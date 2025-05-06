@@ -160,29 +160,33 @@ class Server(monarch.service.Actor):
                 try:
                     if input is not None:
                         while True:
-                            msg = await self._queue.get.call(input)
-                            stream = castable.stream(msg)
+                            msg = await self._queue.get(input).call()
+                            stream = castable(msg).stream()
                             result = [res async for res in stream]
                             if yield_output:
                                 if result is not None:
                                     for item in result:
-                                        await self._queue.put.broadcast_and_wait(
+                                        await self._queue.put(
                                             yield_output, item
-                                        )
+                                        ).broadcast_and_wait()
                             elif output and result is not None:
-                                await self._queue.put.broadcast_and_wait(output, result)
+                                await self._queue.put(
+                                    output, result
+                                ).broadcast_and_wait()
                     else:
                         while True:
-                            stream = castable.stream()
+                            stream = castable().stream()
                             result = [res async for res in stream]
                             if yield_output:
                                 if result is not None:
                                     for item in result:
-                                        await self._queue.put.broadcast_and_wait(
+                                        await self._queue.put(
                                             yield_output, item
-                                        )
+                                        ).broadcast_and_wait()
                             elif output and result is not None:
-                                await self._queue.put.broadcast_and_wait(output, result)
+                                await self._queue.put(
+                                    output, result
+                                ).broadcast_and_wait()
                             await asyncio.sleep(1)
                 except Exception as e:
                     logger.error(f"Exception in pipeline loop: {e}")
@@ -218,7 +222,7 @@ async def deploy(*mesh_and_groups):
 
     tasks = []
     for group, server in zip(groups, servers):
-        tasks.append(server._deploy.broadcast_and_wait(queue=queue, actor=group))
+        tasks.append(server._deploy(queue=queue, actor=group).broadcast_and_wait())
 
     await asyncio.gather(*tasks)
     tasks.clear()
@@ -231,14 +235,14 @@ async def deploy(*mesh_and_groups):
             )
         else:
             print("Deploying queue to group {}".format(group._class.__name__))
-            tasks.append(group.deploy_queue.broadcast_and_wait(queue=queue))
+            tasks.append(group.deploy_queue(queue=queue).broadcast_and_wait())
 
     await asyncio.gather(*tasks)
     tasks.clear()
 
     for group, server in zip(groups, servers):
         print(f"Starting pipeline loops for {group._class.__name__}")
-        tasks.append(server._run.broadcast_and_wait())
+        tasks.append(server._run().broadcast_and_wait())
 
     await asyncio.gather(*tasks)
     return queue
@@ -318,16 +322,16 @@ class Trainer(BaseActor):
         self.optimizer.step()
         # Simulate sending updated weights and new prompts back to the generator.
         if self.rank == 0:
-            await self._queue.put.broadcast_and_wait(
+            await self._queue.put(
                 "trainer2generator_weights", f"new_weights({self.step})"
-            )
+            ).broadcast_and_wait()
 
         num_prompts_to_insert = NUM_GENERATORS
         new_prompts = [
             f"step_{self.step}_prompt_{i}" for i in range(num_prompts_to_insert)
         ]
         if self.rank == 0:
-            await self._queue.put.broadcast_and_wait("trainer2generator", new_prompts)
+            await self._queue.put("trainer2generator", new_prompts).broadcast_and_wait()
         self.step += 1
 
     def __repr__(self) -> str:
@@ -488,7 +492,7 @@ async def main(max_gpus: int = 8) -> None:
 
     # the demo code put some global channels that were declared as pipeline inputs.
     # Make them available to the trainer directly.
-    await queue.put.broadcast_and_wait("trainer2generator", ["Hello", "World"])
+    await queue.put("trainer2generator", ["Hello", "World"]).broadcast_and_wait()
 
     # This sleep controls how long the workload runs for.
     # TODO - wire in mechanisms to stop the workload based on a number of steps completed.

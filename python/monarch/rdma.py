@@ -132,8 +132,10 @@ class RDMABuffer:
         The destination tensor must be contiguous and 1 byte per item.
         """
         _assert_tensor_is_1d_contiguous_uint8(dst)
-        bytes = await RDMAManager.on_proc(self.proc_id).fetch.call(
-            self.addr, offset, dst.numel()
+        bytes = (
+            await RDMAManager.on_proc(self.proc_id)
+            .fetch(self.addr, offset, dst.numel())
+            .call()
         )
         dst.copy_(torch.frombuffer(bytes, dtype=torch.uint8))
 
@@ -149,7 +151,7 @@ class RDMABuffer:
             cast(int, src.storage_offset()),
             src.numel(),
         )
-        await RDMAManager.on_proc(self.proc_id).put.call(self.addr, offset, bytes)
+        await RDMAManager.on_proc(self.proc_id).put(self.addr, offset, bytes).call()
 
 
 class ServiceCallFailedException(Exception):

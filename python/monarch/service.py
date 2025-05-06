@@ -5,6 +5,7 @@ import inspect
 import itertools
 import random
 import traceback
+import warnings
 from asyncio import Future
 
 from dataclasses import dataclass
@@ -22,6 +23,7 @@ from typing import (
     Generic,
     Iterable,
     List,
+    Literal,
     Optional,
     ParamSpec,
     Tuple,
@@ -33,7 +35,6 @@ import monarch._monarch.hyperactor as hyperactor
 from monarch.common.mesh_trait import MeshTrait
 from monarch.common.ndslice import NDSlice, Shape
 from monarch.common.pickle_flatten import flatten, unflatten
-
 
 Allocator = hyperactor.ProcessAllocator | hyperactor.LocalAllocator
 
@@ -108,6 +109,9 @@ A = TypeVar("A")
 _load_balancing_seed = random.Random(4)
 
 
+Selection = Literal["all", "choose"]  # TODO: replace with real selection objects
+
+
 # standin class for whatever is the serializable python object we use
 # to name an actor mesh. Hacked up today because ActorMesh
 # isn't plumbed to non-clients
@@ -161,22 +165,29 @@ class ActorMeshRef:
         self._actor_mesh = None
         self._shape, self._please_replace_me_actor_ids, self._mailbox = state
 
-    def choose(self, message: hyperactor.PythonMessage) -> None:
-        idx = _load_balancing_seed.randrange(len(self._shape.ndslice))
-        actor_rank = self._shape.ndslice[idx]
-        self._mailbox.post(self._please_replace_me_actor_ids[actor_rank], message)
-
     def send(self, rank: int, message: hyperactor.PythonMessage) -> None:
         actor = self._please_replace_me_actor_ids[rank]
         self._mailbox.post(actor, message)
 
-    def cast(self, message: hyperactor.PythonMessage) -> None:
-        if self._actor_mesh is None:
-            # replace me with actual remote actor mesh
-            for rank in self._shape.ranks():
-                self._mailbox.post(self._please_replace_me_actor_ids[rank], message)
+    def cast(
+        self,
+        message: hyperactor.PythonMessage,
+        selection: Selection,
+    ) -> None:
+        if selection == "choose":
+            idx = _load_balancing_seed.randrange(len(self._shape.ndslice))
+            actor_rank = self._shape.ndslice[idx]
+            self._mailbox.post(self._please_replace_me_actor_ids[actor_rank], message)
+            return
+        elif selection == "all":
+            if self._actor_mesh is None:
+                # replace me with actual remote actor mesh
+                for rank in self._shape.ranks():
+                    self._mailbox.post(self._please_replace_me_actor_ids[rank], message)
+            else:
+                self._actor_mesh.cast(message)
         else:
-            self._actor_mesh.cast(message)
+            raise ValueError(f"invalid selection: {selection}")
 
     @property
     def len(self) -> int:
@@ -196,70 +207,91 @@ class Endpoint(Generic[P, R]):
         self._signature: inspect.Signature = inspect.signature(impl)
         self._mailbox = mailbox
 
-    def broadcast(self, *args: P.args, **kwargs: P.kwargs) -> None:
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> "Message[P, R]":
+        self._signature.bind(None, *args, **kwargs)
+        return Message(self, args, kwargs)
+
+    def _port(self, once: bool) -> Tuple["Port", "PortReceiver[R]"]:
+        handle, receiver = (
+            self._mailbox.open_once_port() if once else self._mailbox.open_port()
+        )
+        port_id: hyperactor.PortId = handle.bind()
+        return Port(port_id, self._mailbox), PortReceiver(self._mailbox, receiver)
+
+
+class Message(Generic[P, R]):
+    def __init__(self, endpoint: Endpoint[P, R], args: object, kwargs: object):
+        self._endpoint = endpoint
+        self._used = False
+        self._args = args
+        self._kwargs = kwargs
+
+    def port(self, once: bool = False) -> Tuple["Port", "PortReceiver"]:
+        return self._endpoint._port(once)
+
+    def __del__(self):
+        if not self._used:
+            warnings.warn("This message was not used.", UserWarning, stacklevel=2)
+
+    def broadcast(
+        self, *, port: "Optional[Port]" = None, selection: Selection = "all"
+    ) -> None:
         """
         Fire-and-forget broadcast invocation of the endpoint across all actors in the mesh.
 
         This sends the message to all actors but does not wait for any result.
         """
-        self._signature.bind(None, *args, **kwargs)
-        self._actor_mesh.cast(self._message(args, kwargs, None))
-
-    def _port(
-        self, once: bool
-    ) -> Tuple["Port", hyperactor.OncePortReceiver | hyperactor.PortReceiver]:
-        handle, receiver = (
-            self._mailbox.open_once_port() if once else self._mailbox.open_port()
+        if self._used:
+            raise ValueError(
+                "message has already been sent, create a new message to sent it a different way"
+            )
+        self._used = True
+        message = hyperactor.PythonMessage(
+            self._endpoint._name, _pickle((self._args, self._kwargs, port))
         )
-        port_id: hyperactor.PortId = handle.bind()
-        return Port(port_id, self._mailbox), receiver
+        self._endpoint._actor_mesh.cast(message, selection)
+        del self._args, self._kwargs
 
-    async def choose(self, *args: P.args, **kwargs: P.kwargs) -> R:
+    async def choose(self) -> R:
         """
         Load balanced sends a message to one chosen actor and awaits a result.
 
         Load balanced RPC-style entrypoint for request/response messaging.
         """
-        self._signature.bind(None, *args, **kwargs)
-        port, receiver = self._port(once=True)
-        self._actor_mesh.choose(self._message(args, kwargs, port))
-        return self._unpack(await receiver.recv())
+        port, receiver = self.port(once=True)
+        self.broadcast(selection="choose", port=port)
+        return await receiver.recv()
 
-    def call(self, *args: P.args, **kwargs: P.kwargs) -> Awaitable[R]:
-        if self._actor_mesh.len != 1:
+    def call(self) -> Awaitable[R]:
+        if self._endpoint._actor_mesh.len != 1:
             raise ValueError(
-                f"Can only use 'call' on a single Actor but this actor has shape {self._actor_mesh._shape}"
+                f"Can only use 'call' on a single Actor but this actor has shape {self._endpoint._actor_mesh._shape}"
             )
-        return self.choose(*args, **kwargs)
+        return self.choose()
 
-    async def stream(self, *args: P.args, **kwargs: P.kwargs) -> AsyncGenerator[R, R]:
+    async def stream(self) -> AsyncGenerator[R, R]:
         """
         Broadcasts to all actors and yields their responses as a stream / generator.
 
         This enables processing results from multiple actors incrementally as
         they become available. Returns an async generator of response values.
         """
-        self._signature.bind(None, *args, **kwargs)
-        port, receiver = self._port(once=False)
-        self._actor_mesh.cast(self._message(args, kwargs, port))
-        for _ in range(self._actor_mesh.len):
-            yield self._unpack(await receiver.recv())
+        port, receiver = self.port()
+        self.broadcast(port=port)
+        for _ in range(self._endpoint._actor_mesh.len):
+            yield await receiver.recv()
 
-    async def aggregate(
+    async def accumulate(
         self,
         identity: A,
         combine: Callable[[A, R], A],
-        *args: P.args,
-        **kwargs: P.kwargs,
     ) -> A:
         value = identity
-        async for x in self.stream(*args, **kwargs):
+        async for x in self.stream():
             value = combine(value, x)
         return value
 
-    def broadcast_and_wait(
-        self, *args: P.args, **kwargs: P.kwargs
-    ) -> Coroutine[None, Any, Any]:
+    def broadcast_and_wait(self) -> Coroutine[None, Any, Any]:
         """
         Broadcast to all actors and wait for each to acknowledge receipt.
 
@@ -267,27 +299,7 @@ class Endpoint(Generic[P, R]):
         processed the message by awaiting a response from each one. Does not
         return any results.
         """
-        return self.aggregate(None, lambda x, _: x, *args, **kwargs)
-
-    def _unpack(self, msg: hyperactor.PythonMessage) -> R:
-        # TODO: Try to do something more structured than a cast here
-        payload = cast(R, _unpickle(msg.message, self._mailbox))
-        if msg.method == "result":
-            return payload
-        else:
-            assert msg.method == "exception"
-            # pyre-ignore do something more structured here
-            raise payload
-
-    def _message(
-        self, args: object, kwargs: object, port: Optional["Port"]
-    ) -> hyperactor.PythonMessage:
-        return hyperactor.PythonMessage(self._name, _pickle((args, kwargs, port)))
-
-    def __call__(self, *args: Any, **kwargs: Any) -> None:
-        raise RuntimeError(
-            "Monarch service endpoints cannot be called directly, use .call suffix for getting a result or the .cast suffix to send without expecting a result."
-        )
+        return self.accumulate(None, lambda x, _: x)
 
 
 class EndpointProperty(Generic[P, R]):
@@ -319,6 +331,27 @@ class Port:
             self._port,
             hyperactor.PythonMessage(method, _pickle(obj)),
         )
+
+
+class PortReceiver(Generic[R]):
+    def __init__(
+        self,
+        mailbox: hyperactor.Mailbox,
+        receiver: hyperactor.PortReceiver | hyperactor.OncePortReceiver,
+    ):
+        self._mailbox = mailbox
+        self._receiver = receiver
+
+    async def recv(self) -> R:
+        msg: hyperactor.PythonMessage = await self._receiver.recv()
+        # TODO: Try to do something more structured than a cast here
+        payload = cast(R, _unpickle(msg.message, self._mailbox))
+        if msg.method == "result":
+            return payload
+        else:
+            assert msg.method == "exception"
+            # pyre-ignore do something more structured here
+            raise payload
 
 
 singleton_shape = Shape([], NDSlice(offset=0, sizes=[], strides=[]))
@@ -442,7 +475,7 @@ class Service(MeshTrait):
             self._mailbox,
         )
         # pyre-ignore
-        ep.broadcast(self._class, *args, **kwargs)
+        ep(self._class, *args, **kwargs).broadcast()
 
     def __reduce_ex__(self, protocol: ...) -> "Tuple[Type[Service], Tuple[Any, ...]]":
         return Service, (
