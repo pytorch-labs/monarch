@@ -1,14 +1,13 @@
 use std::sync::Arc;
 
 use hyperactor::channel::ChannelTransport;
+use hyperactor_extension::alloc::PyAlloc;
 use hyperactor_extension::alloc::PyAllocSpec;
-use hyperactor_extension::alloc::TakeableAlloc;
 use hyperactor_mesh::alloc::Allocator;
 use hyperactor_meta_lib::alloc::ALLOC_LABEL_TASK_GROUP;
 use hyperactor_meta_lib::alloc::DEFAULT_REMOTE_ALLOCATOR_PORT;
 use hyperactor_meta_lib::alloc::MastAllocator;
 use hyperactor_meta_lib::alloc::MastAllocatorConfig;
-use hyperactor_meta_lib::alloc::TaskGroupAlloc;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
@@ -18,7 +17,7 @@ use pyo3::prelude::*;
 )]
 #[derive(Clone)]
 pub struct PyMastAllocatorConfig {
-    inner: MastAllocatorConfig,
+    pub(crate) inner: MastAllocatorConfig,
 }
 
 #[pymethods]
@@ -58,7 +57,7 @@ impl PyMastAllocatorConfig {
 )]
 #[derive(Clone)]
 pub struct PyMastAllocator {
-    inner: Arc<tokio::sync::Mutex<MastAllocator>>,
+    pub(crate) inner: Arc<tokio::sync::Mutex<MastAllocator>>,
 }
 
 #[pymethods]
@@ -92,32 +91,14 @@ impl PyMastAllocator {
                 .await
                 .allocate(spec)
                 .await
-                .map(|inner| PyMastAlloc {
-                    inner: Arc::new(std::sync::Mutex::new(Some(inner))),
-                })
+                .map(|inner| PyAlloc::new(Box::new(inner)))
                 .map_err(|e| PyRuntimeError::new_err(format!("{}", e)))
         })
-    }
-}
-
-#[pyclass(
-    name = "MastAlloc",
-    module = "monarch_meta._monarch_meta.hyperactor_meta"
-)]
-#[derive(Clone)]
-pub struct PyMastAlloc {
-    inner: Arc<std::sync::Mutex<Option<TaskGroupAlloc>>>,
-}
-
-impl TakeableAlloc<TaskGroupAlloc> for PyMastAlloc {
-    fn take(&self) -> Option<TaskGroupAlloc> {
-        self.inner.lock().unwrap().take()
     }
 }
 
 pub fn init_pymodule(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyMastAllocatorConfig>()?;
     module.add_class::<PyMastAllocator>()?;
-    module.add_class::<PyMastAlloc>()?;
     Ok(())
 }

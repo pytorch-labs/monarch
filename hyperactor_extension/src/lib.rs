@@ -7,10 +7,12 @@ use pyo3::PyResult;
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
 
+use crate::alloc::PyAlloc;
 use crate::alloc::PyAllocConstraints;
 use crate::alloc::PyAllocSpec;
 
 pub fn init_pymodule(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_class::<PyAlloc>()?;
     module.add_class::<PyAllocConstraints>()?;
     module.add_class::<PyAllocSpec>()?;
 

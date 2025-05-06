@@ -179,9 +179,19 @@ impl TaskGroupAlloc {
             };
             let remote_addr = match self.transport {
                 ChannelTransport::MetaTls => {
-                    format!("metatls!:{}:{}", hostname, self.remote_allocator_port)
+                    format!(
+                        "metatls!{}:{}",
+                        Self::canonicalize_hostname(&hostname),
+                        self.remote_allocator_port
+                    )
                 }
-                ChannelTransport::Tcp => format!("tcp!{}:{}", hostname, self.remote_allocator_port),
+                ChannelTransport::Tcp => format!(
+                    "tcp!{}:{}",
+                    // This may not be entirely correct if there is monekying around outside of MAST.
+                    // See relevant comments in system_resolution.rs.
+                    Self::canonicalize_hostname(&hostname),
+                    self.remote_allocator_port
+                ),
                 // Used only for testing.
                 ChannelTransport::Unix => hostname,
                 _ => {
@@ -192,6 +202,7 @@ impl TaskGroupAlloc {
                     );
                 }
             };
+            tracing::debug!("dialing remote: {} for task {}", remote_addr, task_id);
             let tx = channel::dial(remote_addr.parse()?)
                 .map_err(anyhow::Error::from)
                 .context(format!(
@@ -475,6 +486,14 @@ impl TaskGroupAlloc {
             safe_name
         ))
     }
+
+    pub fn canonicalize_hostname(hostname: &str) -> String {
+        if !hostname.ends_with(".facebook.com") {
+            format!("{}.facebook.com", hostname)
+        } else {
+            hostname.to_string()
+        }
+    }
 }
 
 #[async_trait]
@@ -591,7 +610,7 @@ impl Alloc for TaskGroupAlloc {
             if let ProcState::Created { proc_id, coords } = update {
                 match self.project_proc_into_global_shape(&proc_id, &coords) {
                     Ok(global_coords) => {
-                        tracing::info!("reprojected coords: {:?} -> {:?}", coords, global_coords);
+                        tracing::debug!("reprojected coords: {:?} -> {:?}", coords, global_coords);
                         break Some(ProcState::Created {
                             proc_id,
                             coords: global_coords,
@@ -617,7 +636,7 @@ impl Alloc for TaskGroupAlloc {
     }
 
     fn transport(&self) -> ChannelTransport {
-        ChannelTransport::MetaTls
+        self.transport.clone()
     }
 
     async fn stop(&mut self) -> Result<(), AllocatorError> {

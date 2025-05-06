@@ -1,12 +1,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use hyperactor_extension::alloc::PyAlloc;
 use hyperactor_extension::alloc::PyAllocSpec;
-use hyperactor_extension::alloc::TakeableAlloc;
 use hyperactor_mesh::alloc::Allocator;
-use hyperactor_mesh::alloc::LocalAlloc;
 use hyperactor_mesh::alloc::LocalAllocator;
-use hyperactor_mesh::alloc::ProcessAlloc;
 use hyperactor_mesh::alloc::ProcessAllocator;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -32,23 +30,9 @@ impl PyLocalAllocator {
             LocalAllocator
                 .allocate(spec)
                 .await
-                .map(|inner| PyLocalAlloc {
-                    inner: Arc::new(std::sync::Mutex::new(Some(inner))),
-                })
+                .map(|inner| PyAlloc::new(Box::new(inner)))
                 .map_err(|e| PyRuntimeError::new_err(format!("{:?}", e)))
         })
-    }
-}
-
-#[pyclass(name = "LocalAlloc", module = "monarch._monarch.hyperactor")]
-#[derive(Clone)]
-pub struct PyLocalAlloc {
-    inner: Arc<std::sync::Mutex<Option<LocalAlloc>>>,
-}
-
-impl TakeableAlloc<LocalAlloc> for PyLocalAlloc {
-    fn take(&self) -> Option<LocalAlloc> {
-        self.inner.lock().unwrap().take()
     }
 }
 
@@ -86,22 +70,8 @@ impl PyProcessAllocator {
                 .await
                 .allocate(spec)
                 .await
-                .map(|inner| PyProcessAlloc {
-                    inner: Arc::new(std::sync::Mutex::new(Some(inner))),
-                })
+                .map(|inner| PyAlloc::new(Box::new(inner)))
                 .map_err(|e| PyRuntimeError::new_err(format!("{:?}", e)))
         })
-    }
-}
-
-#[pyclass(name = "ProcessAlloc", module = "monarch._monarch.hyperactor")]
-#[derive(Clone)]
-pub struct PyProcessAlloc {
-    inner: Arc<std::sync::Mutex<Option<ProcessAlloc>>>,
-}
-
-impl TakeableAlloc<ProcessAlloc> for PyProcessAlloc {
-    fn take(&self) -> Option<ProcessAlloc> {
-        self.inner.lock().unwrap().take()
     }
 }

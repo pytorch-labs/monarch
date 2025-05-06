@@ -11,7 +11,7 @@ pub mod mesh;
 pub mod proc_mesh;
 pub mod reference;
 pub mod shortuuid;
-mod test_utils;
+pub mod test_utils;
 
 pub use actor_mesh::ActorMesh;
 pub use actor_mesh::SlicedActorMesh;

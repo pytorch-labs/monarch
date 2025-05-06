@@ -1,16 +1,70 @@
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::Mutex;
 
+use async_trait::async_trait;
+use hyperactor::WorldId;
+use hyperactor::channel::ChannelTransport;
+use hyperactor_mesh::alloc::Alloc;
 use hyperactor_mesh::alloc::AllocConstraints;
 use hyperactor_mesh::alloc::AllocSpec;
+use hyperactor_mesh::alloc::AllocatorError;
+use hyperactor_mesh::alloc::ProcState;
 use hyperactor_mesh::shape::Shape;
 use ndslice::Slice;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-/// Helper trait that allows us to abstract over the different kinds of PyAlloc.
-pub trait TakeableAlloc<T> {
-    fn take(&self) -> Option<T>;
+/// A python class that wraps a Rust Alloc trait object. It represents what
+/// is shown on the python side. Internals are not exposed.
+/// It ensures that the Alloc is only used once (i.e. moved) in rust.
+#[pyclass(name = "Alloc", module = "monarch._monarch.hyperactor")]
+pub struct PyAlloc {
+    pub inner: Arc<Mutex<Option<PyAllocWrapper>>>,
+}
+
+impl PyAlloc {
+    /// Create a new PyAlloc with provided boxed trait.
+    pub fn new(inner: Box<dyn Alloc + Sync + Send>) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(Some(PyAllocWrapper { inner }))),
+        }
+    }
+
+    /// Take the internal Alloc object.
+    pub fn take(&self) -> Option<PyAllocWrapper> {
+        self.inner.lock().unwrap().take()
+    }
+}
+
+/// Internal wrapper to translate from a dyn Alloc to an impl Alloc. Used
+/// to support polymorphism in the Python bindings.
+pub struct PyAllocWrapper {
+    inner: Box<dyn Alloc + Sync + Send>,
+}
+
+#[async_trait]
+impl Alloc for PyAllocWrapper {
+    async fn next(&mut self) -> Option<ProcState> {
+        self.inner.next().await
+    }
+
+    fn shape(&self) -> &Shape {
+        self.inner.shape()
+    }
+
+    fn world_id(&self) -> &WorldId {
+        self.inner.world_id()
+    }
+
+    fn transport(&self) -> ChannelTransport {
+        self.inner.transport()
+    }
+
+    async fn stop(&mut self) -> Result<(), AllocatorError> {
+        self.inner.stop().await
+    }
 }
 
 #[pyclass(name = "AllocConstraints", module = "monarch._monarch.hyperactor")]

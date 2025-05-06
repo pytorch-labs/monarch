@@ -1,19 +1,14 @@
 use std::sync::Arc;
 
-use hyperactor_extension::alloc::TakeableAlloc;
-use hyperactor_mesh::alloc::Alloc;
+use hyperactor_extension::alloc::PyAlloc;
 use hyperactor_mesh::proc_mesh::ProcMesh;
 use hyperactor_mesh::proc_mesh::SharedSpawnable;
 use monarch_types::PickledPyObject;
 use pyo3::exceptions::PyException;
-use pyo3::exceptions::PyTypeError;
-use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyType;
 
 use crate::actor_mesh::PythonActorMesh;
-use crate::alloc::PyLocalAlloc;
-use crate::alloc::PyProcessAlloc;
 use crate::mailbox::PyMailbox;
 
 #[pyclass(name = "ProcMesh", module = "monarch._monarch.hyperactor")]
@@ -22,12 +17,14 @@ pub struct PyProcMesh {
     inner: Arc<ProcMesh>,
 }
 
-fn allocate_proc_mesh<'py, T: Alloc + Send + Sync + 'static>(
-    py: Python<'py>,
-    alloc: impl TakeableAlloc<T>,
-) -> PyResult<Bound<'py, PyAny>> {
-    let Some(alloc) = alloc.take() else {
-        return Err(PyValueError::new_err("Alloc is already used"));
+fn allocate_proc_mesh<'py>(py: Python<'py>, alloc: &PyAlloc) -> PyResult<Bound<'py, PyAny>> {
+    let alloc = match alloc.take() {
+        Some(alloc) => alloc,
+        None => {
+            return Err(PyException::new_err(
+                "Alloc object already been used".to_string(),
+            ));
+        }
     };
     pyo3_async_runtimes::tokio::future_into_py(py, async move {
         let mesh = ProcMesh::allocate(alloc)
@@ -45,17 +42,9 @@ impl PyProcMesh {
     fn allocate<'py>(
         _cls: &Bound<'_, PyType>,
         py: Python<'py>,
-        alloc: &Bound<'py, PyAny>,
+        alloc: &PyAlloc,
     ) -> PyResult<Bound<'py, PyAny>> {
-        if let Ok(alloc) = alloc.extract::<PyLocalAlloc>() {
-            allocate_proc_mesh(py, alloc)
-        } else if let Ok(alloc) = alloc.extract::<PyProcessAlloc>() {
-            allocate_proc_mesh(py, alloc)
-        } else {
-            Err(PyTypeError::new_err(
-                "Alloc must be a LocalAlloc or ProcessAlloc",
-            ))
-        }
+        allocate_proc_mesh(py, alloc)
     }
 
     fn spawn<'py>(

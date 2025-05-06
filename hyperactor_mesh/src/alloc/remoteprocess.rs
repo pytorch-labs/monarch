@@ -90,7 +90,7 @@ impl RemoteProcessAllocator {
     /// Start a remote process allocator with given allocator listening for
     /// RemoteProcessAllocatorMessage on serve_addr.
     /// Used for testing.
-    async fn start_with_allocator<A: Allocator + Send + Sync + 'static>(
+    pub async fn start_with_allocator<A: Allocator + Send + Sync + 'static>(
         &self,
         serve_addr: ChannelAddr,
         mut process_allocator: A,

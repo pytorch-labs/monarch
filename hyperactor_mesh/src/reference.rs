@@ -53,7 +53,7 @@ macro_rules! mesh_id {
     Ord,
     Named
 )]
-pub struct ProcMeshId(String);
+pub struct ProcMeshId(pub String);
 
 /// Actor Mesh ID.  This is a tuple of the ProcMesh ID, Actor Mesh ID, and Slice id, empty if not a slice.
 #[derive(
@@ -68,7 +68,7 @@ pub struct ProcMeshId(String);
     Ord,
     Named
 )]
-pub struct ActorMeshId(ProcMeshId, String, String);
+pub struct ActorMeshId(pub ProcMeshId, pub String, pub String);
 
 /// Types references to Actor Meshes.
 #[derive(Debug, Serialize, Deserialize)]

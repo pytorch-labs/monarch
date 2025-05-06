@@ -132,9 +132,18 @@ impl Alloc for LocalAlloc {
                 handle,
             });
 
+            // Adjust for shape slice offset for non-zero shapes (sub-shapes).
+            let rank = rank + self.spec.shape.slice().offset();
+            let coords = match self.spec.shape.slice().coordinates(rank) {
+                Ok(coords) => coords,
+                Err(err) => {
+                    tracing::error!("failed to get coords for rank {}: {}", rank, err);
+                    return None;
+                }
+            };
             let created = ProcState::Created {
                 proc_id: proc_id.clone(),
-                coords: self.spec.shape.slice().coordinates(rank).unwrap(),
+                coords,
             };
             self.queue.push_back(ProcState::Running {
                 proc_id,

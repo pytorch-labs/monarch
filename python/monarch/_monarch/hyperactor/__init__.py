@@ -25,10 +25,9 @@ OncePortReceiver = hyperactor.OncePortReceiver
 
 AllocConstraints = hyperactor.AllocConstraints
 AllocSpec = hyperactor.AllocSpec
+Alloc = hyperactor.Alloc
 ProcessAllocator = hyperactor.ProcessAllocator
-ProcessAlloc = hyperactor.ProcessAlloc
 LocalAllocator = hyperactor.LocalAllocator
-LocalAlloc = hyperactor.LocalAlloc
 
 ProcMesh = hyperactor.ProcMesh
 PythonActorMesh = hyperactor.PythonActorMesh
@@ -67,12 +66,11 @@ __all__ = [
     "PortReceiver",
     "OncePortHandle",
     "OncePortReceiver",
+    "Alloc",
     "AllocSpec",
     "AllocConstraints",
     "ProcessAllocator",
-    "ProcessAlloc",
     "LocalAllocator",
-    "LocalAlloc",
     "ProcMesh",
     "PythonActorMesh",
 ]

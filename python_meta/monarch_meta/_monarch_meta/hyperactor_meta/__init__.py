@@ -4,10 +4,10 @@ from .._lib_meta import (  # @manual=//monarch/monarch_meta_extension:monarch_me
 
 MastAllocatorConfig = hyperactor_meta.MastAllocatorConfig
 MastAllocator = hyperactor_meta.MastAllocator
-MastAlloc = hyperactor_meta.MastAlloc
+MockMast = hyperactor_meta.MockMast
 
 __all__ = [
     "MastAllocatorConfig",
     "MastAllocator",
-    "MastAlloc",
+    "MockMast",
 ]

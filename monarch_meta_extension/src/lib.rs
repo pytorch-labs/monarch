@@ -1,6 +1,7 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 pub mod alloc;
+pub mod alloc_mock;
 
 use pyo3::prelude::*;
 
@@ -16,6 +17,7 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
 
     let hyperactor_mod = PyModule::new_bound(module.py(), "hyperactor_meta")?;
     alloc::init_pymodule(&hyperactor_mod)?;
+    alloc_mock::init_pymodule(&hyperactor_mod)?;
 
     module.add_submodule(&hyperactor_mod)?;
     Ok(())

@@ -45,9 +45,7 @@ pub fn init_pymodule(module: &Bound<'_, PyModule>) -> PyResult<()> {
     hyperactor_mod.add_class::<mailbox::PythonOncePortReceiver>()?;
 
     hyperactor_mod.add_class::<alloc::PyProcessAllocator>()?;
-    hyperactor_mod.add_class::<alloc::PyProcessAlloc>()?;
     hyperactor_mod.add_class::<alloc::PyLocalAllocator>()?;
-    hyperactor_mod.add_class::<alloc::PyLocalAlloc>()?;
 
     hyperactor_mod.add_class::<proc_mesh::PyProcMesh>()?;
     hyperactor_mod.add_class::<actor_mesh::PythonActorMesh>()?;

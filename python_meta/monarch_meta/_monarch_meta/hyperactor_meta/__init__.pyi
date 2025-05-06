@@ -48,3 +48,59 @@ class MastAllocator:
                   required.
         """
         ...
+
+@final
+class MockMast:
+    def __init__(self) -> None:
+        """
+        Create a new mock mast that can be used to emulate mast setup locally.
+        """
+        ...
+
+    async def add_local_task_group(self, name: str, num_tasks: int) -> None:
+        """
+        Add a local task group to the mock mast using LocalAllocator.
+
+        Arguments:
+        - `name`: The name of the task group.
+        - `num_tasks`: The number of tasks in the task group.
+        """
+        ...
+
+    async def add_process_task_group(
+        self,
+        name: str,
+        num_tasks: int,
+        cmd: str,
+        args: Optional[dict[str, str]] = None,
+        env: Optional[dict[str, str]] = None,
+    ) -> None:
+        """
+        Add a local task group to the mock mast using ProcessAllocator.
+
+        Arguments:
+        - `name`: The name of the task group.
+        - `num_tasks`: The number of tasks in the task group.
+        - `cmd`: The command to run for each task.
+        - `args`: The arguments to pass to the command.
+        - `env`: The environment variables to set for each task.
+        """
+        ...
+
+    async def stop_task_group(self, name: str) -> None:
+        """
+        Stop a task group.
+
+        Arguments:
+        - `name`: The name of the task group.
+        """
+        ...
+
+    async def get_mast_allocator(self, config: MastAllocatorConfig) -> MastAllocator:
+        """
+        Get a mast allocator for the mock mast. `config` must have job_name set.
+
+        Arguments:
+        - `config`: The configuration to use for the mast allocator. Must have job_name set.
+        """
+        ...
