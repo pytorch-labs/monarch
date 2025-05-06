@@ -5,7 +5,7 @@ from typing import List
 from monarch.common.client import Client
 
 from monarch.common.device_mesh import DeviceMesh
-from monarch.common.ndslice import NDSlice
+from monarch.common.shape import NDSlice
 
 from monarch.controller.backend import ProcessBackend
 

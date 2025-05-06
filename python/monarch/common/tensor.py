@@ -34,8 +34,8 @@ from .fake import fake_call
 from .function import Propagator, ResolvableFunction
 from .invocation import Invocation
 from .messages import Dims
-from .ndslice import NDSlice
 from .reference import Referenceable
+from .shape import NDSlice
 from .stream import Stream
 from .tree import flatten
 

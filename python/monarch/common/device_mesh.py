@@ -22,7 +22,7 @@ from typing import (
 
 import monarch.common.messages as messages
 import torch
-from monarch.common.mesh_trait import MeshTrait
+from monarch.common.shape import MeshTrait
 
 from torch.utils._python_dispatch import TorchDispatchMode
 from torch.utils._pytree import tree_map
@@ -30,8 +30,8 @@ from torch.utils._pytree import tree_map
 from ._tensor_to_table import tensor_to_table
 from .context_manager import activate_first_context_manager
 from .messages import Dims
-from .ndslice import NDSlice
 from .reference import Referenceable
+from .shape import NDSlice, Shape
 from .stream import Stream
 from .tensor import MeshSliceTensor, Tensor
 
@@ -234,14 +234,8 @@ class DeviceMesh(Referenceable, MeshTrait):
     def _labels(self) -> Tuple[str, ...]:
         return self.names
 
-    def _new_with_shape(
-        self, labels: Tuple[str, ...], ndslice: NDSlice
-    ) -> "DeviceMesh":
-        mesh = DeviceMesh(
-            self.client,
-            ndslice,
-            labels,
-        )
+    def _new_with_shape(self, shape: Shape) -> "DeviceMesh":
+        mesh = DeviceMesh(self.client, shape.ndslice, tuple(shape.labels))
         mesh.exit = self.exit
         return mesh
 

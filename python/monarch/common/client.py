@@ -32,10 +32,10 @@ from monarch.common.borrows import Borrow, StorageAliases
 from monarch.common.controller_api import LogMessage, MessageResult, TController
 from monarch.common.device_mesh import DeviceMesh
 from monarch.common.invocation import DeviceException, RemoteException, Seq
-from monarch.common.ndslice import NDSlice
 from monarch.common.recording import flatten_messages, Recording
 
 from monarch.common.reference import Ref, Referenceable
+from monarch.common.shape import NDSlice
 from monarch.common.stream import StreamRef
 from monarch.common.tensor import Tensor
 from monarch.common.tree import tree_map

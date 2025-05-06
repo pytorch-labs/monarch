@@ -8,7 +8,7 @@ from typing import List, NamedTuple, Optional, Sequence
 import torch
 
 from monarch.common import messages
-from monarch.common.ndslice import NDSlice
+from monarch.common.shape import NDSlice
 from monarch.simulator.ir import IRGraph
 from monarch.simulator.tensor import DTensorRef
 from monarch.simulator.utils import clean_name, file_path_with_iter

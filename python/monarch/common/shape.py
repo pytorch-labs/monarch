@@ -1,13 +1,35 @@
 import itertools
 import operator
 from abc import ABC, abstractmethod
-from typing import Dict, Sequence, Tuple
 
-from monarch.common.ndslice import NDSlice
+from typing import Dict, Generator, Sequence, Tuple
+
+from monarch._monarch.shape import Shape, Slice
+
 from typing_extensions import Self
+
+NDSlice = Slice
+
+Slices = Slice | list[Slice]
+
+
+def iter_ranks(ranks: Slices) -> Generator[int, None, None]:
+    if isinstance(ranks, list):
+        seen = set()
+        for slice_ in ranks:
+            for rank in slice_:
+                if rank not in seen:
+                    seen.add(rank)
+                    yield rank
+    else:
+        yield from ranks
 
 
 class MeshTrait(ABC):
+    """
+    Mesh interface. Implemented via Shape.
+    """
+
     @property
     @abstractmethod
     def _ndslice(self) -> NDSlice: ...
@@ -17,7 +39,7 @@ class MeshTrait(ABC):
     def _labels(self) -> Tuple[str, ...]: ...
 
     @abstractmethod
-    def _new_with_shape(self, labels: Tuple[str, ...], ndslice: NDSlice) -> Self: ...
+    def _new_with_shape(self, shape: Shape) -> Self: ...
 
     def slice(self, **kwargs) -> Self:
         """
@@ -53,7 +75,7 @@ class MeshTrait(ABC):
             )
 
         new_ndslice = NDSlice(offset=offset, sizes=sizes, strides=strides)
-        return self._new_with_shape(tuple(names), new_ndslice)
+        return self._new_with_shape(Shape(names, new_ndslice))
 
     def split(self, **kwargs) -> Self:
         """
@@ -133,7 +155,7 @@ class MeshTrait(ABC):
                 f"unused size constraints: {tuple(size_constraints.keys())}"
             )
         return self._new_with_shape(
-            tuple(names), NDSlice(offset=ndslice.offset, sizes=sizes, strides=strides)
+            Shape(names, NDSlice(offset=ndslice.offset, sizes=sizes, strides=strides))
         )
 
     def flatten(self, name: str) -> Self:
@@ -158,7 +180,9 @@ class MeshTrait(ABC):
             )
 
         return self._new_with_shape(
-            (name,), NDSlice(offset=ndslice.offset, sizes=[total_size], strides=[1])
+            Shape(
+                [name], NDSlice(offset=ndslice.offset, sizes=[total_size], strides=[1])
+            )
         )
 
     def rename(self, **kwargs) -> Self:
@@ -169,3 +193,6 @@ class MeshTrait(ABC):
             new_mesh = mesh.rename(host='dp', gpu='tp')
         """
         return self.split(**{k: (v,) for k, v in kwargs.items()})
+
+
+__all__ = ["NDSlice", "Shape", "MeshTrait"]

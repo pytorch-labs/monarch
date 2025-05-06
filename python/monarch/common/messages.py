@@ -23,7 +23,7 @@ from monarch.common.stream import StreamRef
 from monarch.common.tree import flattener
 from pyre_extensions import none_throws
 
-from .ndslice import NDSlice
+from .shape import NDSlice
 from .tensor_factory import TensorFactory
 
 if TYPE_CHECKING:

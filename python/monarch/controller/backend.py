@@ -5,15 +5,11 @@ import os
 import socket
 
 from abc import ABC, abstractmethod
-from collections import deque
-from typing import List, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import List, NamedTuple, Optional, Sequence, Tuple
 
-import torch
 from monarch.common import messages
-from monarch.common.device_mesh import no_mesh
 
-from monarch.common.ndslice import iter_ranks, NDSlice, Ranks
-from monarch.common.tree import flatten
+from monarch.common.shape import iter_ranks, Slices as Ranks
 from monarch_supervisor import (
     Context,
     FunctionCall,

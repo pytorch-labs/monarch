@@ -35,9 +35,9 @@ import zmq.asyncio
 from monarch.common import messages
 from monarch.common.function import ResolvableFunction
 from monarch.common.messages import DependentOnError, Dims
-from monarch.common.ndslice import NDSlice
 from monarch.common.process_group import SingleControllerProcessGroupWrapper
 from monarch.common.reference import Ref, Referenceable
+from monarch.common.shape import NDSlice
 from monarch.common.tensor_factory import TensorFactory
 from monarch.common.tree import flatten, flattener
 from monarch_supervisor import get_message_queue, Letter

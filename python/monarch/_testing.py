@@ -10,7 +10,7 @@ import monarch_supervisor
 from monarch.common.client import Client
 from monarch.common.device_mesh import DeviceMesh
 from monarch.common.invocation import DeviceException, RemoteException
-from monarch.common.ndslice import NDSlice
+from monarch.common.shape import NDSlice
 from monarch.controller.backend import ProcessBackend
 from monarch.python_local_mesh import PythonLocalContext
 from monarch.rust_local_mesh import (

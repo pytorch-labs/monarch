@@ -23,7 +23,7 @@ from monarch.common.constants import (
 from monarch.common.device_mesh import DeviceMesh
 from monarch.common.fake import fake_call
 from monarch.common.invocation import DeviceException, RemoteException
-from monarch.common.ndslice import NDSlice
+from monarch.common.shape import NDSlice
 from monarch.controller.rust_backend.controller import RustController
 from monarch.rust_backend_mesh import MeshWorld
 

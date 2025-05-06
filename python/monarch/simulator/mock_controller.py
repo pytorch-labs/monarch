@@ -21,8 +21,8 @@ from monarch.common import messages
 from monarch.common.controller_api import DebuggerMessage, LogMessage, MessageResult
 from monarch.common.device_mesh import no_mesh
 from monarch.common.invocation import Invocation, RemoteException, Seq
-from monarch.common.ndslice import iter_ranks, NDSlice, Ranks
 from monarch.common.reference import Ref
+from monarch.common.shape import iter_ranks, NDSlice, Slices as Ranks
 from monarch.common.tree import flatten
 
 if TYPE_CHECKING:

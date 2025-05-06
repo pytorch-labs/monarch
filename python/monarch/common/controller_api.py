@@ -4,8 +4,8 @@ from typing import Any, List, NamedTuple, Optional, Protocol, Sequence, Union
 from monarch._monarch.client import DebuggerMessage, LogLevel, WorldState
 
 from monarch.common.invocation import DeviceException, RemoteException, Seq
-from monarch.common.ndslice import NDSlice
 from monarch.common.reference import Ref
+from monarch.common.shape import NDSlice
 from monarch.common.tensor import Tensor
 
 

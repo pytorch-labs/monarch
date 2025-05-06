@@ -14,7 +14,7 @@ from monarch.common.controller_api import LogMessage, MessageResult
 from monarch.common.device_mesh import no_mesh
 from monarch.common.invocation import DeviceException, RemoteException
 from monarch.common.messages import SupportsToRustMessage
-from monarch.common.ndslice import NDSlice
+from monarch.common.shape import NDSlice
 from monarch.common.tensor import Tensor
 from monarch.controller.debugger import read as debugger_read, write as debugger_write
 from pyre_extensions import none_throws

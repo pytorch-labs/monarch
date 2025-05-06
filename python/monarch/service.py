@@ -31,9 +31,8 @@ from typing import (
 )
 
 import monarch._monarch.hyperactor as hyperactor
-from monarch.common.mesh_trait import MeshTrait
-from monarch.common.ndslice import NDSlice, Shape
 from monarch.common.pickle_flatten import flatten, unflatten
+from monarch.common.shape import MeshTrait, NDSlice, Shape
 
 Allocator = hyperactor.ProcessAllocator | hyperactor.LocalAllocator
 
@@ -478,7 +477,7 @@ class Actor(MeshTrait):
             "actor implementations are not meshes, but we can't convince the typechecker of it..."
         )
 
-    def _new_with_shape(self, labels: Tuple[str, ...], ndslice: NDSlice) -> "Service":
+    def _new_with_shape(self, shape: Shape) -> "Service":
         raise NotImplementedError(
             "actor implementations are not meshes, but we can't convince the typechecker of it..."
         )
@@ -533,12 +532,10 @@ class Service(MeshTrait):
     def _labels(self) -> Iterable[str]:
         return self._actor_mesh_ref._shape.labels
 
-    def _new_with_shape(self, labels: Tuple[str, ...], ndslice: NDSlice) -> "Service":
+    def _new_with_shape(self, shape: Shape) -> "Service":
         return Service(
             self._class,
-            ActorMeshRef.from_actor_ref_with_shape(
-                self._actor_mesh_ref, Shape(list(labels), ndslice)
-            ),
+            ActorMeshRef.from_actor_ref_with_shape(self._actor_mesh_ref, shape),
             self._mailbox,
         )
 
