@@ -383,6 +383,9 @@ class PortReceiver:
     async def recv(self) -> PythonMessage:
         """Receive a PythonMessage from the port's sender."""
         ...
+    def blocking_recv(self) -> PythonMessage:
+        """Receive a single PythonMessage from the port's sender."""
+        ...
 
 @final
 class OncePortHandle:
@@ -404,6 +407,9 @@ class OncePortReceiver:
     A variant of PortReceiver that can only receive a single message.
     """
     async def recv(self) -> PythonMessage:
+        """Receive a single PythonMessage from the port's sender."""
+        ...
+    def blocking_recv(self) -> PythonMessage:
         """Receive a single PythonMessage from the port's sender."""
         ...
 

@@ -6,7 +6,6 @@ import itertools
 import random
 import traceback
 import warnings
-from asyncio import Future
 
 from dataclasses import dataclass
 from traceback import extract_tb, StackSummary
@@ -252,7 +251,7 @@ class Message(Generic[P, R]):
         self._endpoint._actor_mesh.cast(message, selection)
         del self._args, self._kwargs
 
-    async def choose(self) -> R:
+    def choose(self) -> "Future[R]":
         """
         Load balanced sends a message to one chosen actor and awaits a result.
 
@@ -260,15 +259,16 @@ class Message(Generic[P, R]):
         """
         port, receiver = self.port(once=True)
         self.broadcast(selection="choose", port=port)
-        return await receiver.recv()
+        return receiver.recv()
 
-    def call(self) -> Awaitable[R]:
+    def call(self) -> "Future[R]":
         if self._endpoint._actor_mesh.len != 1:
             raise ValueError(
                 f"Can only use 'call' on a single Actor but this actor has shape {self._endpoint._actor_mesh._shape}"
             )
         return self.choose()
 
+    # TODO: convert into something equivalent that works with futures
     async def stream(self) -> AsyncGenerator[R, R]:
         """
         Broadcasts to all actors and yields their responses as a stream / generator.
@@ -281,17 +281,22 @@ class Message(Generic[P, R]):
         for _ in range(self._endpoint._actor_mesh.len):
             yield await receiver.recv()
 
-    async def accumulate(
+    def accumulate(
         self,
         identity: A,
         combine: Callable[[A, R], A],
-    ) -> A:
-        value = identity
-        async for x in self.stream():
-            value = combine(value, x)
-        return value
+    ) -> "Future[A]":
+        gen = self.stream()
 
-    def broadcast_and_wait(self) -> Coroutine[None, Any, Any]:
+        async def impl():
+            value = identity
+            async for x in gen:
+                value = combine(value, x)
+            return value
+
+        return Future(impl())
+
+    def broadcast_and_wait(self) -> "Future[None]":
         """
         Broadcast to all actors and wait for each to acknowledge receipt.
 
@@ -316,8 +321,6 @@ class EndpointProperty(Generic[P, R]):
 def endpoint(
     method: Callable[Concatenate[Any, P], Coroutine[Any, Any, R]],
 ) -> EndpointProperty[P, R]:
-    if not inspect.iscoroutinefunction(method):
-        raise TypeError(f"The implementation of an endpoint must be an async function")
     return EndpointProperty(method)
 
 
@@ -342,8 +345,13 @@ class PortReceiver(Generic[R]):
         self._mailbox = mailbox
         self._receiver = receiver
 
-    async def recv(self) -> R:
-        msg: hyperactor.PythonMessage = await self._receiver.recv()
+    async def _recv(self) -> R:
+        return self._process(await self._receiver.recv())
+
+    def _blocking_recv(self) -> R:
+        return self._process(self._receiver.blocking_recv())
+
+    def _process(self, msg: hyperactor.PythonMessage):
         # TODO: Try to do something more structured than a cast here
         payload = cast(R, _unpickle(msg.message, self._mailbox))
         if msg.method == "result":
@@ -353,6 +361,23 @@ class PortReceiver(Generic[R]):
             # pyre-ignore do something more structured here
             raise payload
 
+    def recv(self) -> "Future[R]":
+        return Future(self._recv(), self._blocking_recv)
+
+
+class Future(Generic[R]):
+    def __init__(self, impl, blocking_impl=None):
+        self._impl = impl
+        self._blocking_impl = blocking_impl
+
+    def get(self) -> R:
+        if self._blocking_impl is not None:
+            return self._blocking_impl()
+        return asyncio.run(self._impl)
+
+    def __await__(self):
+        return self._impl.__await__()
+
 
 singleton_shape = Shape([], NDSlice(offset=0, sizes=[], strides=[]))
 
@@ -360,48 +385,64 @@ singleton_shape = Shape([], NDSlice(offset=0, sizes=[], strides=[]))
 class _Actor:
     def __init__(self) -> None:
         self.instance: object | None = None
-        self.active_requests: asyncio.Queue[Future[object]] = asyncio.Queue()
+        self.active_requests: asyncio.Queue[asyncio.Future[object]] = asyncio.Queue()
         self.complete_task: object | None = None
 
-    async def handle(
+    def handle(
         self, mailbox: hyperactor.Mailbox, message: hyperactor.PythonMessage
-    ) -> None:
-        return await self.handle_cast(mailbox, 0, singleton_shape, message)
+    ) -> Optional[Coroutine[Any, Any, Any]]:
+        return self.handle_cast(mailbox, 0, singleton_shape, message)
 
-    async def handle_cast(
+    def handle_cast(
         self,
         mailbox: hyperactor.Mailbox,
         rank: int,
         shape: Shape,
         message: hyperactor.PythonMessage,
-    ) -> None:
+    ) -> Optional[Coroutine[Any, Any, Any]]:
+        port = None
         try:
-            _context.set(MonarchContext(mailbox, mailbox.actor_id.proc_id, rank, shape))
-
             args, kwargs, port = _unpickle(message.message, mailbox)
+
+            ctx = MonarchContext(mailbox, mailbox.actor_id.proc_id, rank, shape)
+            _context.set(ctx)
+
             if message.method == "__init__":
                 Class, *args = args
                 self.instance = Class(*args, **kwargs)
+                return None
             else:
+                the_method = getattr(self.instance, message.method)._method
+                result = the_method(self.instance, *args, **kwargs)
+                if not inspect.iscoroutinefunction(the_method):
+                    if port is not None:
+                        port.send("result", result)
+                    return None
 
-                async def run() -> None:
-                    try:
-                        result = await getattr(self.instance, message.method)._method(
-                            self.instance, *args, **kwargs
-                        )
-                        if port is not None:
-                            port.send("result", result)
-                    except Exception as e:
-                        s = ServiceCallFailedException(e)
-                        if port is not None:
-                            port.send("exception", s)
-                        raise s from None
-
-                if self.complete_task is None:
-                    asyncio.create_task(self._complete())
-                await self.active_requests.put(create_eager_task(run()))
+                return self.run_async(ctx, self.run_task(port, result))
         except Exception as e:
-            raise ServiceCallFailedException(e) from None
+            s = ServiceCallFailedException(e)
+            if port is not None:
+                port.send("exception", s)
+            raise s from None
+
+    async def run_async(self, ctx, coroutine):
+        _context.set(ctx)
+        if self.complete_task is None:
+            asyncio.create_task(self._complete())
+        await self.active_requests.put(create_eager_task(coroutine))
+
+    async def run_task(self, port, coroutine):
+        try:
+            result = await coroutine
+            if port is not None:
+                port.send("result", result)
+        except Exception as e:
+            print("EXCEPTING", e)
+            s = ServiceCallFailedException(e)
+            if port is not None:
+                port.send("exception", s)
+            raise s from None
 
     async def _complete(self) -> None:
         while True:

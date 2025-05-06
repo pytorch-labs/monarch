@@ -22,6 +22,7 @@ use pyo3::types::PyTuple;
 
 use crate::actor::PythonMessage;
 use crate::proc::PyActorId;
+use crate::runtime::signal_safe_block_on;
 #[derive(Clone, Debug)]
 #[pyclass(name = "Mailbox", module = "monarch._monarch.hyperactor")]
 pub(super) struct PyMailbox {
@@ -219,6 +220,11 @@ impl PythonPortReceiver {
                 .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))
         })
     }
+    fn blocking_recv<'py>(&mut self, py: Python<'py>) -> PyResult<PythonMessage> {
+        let receiver = self.inner.clone();
+        signal_safe_block_on(py, async move { receiver.lock().await.recv().await })?
+            .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))
+    }
 }
 
 #[derive(Debug)]
@@ -268,5 +274,12 @@ impl PythonOncePortReceiver {
                 .await
                 .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))
         })
+    }
+    fn blocking_recv<'py>(&mut self, py: Python<'py>) -> PyResult<PythonMessage> {
+        let Some(receiver) = self.inner.lock().unwrap().take() else {
+            return Err(PyErr::new::<PyValueError, _>("OncePort is already used"));
+        };
+        signal_safe_block_on(py, async move { receiver.recv().await })?
+            .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))
     }
 }

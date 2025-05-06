@@ -35,8 +35,7 @@ class Indirect(Actor):
 
 # have to use a single loop for all tests, otherwise there are
 # loop closed errors.
-
-loop = asyncio.get_event_loop()
+loop = asyncio.new_event_loop()
 
 
 def run_async(x):
@@ -295,3 +294,18 @@ async def test_gpu_trainer_generator() -> None:
     for _ in range(3):
         await trainer.weights_ready().broadcast_and_wait()
         await generator.update_weights().broadcast_and_wait()
+
+
+class SyncActor(Actor):
+    @endpoint
+    def sync_endpoint(self, a_counter: Counter):
+        return a_counter.value().choose().get()
+
+
+@run_async
+async def test_sync_actor():
+    proc = await local_proc_mesh(gpus=2)
+    a = await proc.spawn("actor", SyncActor)
+    c = await proc.spawn("counter", Counter, 5)
+    r = await a.sync_endpoint(c).choose()
+    assert r == 5

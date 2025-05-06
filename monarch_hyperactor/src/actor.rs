@@ -240,15 +240,23 @@ impl Handler<PythonMessage> for PythonActor {
             let mailbox = PyMailbox {
                 inner: this.mailbox_for_py().clone(),
             };
-            let awaitable = self
-                .actor
-                .call_method_bound(py, "handle", (mailbox, message), None)?;
+            let awaitable = tokio::task::block_in_place(|| {
+                self.actor
+                    .call_method_bound(py, "handle", (mailbox, message), None)
+            })?;
+
+            if awaitable.is_none(py) {
+                return Ok(None);
+            }
             let task_locals = TASK_LOCALS
                 .get()
                 .ok_or_else(|| PyRuntimeError::new_err("init_asyncio_loop not called"))?;
             pyo3_async_runtimes::into_future_with_locals(task_locals, awaitable.into_bound(py))
+                .map(Some)
         })?;
-        future.await?;
+        if let Some(future) = future {
+            future.await?;
+        }
         Ok(())
     }
 }
@@ -269,18 +277,27 @@ impl Handler<Cast<PythonMessage>> for PythonActor {
                 inner: this.mailbox_for_py().clone(),
             };
 
-            let awaitable = self.actor.call_method_bound(
-                py,
-                "handle_cast",
-                (mailbox, rank, PyShape::from(shape), message),
-                None,
-            )?;
+            let awaitable = tokio::task::block_in_place(|| {
+                self.actor.call_method_bound(
+                    py,
+                    "handle_cast",
+                    (mailbox, rank, PyShape::from(shape), message),
+                    None,
+                )
+            })?;
+
+            if awaitable.is_none(py) {
+                return Ok(None);
+            }
             let task_locals = TASK_LOCALS
                 .get()
                 .ok_or_else(|| PyRuntimeError::new_err("init_asyncio_loop not called"))?;
             pyo3_async_runtimes::into_future_with_locals(task_locals, awaitable.into_bound(py))
+                .map(Some)
         })?;
-        future.await?;
+        if let Some(future) = future {
+            future.await?;
+        }
         Ok(())
     }
 }
