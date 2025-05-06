@@ -85,9 +85,7 @@ pub mod token_parser;
 /// Shape navigation guided by [`Selection`] expressions.
 pub mod routing;
 
-#[cfg(test)]
-#[macro_use]
-mod test_utils;
+pub mod test_utils;
 
 use std::collections::HashMap;
 use std::fmt;
@@ -841,6 +839,32 @@ impl Selection {
             Selection::First(inner) => first(inner.promote_terminal_true(dim + 1, max_dim)),
             Selection::Any(inner) => any(inner.promote_terminal_true(dim + 1, max_dim)),
             other => other,
+        }
+    }
+
+    /// Recursively folds the `Selection` into an abstract syntax via
+    /// the `SelectionSYM` interface.
+    ///
+    /// This method structurally traverses the `Selection` tree and
+    /// reconstructs it using the operations provided by the
+    /// `SelectionSYM` trait. It is typically used to reify a
+    /// `Selection` into alternate forms, such as pretty-printers.
+    ///
+    /// # Type Parameters
+    ///
+    /// - `S`: An implementation of the `SelectionSYM` trait,
+    ///   providing the constructors for the target representation.
+    pub fn fold<S: SelectionSYM>(&self) -> S {
+        match self {
+            Selection::False => S::false_(),
+            Selection::True => S::true_(),
+            Selection::All(inner) => S::all(inner.fold::<S>()),
+            Selection::First(inner) => S::first(inner.fold::<S>()),
+            Selection::Range(r, inner) => S::range(r.clone(), inner.fold::<S>()),
+            Selection::Label(labels, inner) => S::label(labels.clone(), inner.fold::<S>()),
+            Selection::Any(inner) => S::any(inner.fold::<S>()),
+            Selection::Intersection(a, b) => S::intersection(a.fold::<S>(), b.fold::<S>()),
+            Selection::Union(a, b) => S::union(a.fold::<S>(), b.fold::<S>()),
         }
     }
 }

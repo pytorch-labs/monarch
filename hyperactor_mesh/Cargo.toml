@@ -32,6 +32,5 @@ tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 [dev-dependencies]
 buck-resources = "1"
 hyperactor_telemetry = { path = "../hyperactor_telemetry" }
-nom = "7.1"
 timed_test = { path = "../timed_test" }
 tracing-test = { version = "0.2.3", features = ["no-env-filter"] }
