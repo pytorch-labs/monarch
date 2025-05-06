@@ -289,6 +289,14 @@ impl<'a> Iterator for SliceIterator<'a> {
     }
 }
 
+/// Iterates over the Cartesian product of a list of dimension sizes.
+///
+/// Given a list of dimension sizes `[d₀, d₁, ..., dₖ₋₁]`, this yields
+/// all coordinate tuples `[i₀, i₁, ..., iₖ₋₁]` where each `iⱼ ∈
+/// 0..dⱼ`.
+///
+/// Coordinates are yielded in row-major order (last dimension varies
+/// fastest).
 pub struct DimSliceIterator<'a> {
     pos: CartesianIterator<'a>,
 }
@@ -301,8 +309,19 @@ impl<'a> Iterator for DimSliceIterator<'a> {
     }
 }
 
-/// CartesianIterator is a helper iterator to compute the Cartesian
-/// product across an arbitrary number of dimensions.
+/// Iterates over all coordinate tuples in an N-dimensional space.
+///
+/// Yields each point in row-major order for the shape defined by
+/// `dims`, where each coordinate lies in `[0..dims[i])`.
+/// # Example
+/// ```ignore
+/// let iter = CartesianIterator::new(&[2, 3]);
+/// let coords: Vec<_> = iter.collect();
+/// assert_eq!(coords, vec![
+///     vec![0, 0], vec![0, 1], vec![0, 2],
+///     vec![1, 0], vec![1, 1], vec![1, 2],
+/// ]);
+/// ```
 struct CartesianIterator<'a> {
     dims: &'a [usize],
     index: usize,

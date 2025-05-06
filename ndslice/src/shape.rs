@@ -72,8 +72,38 @@ impl Shape {
         Ok(Self { labels, slice })
     }
 
-    /// Sub-set this shape by selecting a [`Range`] from a named dimension.
-    /// The provided range must be nonempty.
+    /// Restrict this shape along a named dimension using a [`Range`]. The
+    /// provided range must be nonempty.
+    //
+    /// A shape defines a "strided view" where a strided view is a
+    /// triple (`offset, `sizes`, `strides`). Each coordinate maps to
+    /// a flat memory index using the formula:
+    /// ``` text
+    ///     index = offset + ∑ i_k * strides[k]
+    /// ```
+    /// where `i_k` is the coordinate in dimension `k`.
+    ///
+    /// The `select(dim, range)` operation restricts the view to a
+    /// subrange along a single dimension. It refines the shape by
+    /// updating the `offset`, `sizes[dim]`, and `strides[dim]` to
+    /// describe a logically reindexed subregion:
+    ///
+    /// ```text
+    ///     offset       += begin x strides[dim]
+    ///     sizes[dim]    = (end - begin) / step
+    ///     strides[dim] *= step
+    /// ```
+    ///
+    /// This transformation preserves the strided layout and avoids
+    /// copying data. After `select`, the view behaves as if indexing
+    /// starts at zero in the selected dimension, with a new length
+    /// and stride. From the user's perspective, nothing changes —
+    /// indexing remains zero-based, and the resulting shape can be
+    /// used like any other. The transformation is internal: the
+    /// view's offset and stride absorb the selection logic.
+    ///
+    /// `select` is composable — it can be applied repeatedly, even on
+    /// the same dimension, to refine the view incrementally.
     pub fn select<R: Into<Range>>(&self, label: &str, range: R) -> Result<Self, ShapeError> {
         let dim = self.dim(label)?;
         let range: Range = range.into();
@@ -104,9 +134,19 @@ impl Shape {
         })
     }
 
-    /// Sub-set this shape by iterating over selection of dims sub-dimensions as Shape
-    /// iterator.
-    /// dims must be in range [0, num_dim - 1].
+    /// Produces an iterator over subshapes by fixing the first `dims`
+    /// dimensions.
+    ///
+    /// For a shape of rank `n`, this yields `∏ sizes[0..dims]`
+    /// subshapes, each with the first `dims` dimensions restricted to
+    /// size 1. The remaining dimensions are left unconstrained.
+    ///
+    /// This is useful for structured traversal of slices within a
+    /// multidimensional shape. See [`SelectIterator`] for details and
+    /// examples.
+    ///
+    /// # Errors
+    /// Returns an error if `dims == 0` or `dims >= self.rank()`.
     pub fn select_iter(&self, dims: usize) -> Result<SelectIterator, ShapeError> {
         let num_dims = self.slice().num_dim();
         if dims == 0 || dims >= num_dims {
@@ -196,7 +236,32 @@ impl Shape {
     }
 }
 
-/// Iterator over sub-shapes of a given shape.
+/// Iterator over subshapes obtained by fixing a prefix of dimensions.
+///
+/// This iterator is produced by [`Shape::select_iter(dims)`], and
+/// yields one `Shape` per coordinate prefix in the first `dims`
+/// dimensions.
+///
+/// For a shape of `n` dimensions, each yielded shape has:
+/// - The first `dims` dimensions restricted to size 1 (i.e., fixed
+///   via `select`)
+/// - The remaining `n - dims` dimensions left unconstrained
+///
+/// This allows structured iteration over "slices" of the original
+/// shape: for example with `n` = 3, `select_iter(1)` walks through 2D
+/// planes, while `select_iter(2)` yields 1D subshapes.
+///
+/// # Example
+/// ```ignore
+/// let s = shape!(zone = 2, host = 2, gpu = 8);
+/// let views: Vec<_> = s.select_iter(2).unwrap().collect();
+/// assert_eq!(views.len(), 4);
+/// assert_eq!(views[0].slice().sizes(), &[1, 1, 8]);
+/// ```
+/// The above example can be interpreted as: for each `(zone, host)`
+/// pair, `select_iter(2)` yields a `Shape` describing the associated
+/// row of GPUs — a view into the `[1, 1, 8]` subregion of the full
+/// `[2, 2, 8]` shape.
 pub struct SelectIterator<'a> {
     shape: &'a Shape,
     iter: DimSliceIterator<'a>,
