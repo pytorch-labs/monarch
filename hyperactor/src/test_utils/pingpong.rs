@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde::Serialize;
@@ -10,6 +12,8 @@ use crate::Instance;
 use crate::Named;
 use crate::OncePortRef;
 use crate::PortRef;
+use crate::clock::Clock;
+use crate::clock::RealClock;
 use crate::mailbox::MessageEnvelope;
 use crate::mailbox::Undeliverable;
 
@@ -27,6 +31,8 @@ pub struct PingPongActorParams {
     undeliverable_port_ref: PortRef<Undeliverable<MessageEnvelope>>,
     /// The TTL at which the actor will exit with error.
     error_ttl: Option<u64>,
+    /// Manual delay before sending handling the message.
+    delay_ms: Option<u64>,
 }
 
 impl PingPongActorParams {
@@ -38,7 +44,13 @@ impl PingPongActorParams {
         Self {
             undeliverable_port_ref,
             error_ttl,
+            delay_ms: None,
         }
+    }
+
+    /// Set the delay in millisenconds
+    pub fn set_delay_ms(&mut self, delay_ms: u64) {
+        self.delay_ms = Some(delay_ms);
     }
 }
 
@@ -98,6 +110,9 @@ impl Handler<PingPongMessage> for PingPongActor {
         if ttl == 0 {
             done_port.send(this, true)?;
         } else {
+            if let Some(delay_ms) = self.params.delay_ms {
+                RealClock.sleep(Duration::from_millis(delay_ms)).await;
+            }
             let next_message = PingPongMessage(ttl - 1, this.bind(), done_port);
             pong_actor.send(this, next_message)?;
         }
