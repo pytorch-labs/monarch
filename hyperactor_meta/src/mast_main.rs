@@ -9,7 +9,6 @@ use std::path::Path;
 use std::process::Stdio;
 use std::str::FromStr;
 use std::time::Duration;
-use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 use clap::Parser;
@@ -22,6 +21,8 @@ use fbwhoami::FbWhoAmI;
 use futures::future::TryJoinAll;
 use hpc_scheduler_constants::MastReplyFileErrorCode;
 use hyperactor::channel::ChannelAddr;
+use hyperactor::clock::Clock;
+use hyperactor::clock::RealClock;
 use hyperactor::id;
 use hyperactor::reference::ActorId;
 use hyperactor::reference::WorldId;
@@ -596,7 +597,10 @@ fn world_with_epoch(world_id: &WorldId) -> WorldId {
 
 /// Write error message to MAST reply file.
 fn write_error_to_reply_file_and_abort(error_message: &str, exit_code: i32) {
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+    let now = RealClock
+        .system_time_now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap();
 
     let mut py_client_script_reply_file_contents = String::new();
     let path = Path::new(&PY_CLIENT_SCRIPT_REPLY_FILE);

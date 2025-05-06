@@ -2,6 +2,7 @@
 
 use std::sync::LazyLock;
 use std::sync::Mutex;
+use std::time::SystemTime;
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -15,6 +16,7 @@ use crate::simnet::SleepEvent;
 struct SimTime {
     start: tokio::time::Instant,
     now: Mutex<tokio::time::Instant>,
+    system_start: SystemTime,
 }
 
 #[allow(clippy::disallowed_methods)]
@@ -23,6 +25,7 @@ static SIM_TIME: LazyLock<SimTime> = LazyLock::new(|| {
     SimTime {
         start: now.clone(),
         now: Mutex::new(now),
+        system_start: SystemTime::now(),
     }
 });
 
@@ -40,6 +43,8 @@ pub trait Clock {
         &self,
         deadline: tokio::time::Instant,
     ) -> impl std::future::Future<Output = ()> + Send + Sync;
+    /// Get the current system time according to the clock
+    fn system_time_now(&self) -> SystemTime;
 }
 
 /// An adapter that allows us to control the behaviour of sleep between performing a real sleep
@@ -69,6 +74,12 @@ impl Clock for ClockKind {
         match self {
             Self::Sim(clock) => clock.now(),
             Self::Real(clock) => clock.now(),
+        }
+    }
+    fn system_time_now(&self) -> SystemTime {
+        match self {
+            Self::Sim(clock) => clock.system_time_now(),
+            Self::Real(clock) => clock.system_time_now(),
         }
     }
 }
@@ -123,6 +134,10 @@ impl Clock for SimClock {
     fn now(&self) -> tokio::time::Instant {
         SIM_TIME.now.lock().unwrap().clone()
     }
+
+    fn system_time_now(&self) -> SystemTime {
+        SIM_TIME.system_start.clone() + self.now().duration_since(SIM_TIME.start)
+    }
 }
 
 impl SimClock {
@@ -156,6 +171,10 @@ impl Clock for RealClock {
     fn now(&self) -> tokio::time::Instant {
         tokio::time::Instant::now()
     }
+    #[allow(clippy::disallowed_methods)]
+    fn system_time_now(&self) -> SystemTime {
+        SystemTime::now()
+    }
 }
 
 #[cfg(test)]
@@ -172,6 +191,17 @@ mod tests {
         assert_eq!(SimClock.millis_since_start(end), 10000);
         assert_eq!(
             end.duration_since(start),
+            tokio::time::Duration::from_secs(10)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sim_clock_system_time() {
+        let start = SimClock.system_time_now();
+        SimClock.advance_to(10000);
+        let end = SimClock.system_time_now();
+        assert_eq!(
+            end.duration_since(start).unwrap(),
             tokio::time::Duration::from_secs(10)
         );
     }

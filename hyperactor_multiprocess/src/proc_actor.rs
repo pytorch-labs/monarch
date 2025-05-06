@@ -26,6 +26,7 @@ use hyperactor::actor::remote::Remote;
 use hyperactor::cap;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
+use hyperactor::clock::Clock;
 use hyperactor::clock::ClockKind;
 use hyperactor::mailbox::BoxedMailboxSender;
 use hyperactor::mailbox::DialMailboxRouter;
@@ -490,11 +491,12 @@ impl Actor for ProcActor {
     type Params = ProcActorParams;
 
     async fn new(params: ProcActorParams) -> Result<Self, anyhow::Error> {
+        let last_successful_supervision_update = params.proc.clock().system_time_now();
         Ok(Self {
             params,
             state: ProcState::AwaitingJoin,
             remote: Remote::collect(),
-            last_successful_supervision_update: SystemTime::now(),
+            last_successful_supervision_update,
         })
     }
 
@@ -682,7 +684,7 @@ impl ProcMessageHandler for ProcActor {
         .await
         {
             Ok(_) => {
-                self.last_successful_supervision_update = SystemTime::now();
+                self.last_successful_supervision_update = this.clock().system_time_now();
             }
             Err(_) => {}
         }

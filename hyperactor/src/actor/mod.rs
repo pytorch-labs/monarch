@@ -31,6 +31,8 @@ use crate::RemoteMessage;
 use crate::cap;
 use crate::checkpoint::CheckpointError;
 use crate::checkpoint::Checkpointable;
+use crate::clock::Clock;
+use crate::clock::RealClock;
 use crate::mailbox::MailboxError;
 use crate::mailbox::MailboxSenderError;
 use crate::mailbox::MessageEnvelope;
@@ -422,7 +424,8 @@ impl fmt::Display for ActorStatus {
                 write!(
                     f,
                     "processing for {}ms",
-                    SystemTime::now()
+                    RealClock
+                        .system_time_now()
                         .duration_since(instant.clone())
                         .unwrap_or_default()
                         .as_millis()
@@ -433,7 +436,8 @@ impl fmt::Display for ActorStatus {
                     f,
                     "{}: processing for {}ms",
                     handler,
-                    SystemTime::now()
+                    RealClock
+                        .system_time_now()
                         .duration_since(instant.clone())
                         .unwrap_or_default()
                         .as_millis()
@@ -445,7 +449,8 @@ impl fmt::Display for ActorStatus {
                     "{},{}: processing for {}ms",
                     handler,
                     arm,
-                    SystemTime::now()
+                    RealClock
+                        .system_time_now()
                         .duration_since(instant.clone())
                         .unwrap_or_default()
                         .as_millis()
@@ -455,7 +460,8 @@ impl fmt::Display for ActorStatus {
                 write!(
                     f,
                     "saving for {}ms",
-                    SystemTime::now()
+                    RealClock
+                        .system_time_now()
                         .duration_since(instant.clone())
                         .unwrap_or_default()
                         .as_millis()
@@ -465,7 +471,8 @@ impl fmt::Display for ActorStatus {
                 write!(
                     f,
                     "loading for {}ms",
-                    SystemTime::now()
+                    RealClock
+                        .system_time_now()
                         .duration_since(instant.clone())
                         .unwrap_or_default()
                         .as_millis()

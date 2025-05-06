@@ -20,7 +20,6 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-use std::time::SystemTime;
 
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -352,6 +351,11 @@ impl Proc {
     /// Convenience accessor for state.
     fn state(&self) -> &ProcState {
         self.0.as_ref()
+    }
+
+    /// The proc's clock.
+    pub fn clock(&self) -> &ClockKind {
+        &self.state().clock
     }
 
     /// Get the snapshot of the ledger.
@@ -1014,9 +1018,10 @@ impl<A: Actor> Instance<A> {
             )
         });
 
-        let _ = self
-            .status_tx
-            .send(ActorStatus::Processing(SystemTime::now(), handler));
+        let _ = self.status_tx.send(ActorStatus::Processing(
+            self.clock().system_time_now(),
+            handler,
+        ));
         actor
             .handle(self, message)
             .instrument(self.cell.state.recording.span())
@@ -1607,7 +1612,7 @@ mod tests {
             .send(TestActorMessage::Wait(enter_tx, exit_rx))
             .unwrap();
         enter_rx.await.unwrap();
-        assert_matches!(*state.borrow(), ActorStatus::Processing(instant, _) if instant <= SystemTime::now());
+        assert_matches!(*state.borrow(), ActorStatus::Processing(instant, _) if instant <= RealClock.system_time_now());
         exit_tx.send(()).unwrap();
 
         state

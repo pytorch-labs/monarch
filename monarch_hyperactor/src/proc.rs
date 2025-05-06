@@ -22,6 +22,7 @@ use hyperactor::RemoteMessage;
 use hyperactor::actor::Signal;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
+use hyperactor::clock::Clock;
 use hyperactor::clock::ClockKind;
 use hyperactor::data::Serialized;
 use hyperactor::mailbox::BoxedMailboxSender;
@@ -365,6 +366,7 @@ pub struct InstanceWrapper<M: RemoteMessage> {
     controller_id: OnceCell<ActorId>,
     controller_error_sender: watch::Sender<String>,
     controller_error_receiver: watch::Receiver<String>,
+    clock: ClockKind,
 }
 
 /// Error that can occur when there is controller supervision error.
@@ -376,14 +378,20 @@ pub enum ControllerError {
 
 impl<M: RemoteMessage> InstanceWrapper<M> {
     pub fn new(proc: &PyProc, actor_name: &str) -> Result<Self> {
-        InstanceWrapper::new_with_mailbox(proc.inner.attach(actor_name)?)
+        InstanceWrapper::new_with_mailbox_and_clock(
+            proc.inner.attach(actor_name)?,
+            proc.inner.clock().clone(),
+        )
     }
 
     pub fn new_with_parent(proc: &PyProc, parent_id: &ActorId) -> Result<Self> {
-        InstanceWrapper::new_with_mailbox(proc.inner.attach_child(parent_id)?)
+        InstanceWrapper::new_with_mailbox_and_clock(
+            proc.inner.attach_child(parent_id)?,
+            proc.inner.clock().clone(),
+        )
     }
 
-    fn new_with_mailbox(mailbox: Mailbox) -> Result<Self> {
+    fn new_with_mailbox_and_clock(mailbox: Mailbox, clock: ClockKind) -> Result<Self> {
         // TEMPORARY: remove after using fixed message ports.
         let (message_port, message_receiver) = mailbox.open_port::<M>();
         message_port.bind_to(M::port());
@@ -399,10 +407,11 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
             signal_receiver,
             status: InstanceStatus::Running,
             signal_port,
-            last_controller_status_check: SystemTime::now(),
+            last_controller_status_check: clock.system_time_now(),
             controller_id: OnceCell::new(),
             controller_error_sender,
             controller_error_receiver,
+            clock,
         })
     }
 
@@ -481,7 +490,7 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
                     )
                     .await;
                 });
-                self.last_controller_status_check = SystemTime::now();
+                self.last_controller_status_check = self.clock.system_time_now();
             }
         }
 

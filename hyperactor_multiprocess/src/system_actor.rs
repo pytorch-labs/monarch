@@ -1321,7 +1321,7 @@ impl SystemMessageHandler for SystemActor {
                                     .supervision_state
                                     .is_world_healthy(&world_id, this.clock())
                             {
-                                WorldStatus::Unhealthy(SystemTime::now())
+                                WorldStatus::Unhealthy(this.clock().system_time_now())
                             } else {
                                 WorldStatus::Live
                             },
@@ -1353,7 +1353,7 @@ impl SystemMessageHandler for SystemActor {
                     WorldState {
                         host_map: HashMap::new(),
                         procs: HashMap::new(),
-                        status: WorldStatus::Unhealthy(SystemTime::now()),
+                        status: WorldStatus::Unhealthy(this.clock().system_time_now()),
                     },
                     num_procs_per_host,
                     env,
@@ -1584,7 +1584,7 @@ impl Handler<MaintainWorldHealth> for SystemActor {
             }
 
             if world.state.status == WorldStatus::Live {
-                world.state.status = WorldStatus::Unhealthy(SystemTime::now());
+                world.state.status = WorldStatus::Unhealthy(this.clock().system_time_now());
             }
 
             match &world.state.status {

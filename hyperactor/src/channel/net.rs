@@ -1783,8 +1783,6 @@ mod tests {
     use std::sync::atomic::AtomicU64;
     use std::sync::atomic::Ordering;
     #[cfg(target_os = "linux")] // uses abstract names
-    use std::time::SystemTime;
-    #[cfg(target_os = "linux")] // uses abstract names
     use std::time::UNIX_EPOCH;
 
     #[cfg(target_os = "linux")] // uses abstract names
@@ -1807,7 +1805,8 @@ mod tests {
     #[tracing_test::traced_test]
     #[tokio::test]
     async fn test_unix_basic() -> Result<()> {
-        let timestamp = SystemTime::now()
+        let timestamp = RealClock
+            .system_time_now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
@@ -1849,7 +1848,8 @@ mod tests {
     #[tokio::test]
     async fn test_unix_basic_client_before_server() -> Result<()> {
         // We run this test on Unix because we can pick our own port names more easily.
-        let timestamp = SystemTime::now()
+        let timestamp = RealClock
+            .system_time_now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
