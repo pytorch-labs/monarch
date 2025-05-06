@@ -12,7 +12,7 @@ core ideas clearly.
 
 Run this with:
 
-buck2 run @//mode/opt //monarch/examples/rl:pipeline_skeleton
+buck2 run @//mode/opt //monarch/examples/rl:async_pipelined
 
 """
 
