@@ -1,6 +1,8 @@
+use std::collections::HashMap;
+
 use hyperactor_mesh::alloc::AllocConstraints;
 use hyperactor_mesh::alloc::AllocSpec;
-use ndslice::Shape;
+use hyperactor_mesh::shape::Shape;
 use ndslice::Slice;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -11,6 +13,25 @@ pub trait TakeableAlloc<T> {
     fn take(&self) -> Option<T>;
 }
 
+#[pyclass(name = "AllocConstraints", module = "monarch._monarch.hyperactor")]
+pub struct PyAllocConstraints {
+    inner: AllocConstraints,
+}
+
+#[pymethods]
+impl PyAllocConstraints {
+    #[new]
+    #[pyo3(signature = (match_labels=None))]
+    fn new(match_labels: Option<HashMap<String, String>>) -> PyResult<Self> {
+        let mut constraints = AllocConstraints::none();
+        if let Some(match_lables) = match_labels {
+            constraints.match_labels = match_lables;
+        }
+
+        Ok(Self { inner: constraints })
+    }
+}
+
 #[pyclass(name = "AllocSpec", module = "monarch._monarch.hyperactor")]
 pub struct PyAllocSpec {
     pub inner: AllocSpec,
@@ -19,8 +40,8 @@ pub struct PyAllocSpec {
 #[pymethods]
 impl PyAllocSpec {
     #[new]
-    #[pyo3(signature = (**kwargs))]
-    fn new(kwargs: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
+    #[pyo3(signature = (constraints, **kwargs))]
+    fn new(constraints: &PyAllocConstraints, kwargs: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
         let Some(kwargs) = kwargs else {
             return Err(PyValueError::new_err(
                 "Shape must have at least one dimension",
@@ -51,8 +72,7 @@ impl PyAllocSpec {
         Ok(Self {
             inner: AllocSpec {
                 shape,
-                // TODO(osamas): Support constraints
-                constraints: AllocConstraints::none(),
+                constraints: constraints.inner.clone(),
             },
         })
     }

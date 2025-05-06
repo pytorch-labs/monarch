@@ -23,6 +23,7 @@ PortReceiver = hyperactor.PortReceiver
 OncePortHandle = hyperactor.OncePortHandle
 OncePortReceiver = hyperactor.OncePortReceiver
 
+AllocConstraints = hyperactor.AllocConstraints
 AllocSpec = hyperactor.AllocSpec
 ProcessAllocator = hyperactor.ProcessAllocator
 ProcessAlloc = hyperactor.ProcessAlloc
@@ -66,6 +67,8 @@ __all__ = [
     "PortReceiver",
     "OncePortHandle",
     "OncePortReceiver",
+    "AllocSpec",
+    "AllocConstraints",
     "ProcessAllocator",
     "ProcessAlloc",
     "LocalAllocator",

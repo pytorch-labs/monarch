@@ -77,14 +77,14 @@ def test_no_hang_on_shutdown() -> None:
 @run_async
 async def test_allocator() -> None:
     hyperactor.init_asyncio_loop()
-    spec = hyperactor.AllocSpec(replica=2)
+    spec = hyperactor.AllocSpec(hyperactor.AllocConstraints(), replica=2)
     _ = await hyperactor.LocalAllocator.allocate(spec)
 
 
 @run_async
 async def test_proc_mesh() -> None:
     hyperactor.init_asyncio_loop()
-    spec = hyperactor.AllocSpec(replica=2)
+    spec = hyperactor.AllocSpec(hyperactor.AllocConstraints(), replica=2)
     alloc = await hyperactor.LocalAllocator.allocate(spec)
     _ = await hyperactor.ProcMesh.allocate(alloc)
 
@@ -92,7 +92,7 @@ async def test_proc_mesh() -> None:
 @run_async
 async def test_actor_mesh() -> None:
     hyperactor.init_asyncio_loop()
-    spec = hyperactor.AllocSpec(replica=2)
+    spec = hyperactor.AllocSpec(hyperactor.AllocConstraints(), replica=2)
     alloc = await hyperactor.LocalAllocator.allocate(spec)
     proc_mesh = await hyperactor.ProcMesh.allocate(alloc)
     actor_mesh = await proc_mesh.spawn("test", MyActor)
@@ -108,7 +108,7 @@ async def test_actor_mesh() -> None:
 @run_async
 async def test_proc_mesh_process_allocator() -> None:
     hyperactor.init_asyncio_loop()
-    spec = hyperactor.AllocSpec(replica=2)
+    spec = hyperactor.AllocSpec(hyperactor.AllocConstraints(), replica=2)
     cmd = importlib.resources.files("monarch.python.tests._monarch").joinpath(
         "bootstrap"
     )

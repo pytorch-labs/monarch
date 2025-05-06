@@ -47,7 +47,7 @@ pub static MONARCH_LABEL_PREFIX: &str = "monarch.meta.com/";
 pub static ALLOC_LABEL_TASK_GROUP: &str = concatcp!("mast.", MONARCH_LABEL_PREFIX, "taskGroup");
 
 /// TODO: Remove once we have a way to extract it from the task group API.
-static DEFAULT_REMOTE_ALLOCATOR_PORT: u16 = 26600;
+pub static DEFAULT_REMOTE_ALLOCATOR_PORT: u16 = 26600;
 static DEFAULT_TASK_GROUP_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 
 /// MAST/TW task ID.
@@ -639,6 +639,7 @@ impl Alloc for TaskGroupAlloc {
 }
 
 /// Configurations for the MAST allocator.
+#[derive(Clone, Debug)]
 pub struct MastAllocatorConfig {
     /// MAST job name. If not specified it will be obtained from environment variables.
     pub job_name: Option<String>,
@@ -667,16 +668,16 @@ pub struct MastAllocator {
 
 impl MastAllocator {
     /// Creates a new Allocator for the current MAST job.
-    pub async fn new(config: MastAllocatorConfig) -> Result<Self, anyhow::Error> {
+    pub fn new(config: MastAllocatorConfig) -> Result<Self, anyhow::Error> {
         let client = hpcscheduler_srclients::make_HpcSchedulerService_srclient!(
             fbinit::expect_init(),
             tiername = "mast.api.read"
         )?;
-        Self::new_with_client(client, config).await
+        Self::new_with_client(client, config)
     }
 
     /// Creates a new Allocator with a specific MAST API client. Used for testing.
-    pub async fn new_with_client(
+    pub fn new_with_client(
         client: Arc<dyn HpcSchedulerReadOnlyService + Send + Sync>,
         config: MastAllocatorConfig,
     ) -> Result<Self, anyhow::Error> {
@@ -1529,9 +1530,7 @@ mod test {
             job_name: Some("test".to_string()),
             ..Default::default()
         };
-        let mut allocator = MastAllocator::new_with_client(client, config)
-            .await
-            .unwrap();
+        let mut allocator = MastAllocator::new_with_client(client, config).unwrap();
         // Test just capacity
         allocator
             .allocate(AllocSpec {

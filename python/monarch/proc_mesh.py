@@ -55,7 +55,7 @@ async def local_proc_mesh(*, gpus: Optional[int] = None, hosts: int = 1) -> Proc
     init_asyncio_loop()
     if gpus is None:
         gpus = _local_device_count()
-    spec = hyperactor.AllocSpec(gpus=gpus, hosts=hosts)
+    spec = hyperactor.AllocSpec(hyperactor.AllocConstraints(), gpus=gpus, hosts=hosts)
     alloc = await hyperactor.LocalAllocator.allocate(spec)
     return ProcMesh(await hyperactor.ProcMesh.allocate(alloc))
 
@@ -84,7 +84,7 @@ async def proc_mesh(
     init_asyncio_loop()
     if gpus is None:
         gpus = _local_device_count()
-    spec = hyperactor.AllocSpec(gpus=gpus, hosts=hosts)
+    spec = hyperactor.AllocSpec(hyperactor.AllocConstraints(), gpus=gpus, hosts=hosts)
     env = env or {}
     cmd, args, base_env = _get_bootstrap_args()
     env.update(base_env)

@@ -11,7 +11,7 @@ class TestAlloc(IsolatedAsyncioTestCase):
     async def test_basic(self) -> None:
         cmd = "echo hello"
         allocator = hyperactor.ProcessAllocator(cmd)
-        spec = hyperactor.AllocSpec(replica=2)
+        spec = hyperactor.AllocSpec(hyperactor.AllocConstraints(), replica=2)
         alloc = await allocator.allocate(spec)
 
         print(alloc)
