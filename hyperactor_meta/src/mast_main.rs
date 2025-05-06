@@ -1,6 +1,7 @@
 use std::env;
 use std::fs;
 use std::fs::File;
+use std::io::Read;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::option;
@@ -57,6 +58,13 @@ pub static LABEL_NAME_HOST_NAME: &str = concatcp!(WORLD_LABEL_PREFIX, "hostname"
 
 /// How long to wait for the system to shutdown before we kill it.
 static SHUTDOWN_TIMEOUT_SECS: u64 = 60;
+
+/// The reply file path that the python process will write the error message and stack trace to. We need to write this outside of the reply file otherwise
+/// the default reply file script will overwrite this.
+static PY_CLIENT_SCRIPT_REPLY_FILE: &str = "/tmp/py_client_reply_file.json";
+/// Launcher script path provided by fbpkg to write reply files
+static PY_CLIENT_SCRIPT_PATH: &str =
+    "/packages/monarch/mast_client_script/src/mast_client_script.py";
 
 #[derive(Subcommand)]
 enum MastSubcommand {
@@ -384,6 +392,16 @@ async fn spawn_main_script(
     tracing::info!("spawning main script: {:?}", command.join(" "));
 
     let mut child = Command::new(&command[0]);
+
+    if Path::new(PY_CLIENT_SCRIPT_PATH).exists() {
+        child.arg(PY_CLIENT_SCRIPT_PATH);
+    } else {
+        tracing::warn!(
+            "Python client script at could not be found at {}. Running main script without reply file.",
+            PY_CLIENT_SCRIPT_PATH
+        );
+    }
+
     if command.len() > 1 {
         child.args(&command[1..]);
     }
@@ -391,6 +409,7 @@ async fn spawn_main_script(
     let child = child
         .env("HYPERACTOR_SYSTEM_ADDR", system_addr.to_string())
         .env("MONARCH_NUM_HOSTS_PER_TASK_GROUP", num_hosts.to_string())
+        .env("PY_CLIENT_SCRIPT_REPLY_FILE", PY_CLIENT_SCRIPT_REPLY_FILE)
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -433,7 +452,6 @@ async fn spawn_main_script(
         );
         tracing::error!(error_message);
         write_error_to_reply_file_and_abort(
-            // TODO: we need to find a way to tunnel the full stacktrace to the reply file.
             &format!("{error_message}; check MAST logs for more details"),
             // TODO: we need to expose the actual exit code to indicate retryable vs permanent errors.
             MastReplyFileErrorCode::JOB_RESTART_SCOPE_ESCALATION.0,
@@ -580,11 +598,44 @@ fn world_with_epoch(world_id: &WorldId) -> WorldId {
 fn write_error_to_reply_file_and_abort(error_message: &str, exit_code: i32) {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
 
+    let mut py_client_script_reply_file_contents = String::new();
+    let path = Path::new(&PY_CLIENT_SCRIPT_REPLY_FILE);
+    if path.exists() {
+        if let Ok(mut file) = File::open(path) {
+            if let Err(err) = file.read_to_string(&mut py_client_script_reply_file_contents) {
+                tracing::error!(
+                    "failed to read python client script reply file with error {:?}",
+                    err
+                );
+            }
+        }
+    }
+
+    let (py_callstack, error_message) = if let Ok(json) =
+        serde_json::from_str::<serde_json::Value>(&py_client_script_reply_file_contents)
+    {
+        (
+            json.get("pyCallStack")
+                .and_then(|x| x.as_str())
+                .unwrap_or("No python stack trace available")
+                .to_string(),
+            json.get("message")
+                .and_then(|x| x.as_str())
+                .unwrap_or(error_message)
+                .to_string(),
+        )
+    } else {
+        (
+            "No python stack trace available".to_string(),
+            error_message.to_string(),
+        )
+    };
     let reply_json = serde_json::json!({
         "message": error_message,
         "errorCode": exit_code,
         "timestamp": now.as_secs(),
         "timestamp_us": now.as_micros(),
+        "pyCallStack": py_callstack
     });
 
     match env::var(MAST_HPC_TASK_FAILURE_REPLY_FILE) {
@@ -684,7 +735,7 @@ mod tests {
 
         let reply_file_contents = read_to_string(tmp_file_path).unwrap();
         let expected_reply_file_contents =
-            "{\"message\":\"I'm two\\nlines\",\"errorCode\":1,\"timestamp\":0,\"timestamp_us\":0}"
+            "{\"message\":\"I'm two\\nlines\",\"pyCallStack\":\"No python stack trace available\",\"errorCode\":1,\"timestamp\":0,\"timestamp_us\":0}"
                 .to_string();
 
         // Remove timestamps as they can change
