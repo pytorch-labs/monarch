@@ -1,0 +1,14 @@
+graft monarch_extension
+graft examples
+graft python
+graft hyperactor
+graft hyperactor_python
+graft monarch_messages
+graft ndslice
+graft torch-sys
+graft nccl-sys
+graft hyperactor_multiprocess
+graft hyperactor_macros
+graft controller
+
+global-exclude *~ *.py[cod] *.so

@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "morpho"
+description = """
+A native training library for monarch based on patterns from torchtitan.
+
+Named after milkweed, the food of Monarch caterpillars,
+itself named scientifically after Aesclepius,
+who decendend from titans.
+"""
+readme = "README.md"
+requires-python = ">=3.10"
+dynamic = ["version"]
+dependencies = [
+    "monarch",
+]
+
+[tool.pyright]
+include = ["morpho", "tests"]
+
+
+[project.scripts]
+morpho = "morpho.script:main"

@@ -1,0 +1,21 @@
+# This file is manually maintained to maintain the abilith to build hyper
+# using cargo. The code is annotated with fbcode_build conditionals such that
+# it works with both cargo (all oss deps) and buck (full meta deps).
+[package]
+name = "hyper"
+version = "0.0.0"
+authors = ["Facebook"]
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+anyhow = "1.0.95"
+async-trait = "0.1.86"
+clap = { version = "4.5.30", features = ["derive", "env", "string", "unicode", "wrap_help"] }
+hyperactor = { path = "../hyperactor" }
+hyperactor_multiprocess = { path = "../hyperactor_multiprocess" }
+serde = { version = "1.0.185", features = ["derive", "rc"] }
+serde_json = { version = "1.0.132", features = ["float_roundtrip", "unbounded_depth"] }
+tabwriter = { version = "1.2.1", features = ["ansi_formatting"] }
+tokio = { version = "1.41.0", features = ["full", "test-util", "tracing"] }
+tracing = { version = "0.1.41", features = ["attributes", "valuable"] }

@@ -1,0 +1,292 @@
+import asyncio
+import operator
+
+import torch
+
+from monarch.proc_mesh import local_proc_mesh, proc_mesh
+from monarch.rdma import RDMABuffer
+from monarch.service import (
+    Actor,
+    current_actor_name,
+    current_rank,
+    current_size,
+    endpoint,
+)
+
+
+class Counter(Actor):
+    def __init__(self, v: int):
+        self.v = v
+
+    @endpoint
+    async def incr(self):
+        self.v += 1
+
+    @endpoint
+    async def value(self) -> int:
+        return self.v
+
+
+class Indirect(Actor):
+    @endpoint
+    async def call_value(self, c: Counter) -> int:
+        return await c.value.choose()
+
+
+# have to use a single loop for all tests, otherwise there are
+# loop closed errors.
+
+loop = asyncio.get_event_loop()
+
+
+def run_async(x):
+    return lambda: loop.run_until_complete(x())
+
+
+class ParameterServer(Actor):
+    def __init__(self):
+        self.params = torch.rand(10, 10)
+        self.grad_buffer = torch.rand(10, 10)
+
+    @endpoint
+    async def grad_handle(self) -> RDMABuffer:
+        byte_tensor = self.grad_buffer.view(torch.uint8).flatten()
+        return RDMABuffer(byte_tensor)
+
+    @endpoint
+    async def update(self):
+        self.params += 0.01 * self.grad_buffer
+
+    @endpoint
+    async def get_grad_buffer(self) -> torch.Tensor:
+        # just used for testing
+        return self.grad_buffer
+
+
+@run_async
+async def test_choose():
+    proc = await local_proc_mesh(gpus=2)
+    v = await proc.spawn("counter", Counter, 3)
+    i = await proc.spawn("indirect", Indirect)
+    v.incr.broadcast()
+    result = await v.value.choose()
+    result2 = await i.call_value.choose(v)
+
+    assert result == result2
+
+
+@run_async
+async def test_stream():
+    proc = await local_proc_mesh(gpus=2)
+    v = await proc.spawn("counter2", Counter, 3)
+    v.incr.broadcast()
+
+    assert 8 == sum([x async for x in v.value.stream()])
+
+
+class ParameterClient(Actor):
+    def __init__(self, server, buffer):
+        self.server = server
+        byte_tensor = buffer.view(torch.uint8).flatten()
+        self.buffer = byte_tensor
+
+    @endpoint
+    async def upload(self, tensor):
+        gh = await self.server.grad_handle.call()
+        await gh.write(tensor)
+
+    @endpoint
+    async def download(self):
+        gh = await self.server.grad_handle.call()
+        await gh.read_into(self.buffer)
+
+    @endpoint
+    async def get_buffer(self):
+        return self.buffer
+
+
+@run_async
+async def test_proc_mesh_rdma():
+    proc = await proc_mesh(gpus=1)
+    server = await proc.spawn("server", ParameterServer)
+
+    # --- CPU TESTS ---
+    client_cpu = await proc.spawn(
+        "client_cpu", ParameterClient, server, torch.ones(10, 10)
+    )
+    x = await client_cpu.get_buffer.call()
+    assert torch.sum(x.view(torch.float32).view(10, 10)) == 100
+    zeros = torch.zeros(10, 10)
+    await client_cpu.upload.call(zeros.view(torch.uint8).flatten())
+    await client_cpu.download.call()
+    x = await client_cpu.get_buffer.call()
+    assert torch.sum(x.view(torch.float32).view(10, 10)) == 0
+
+    # --- Modify server's backing buffer directly ---
+    await server.update.call()
+
+    # Should reflect updated values
+    await client_cpu.download.call()
+
+    buffer = await client_cpu.get_buffer.call()
+    remote_grad = await server.get_grad_buffer.call()
+    assert torch.allclose(buffer.view(torch.float32).view(10, 10), remote_grad)
+
+    # --- GPU TESTS ---
+    client_gpu = await proc.spawn(
+        "client_gpu", ParameterClient, server, torch.ones(10, 10, device="cuda")
+    )
+    x = await client_gpu.get_buffer.call()
+    buffer = x.view(torch.float32).view(10, 10)
+    assert torch.sum(buffer) == 100
+    zeros = torch.zeros(10, 10, device="cuda")
+    await client_gpu.upload.call(zeros.view(torch.uint8).flatten())
+    await client_gpu.download.call()
+    x = await client_gpu.get_buffer.call()
+    buffer_gpu = x.view(torch.float32).view(10, 10)
+    assert torch.sum(buffer_gpu) == 0
+    assert buffer_gpu.device.type == "cuda"
+
+    # Modify server state again
+    await server.update.call()
+    await client_gpu.download.call()
+    x = await client_gpu.get_buffer.call()
+    buffer_gpu = x.view(torch.float32).view(10, 10)
+    remote_grad = await server.get_grad_buffer.call()
+    assert torch.allclose(buffer_gpu.cpu(), remote_grad)
+
+
+class To(Actor):
+    @endpoint
+    async def whoami(self):
+        return current_actor_name()
+
+
+class From(Actor):
+    @endpoint
+    async def get(self, to: To):
+        return [x async for x in to.whoami.stream()]
+
+
+@run_async
+async def test_mesh_passed_to_mesh():
+    proc = await local_proc_mesh(gpus=2)
+    f = await proc.spawn("from", From)
+    t = await proc.spawn("to", To)
+    all = [y async for x in f.get.stream(t) for y in x]
+    assert len(all) == 4
+    assert all[0] != all[1]
+
+
+@run_async
+async def test_mesh_passed_to_mesh_on_different_proc_mesh():
+    proc = await local_proc_mesh(gpus=2)
+    proc2 = await local_proc_mesh(gpus=2)
+    f = await proc.spawn("from", From)
+    t = await proc2.spawn("to", To)
+    all = [y async for x in f.get.stream(t) for y in x]
+    assert len(all) == 4
+    assert all[0] != all[1]
+
+
+@run_async
+async def test_actor_slicing():
+    proc = await local_proc_mesh(gpus=2)
+    proc2 = await local_proc_mesh(gpus=2)
+
+    f = await proc.spawn("from", From)
+    t = await proc2.spawn("to", To)
+
+    assert await t.slice(gpus=0).whoami.call() != await t.slice(gpus=1).whoami.call()
+
+    result = [y async for x in f.get.stream(t.slice(gpus=0)) for y in x]
+    assert len(result) == 2
+
+    assert result[0] == result[1]
+
+
+@run_async
+async def test_aggregate():
+    proc = await local_proc_mesh(gpus=2)
+    counter = await proc.spawn("counter", Counter, 1)
+    counter.incr.broadcast()
+    r = await counter.value.aggregate(0, operator.add)
+    assert r == 4
+
+
+class RunIt(Actor):
+    @endpoint
+    async def run(self, fn):
+        return fn()
+
+
+@run_async
+async def test_rank_size():
+    proc = await local_proc_mesh(gpus=2)
+    r = await proc.spawn("runit", RunIt)
+
+    assert 1 == await r.run.aggregate(0, operator.add, lambda: current_rank()["gpus"])
+    assert 4 == await r.run.aggregate(0, operator.add, lambda: current_size()["gpus"])
+
+
+class TrainerActor(Actor):
+    def __init__(self):
+        super().__init__()
+        self.trainer = torch.nn.Linear(10, 10).to("cuda")
+        self.trainer.weight.data.zero_()
+
+    @endpoint
+    async def init(self, gen):
+        ranks = current_rank()
+        self.gen = gen.slice(**ranks)
+
+    @endpoint
+    async def exchange_metadata(self):
+        byte_tensor = self.trainer.weight.data.view(torch.uint8).flatten()
+        self.handle = RDMABuffer(byte_tensor)
+        await self.gen.attach_weight_buffer.call(self.handle)
+
+    @endpoint
+    async def weights_ready(self):
+        self.trainer.weight.data.add_(1.0)
+
+
+class GeneratorActor(Actor):
+    def __init__(self):
+        super().__init__()
+        self.generator = torch.nn.Linear(10, 10).to("cuda")
+        self.step = 0
+
+    @endpoint
+    async def init(self, trainer):
+        ranks = current_rank()
+        self.trainer = trainer.slice(**ranks)
+
+    @endpoint
+    async def attach_weight_buffer(self, handle):
+        self.handle = handle
+
+    @endpoint
+    async def update_weights(self):
+        self.step += 1
+        byte_tensor = self.generator.weight.data.view(torch.uint8).flatten()
+        await self.handle.read_into(byte_tensor)
+        assert (
+            torch.sum(self.generator.weight.data) == self.step * 100
+        ), f"{torch.sum(self.generator.weight.data)=}, {self.step=}"
+
+
+@run_async
+async def test_gpu_trainer_generator():
+    trainer_proc = await proc_mesh(gpus=1)
+    gen_proc = await proc_mesh(gpus=1)
+    trainer = await trainer_proc.spawn("trainer", TrainerActor)
+    generator = await gen_proc.spawn("gen", GeneratorActor)
+
+    await generator.init.broadcast_and_wait(trainer)
+    await trainer.init.broadcast_and_wait(generator)
+    await trainer.exchange_metadata.broadcast_and_wait()
+
+    for _ in range(3):
+        await trainer.weights_ready.broadcast_and_wait()
+        await generator.update_weights.broadcast_and_wait()

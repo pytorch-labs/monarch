@@ -1,0 +1,5 @@
+checkpoints/
+input.txt
+*.bin
+*.model
+*.pkl

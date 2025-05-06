@@ -1,0 +1,159 @@
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::time::Duration;
+
+    use hyperactor::ActorRef;
+    use hyperactor::Mailbox;
+    use hyperactor::channel::ChannelAddr;
+    use hyperactor::channel::ChannelTransport;
+    use hyperactor::channel::sim;
+    use hyperactor::channel::sim::SimAddr;
+    use hyperactor::id;
+    use hyperactor::reference::Index;
+    use hyperactor::reference::WorldId;
+    use hyperactor::simnet::NetworkConfig;
+    use hyperactor::test_utils::pingpong::PingPongActor;
+    use hyperactor::test_utils::pingpong::PingPongActorParams;
+    use hyperactor::test_utils::pingpong::PingPongMessage;
+
+    use crate::System;
+    use crate::proc_actor::ProcActor;
+    use crate::proc_actor::spawn;
+    use crate::system_actor::ProcLifecycleMode;
+    use crate::system_actor::SystemActorParams;
+
+    #[tracing_test::traced_test]
+    #[tokio::test]
+    async fn test_sim_ping_pong() {
+        let system_addr = "local!1".parse::<ChannelAddr>().unwrap();
+        let proxy_addr = ChannelAddr::any(ChannelTransport::Unix);
+
+        let system_sim_addr = ChannelAddr::Sim(
+            SimAddr::new(
+                system_addr.clone(),
+                proxy_addr.clone(),
+                system_addr.clone(),
+                proxy_addr.clone(),
+            )
+            .unwrap()
+            .reversed(),
+        );
+        let server_handle = System::serve(
+            system_sim_addr,
+            SystemActorParams::new(Duration::from_secs(10), Duration::from_secs(10)),
+        )
+        .await
+        .unwrap();
+
+        let server_local_addr = server_handle.local_addr();
+        let mut system = System::new(server_local_addr.clone());
+
+        // Create a client on its individual proc that can talk to the system.
+        let sys_mailbox = system.attach().await.unwrap();
+
+        let world_id = id!(world);
+
+        let ping_actor_ref = spawn_proc_actor(
+            2,
+            proxy_addr.clone(),
+            system_addr.clone(),
+            sys_mailbox.clone(),
+            world_id.clone(),
+        )
+        .await;
+
+        let pong_actor_ref = spawn_proc_actor(
+            3,
+            proxy_addr.clone(),
+            system_addr.clone(),
+            sys_mailbox.clone(),
+            world_id.clone(),
+        )
+        .await;
+
+        // Configure the simulation network.
+        let simnet_config_yaml = r#"
+edges:
+  - src: local!1
+    dst: local!2
+    metadata:
+      latency: 1
+  - src: local!2
+    dst: local!1
+    metadata:
+      latency: 1
+  - src: local!1
+    dst: local!3
+    metadata:
+      latency: 2
+  - src: local!3
+    dst: local!1
+    metadata:
+      latency: 2
+"#;
+        let simnet_config = NetworkConfig::from_yaml(simnet_config_yaml).unwrap();
+        sim::update_config(simnet_config).await.unwrap();
+
+        // Kick start the ping pong game by sending a message to the ping actor. The message will ask the
+        // ping actor to deliver a message to the pong actor with TTL - 1. The pong actor will then
+        // deliver a message to the ping actor with TTL - 2. This will continue until the TTL reaches 0.
+        // The ping actor will then send a message to the done channel to indicate that the game is over.
+        let (done_tx, done_rx) = sys_mailbox.open_once_port();
+        let ping_pong_message = PingPongMessage(4, pong_actor_ref.clone(), done_tx.bind());
+        ping_actor_ref
+            .send(&sys_mailbox, ping_pong_message)
+            .unwrap();
+
+        assert!(done_rx.recv().await.unwrap());
+
+        let records = sim::records().await;
+        eprintln!("records: {:#?}", serde_json::to_string(&records).unwrap());
+    }
+
+    async fn spawn_proc_actor(
+        actor_index: Index,
+        proxy_addr: ChannelAddr,
+        system_addr: ChannelAddr,
+        sys_mailbox: Mailbox,
+        world_id: WorldId,
+    ) -> ActorRef<PingPongActor> {
+        let proc_addr = format!("local!{}", actor_index)
+            .parse::<ChannelAddr>()
+            .unwrap();
+
+        let proc_sim_addr = SimAddr::new(
+            proc_addr.clone(),
+            proxy_addr.clone(),
+            system_addr.clone(),
+            proxy_addr.clone(),
+        )
+        .unwrap();
+        let proc_bootstrap_addr = ChannelAddr::Sim(proc_sim_addr.clone());
+        let proc_listen_addr = ChannelAddr::Sim(proc_sim_addr.clone());
+        let proc_id = world_id.proc_id(actor_index);
+        let bootstrap = ProcActor::bootstrap(
+            proc_id,
+            world_id.clone(),
+            proc_listen_addr,
+            proc_bootstrap_addr,
+            Duration::from_secs(3),
+            HashMap::new(),
+            ProcLifecycleMode::ManagedBySystem,
+        )
+        .await
+        .unwrap();
+
+        let (undeliverable_msg_tx, _) = sys_mailbox.open_port();
+
+        let params = PingPongActorParams::new(undeliverable_msg_tx.bind(), None);
+        spawn::<PingPongActor>(
+            &sys_mailbox,
+            &bootstrap.proc_actor.bind(),
+            actor_index.to_string().as_str(),
+            &params,
+        )
+        .await
+        .unwrap()
+    }
+}

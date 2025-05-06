@@ -1,0 +1,1078 @@
+//! References for different resources in Hyperactor.
+//!
+//! The "Id" variants are transparent and typeless, whereas the
+//! corresponding "Ref" variants are opaque and typed. The latter intended
+//! to be exposed in user-facing APIs. We provide [`std::convert::From`]
+//! implementations between Id and Refs where this makes sense.
+//!
+//! All system implementations use the same concrete reference
+//! representations, as their specific layout (e.g., actor index, rank,
+//! etc.) are used by the core communications algorithms throughout.
+//!
+//! References and ids are [`crate::Message`]s to facilitate passing
+//! them between actors.
+
+#![allow(dead_code)] // Allow until this is used outside of tests.
+
+use std::cmp::Ord;
+use std::cmp::Ordering;
+use std::cmp::PartialOrd;
+use std::convert::From;
+use std::fmt;
+use std::hash::Hash;
+use std::hash::Hasher;
+use std::marker::PhantomData;
+use std::num::ParseIntError;
+use std::str::FromStr;
+
+use rand::Rng;
+use serde::Deserialize;
+use serde::Serialize;
+
+use crate as hyperactor;
+use crate::Named;
+use crate::RemoteHandles;
+use crate::RemoteMessage;
+use crate::actor::RemoteActor;
+use crate::cap;
+use crate::data::Serialized;
+use crate::mailbox::MailboxSenderError;
+use crate::mailbox::MailboxSenderErrorKind;
+use crate::parse::Lexer;
+use crate::parse::ParseError;
+use crate::parse::Token;
+use crate::parse::parse;
+
+/// A universal reference to hierarchical identifiers in Hyperactor.
+///
+/// References implement a concrete syntax which can be parsed via
+/// [`FromStr`]. They are of the form:
+///
+/// - `world`,
+/// - `world[rank]`,
+/// - `world[rank].actor[pid]`,
+/// - `world[rank].port[pid][port]`, or
+/// - `world.actor`
+///
+/// Reference also implements a total ordering, so that references are
+/// ordered lexicographically with the hierarchy implied by world, proc,
+/// actor. This allows reference ordering to be used to implement prefix
+/// based routing.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash, Named)]
+pub enum Reference {
+    /// A reference to a world.
+    World(WorldId),
+    /// A reference to a proc.
+    Proc(ProcId),
+    /// A reference to an actor.
+    Actor(ActorId), // todo: should we only allow name references here?
+    /// A reference to a port.
+    Port(PortId),
+    /// A reference to a gang.
+    Gang(GangId),
+}
+
+impl Reference {
+    /// Tells whether this reference is a prefix of the provided reference.
+    pub fn is_prefix_of(&self, other: &Reference) -> bool {
+        match self {
+            Self::World(_) => self.world_id() == other.world_id(),
+            Self::Proc(_) => {
+                self.world_id() == other.world_id() && self.proc_id() == other.proc_id()
+            }
+            Self::Actor(_) => self == other,
+            Self::Port(_) => self == other,
+            Self::Gang(_) => self == other,
+        }
+    }
+
+    /// The world id of the reference.
+    pub fn world_id(&self) -> &WorldId {
+        match self {
+            Self::World(world_id) => world_id,
+            Self::Proc(ProcId(world_id, _)) => world_id,
+            Self::Actor(ActorId(ProcId(world_id, _), _, _)) => world_id,
+            Self::Port(PortId(ActorId(ProcId(world_id, _), _, _), _)) => world_id,
+            Self::Gang(GangId(world_id, _)) => world_id,
+        }
+    }
+
+    /// The proc id of the reference, if any.
+    pub fn proc_id(&self) -> Option<&ProcId> {
+        match self {
+            Self::World(_) => None,
+            Self::Proc(proc_id) => Some(proc_id),
+            Self::Actor(ActorId(proc_id, _, _)) => Some(proc_id),
+            Self::Port(PortId(ActorId(proc_id, _, _), _)) => Some(proc_id),
+            Self::Gang(_) => None,
+        }
+    }
+
+    /// The rank of the reference, if any.
+    fn rank(&self) -> Option<Index> {
+        self.proc_id().map(|proc_id| proc_id.rank())
+    }
+
+    /// The actor id of the reference, if any.
+    pub fn actor_id(&self) -> Option<&ActorId> {
+        match self {
+            Self::World(_) => None,
+            Self::Proc(_) => None,
+            Self::Actor(actor_id) => Some(actor_id),
+            Self::Port(PortId(actor_id, _)) => Some(actor_id),
+            Self::Gang(_) => None,
+        }
+    }
+
+    /// The actor name of the reference, if any.
+    fn actor_name(&self) -> Option<&str> {
+        match self {
+            Self::World(_) => None,
+            Self::Proc(_) => None,
+            Self::Actor(actor_id) => Some(actor_id.name()),
+            Self::Port(PortId(actor_id, _)) => Some(actor_id.name()),
+            Self::Gang(gang_id) => Some(&gang_id.1),
+        }
+    }
+
+    /// The pid of the reference, if any.
+    fn pid(&self) -> Option<Index> {
+        match self {
+            Self::World(_) => None,
+            Self::Proc(_) => None,
+            Self::Actor(actor_id) => Some(actor_id.pid()),
+            Self::Port(PortId(actor_id, _)) => Some(actor_id.pid()),
+            Self::Gang(_) => None,
+        }
+    }
+
+    /// The port of the reference, if any.
+    fn port(&self) -> Option<u64> {
+        match self {
+            Self::World(_) => None,
+            Self::Proc(_) => None,
+            Self::Actor(_) => None,
+            Self::Port(port_id) => Some(port_id.index()),
+            Self::Gang(_) => None,
+        }
+    }
+}
+
+impl PartialOrd for Reference {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Reference {
+    fn cmp(&self, other: &Self) -> Ordering {
+        (
+            self.world_id(),
+            self.rank(),
+            self.actor_name(),
+            self.pid(),
+            self.port(),
+        )
+            .cmp(&(
+                other.world_id(),
+                other.rank(),
+                other.actor_name(),
+                other.pid(),
+                other.port(),
+            ))
+    }
+}
+
+impl fmt::Display for Reference {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::World(world_id) => fmt::Display::fmt(world_id, f),
+            Self::Proc(proc_id) => fmt::Display::fmt(proc_id, f),
+            Self::Actor(actor_id) => fmt::Display::fmt(actor_id, f),
+            Self::Port(port_id) => fmt::Display::fmt(port_id, f),
+            Self::Gang(gang_id) => fmt::Display::fmt(gang_id, f),
+        }
+    }
+}
+
+/// Statically create a [`WorldId`], [`ProcId`], [`ActorId`] or [`GangId`],
+/// given the concrete syntax documented in [`Reference`]:
+///
+/// ```
+/// # use hyperactor::id;
+/// # use hyperactor::reference::WorldId;
+/// # use hyperactor::reference::ProcId;
+/// # use hyperactor::reference::ActorId;
+/// # use hyperactor::reference::GangId;
+/// assert_eq!(id!(hello), WorldId("hello".into()));
+/// assert_eq!(id!(hello[0]), ProcId(WorldId("hello".into()), 0));
+/// assert_eq!(
+///     id!(hello[0].actor),
+///     ActorId(ProcId(WorldId("hello".into()), 0), "actor".into(), 0)
+/// );
+/// assert_eq!(
+///     id!(hello[0].actor[1]),
+///     ActorId(ProcId(WorldId("hello".into()), 0), "actor".into(), 1)
+/// );
+/// assert_eq!(
+///     id!(hello.actor),
+///     GangId(WorldId("hello".into()), "actor".into())
+/// );
+/// ```
+///
+/// Prefer to use the id macro to construct identifiers in code, as it
+/// guarantees static validity, and preserves and reinforces the uniform
+/// concrete syntax of identifiers throughout.
+#[macro_export]
+macro_rules! id {
+    ($world:ident) => {
+        $crate::reference::WorldId(stringify!($world).to_string())
+    };
+    ($world:ident [$rank:expr]) => {
+        $crate::reference::ProcId(
+            $crate::reference::WorldId(stringify!($world).to_string()),
+            $rank,
+        )
+    };
+    ($world:ident [$rank:expr] . $actor:ident) => {
+        $crate::reference::ActorId(
+            $crate::reference::ProcId(
+                $crate::reference::WorldId(stringify!($world).to_string()),
+                $rank,
+            ),
+            stringify!($actor).to_string(),
+            0,
+        )
+    };
+    ($world:ident [$rank:expr] . $actor:ident [$pid:expr]) => {
+        $crate::reference::ActorId(
+            $crate::reference::ProcId(
+                $crate::reference::WorldId(stringify!($world).to_string()),
+                $rank,
+            ),
+            stringify!($actor).to_string(),
+            $pid,
+        )
+    };
+    ($world:ident . $actor:ident) => {
+        $crate::reference::GangId(
+            $crate::reference::WorldId(stringify!($world).to_string()),
+            stringify!($actor).to_string(),
+        )
+    };
+    ($world:ident [$rank:expr] . $actor:ident [$pid:expr] [$port:expr]) => {
+        $crate::reference::PortId(
+            $crate::reference::ActorId(
+                $crate::reference::ProcId(
+                    $crate::reference::WorldId(stringify!($world).to_string()),
+                    $rank,
+                ),
+                stringify!($actor).to_string(),
+                $pid,
+            ),
+            $port,
+        )
+    };
+}
+pub use id;
+
+/// The type of error encountered while parsing references.
+#[derive(thiserror::Error, Debug, PartialEq, Eq)]
+pub enum ReferenceParsingError {
+    /// The parser expected a token, but it reached the end of the token stream.
+    #[error("expected token")]
+    Empty,
+
+    /// The parser encountered an unexpected token.
+    #[error("unexpected token: {0}")]
+    Unexpected(String),
+
+    /// The parser encountered an error parsing an integer.
+    #[error(transparent)]
+    ParseInt(#[from] ParseIntError),
+
+    /// A parse error.
+    #[error("parse: {0}")]
+    Parse(#[from] ParseError),
+
+    /// The parser encountered the wrong reference type.
+    #[error("wrong reference type: expected {0}")]
+    WrongType(String),
+}
+
+impl FromStr for Reference {
+    type Err = ReferenceParsingError;
+
+    fn from_str(addr: &str) -> Result<Self, Self::Err> {
+        let reference = parse! {
+            Lexer::new(addr);
+
+            // world
+            Token::Elem(world) => Self::World(WorldId(world.into())),
+
+            // world[rank]
+            Token::Elem(world) Token::LeftBracket Token::Uint(rank) Token::RightBracket =>
+                Self::Proc(ProcId(WorldId(world.into()), rank)),
+
+            // world[rank].actor  (implied pid=0)
+            Token::Elem(world) Token::LeftBracket Token::Uint(rank) Token::RightBracket
+                Token::Dot Token::Elem(actor) =>
+                Self::Actor(ActorId(ProcId(WorldId(world.into()), rank), actor.into(), 0)),
+
+            // world[rank].actor[pid]
+            Token::Elem(world) Token::LeftBracket Token::Uint(rank) Token::RightBracket
+                Token::Dot Token::Elem(actor)
+                Token::LeftBracket Token::Uint(pid) Token::RightBracket =>
+                Self::Actor(ActorId(ProcId(WorldId(world.into()), rank), actor.into(), pid)),
+
+            // world[rank].actor[pid][port]
+            Token::Elem(world) Token::LeftBracket Token::Uint(rank) Token::RightBracket
+                Token::Dot Token::Elem(actor)
+                Token::LeftBracket Token::Uint(pid) Token::RightBracket
+                Token::LeftBracket Token::Uint(index) Token::RightBracket =>
+                Self::Port(PortId(ActorId(ProcId(WorldId(world.into()), rank), actor.into(), pid), index as u64)),
+
+            // world.actor
+            Token::Elem(world) Token::Dot Token::Elem(actor) =>
+                Self::Gang(GangId(WorldId(world.into()), actor.into())),
+        };
+        Ok(reference?)
+    }
+}
+
+impl From<WorldId> for Reference {
+    fn from(world_id: WorldId) -> Self {
+        Self::World(world_id)
+    }
+}
+
+impl From<ProcId> for Reference {
+    fn from(proc_id: ProcId) -> Self {
+        Self::Proc(proc_id)
+    }
+}
+
+impl From<ActorId> for Reference {
+    fn from(actor_id: ActorId) -> Self {
+        Self::Actor(actor_id)
+    }
+}
+
+impl From<PortId> for Reference {
+    fn from(port_id: PortId) -> Self {
+        Self::Port(port_id)
+    }
+}
+
+impl From<GangId> for Reference {
+    fn from(gang_id: GangId) -> Self {
+        Self::Gang(gang_id)
+    }
+}
+
+/// Index is a type alias representing a value that can be used as an index
+/// into a sequence.
+pub type Index = usize;
+
+/// WorldId identifies a world within a [`crate::system::System`].
+/// The index of a World uniquely identifies it within a system instance.
+#[derive(
+    Debug,
+    Serialize,
+    Deserialize,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Hash,
+    Ord,
+    Named
+)]
+pub struct WorldId(pub String);
+
+impl WorldId {
+    /// Create a proc ID with the provided index in this world.
+    pub fn proc_id(&self, index: Index) -> ProcId {
+        ProcId(self.clone(), index)
+    }
+
+    /// The world index.
+    pub fn name(&self) -> &str {
+        &self.0
+    }
+
+    /// Return a randomly selected user proc in this world.
+    pub fn random_user_proc(&self) -> ProcId {
+        let mask = 1usize << (std::mem::size_of::<usize>() * 8 - 1);
+        ProcId(self.clone(), rand::thread_rng().r#gen::<usize>() | mask)
+    }
+}
+
+impl fmt::Display for WorldId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let WorldId(name) = self;
+        write!(f, "{}", name)
+    }
+}
+
+impl FromStr for WorldId {
+    type Err = ReferenceParsingError;
+
+    fn from_str(addr: &str) -> Result<Self, Self::Err> {
+        match addr.parse()? {
+            Reference::World(world_id) => Ok(world_id),
+            _ => Err(ReferenceParsingError::WrongType("world".into())),
+        }
+    }
+}
+
+/// Procs are identified by their _rank_ within a world. Each proc
+/// represents an actor runtime that can locally route to all of its
+/// constituent actors.
+///
+/// Ranks >= 1usize << (no. bits in usize - 1) (i.e., with the high bit set) are "user"
+/// ranks. These are reserved for randomly generated identifiers not
+/// assigned by the system.
+#[derive(
+    Debug,
+    Serialize,
+    Deserialize,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Hash,
+    Ord,
+    Named
+)]
+pub struct ProcId(pub WorldId, pub Index);
+
+impl ProcId {
+    /// Create an actor ID with the provided name, pid within this proc.
+    pub fn actor_id(&self, name: impl Into<String>, pid: Index) -> ActorId {
+        ActorId(self.clone(), name.into(), pid)
+    }
+
+    /// The proc's world id.
+    pub fn world_id(&self) -> &WorldId {
+        &self.0
+    }
+
+    /// The world index.
+    pub fn world_name(&self) -> &str {
+        self.0.name()
+    }
+
+    /// The proc's rank.
+    pub fn rank(&self) -> Index {
+        self.1
+    }
+}
+
+impl fmt::Display for ProcId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let ProcId(world_id, rank) = self;
+        write!(f, "{}[{}]", world_id, rank)
+    }
+}
+
+impl FromStr for ProcId {
+    type Err = ReferenceParsingError;
+
+    fn from_str(addr: &str) -> Result<Self, Self::Err> {
+        match addr.parse()? {
+            Reference::Proc(proc_id) => Ok(proc_id),
+            _ => Err(ReferenceParsingError::WrongType("proc".into())),
+        }
+    }
+}
+
+/// Actors are identified by their proc, their name, and pid.
+#[derive(
+    Debug,
+    Serialize,
+    Deserialize,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Hash,
+    Ord,
+    Named
+)]
+pub struct ActorId(pub ProcId, pub String, pub Index);
+
+impl ActorId {
+    /// Create a new port ID with the provided port for this actor.
+    pub fn port_id(&self, port: u64) -> PortId {
+        PortId(self.clone(), port)
+    }
+
+    /// Create a child actor ID with the provided PID.
+    pub fn child_id(&self, pid: Index) -> Self {
+        Self(self.0.clone(), self.1.clone(), pid)
+    }
+
+    /// Return the root actor ID for the provided proc and name.
+    pub fn root(proc_id: ProcId, name: String) -> Self {
+        Self(proc_id, name, 0)
+    }
+
+    /// The proc ID of this actor ID.
+    pub fn proc_id(&self) -> &ProcId {
+        &self.0
+    }
+
+    /// The world index.
+    pub fn world_name(&self) -> &str {
+        self.0.world_name()
+    }
+
+    /// The actor's proc's rank.
+    pub fn rank(&self) -> Index {
+        self.0.rank()
+    }
+
+    /// The actor's name.
+    pub fn name(&self) -> &str {
+        &self.1
+    }
+
+    /// The actor's pid.
+    pub fn pid(&self) -> Index {
+        self.2
+    }
+}
+
+impl fmt::Display for ActorId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let ActorId(proc_id, name, pid) = self;
+        write!(f, "{}.{}[{}]", proc_id, name, pid)
+    }
+}
+impl<A: RemoteActor> From<ActorRef<A>> for ActorId {
+    fn from(actor_ref: ActorRef<A>) -> Self {
+        actor_ref.actor_id.clone()
+    }
+}
+
+impl<'a, A: RemoteActor> From<&'a ActorRef<A>> for &'a ActorId {
+    fn from(actor_ref: &'a ActorRef<A>) -> Self {
+        &actor_ref.actor_id
+    }
+}
+
+impl FromStr for ActorId {
+    type Err = ReferenceParsingError;
+
+    fn from_str(addr: &str) -> Result<Self, Self::Err> {
+        match addr.parse()? {
+            Reference::Actor(actor_id) => Ok(actor_id),
+            _ => Err(ReferenceParsingError::WrongType("actor".into())),
+        }
+    }
+}
+
+/// ActorRefs are typed references to actors.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ActorRef<A: RemoteActor> {
+    pub(crate) actor_id: ActorId,
+    phantom: PhantomData<A>,
+}
+
+impl<A: RemoteActor> ActorRef<A> {
+    /// Get the remote port for message type [`M`] for the referenced actor.
+    pub fn port<M: RemoteMessage>(&self) -> PortRef<M>
+    where
+        A: RemoteHandles<M>,
+    {
+        PortRef::attest(self.actor_id.port_id(<M as Named>::port()))
+    }
+
+    /// Send an [`M`]-typed message to the referenced actor.
+    pub fn send<M: RemoteMessage>(
+        &self,
+        cap: &impl cap::CanSend,
+        message: M,
+    ) -> Result<(), MailboxSenderError>
+    where
+        A: RemoteHandles<M>,
+    {
+        self.port().send(cap, message)
+    }
+
+    /// The caller guarantees that the provided actor ID is also a valid,
+    /// typed reference.  This is usually invoked to provide a guarantee
+    /// that an externally-provided actor ID (e.g., through a command
+    /// line argument) is a valid reference.
+    pub fn attest(actor_id: ActorId) -> Self {
+        Self {
+            actor_id,
+            phantom: PhantomData,
+        }
+    }
+
+    /// The actor ID corresponding with this reference.
+    pub fn actor_id(&self) -> &ActorId {
+        &self.actor_id
+    }
+
+    /// Convert this actor reference into its corresponding actor ID.
+    pub fn into_actor_id(self) -> ActorId {
+        self.actor_id
+    }
+}
+
+impl<A: RemoteActor> fmt::Display for ActorRef<A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.actor_id, f)?;
+        write!(f, "<{}>", std::any::type_name::<A>())
+    }
+}
+
+// We implement Clone manually to avoid imposing A: Clone.
+impl<A: RemoteActor> Clone for ActorRef<A> {
+    fn clone(&self) -> Self {
+        Self {
+            actor_id: self.actor_id.clone(),
+            phantom: PhantomData,
+        }
+    }
+}
+
+impl<A: RemoteActor> PartialEq for ActorRef<A> {
+    fn eq(&self, other: &Self) -> bool {
+        self.actor_id == other.actor_id
+    }
+}
+
+impl<A: RemoteActor> Eq for ActorRef<A> {}
+
+impl<A: RemoteActor> PartialOrd for ActorRef<A> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<A: RemoteActor> Ord for ActorRef<A> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.actor_id.cmp(&other.actor_id)
+    }
+}
+
+impl<A: RemoteActor> Hash for ActorRef<A> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.actor_id.hash(state);
+    }
+}
+
+impl<A: RemoteActor + 'static> Named for ActorRef<A> {
+    fn typename() -> &'static str {
+        crate::data::intern_typename!(Self, "hyperactor::ActorRef<{}>", A)
+    }
+}
+
+/// Port ids identify [`crate::mailbox::Port`]s of an actor.
+///
+/// TODO: consider moving [`crate::mailbox::Port`] to `PortRef` in this
+/// module for consistency with actors,
+#[derive(
+    Debug,
+    Serialize,
+    Deserialize,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Hash,
+    Ord,
+    Named
+)]
+pub struct PortId(pub ActorId, pub u64);
+
+impl PortId {
+    /// The ID of the port's owning actor.
+    pub fn actor_id(&self) -> &ActorId {
+        &self.0
+    }
+
+    /// Convert this port ID into an actor ID.
+    pub fn into_actor_id(self) -> ActorId {
+        self.0
+    }
+
+    /// This port's index.
+    pub fn index(&self) -> u64 {
+        self.1
+    }
+
+    /// Send a serialized message to this port, provided a sending capability,
+    /// such as [`crate::actor::Instance`]. It is the sender's responsibility
+    /// to ensure that the provided message is well-typed.
+    pub fn send(&self, caps: &impl cap::CanSend, serialized: &Serialized) {
+        caps.post(self.clone(), serialized.clone());
+    }
+}
+
+impl FromStr for PortId {
+    type Err = ReferenceParsingError;
+
+    fn from_str(addr: &str) -> Result<Self, Self::Err> {
+        match addr.parse()? {
+            Reference::Port(port_id) => Ok(port_id),
+            _ => Err(ReferenceParsingError::WrongType("port".into())),
+        }
+    }
+}
+
+impl fmt::Display for PortId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let PortId(actor_id, port) = self;
+        write!(f, "{}[{}]", actor_id, port)
+    }
+}
+
+/// A reference to a remote port. All messages passed through
+/// PortRefs will be serialized.
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Hash, Ord)]
+pub struct PortRef<M: RemoteMessage> {
+    port_id: PortId,
+    phantom: PhantomData<M>,
+}
+
+impl<M: RemoteMessage> PortRef<M> {
+    /// The caller attests that the provided PortId can be
+    /// converted to a reachable, typed port reference.
+    pub(crate) fn attest(port_id: PortId) -> Self {
+        Self {
+            port_id,
+            phantom: PhantomData,
+        }
+    }
+
+    /// This port's ID.
+    pub fn port_id(&self) -> &PortId {
+        &self.port_id
+    }
+
+    /// Convert this PortRef into its corresponding port id.
+    pub fn into_port_id(self) -> PortId {
+        self.port_id
+    }
+
+    /// coerce it into OncePortRef so we can send messages to this port from
+    /// APIs requires OncePortRef.
+    pub fn into_once(self) -> OncePortRef<M> {
+        OncePortRef::attest(self.into_port_id())
+    }
+
+    /// Send a message to this port, provided a sending capability, such as
+    /// [`crate::actor::Instance`].
+    pub fn send(&self, caps: &impl cap::CanSend, message: M) -> Result<(), MailboxSenderError> {
+        let serialized = Serialized::serialize(&message).map_err(|err| {
+            MailboxSenderError::new_bound(
+                self.port_id.clone(),
+                MailboxSenderErrorKind::Serialize(err.into()),
+            )
+        })?;
+        self.send_serialized(caps, &serialized);
+        Ok(())
+    }
+
+    /// Send a serialized message to this port, provided a sending capability, such as
+    /// [`crate::actor::Instance`].
+    pub fn send_serialized(&self, caps: &impl cap::CanSend, message: &Serialized) {
+        caps.post(self.port_id.clone(), message.clone());
+    }
+}
+
+impl<M: RemoteMessage> Clone for PortRef<M> {
+    fn clone(&self) -> Self {
+        Self {
+            port_id: self.port_id.clone(),
+            phantom: PhantomData,
+        }
+    }
+}
+
+impl<M: RemoteMessage> fmt::Display for PortRef<M> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.port_id, f)
+    }
+}
+
+impl<M: RemoteMessage> Named for PortRef<M> {
+    fn typename() -> &'static str {
+        crate::data::intern_typename!(Self, "hyperactor::mailbox::PortRef<{}>", M)
+    }
+}
+
+/// A remote reference to a [`OncePort`]. References are serializable
+/// and may be passed to remote actors, which can then use it to send
+/// a message to this port.
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+pub struct OncePortRef<M: RemoteMessage> {
+    port_id: PortId,
+    phantom: PhantomData<M>,
+}
+
+impl<M: RemoteMessage> OncePortRef<M> {
+    pub(crate) fn attest(port_id: PortId) -> Self {
+        Self {
+            port_id,
+            phantom: PhantomData,
+        }
+    }
+
+    /// This port's ID.
+    pub fn port_id(&self) -> &PortId {
+        &self.port_id
+    }
+
+    /// Convert this PortRef into its corresponding port id.
+    pub fn into_port_id(self) -> PortId {
+        self.port_id
+    }
+
+    /// Send a message to this port, provided a sending capability, such as
+    /// [`crate::actor::Instance`].
+    pub fn send(self, caps: &impl cap::CanSend, message: M) -> Result<(), MailboxSenderError> {
+        let serialized = Serialized::serialize(&message).map_err(|err| {
+            MailboxSenderError::new_bound(
+                self.port_id.clone(),
+                MailboxSenderErrorKind::Serialize(err.into()),
+            )
+        })?;
+        caps.post(self.port_id.clone(), serialized);
+        Ok(())
+    }
+}
+
+impl<M: RemoteMessage> Clone for OncePortRef<M> {
+    fn clone(&self) -> Self {
+        Self {
+            port_id: self.port_id.clone(),
+            phantom: PhantomData,
+        }
+    }
+}
+
+impl<M: RemoteMessage> fmt::Display for OncePortRef<M> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.port_id, f)
+    }
+}
+
+impl<M: RemoteMessage> Named for OncePortRef<M> {
+    fn typename() -> &'static str {
+        crate::data::intern_typename!(Self, "hyperactor::mailbox::OncePortRef<{}>", M)
+    }
+}
+
+/// Gangs identify a gang of actors across the world.
+#[derive(
+    Debug,
+    Serialize,
+    Deserialize,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Hash,
+    Ord,
+    Named
+)]
+pub struct GangId(pub WorldId, pub String);
+
+impl GangId {
+    pub(crate) fn expand(&self, world_size: usize) -> impl Iterator<Item = ActorId> + '_ {
+        (0..world_size).map(|rank| ActorId(ProcId(self.0.clone(), rank), self.1.clone(), 0))
+    }
+
+    /// The world id of the gang.
+    pub fn world_id(&self) -> &WorldId {
+        &self.0
+    }
+
+    /// The name of the gang.
+    pub fn name(&self) -> &str {
+        &self.1
+    }
+
+    /// The gang's actor ID for the provided rank. It always returns the root
+    /// actor because the root actor is the public interface of a gang.
+    pub fn actor_id(&self, rank: Index) -> ActorId {
+        ActorId(
+            ProcId(self.world_id().clone(), rank),
+            self.name().to_string(),
+            0,
+        )
+    }
+}
+
+impl fmt::Display for GangId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let GangId(world_id, name) = self;
+        write!(f, "{}.{}", world_id, name)
+    }
+}
+
+impl FromStr for GangId {
+    type Err = ReferenceParsingError;
+
+    fn from_str(addr: &str) -> Result<Self, Self::Err> {
+        match addr.parse()? {
+            Reference::Gang(gang_id) => Ok(gang_id),
+            _ => Err(ReferenceParsingError::WrongType("gang".into())),
+        }
+    }
+}
+
+/// A reference to a remote port of a gang.
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Hash, Ord)]
+pub struct GangPortRef<M: RemoteMessage> {
+    gang_id: GangId,
+    phantom: PhantomData<M>,
+}
+
+impl<M: RemoteMessage> GangPortRef<M> {
+    /// The caller attests that the provided gang is reachable through the
+    /// provided remote message type's named port.
+    pub fn attest(gang_id: GangId) -> Self {
+        Self {
+            gang_id,
+            phantom: PhantomData,
+        }
+    }
+
+    /// Return the port ID for the provided rank
+    pub fn port_id(&self, rank: Index) -> PortId {
+        PortId(self.gang_id.actor_id(rank), M::port())
+    }
+}
+
+/// Chop implements a simple lexer on a fixed set of delimiters.
+fn chop<'a>(mut s: &'a str, delims: &'a [&'a str]) -> impl Iterator<Item = &'a str> + 'a {
+    std::iter::from_fn(move || {
+        if s.is_empty() {
+            return None;
+        }
+
+        match delims
+            .iter()
+            .enumerate()
+            .flat_map(|(index, d)| s.find(d).map(|pos| (index, pos)))
+            .min_by_key(|&(_, v)| v)
+        {
+            Some((index, 0)) => {
+                let delim = delims[index];
+                s = &s[delim.len()..];
+                Some(delim)
+            }
+            Some((_, pos)) => {
+                let token = &s[..pos];
+                s = &s[pos..];
+                Some(token.trim())
+            }
+            None => {
+                let token = s;
+                s = "";
+                Some(token.trim())
+            }
+        }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use rand::seq::SliceRandom;
+    use rand::thread_rng;
+
+    use super::*;
+
+    #[test]
+    fn test_reference_parse() {
+        let cases: Vec<(&str, Reference)> = vec![
+            ("test", WorldId("test".into()).into()),
+            ("test[234]", ProcId(WorldId("test".into()), 234).into()),
+            (
+                "test[234].testactor[6]",
+                ActorId(ProcId(WorldId("test".into()), 234), "testactor".into(), 6).into(),
+            ),
+            (
+                "test[234].testactor[6][1]",
+                PortId(
+                    ActorId(ProcId(WorldId("test".into()), 234), "testactor".into(), 6),
+                    1,
+                )
+                .into(),
+            ),
+            (
+                "test.testactor",
+                GangId(WorldId("test".into()), "testactor".into()).into(),
+            ),
+        ];
+
+        for (s, expected) in cases {
+            let got: Reference = s.parse().unwrap();
+            assert_eq!(got, expected);
+        }
+    }
+
+    #[test]
+    fn test_reference_parse_error() {
+        let cases: Vec<&str> = vec!["(blah)", "world(1, 2, 3)"];
+
+        for s in cases {
+            let result: Result<Reference, ReferenceParsingError> = s.parse();
+            assert!(result.is_err());
+        }
+    }
+
+    #[test]
+    fn test_id_macro() {
+        assert_eq!(id!(hello), WorldId("hello".into()));
+        assert_eq!(id!(hello[0]), ProcId(WorldId("hello".into()), 0));
+        assert_eq!(
+            id!(hello[0].actor),
+            ActorId(ProcId(WorldId("hello".into()), 0), "actor".into(), 0)
+        );
+        assert_eq!(
+            id!(hello[0].actor[1]),
+            ActorId(ProcId(WorldId("hello".into()), 0), "actor".into(), 1)
+        );
+        assert_eq!(
+            id!(hello.actor),
+            GangId(WorldId("hello".into()), "actor".into())
+        );
+    }
+
+    #[test]
+    fn test_reference_ord() {
+        let expected: Vec<Reference> = [
+            "first",
+            "second",
+            "second.actor1",
+            "second.actor2",
+            "second[1]",
+            "second[1].actor1",
+            "second[1].actor2",
+            "second[2]",
+            "second[2].actor100",
+            "third",
+            "third.actor",
+            "third[2]",
+            "third[2].actor",
+            "third[2].actor[1]",
+        ]
+        .into_iter()
+        .map(|s| s.parse().unwrap())
+        .collect();
+
+        let mut sorted = expected.to_vec();
+        sorted.shuffle(&mut thread_rng());
+        sorted.sort();
+
+        assert_eq!(sorted, expected);
+    }
+}
