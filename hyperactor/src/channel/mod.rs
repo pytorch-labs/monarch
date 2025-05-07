@@ -89,17 +89,13 @@ pub trait Tx<M: RemoteMessage>: std::fmt::Debug {
     /// Enqueue a `message` on the local end of the channel. The
     /// message is either delivered, or we eventually discover that
     /// the channel has failed and it will be sent back on `return_handle`.
-    async fn post(
-        &self,
-        message: M,
-        return_channel: oneshot::Sender<M>,
-    ) -> Result<(), SendError<M>>;
+    fn post(&self, message: M, return_channel: oneshot::Sender<M>) -> Result<(), SendError<M>>;
 
     /// Send a message synchronously, returning when the messsage has
     /// been delivered to the remote end of the channel.
     async fn send(&self, message: M) -> Result<(), SendError<M>> {
         let (tx, rx) = oneshot::channel();
-        self.post(message, tx).await?;
+        self.post(message, tx)?;
         match rx.await {
             // Channel was closed; the message was not delivered.
             Ok(m) => Err(SendError(ChannelError::Closed, m)),
@@ -130,13 +126,13 @@ pub trait Rx<M: RemoteMessage>: std::fmt::Debug {
 
 #[derive(Debug)]
 struct MpscTx<M: RemoteMessage> {
-    tx: mpsc::Sender<M>,
+    tx: mpsc::UnboundedSender<M>,
     addr: ChannelAddr,
     status: watch::Receiver<TxStatus>,
 }
 
 impl<M: RemoteMessage> MpscTx<M> {
-    pub fn new(tx: mpsc::Sender<M>, addr: ChannelAddr) -> (Self, watch::Sender<TxStatus>) {
+    pub fn new(tx: mpsc::UnboundedSender<M>, addr: ChannelAddr) -> (Self, watch::Sender<TxStatus>) {
         let (sender, receiver) = watch::channel(TxStatus::Active);
         (
             Self {
@@ -151,14 +147,9 @@ impl<M: RemoteMessage> MpscTx<M> {
 
 #[async_trait]
 impl<M: RemoteMessage> Tx<M> for MpscTx<M> {
-    async fn post(
-        &self,
-        message: M,
-        _return_channel: oneshot::Sender<M>,
-    ) -> Result<(), SendError<M>> {
+    fn post(&self, message: M, _return_channel: oneshot::Sender<M>) -> Result<(), SendError<M>> {
         self.tx
             .send(message)
-            .await
             .map_err(|mpsc::error::SendError(message)| SendError(ChannelError::Closed, message))
     }
 
@@ -173,7 +164,7 @@ impl<M: RemoteMessage> Tx<M> for MpscTx<M> {
 
 #[derive(Debug)]
 struct MpscRx<M: RemoteMessage> {
-    rx: mpsc::Receiver<M>,
+    rx: mpsc::UnboundedReceiver<M>,
     addr: ChannelAddr,
     // Used to report the status to the Tx side.
     status_sender: watch::Sender<TxStatus>,
@@ -181,7 +172,7 @@ struct MpscRx<M: RemoteMessage> {
 
 impl<M: RemoteMessage> MpscRx<M> {
     pub fn new(
-        rx: mpsc::Receiver<M>,
+        rx: mpsc::UnboundedReceiver<M>,
         addr: ChannelAddr,
         status_sender: watch::Sender<TxStatus>,
     ) -> Self {
@@ -429,17 +420,13 @@ enum ChannelTxKind<M: RemoteMessage> {
 
 #[async_trait]
 impl<M: RemoteMessage> Tx<M> for ChannelTx<M> {
-    async fn post(
-        &self,
-        message: M,
-        return_channel: oneshot::Sender<M>,
-    ) -> Result<(), SendError<M>> {
+    fn post(&self, message: M, return_channel: oneshot::Sender<M>) -> Result<(), SendError<M>> {
         match &self.inner {
-            ChannelTxKind::Local(tx) => tx.post(message, return_channel).await,
-            ChannelTxKind::Tcp(tx) => tx.post(message, return_channel).await,
-            ChannelTxKind::MetaTls(tx) => tx.post(message, return_channel).await,
-            ChannelTxKind::Sim(tx) => tx.post(message, return_channel).await,
-            ChannelTxKind::Unix(tx) => tx.post(message, return_channel).await,
+            ChannelTxKind::Local(tx) => tx.post(message, return_channel),
+            ChannelTxKind::Tcp(tx) => tx.post(message, return_channel),
+            ChannelTxKind::MetaTls(tx) => tx.post(message, return_channel),
+            ChannelTxKind::Sim(tx) => tx.post(message, return_channel),
+            ChannelTxKind::Unix(tx) => tx.post(message, return_channel),
         }
     }
 
@@ -672,7 +659,7 @@ mod tests {
                 let addr = listen_addr.clone();
                 sends.spawn(async move {
                     let tx = dial::<u64>(addr).unwrap();
-                    tx.post(message, oneshot::channel().0).await.unwrap();
+                    tx.post(message, oneshot::channel().0).unwrap();
                 });
             }
 
@@ -707,7 +694,7 @@ mod tests {
             let (listen_addr, rx) = crate::channel::serve::<u64>(addr).await.unwrap();
 
             let tx = dial::<u64>(listen_addr).unwrap();
-            tx.post(123, oneshot::channel().0).await.unwrap();
+            tx.post(123, oneshot::channel().0).unwrap();
             drop(rx);
 
             // New transmits should fail... but there is buffering, etc.,
@@ -717,7 +704,7 @@ mod tests {
             let start = RealClock.now();
 
             let result = loop {
-                let result = tx.post(123, oneshot::channel().0).await;
+                let result = tx.post(123, oneshot::channel().0);
                 if result.is_err() || start.elapsed() > Duration::from_secs(10) {
                     break result;
                 }
@@ -751,7 +738,7 @@ mod tests {
         for addr in addrs() {
             let (listen_addr, mut rx) = crate::channel::serve::<i32>(addr).await.unwrap();
             let tx = crate::channel::dial(listen_addr).unwrap();
-            tx.post(123, oneshot::channel().0).await.unwrap();
+            tx.post(123, oneshot::channel().0).unwrap();
             assert_eq!(rx.recv().await.unwrap(), 123);
         }
     }

@@ -698,7 +698,6 @@ impl WorkerActor {
                 kwargs_string,
                 actor_id,
             ))
-            .await
             .unwrap();
 
         rx.recv().await.unwrap();

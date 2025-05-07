@@ -24,8 +24,9 @@ use serde_with::serde_as;
 use tokio::sync::Mutex;
 use tokio::sync::SetError;
 use tokio::sync::mpsc;
-use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::Sender;
+use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::mpsc::error::SendError;
 use tokio::task::JoinError;
 use tokio::task::JoinHandle;
@@ -309,7 +310,7 @@ struct State {
 /// A handle to a running [`SimNet`] instance.
 pub struct SimNetHandle {
     join_handles: Vec<JoinHandle<()>>,
-    event_tx: Sender<Box<dyn Event>>,
+    event_tx: UnboundedSender<Box<dyn Event>>,
     config: Arc<Mutex<SimNetConfig>>,
     records: Option<Arc<Mutex<Vec<SimulatorEventRecord>>>>,
     pending_event_count: Arc<AtomicUsize>,
@@ -317,32 +318,30 @@ pub struct SimNetHandle {
     /// into the simnet.
     proxy_handle: Arc<Mutex<Option<ProxyHandle>>>,
     /// A sender to forward simulator operational messages.
-    operational_message_tx: Sender<OperationalMessage>,
+    operational_message_tx: UnboundedSender<OperationalMessage>,
     /// A receiver to receive simulator operational messages.
     /// The receiver can be moved out of the simnet handle.
-    operational_message_rx: Arc<Mutex<Option<Receiver<OperationalMessage>>>>,
+    operational_message_rx: Arc<Mutex<Option<UnboundedReceiver<OperationalMessage>>>>,
 }
 
 impl SimNetHandle {
     /// Sends an event to be scheduled onto the simnet's event loop
-    pub async fn send_event(&self, event: Box<dyn Event>) -> Result<(), SimNetError> {
+    pub fn send_event(&self, event: Box<dyn Event>) -> Result<(), SimNetError> {
         self.pending_event_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.event_tx
             .send(event)
-            .await
             .map_err(|err| SimNetError::Closed(err.to_string()))
     }
 
     /// Bind the given address to this simulator instance.
-    pub async fn bind(&self, address: ChannelAddr) -> Result<(), SimNetError> {
+    pub fn bind(&self, address: ChannelAddr) -> Result<(), SimNetError> {
         self.pending_event_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.event_tx
             .send(Box::new(NodeJoinEvent {
                 channel_addr: address,
             }))
-            .await
             .map_err(|err| SimNetError::Closed(err.to_string()))
     }
 
@@ -448,7 +447,7 @@ impl SimNetHandle {
     /// Returns the operational message receiver.
     pub async fn operational_message_receiver(
         &self,
-    ) -> Result<Receiver<OperationalMessage>, SimNetError> {
+    ) -> Result<UnboundedReceiver<OperationalMessage>, SimNetError> {
         tracing::info!("moving out operational message receiver");
         self.operational_message_rx
             .lock()
@@ -506,14 +505,14 @@ impl Named for OperationalMessage {
 #[derive(Debug)]
 pub struct SimOperation {
     /// Sender to send OperationalMessage to the simulator.
-    operational_message_tx: Sender<OperationalMessage>,
+    operational_message_tx: UnboundedSender<OperationalMessage>,
     operational_message: OperationalMessage,
 }
 
 impl SimOperation {
     /// Creates a new SimOperation.
     pub fn new(
-        operational_message_tx: Sender<OperationalMessage>,
+        operational_message_tx: UnboundedSender<OperationalMessage>,
         operational_message: OperationalMessage,
     ) -> Self {
         Self {
@@ -527,8 +526,7 @@ impl SimOperation {
 impl Event for SimOperation {
     async fn handle(&self) -> Result<(), SimNetError> {
         self.operational_message_tx
-            .send(self.operational_message.clone())
-            .await?;
+            .send(self.operational_message.clone())?;
         Ok(())
     }
 
@@ -629,10 +627,10 @@ impl ProxyHandle {
     ///  to_event: a function that specifies how to generate an Event from a forward message
     async fn start(
         proxy_addr: ChannelAddr,
-        event_tx: Sender<Box<dyn Event>>,
+        event_tx: UnboundedSender<Box<dyn Event>>,
         pending_event_count: Arc<AtomicUsize>,
         to_event: Option<fn(SimAddr, Serialized) -> Box<dyn Event>>,
-        operational_message_tx: Sender<OperationalMessage>,
+        operational_message_tx: UnboundedSender<OperationalMessage>,
     ) -> anyhow::Result<Self> {
         let (addr, mut rx) = channel::serve::<MessageEnvelope>(proxy_addr).await?;
         tracing::info!("SimNet serving external traffic on {}", &addr);
@@ -662,7 +660,7 @@ impl ProxyHandle {
                             }
                         };
 
-                        if let Err(e) = event_tx.send(event).await {
+                        if let Err(e) = event_tx.send(event) {
                             tracing::error!("error sending message to simnet: {:?}", e);
                         } else {
                             pending_event_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -712,7 +710,7 @@ pub fn start(private_addr: ChannelAddr, max_duration_ms: u64) -> anyhow::Result<
 
     let config = Arc::new(Mutex::new(SimNetConfig { topology }));
 
-    let (event_tx, event_rx) = mpsc::channel::<Box<dyn Event>>(100);
+    let (event_tx, event_rx) = mpsc::unbounded_channel::<Box<dyn Event>>();
     let records = Some(Arc::new(Mutex::new(vec![]))); // TODO remove optional
     let pending_event_count = Arc::new(AtomicUsize::new(0));
     let simnet_join_handle = {
@@ -735,7 +733,7 @@ pub fn start(private_addr: ChannelAddr, max_duration_ms: u64) -> anyhow::Result<
     };
     let join_handles = vec![simnet_join_handle];
     let (operational_message_tx, operational_message_rx) =
-        mpsc::channel::<OperationalMessage>(OPERATIONAL_MESSAGE_BUFFER_SIZE);
+        mpsc::unbounded_channel::<OperationalMessage>();
 
     Ok(SimNetHandle {
         join_handles,
@@ -813,7 +811,7 @@ impl SimNet {
 
     /// Run the simulation. This will dispatch all the messages in the network.
     /// And wait for new ones.
-    async fn run(&mut self, mut event_rx: Receiver<Box<dyn Event>>) {
+    async fn run(&mut self, mut event_rx: UnboundedReceiver<Box<dyn Event>>) {
         'outer: loop {
             // TODO: Find a way to drain all needed messages with better guarantees.
             //
@@ -1071,7 +1069,7 @@ mod tests {
             Serialized::serialize(&"123".to_string()).unwrap(),
             None,
         ));
-        nw_handle.send_event(msg).await.unwrap();
+        nw_handle.send_event(msg).unwrap();
         nw_handle.flush(Duration::from_millis(1000)).await.unwrap();
         let records = nw_handle.records().await;
         let expected_record = SimulatorEventRecord {
@@ -1120,7 +1118,6 @@ mod tests {
                     Serialized::serialize(&"123".to_string()).unwrap(),
                     None,
                 )))
-                .await
                 .unwrap();
         }
 
@@ -1190,9 +1187,9 @@ mod tests {
             sender.clone(),
         ));
 
-        nw_handle.send_event(one).await.unwrap();
-        nw_handle.send_event(two).await.unwrap();
-        nw_handle.send_event(three).await.unwrap();
+        nw_handle.send_event(one).unwrap();
+        nw_handle.send_event(two).unwrap();
+        nw_handle.send_event(three).unwrap();
 
         nw_handle.flush(Duration::from_millis(1000)).await.unwrap();
         let records = nw_handle.records().await;
@@ -1279,9 +1276,7 @@ edges:
         let forward_message = ProxyMessage::new(Some(sim_addr), src_to_dst_msg);
         let external_message =
             MessageEnvelope::new_unknown(port_id, Serialized::serialize(&forward_message).unwrap());
-        tx.post(external_message, oneshot::channel().0)
-            .await
-            .unwrap();
+        tx.post(external_message, oneshot::channel().0).unwrap();
         // flush doesn't work here because tx.send() delivers the message through real network.
         // We have to wait for the message to enter simnet.
         RealClock.sleep(Duration::from_millis(1000)).await;
@@ -1315,9 +1310,7 @@ edges:
         let external_message = MessageEnvelope::new_unknown(port_id, serialized_proxy_message);
 
         // Send the message to the simnet.
-        tx.post(external_message, oneshot::channel().0)
-            .await
-            .unwrap();
+        tx.post(external_message, oneshot::channel().0).unwrap();
         // flush doesn't work here because tx.send() delivers the message through real network.
         // We have to wait for the message to enter simnet.
         RealClock.sleep(Duration::from_millis(1000)).await;
@@ -1363,7 +1356,6 @@ edges:
                 kwargs_string,
                 id!(mesh_0_worker[0].worker_0),
             ))
-            .await
             .unwrap();
 
         rx.recv().await.unwrap();

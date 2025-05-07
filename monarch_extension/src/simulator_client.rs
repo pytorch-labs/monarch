@@ -9,7 +9,6 @@ use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::simnet::OperationalMessage;
 use hyperactor::simnet::ProxyMessage;
 use hyperactor::simnet::SpawnMesh;
-use monarch_hyperactor::runtime::get_tokio_runtime;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use tokio::sync::oneshot;
@@ -54,13 +53,9 @@ impl SimulatorClient {
     fn kill_world(&self, world_name: &str) -> PyResult<()> {
         let operational_message = OperationalMessage::KillWorld(world_name.to_string());
         let external_message = wrap_operational_message(operational_message);
-        get_tokio_runtime()
-            .block_on(async {
-                let tx = dial(self.proxy_addr.clone()).map_err(|err| anyhow!(err))?;
-                tx.post(external_message, oneshot::channel().0)
-                    .await
-                    .map_err(|err| anyhow!("Failed to post message: {}", err))
-            })
+        let tx = dial(self.proxy_addr.clone()).map_err(|err| anyhow!(err))?;
+        tx.post(external_message, oneshot::channel().0)
+            .map_err(|err| anyhow!("Failed to post message: {}", err))
             .map_err(|err| PyValueError::new_err(err.to_string()))?;
         Ok(())
     }
@@ -78,13 +73,9 @@ impl SimulatorClient {
         );
         let operational_message = OperationalMessage::SpawnMesh(spawn_mesh);
         let external_message = wrap_operational_message(operational_message);
-        get_tokio_runtime()
-            .block_on(async {
-                let tx = dial(self.proxy_addr.clone()).map_err(|err| anyhow!(err))?;
-                tx.post(external_message, oneshot::channel().0)
-                    .await
-                    .map_err(|err| anyhow!("Failed to post message: {}", err))
-            })
+        let tx = dial(self.proxy_addr.clone()).map_err(|err| anyhow!(err))?;
+        tx.post(external_message, oneshot::channel().0)
+            .map_err(|err| anyhow!("Failed to post message: {}", err))
             .map_err(|err| PyValueError::new_err(err.to_string()))?;
         Ok(())
     }

@@ -10,7 +10,7 @@ use dashmap::DashMap;
 use futures::executor::block_on;
 use regex::Regex;
 use tokio::sync::Mutex;
-use tokio::sync::mpsc::Receiver;
+use tokio::sync::mpsc::UnboundedReceiver;
 
 use super::*;
 use crate::PortId;
@@ -253,7 +253,7 @@ pub async fn records() -> Option<Vec<simnet::SimulatorEventRecord>> {
 /// Bind a channel address to the simnet. It will register the address as a node in simnet,
 /// and configure default latencies between this node and all other existing nodes.
 pub async fn bind(addr: ChannelAddr) -> anyhow::Result<(), SimNetError> {
-    HANDLE.bind(addr).await
+    HANDLE.bind(addr)
 }
 
 /// Update the configuration for simnet.
@@ -269,7 +269,7 @@ pub async fn add_proxy(addr: ChannelAddr) -> anyhow::Result<(), SimNetError> {
 
 /// Moves the operational message receiver out of the simnet.
 pub async fn operational_message_receiver()
--> anyhow::Result<Receiver<OperationalMessage>, SimNetError> {
+-> anyhow::Result<UnboundedReceiver<OperationalMessage>, SimNetError> {
     HANDLE.operational_message_receiver().await
 }
 
@@ -372,7 +372,6 @@ impl Dispatcher<SimAddr> for SimDispatcher {
                 MessageEnvelope::new_unknown(port_id_placeholder, serialized_forward_message);
             return sender
                 .post(message, oneshot::channel().0)
-                .await
                 .map_err(|err| SimNetError::InvalidNode(dst_proxy.to_string(), err.into()));
         }
 
@@ -414,18 +413,13 @@ pub(crate) struct SimRx<M: RemoteMessage> {
 
 #[async_trait]
 impl<M: RemoteMessage> Tx<M> for SimTx<M> {
-    async fn post(
-        &self,
-        message: M,
-        _return_handle: oneshot::Sender<M>,
-    ) -> Result<(), SendError<M>> {
+    fn post(&self, message: M, _return_handle: oneshot::Sender<M>) -> Result<(), SendError<M>> {
         let data = match Serialized::serialize(&message) {
             Ok(data) => data,
             Err(err) => return Err(SendError(err.into(), message)),
         };
         HANDLE
             .send_event(Box::new(MessageDeliveryEvent::new(self.addr.clone(), data)))
-            .await
             .map_err(|err| SendError(ChannelError::from(err), message))
     }
 
@@ -509,7 +503,6 @@ mod tests {
             // Add to network along with its edges.
             sim::HANDLE
                 .bind(addr.parse::<ChannelAddr>().unwrap())
-                .await
                 .unwrap();
         }
         // Messages are transferred internally if only there's a local proxy and the
@@ -532,7 +525,7 @@ mod tests {
             // reverse src and dst since `sim::serve()` will reverse it.
             let (_, mut rx) = sim::serve::<u64>(sim_addr.reversed().clone()).unwrap();
             let tx = sim::dial::<u64>(sim_addr).unwrap();
-            tx.post(123, oneshot::channel().0).await.unwrap();
+            tx.post(123, oneshot::channel().0).unwrap();
             assert_eq!(rx.recv().await.unwrap(), 123);
         }
 

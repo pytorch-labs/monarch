@@ -21,7 +21,7 @@ use hyperactor_multiprocess::system_actor::ProcLifecycleMode;
 use hyperactor_multiprocess::system_actor::SystemActorParams;
 use monarch_messages::worker::Factory;
 use tokio::sync::Mutex;
-use tokio::sync::mpsc::Receiver;
+use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::task::JoinHandle;
 use torch_sys::Layout;
 use torch_sys::ScalarType;
@@ -233,7 +233,7 @@ pub async fn boostrap(system_addr: ChannelAddr) -> Result<JoinHandle<()>> {
 }
 
 async fn handle_operational_message(
-    operational_message_rx: &mut Receiver<OperationalMessage>,
+    operational_message_rx: &mut UnboundedReceiver<OperationalMessage>,
     simulator: Arc<Mutex<Simulator>>,
 ) {
     while let Some(msg) = operational_message_rx.recv().await {

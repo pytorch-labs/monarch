@@ -724,11 +724,7 @@ impl<M: RemoteMessage> Tx<M> for NetTx<M> {
         &self.status
     }
 
-    async fn post(
-        &self,
-        message: M,
-        return_channel: oneshot::Sender<M>,
-    ) -> Result<(), SendError<M>> {
+    fn post(&self, message: M, return_channel: oneshot::Sender<M>) -> Result<(), SendError<M>> {
         tracing::trace!(name = "post", "sending message to {}", self.dest);
         self.sender
             .send((message, return_channel, RealClock.now()))
@@ -1825,15 +1821,15 @@ mod tests {
         // channel.
         {
             let tx = crate::channel::dial::<u64>(addr.clone()).unwrap();
-            tx.post(123, unused_return_channel()).await.unwrap();
+            tx.post(123, unused_return_channel()).unwrap();
             assert_eq!(rx.recv().await.unwrap(), 123);
         }
 
         {
             let tx = dial::<u64>(addr).unwrap();
-            tx.post(321, unused_return_channel()).await.unwrap();
-            tx.post(111, unused_return_channel()).await.unwrap();
-            tx.post(444, unused_return_channel()).await.unwrap();
+            tx.post(321, unused_return_channel()).unwrap();
+            tx.post(111, unused_return_channel()).unwrap();
+            tx.post(444, unused_return_channel()).unwrap();
 
             assert_eq!(rx.recv().await.unwrap(), 321);
             assert_eq!(rx.recv().await.unwrap(), 111);
@@ -1860,14 +1856,14 @@ mod tests {
         // Dial the channel before we actually serve it.
         let addr = ChannelAddr::Unix(socket_addr.clone());
         let tx = crate::channel::dial::<u64>(addr.clone()).unwrap();
-        tx.post(123, unused_return_channel()).await.unwrap();
+        tx.post(123, unused_return_channel()).unwrap();
 
         let (_, mut rx) = net::unix::serve::<u64>(socket_addr).await.unwrap();
         assert_eq!(rx.recv().await.unwrap(), 123);
 
-        tx.post(321, unused_return_channel()).await.unwrap();
-        tx.post(111, unused_return_channel()).await.unwrap();
-        tx.post(444, unused_return_channel()).await.unwrap();
+        tx.post(321, unused_return_channel()).unwrap();
+        tx.post(111, unused_return_channel()).unwrap();
+        tx.post(444, unused_return_channel()).unwrap();
 
         assert_eq!(rx.recv().await.unwrap(), 321);
         assert_eq!(rx.recv().await.unwrap(), 111);
@@ -1882,15 +1878,15 @@ mod tests {
         let (addr, mut rx) = tcp::serve::<u64>("[::1]:0".parse().unwrap()).await.unwrap();
         {
             let tx = dial::<u64>(addr.clone()).unwrap();
-            tx.post(123, unused_return_channel()).await.unwrap();
+            tx.post(123, unused_return_channel()).unwrap();
             assert_eq!(rx.recv().await.unwrap(), 123);
         }
 
         {
             let tx = dial::<u64>(addr).unwrap();
-            tx.post(321, unused_return_channel()).await.unwrap();
-            tx.post(111, unused_return_channel()).await.unwrap();
-            tx.post(444, unused_return_channel()).await.unwrap();
+            tx.post(321, unused_return_channel()).unwrap();
+            tx.post(111, unused_return_channel()).unwrap();
+            tx.post(444, unused_return_channel()).unwrap();
 
             assert_eq!(rx.recv().await.unwrap(), 321);
             assert_eq!(rx.recv().await.unwrap(), 111);
@@ -1923,16 +1919,14 @@ mod tests {
         {
             // Leave some headroom because Tx will wrap the payload in Frame::Message.
             let message = "a".repeat(default_size_in_bytes - 1024);
-            tx.post(message.clone(), unused_return_channel())
-                .await
-                .unwrap();
+            tx.post(message.clone(), unused_return_channel()).unwrap();
             assert_eq!(rx.recv().await.unwrap(), message);
         }
         // Bigger than the default size will fail.
         {
             let (return_channel, return_receiver) = oneshot::channel();
             let message = "a".repeat(default_size_in_bytes + 1024);
-            tx.post(message.clone(), return_channel).await.unwrap();
+            tx.post(message.clone(), return_channel).unwrap();
             let returned = return_receiver.await.unwrap();
             assert_eq!(message, returned);
         }
@@ -1953,7 +1947,7 @@ mod tests {
             _ => panic!("unexpected channel type"),
         };
         let tx = dial::<u64>(local_addr).unwrap();
-        tx.post(101, unused_return_channel()).await.unwrap();
+        tx.post(101, unused_return_channel()).unwrap();
         assert_eq!(rx1.recv().await.unwrap(), 101);
         // Wait long enough to ensure message is acked.
         RealClock.sleep(Duration::from_secs(5)).await;
@@ -1963,7 +1957,7 @@ mod tests {
         assert_matches!(rx1.recv().await.unwrap_err(), ChannelError::Closed);
 
         // Send the message is allowed even when the server is down.
-        tx.post(102, unused_return_channel()).await.unwrap();
+        tx.post(102, unused_return_channel()).unwrap();
 
         // Start the server again. Need to serve on the same socket address
         // because that is what tx knows.
@@ -1983,15 +1977,15 @@ mod tests {
         let (local_addr, mut rx) = net::meta::serve::<u64>(hostname, port).await.unwrap();
         {
             let tx = dial::<u64>(local_addr.clone()).unwrap();
-            tx.post(123, unused_return_channel()).await.unwrap();
+            tx.post(123, unused_return_channel()).unwrap();
         }
         assert_eq!(rx.recv().await.unwrap(), 123);
 
         {
             let tx = dial::<u64>(local_addr).unwrap();
-            tx.post(321, unused_return_channel()).await.unwrap();
-            tx.post(111, unused_return_channel()).await.unwrap();
-            tx.post(444, unused_return_channel()).await.unwrap();
+            tx.post(321, unused_return_channel()).unwrap();
+            tx.post(111, unused_return_channel()).unwrap();
+            tx.post(444, unused_return_channel()).unwrap();
             assert_eq!(rx.recv().await.unwrap(), 321);
             assert_eq!(rx.recv().await.unwrap(), 111);
             assert_eq!(rx.recv().await.unwrap(), 444);
@@ -2551,7 +2545,7 @@ mod tests {
         unsafe { std::env::set_var("MONARCH_MESSAGE_DELIVERY_TIMEOUT_SECS", "1") };
         let mut tx_receiver = tx.status().clone();
         let (return_channel, _return_receiver) = oneshot::channel();
-        tx.post(123, return_channel).await.unwrap();
+        tx.post(123, return_channel).unwrap();
         verify_tx_closed(&mut tx_receiver, "failed to deliver message within timeout").await;
     }
 
@@ -2603,7 +2597,7 @@ mod tests {
 
     async fn net_tx_send(tx: &NetTx<u64>, msgs: &[u64]) {
         for msg in msgs {
-            tx.post(*msg, unused_return_channel()).await.unwrap();
+            tx.post(*msg, unused_return_channel()).unwrap();
         }
     }
 
@@ -2810,7 +2804,7 @@ mod tests {
         let tx = NetTx::<u64>::new(link);
         let mut tx_status = tx.status().clone();
         // send a message
-        tx.post(100, unused_return_channel()).await.unwrap();
+        tx.post(100, unused_return_channel()).unwrap();
         let (mut sink, mut stream) = take_receiver(&receiver_storage).await;
         // Confirm message is sent to rx.
         verify_stream(&mut stream, &[(0, 100)], None, line!()).await;
@@ -2821,7 +2815,7 @@ mod tests {
         assert!(!tx_status.has_changed().unwrap());
         assert_eq!(*tx_status.borrow(), TxStatus::Active);
 
-        tx.post(101, unused_return_channel()).await.unwrap();
+        tx.post(101, unused_return_channel()).unwrap();
         // Confirm message is sent to rx.
         verify_message(&mut stream, (1, 101), line!()).await;
 
@@ -2894,7 +2888,7 @@ mod tests {
                 RealClock
                     .sleep(Duration::from_micros(rand::random::<u64>() % 100))
                     .await;
-                tx.post(message, unused_return_channel()).await.unwrap();
+                tx.post(message, unused_return_channel()).unwrap();
             }
             tracing::debug!("NetTx sent all messages");
             // It is important to return tx instead of dropping it here, because
@@ -2964,7 +2958,7 @@ mod tests {
                 RealClock
                     .sleep(Duration::from_micros(rand::random::<u64>() % 100))
                     .await;
-                tx.post(message, unused_return_channel()).await.unwrap();
+                tx.post(message, unused_return_channel()).unwrap();
             }
             RealClock.sleep(Duration::from_secs(5)).await;
             tracing::debug!("NetTx sent all messages");
@@ -3041,9 +3035,7 @@ mod tests {
                     .map(char::from)
                     .collect::<String>();
                 for _ in 0..total_num_msgs {
-                    let _ = tx2
-                        .post(random_string.clone(), unused_return_channel())
-                        .await;
+                    let _ = tx2.post(random_string.clone(), unused_return_channel());
                 }
             }));
         }

@@ -119,7 +119,6 @@ impl Clock for SimClock {
                 mailbox,
                 duration.as_millis() as u64,
             ))
-            .await
             .unwrap();
         rx.recv().await.unwrap();
     }

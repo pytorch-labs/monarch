@@ -777,9 +777,9 @@ mod tests {
         // be actor failure(s) in this test which trigger supervision.
         ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
-        let error_ttl = Some(66);
+        let error_ttl = 66;
         let ping_pong_actor_params =
-            PingPongActorParams::new(undeliverable_msg_tx.bind(), error_ttl);
+            PingPongActorParams::new(undeliverable_msg_tx.bind(), Some(error_ttl));
         let ping_handle = proc
             .spawn::<PingPongActor>("ping", ping_pong_actor_params.clone())
             .await
@@ -793,7 +793,7 @@ mod tests {
 
         ping_handle
             .send(PingPongMessage(
-                error_ttl.unwrap() + 1, // will encounter an error at TTL=66
+                error_ttl + 1, // will encounter an error at TTL=66
                 pong_handle.bind(),
                 local_port.bind(),
             ))
