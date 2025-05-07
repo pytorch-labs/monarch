@@ -1,25 +1,26 @@
 #![allow(dead_code)] // some things currently used only in tests
 
 use std::collections::HashMap;
-use std::mem::take;
+use std::future::Future;
 use std::sync::Arc;
-use std::sync::OnceLock;
 
 use async_trait::async_trait;
+use enum_as_inner::EnumAsInner;
 use hyperactor::ProcId;
 use hyperactor::WorldId;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelError;
 use hyperactor::channel::ChannelTransport;
+use hyperactor::channel::ChannelTx;
 use hyperactor::channel::Rx;
-use hyperactor::channel::SendError;
 use hyperactor::channel::Tx;
+use hyperactor::channel::TxStatus;
 use ndslice::Shape;
 use tokio::process::Command;
 use tokio::sync::Mutex;
-use tokio::sync::mpsc;
-use tokio::sync::oneshot;
+use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 
 use super::Alloc;
 use super::AllocSpec;
@@ -63,8 +64,6 @@ impl Allocator for ProcessAllocator {
             .await
             .map_err(anyhow::Error::from)?;
 
-        let (reap_tx, reap_rx) = mpsc::channel(1);
-
         let name = ShortUuid::generate();
         let n = spec.shape.slice().len();
         Ok(ProcessAlloc {
@@ -77,8 +76,7 @@ impl Allocator for ProcessAllocator {
             active: HashMap::new(),
             ranks: Ranks::new(n),
             cmd: Arc::clone(&self.cmd),
-            reap_tx,
-            reap_rx,
+            children: JoinSet::new(),
             running: true,
         })
     }
@@ -96,72 +94,103 @@ pub struct ProcessAlloc {
     // Maps process index to its rank.
     ranks: Ranks<usize>,
     cmd: Arc<Mutex<Command>>,
-    reap_tx: mpsc::Sender<(usize, std::process::ExitStatus)>,
-    reap_rx: mpsc::Receiver<(usize, std::process::ExitStatus)>,
+    children: JoinSet<usize>,
     running: bool,
 }
 
+#[derive(EnumAsInner)]
+enum ChannelState {
+    NotConnected,
+    Connected(ChannelTx<Allocator2Process>),
+    Failed(ChannelError),
+}
+
 struct Child {
-    addr: OnceLock<ChannelAddr>,
-    kill: Option<oneshot::Sender<()>>,
+    channel: ChannelState,
+    token: CancellationToken,
 }
 
 impl Child {
-    // (Apologies)
-    fn new(
-        mut process: tokio::process::Child,
-        index: usize,
-        reap: mpsc::Sender<(usize, std::process::ExitStatus)>,
-    ) -> Self {
-        let (kill_tx, mut kill_rx) = oneshot::channel();
+    fn monitored(mut process: tokio::process::Child) -> (Self, impl Future) {
+        let token = CancellationToken::new();
 
-        tokio::spawn(async move {
-            let status = tokio::select! {
-                _ = &mut kill_rx => {
-                    let _ = process.kill().await;
-                    process.wait().await
+        let child = Self {
+            channel: ChannelState::NotConnected,
+            token: token.clone(),
+        };
+
+        let monitor = async move {
+            tokio::select! {
+                _ = token.cancelled() => {
+                    match process.kill().await {
+                        Err(err) => {
+                            tracing::error!("error killing process: {}", err);
+                            // In this cased, we're left with little choice but to
+                            // orphan the process.
+                        },
+                        Ok(_) => {
+                            let _ = process.wait().await;
+                        }
+                    }
                 }
-
-                status = process.wait() => {
-                    status
-                }
-            }
-            .unwrap_or(Default::default());
-            let _ = reap.send((index, status)).await;
-        });
-
-        Self {
-            addr: OnceLock::new(),
-            kill: Some(kill_tx),
-        }
-    }
-
-    fn kill(&mut self) {
-        if let Some(kill) = take(&mut self.kill) {
-            let _ = kill.send(());
-        }
-    }
-
-    async fn exit(&self, code: i32) -> Result<(), anyhow::Error> {
-        self.send(Allocator2Process::Exit(code)).await?;
-        Ok(())
-    }
-
-    async fn send(&self, message: Allocator2Process) -> Result<(), SendError<Allocator2Process>> {
-        let addr = match self.addr.get() {
-            Some(addr) => addr.clone(),
-            None => {
-                let err = ChannelError::from(anyhow::anyhow!(
-                    "attempted to send on client for which no address is defined"
-                ));
-                return Err(SendError(err, message));
+                _ = process.wait() => token.cancel(),
             }
         };
-        let tx = match channel::dial(addr) {
-            Ok(tx) => tx,
-            Err(err) => return Err(SendError(err, message)),
+
+        (child, monitor)
+    }
+
+    fn kill(&self) {
+        self.token.cancel();
+    }
+
+    fn connect(&mut self, addr: ChannelAddr) -> bool {
+        if !self.channel.is_not_connected() {
+            return false;
+        }
+
+        let cloned_addr = addr.clone();
+        match channel::dial(addr) {
+            Ok(channel) => {
+                let mut status = channel.status().clone();
+                self.channel = ChannelState::Connected(channel);
+                let token = self.token.clone();
+                // Monitor the channel, killing the process if it becomes unavailable
+                // (fails keepalive).
+                tokio::spawn(async move {
+                    let mut status_ok = true;
+                    loop {
+                        if matches!(*status.borrow_and_update(), TxStatus::Closed) {
+                            tracing::error!("channel {}: closed", cloned_addr);
+                            token.cancel();
+                            break;
+                        }
+                        // !status_ok can happen when the channel itself is dropped, though
+                        // in this case, it should be marked as closed.
+                        assert!(status_ok);
+                        status_ok = tokio::select! {
+                            _ = token.cancelled() => break,
+                            result = status.changed() => result.is_ok(),
+                        };
+                    }
+                });
+            }
+            Err(err) => {
+                self.channel = ChannelState::Failed(err);
+                self.kill();
+            }
         };
-        tx.send(message).await
+        true
+    }
+
+    fn post(&mut self, message: Allocator2Process) {
+        // We're here simply assuming that if we're not connected, we're about to
+        // be killed.
+        if let ChannelState::Connected(channel) = &mut self.channel {
+            channel.post(message);
+        } else {
+            self.kill();
+        }
     }
 }
 
@@ -239,8 +268,12 @@ impl ProcessAlloc {
                     None
                 }
                 Ok(rank) => {
-                    self.active
-                        .insert(index, Child::new(process, index, self.reap_tx.clone()));
+                    let (handle, monitor) = Child::monitored(process);
+                    self.children.spawn(async move {
+                        monitor.await;
+                        index
+                    });
+                    self.active.insert(index, handle);
                     // Adjust for shape slice offset for non-zero shapes (sub-shapes).
                     let rank = rank + self.spec.shape.slice().offset();
                     let coords = self.spec.shape.slice().coordinates(rank).unwrap();
@@ -284,22 +317,15 @@ impl Alloc for ProcessAlloc {
 
                     match message {
                         Process2AllocatorMessage::Hello(addr) => {
-                            if child.addr.set(addr.clone()).is_err() {
+                            if !child.connect(addr.clone()) {
                                 tracing::error!("received multiple hellos from {}", index);
                                 continue;
                             }
 
-                            if let Err(err) = child
-                                .send(Allocator2Process::StartProc(
-                                    ProcId(WorldId(self.name.to_string()), index),
-                                    transport,
-                                ))
-                                .await
-                            {
-                                tracing::error!("failed to send StartProc message to {addr}: {err}");
-                                // We now consider this failed:
-                                self.remove(index);
-                            }
+                            child.post(Allocator2Process::StartProc(
+                                ProcId(WorldId(self.name.to_string()), index),
+                                transport,
+                            ));
                         }
 
                         Process2AllocatorMessage::StartedProc(proc_id, mesh_agent, addr) => {
@@ -312,7 +338,7 @@ impl Alloc for ProcessAlloc {
                     }
                 },
 
-                Some((index, _status)) = self.reap_rx.recv() => {
+                Some(Ok(index)) = self.children.join_next() => {
                     self.remove(index);
                     break Some(ProcState::Stopped(ProcId(WorldId(self.name.to_string()), index)));
                 },
@@ -337,12 +363,8 @@ impl Alloc for ProcessAlloc {
         // exit on its own. We shoudl have a hard timeout here as well,
         // so that we never rely on the system functioning correctly
         // for liveness.
-        for (index, child) in self.active.iter_mut() {
-            if let Err(err) = child.send(Allocator2Process::StopAndExit(0)).await {
-                tracing::error!("failed to send StopAndExit message to {index}: {err}");
-                // Make sure the child is actually killed.
-                child.kill();
-            }
+        for (_index, child) in self.active.iter_mut() {
+            child.post(Allocator2Process::StopAndExit(0));
         }
 
         self.running = false;
