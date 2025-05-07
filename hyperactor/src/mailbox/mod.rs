@@ -888,7 +888,7 @@ impl MailboxClient {
             // Send the message for transmission.
             let return_handle_1 = return_handle.clone();
             async move {
-                if let Err(SendError(_, envelope)) = tx.post(envelope, return_channel) {
+                if let Err(SendError(_, envelope)) = tx.try_post(envelope, return_channel) {
                     // Failed to enqueue.
                     envelope.undeliverable(DeliveryError::BrokenLink, return_handle_1.clone());
                 }

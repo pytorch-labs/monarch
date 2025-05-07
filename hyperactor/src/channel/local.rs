@@ -64,7 +64,11 @@ pub struct LocalTx<M: RemoteMessage> {
 
 #[async_trait]
 impl<M: RemoteMessage> Tx<M> for LocalTx<M> {
-    fn post(&self, message: M, _return_channel: oneshot::Sender<M>) -> Result<(), SendError<M>> {
+    fn try_post(
+        &self,
+        message: M,
+        _return_channel: oneshot::Sender<M>,
+    ) -> Result<(), SendError<M>> {
         let data: Data = match bincode::serialize(&message) {
             Ok(data) => data,
             Err(err) => return Err(SendError(err.into(), message)),
@@ -154,7 +158,7 @@ mod tests {
     async fn test_local_basic() {
         let (tx, mut rx) = local::new::<u64>();
 
-        tx.post(123, unused_return_channel()).unwrap();
+        tx.try_post(123, unused_return_channel()).unwrap();
         assert_eq!(rx.recv().await.unwrap(), 123);
     }
 
@@ -165,13 +169,13 @@ mod tests {
 
         let tx = local::dial::<u64>(port).unwrap();
 
-        tx.post(123, unused_return_channel()).unwrap();
+        tx.try_post(123, unused_return_channel()).unwrap();
         assert_eq!(rx.recv().await.unwrap(), 123);
 
         drop(rx);
 
         assert_matches!(
-            tx.post(123, unused_return_channel()),
+            tx.try_post(123, unused_return_channel()),
             Err(SendError(ChannelError::Closed, 123))
         );
     }
@@ -181,7 +185,7 @@ mod tests {
         let (port, mut rx) = local::serve::<u64>();
         let tx = local::dial::<u64>(port).unwrap();
 
-        tx.post(123, unused_return_channel()).unwrap();
+        tx.try_post(123, unused_return_channel()).unwrap();
         assert_eq!(rx.recv().await.unwrap(), 123);
 
         drop(rx);

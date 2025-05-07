@@ -54,9 +54,7 @@ impl SimulatorClient {
         let operational_message = OperationalMessage::KillWorld(world_name.to_string());
         let external_message = wrap_operational_message(operational_message);
         let tx = dial(self.proxy_addr.clone()).map_err(|err| anyhow!(err))?;
-        tx.post(external_message, oneshot::channel().0)
-            .map_err(|err| anyhow!("Failed to post message: {}", err))
-            .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        tx.post(external_message);
         Ok(())
     }
 
@@ -74,9 +72,7 @@ impl SimulatorClient {
         let operational_message = OperationalMessage::SpawnMesh(spawn_mesh);
         let external_message = wrap_operational_message(operational_message);
         let tx = dial(self.proxy_addr.clone()).map_err(|err| anyhow!(err))?;
-        tx.post(external_message, oneshot::channel().0)
-            .map_err(|err| anyhow!("Failed to post message: {}", err))
-            .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        tx.post(external_message);
         Ok(())
     }
 }

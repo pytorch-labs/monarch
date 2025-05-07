@@ -371,7 +371,7 @@ impl Dispatcher<SimAddr> for SimDispatcher {
             let message =
                 MessageEnvelope::new_unknown(port_id_placeholder, serialized_forward_message);
             return sender
-                .post(message, oneshot::channel().0)
+                .try_post(message, oneshot::channel().0)
                 .map_err(|err| SimNetError::InvalidNode(dst_proxy.to_string(), err.into()));
         }
 
@@ -413,7 +413,7 @@ pub(crate) struct SimRx<M: RemoteMessage> {
 
 #[async_trait]
 impl<M: RemoteMessage> Tx<M> for SimTx<M> {
-    fn post(&self, message: M, _return_handle: oneshot::Sender<M>) -> Result<(), SendError<M>> {
+    fn try_post(&self, message: M, _return_handle: oneshot::Sender<M>) -> Result<(), SendError<M>> {
         let data = match Serialized::serialize(&message) {
             Ok(data) => data,
             Err(err) => return Err(SendError(err.into(), message)),
@@ -525,7 +525,7 @@ mod tests {
             // reverse src and dst since `sim::serve()` will reverse it.
             let (_, mut rx) = sim::serve::<u64>(sim_addr.reversed().clone()).unwrap();
             let tx = sim::dial::<u64>(sim_addr).unwrap();
-            tx.post(123, oneshot::channel().0).unwrap();
+            tx.try_post(123, oneshot::channel().0).unwrap();
             assert_eq!(rx.recv().await.unwrap(), 123);
         }
 

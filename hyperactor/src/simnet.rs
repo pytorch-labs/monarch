@@ -1276,7 +1276,7 @@ edges:
         let forward_message = ProxyMessage::new(Some(sim_addr), src_to_dst_msg);
         let external_message =
             MessageEnvelope::new_unknown(port_id, Serialized::serialize(&forward_message).unwrap());
-        tx.post(external_message, oneshot::channel().0).unwrap();
+        tx.try_post(external_message, oneshot::channel().0).unwrap();
         // flush doesn't work here because tx.send() delivers the message through real network.
         // We have to wait for the message to enter simnet.
         RealClock.sleep(Duration::from_millis(1000)).await;
@@ -1310,7 +1310,7 @@ edges:
         let external_message = MessageEnvelope::new_unknown(port_id, serialized_proxy_message);
 
         // Send the message to the simnet.
-        tx.post(external_message, oneshot::channel().0).unwrap();
+        tx.try_post(external_message, oneshot::channel().0).unwrap();
         // flush doesn't work here because tx.send() delivers the message through real network.
         // We have to wait for the message to enter simnet.
         RealClock.sleep(Duration::from_millis(1000)).await;
