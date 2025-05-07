@@ -13,8 +13,7 @@ use crate::mailbox::PyMailbox;
 
 #[pyclass(name = "ProcMesh", module = "monarch._monarch.hyperactor")]
 pub struct PyProcMesh {
-    #[allow(dead_code)] // not sure why the analyzer can't see the registration
-    inner: Arc<ProcMesh>,
+    pub(super) inner: Arc<ProcMesh>,
 }
 
 fn allocate_proc_mesh<'py>(py: Python<'py>, alloc: &PyAlloc) -> PyResult<Bound<'py, PyAny>> {
@@ -76,5 +75,9 @@ impl PyProcMesh {
     #[getter]
     fn proc_id(&self) -> String {
         self.inner.proc_id().to_string()
+    }
+
+    fn __repr__(&self) -> PyResult<String> {
+        Ok(format!("<ProcMesh {}>", self.inner))
     }
 }

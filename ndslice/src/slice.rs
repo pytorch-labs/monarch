@@ -56,7 +56,7 @@ pub enum SliceError {
 /// ```
 // TODO: Consider representing this by arrays parameterized by the slice
 // dimensionality.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Hash)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Hash, Debug)]
 pub struct Slice {
     offset: usize,
     sizes: Vec<usize>,
@@ -262,6 +262,11 @@ impl Slice {
             slice: self,
             mapper,
         }
+    }
+}
+impl std::fmt::Display for Slice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
     }
 }
 

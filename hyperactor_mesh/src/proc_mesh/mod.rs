@@ -1,3 +1,4 @@
+use std::fmt;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -314,6 +315,24 @@ impl Mesh for ProcMesh {
 
     fn get(&self, rank: usize) -> Option<ProcId> {
         Some(self.ranks[rank].0.clone())
+    }
+}
+
+impl fmt::Display for ProcMesh {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{{ shape: {} }}", self.shape())
+    }
+}
+
+impl fmt::Debug for ProcMesh {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProcMesh")
+            .field("shape", &self.shape())
+            .field("ranks", &self.ranks)
+            .field("client_proc", &self.client_proc)
+            .field("client", &self.client)
+            // Skip the alloc field since it doesn't implement Debug
+            .finish()
     }
 }
 

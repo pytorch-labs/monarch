@@ -26,6 +26,12 @@ class ProcMesh:
             "rdma_manager", RDMAManager
         )
 
+    def __repr__(self) -> str:
+        return repr(self._proc_mesh)
+
+    def __str__(self) -> str:
+        return str(self._proc_mesh)
+
     async def spawn(self, name: str, Class: Type[T], *args: Any, **kwargs: Any) -> T:
         if not issubclass(Class, Actor):
             raise ValueError(

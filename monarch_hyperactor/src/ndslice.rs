@@ -179,6 +179,10 @@ impl PySlice {
         result.push(Self::new(offset, vec![size], vec![stride])?);
         Ok(result.into_py(py))
     }
+
+    fn __repr__(&self) -> PyResult<String> {
+        Ok(format!("{:?}", self.inner))
+    }
 }
 
 impl From<&PySlice> for ndslice::Slice {

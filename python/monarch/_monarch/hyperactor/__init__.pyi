@@ -540,6 +540,7 @@ class ProcMesh:
         broadcast across the mesh)
         """
         ...
+    def __repr__(self) -> str: ...
 
 @final
 class PythonActorMesh:

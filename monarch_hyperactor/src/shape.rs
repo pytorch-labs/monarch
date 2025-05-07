@@ -28,8 +28,11 @@ impl PyShape {
     fn labels(&self) -> Vec<String> {
         self.inner.labels().to_vec()
     }
-    fn __str__(&self) -> String {
-        self.inner.to_string()
+    fn __str__(&self) -> PyResult<String> {
+        Ok(self.inner.to_string())
+    }
+    fn __repr__(&self) -> PyResult<String> {
+        Ok(format!("{:?}", self.inner))
     }
     fn coordinates<'py>(
         &self,

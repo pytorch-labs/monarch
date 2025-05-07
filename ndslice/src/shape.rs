@@ -47,7 +47,7 @@ pub enum ShapeError {
 }
 
 /// A shape is a [`Slice`] with labeled dimensions and a selection API.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Hash)]
+#[derive(Clone, Deserialize, Serialize, PartialEq, Hash, Debug)]
 pub struct Shape {
     /// The labels for each dimension in slice.
     labels: Vec<String>,

@@ -86,7 +86,8 @@ async def test_proc_mesh() -> None:
     hyperactor.init_asyncio_loop()
     spec = hyperactor.AllocSpec(hyperactor.AllocConstraints(), replica=2)
     alloc = await hyperactor.LocalAllocator.allocate(spec)
-    _ = await hyperactor.ProcMesh.allocate(alloc)
+    proc_mesh = await hyperactor.ProcMesh.allocate(alloc)
+    assert str(proc_mesh) == "<ProcMesh { shape: {replica=2} }>"
 
 
 @run_async

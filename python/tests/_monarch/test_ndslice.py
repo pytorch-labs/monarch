@@ -6,7 +6,7 @@ import math
 import random
 from unittest import TestCase
 
-from monarch._monarch.shape import Slice
+from monarch._monarch.shape import Shape, Slice
 
 
 class TestNdslice(TestCase):
@@ -167,3 +167,19 @@ class TestNdslice(TestCase):
         pickled = pickle.dumps(s)
         unpickled = pickle.loads(pickled)
         self.assertEqual(s, unpickled)
+
+    def test_slice_repr(self) -> None:
+        s = Slice(offset=0, sizes=[2, 3], strides=[3, 1])
+        self.assertEqual(str(s), "Slice { offset: 0, sizes: [2, 3], strides: [3, 1] }")
+        self.assertEqual(repr(s), "Slice { offset: 0, sizes: [2, 3], strides: [3, 1] }")
+
+
+class TestShape(TestCase):
+    def test_shape_repr(self) -> None:
+        s = Slice(offset=0, sizes=[2, 3], strides=[3, 1])
+        shape = Shape(["label0", "label1"], s)
+        self.assertEqual(str(shape), "{label0=2,label1=3}")
+        self.assertEqual(
+            repr(shape),
+            'Shape { labels: ["label0", "label1"], slice: Slice { offset: 0, sizes: [2, 3], strides: [3, 1] } }',
+        )

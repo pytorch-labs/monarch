@@ -82,6 +82,8 @@ class Slice:
         """Returns a list of slices that cover the given list of ranks."""
         ...
 
+    def __repr__(self) -> str: ...
+
 @final
 class Shape:
     """
@@ -100,6 +102,7 @@ class Shape:
         """The labels for each dimension of ndslice (e.g. "host", "gpu")"""
         ...
     def __str__(self) -> str: ...
+    def __repr__(self) -> str: ...
     def coordinates(self, rank: int) -> Dict[str, int]:
         """
         Get the coordinates (e.g. {gpu:0, host:3}) where rank `rank` occurs in this shape.
