@@ -12,7 +12,6 @@ from traceback import extract_tb, StackSummary
 from typing import (
     Any,
     AsyncGenerator,
-    Awaitable,
     Callable,
     cast,
     Concatenate,
@@ -30,11 +29,13 @@ from typing import (
     TypeVar,
 )
 
+import monarch
+
 import monarch._monarch.hyperactor as hyperactor
 from monarch.common.pickle_flatten import flatten, unflatten
 from monarch.common.shape import MeshTrait, NDSlice, Shape
 
-Allocator = hyperactor.ProcessAllocator | hyperactor.LocalAllocator
+Allocator = monarch.ProcessAllocator | monarch.LocalAllocator
 
 try:
     from __manifest__ import fbmake  # noqa

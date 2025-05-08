@@ -8,20 +8,23 @@ use hyperactor_mesh::alloc::LocalAllocator;
 use hyperactor_mesh::alloc::ProcessAllocator;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
-use pyo3::types::PyType;
 use tokio::process::Command;
 
-#[pyclass(name = "LocalAllocator", module = "monarch._monarch.hyperactor")]
+#[pyclass(
+    name = "LocalAllocatorBase",
+    module = "monarch._monarch.hyperactor",
+    subclass
+)]
 pub struct PyLocalAllocator;
 
 #[pymethods]
 impl PyLocalAllocator {
-    #[classmethod]
-    fn allocate<'py>(
-        _cls: &Bound<'_, PyType>,
-        py: Python<'py>,
-        spec: &PyAllocSpec,
-    ) -> PyResult<Bound<'py, PyAny>> {
+    #[new]
+    fn new() -> Self {
+        PyLocalAllocator {}
+    }
+
+    fn allocate<'py>(&self, py: Python<'py>, spec: &PyAllocSpec) -> PyResult<Bound<'py, PyAny>> {
         // We could use Bound here, and acquire the GIL inside of `future_into_py`, but
         // it is rather awkward with the current APIs, and we can anyway support Arc/Mutex
         // pretty easily.
@@ -36,7 +39,11 @@ impl PyLocalAllocator {
     }
 }
 
-#[pyclass(name = "ProcessAllocator", module = "monarch._monarch.hyperactor")]
+#[pyclass(
+    name = "ProcessAllocatorBase",
+    module = "monarch._monarch.hyperactor",
+    subclass
+)]
 pub struct PyProcessAllocator {
     inner: Arc<tokio::sync::Mutex<ProcessAllocator>>,
 }

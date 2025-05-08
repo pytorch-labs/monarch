@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from monarch import timer
+    from monarch.allocator import LocalAllocator, ProcessAllocator
     from monarch.common._coalescing import coalescing
 
     from monarch.common.device_mesh import (
@@ -97,6 +98,8 @@ _public_api = {
     "Simulator": ("monarch.simulator.interface", "Simulator"),
     "world_mesh": ("monarch.world_mesh", "world_mesh"),
     "timer": ("monarch.timer", "timer"),
+    "ProcessAllocator": ("monarch.allocator", "ProcessAllocator"),
+    "LocalAllocator": ("monarch.allocator", "LocalAllocator"),
 }
 
 
@@ -161,5 +164,7 @@ __all__ = [
     "Simulator",
     "world_mesh",
     "timer",
+    "ProcessAllocator",
+    "LocalAllocator",
 ]
 assert sorted(__all__) == sorted(_public_api)

@@ -10,6 +10,8 @@ import time
 from asyncio import AbstractEventLoop
 from typing import Any
 
+import monarch
+
 from monarch._monarch import hyperactor
 
 
@@ -78,14 +80,16 @@ def test_no_hang_on_shutdown() -> None:
 async def test_allocator() -> None:
     hyperactor.init_asyncio_loop()
     spec = hyperactor.AllocSpec(hyperactor.AllocConstraints(), replica=2)
-    _ = await hyperactor.LocalAllocator.allocate(spec)
+    allocator = monarch.LocalAllocator()
+    _ = await allocator.allocate(spec)
 
 
 @run_async
 async def test_proc_mesh() -> None:
     hyperactor.init_asyncio_loop()
     spec = hyperactor.AllocSpec(hyperactor.AllocConstraints(), replica=2)
-    alloc = await hyperactor.LocalAllocator.allocate(spec)
+    allocator = monarch.LocalAllocator()
+    alloc = await allocator.allocate(spec)
     proc_mesh = await hyperactor.ProcMesh.allocate(alloc)
     assert str(proc_mesh) == "<ProcMesh { shape: {replica=2} }>"
 
@@ -94,7 +98,8 @@ async def test_proc_mesh() -> None:
 async def test_actor_mesh() -> None:
     hyperactor.init_asyncio_loop()
     spec = hyperactor.AllocSpec(hyperactor.AllocConstraints(), replica=2)
-    alloc = await hyperactor.LocalAllocator.allocate(spec)
+    allocator = monarch.LocalAllocator()
+    alloc = await allocator.allocate(spec)
     proc_mesh = await hyperactor.ProcMesh.allocate(alloc)
     actor_mesh = await proc_mesh.spawn("test", MyActor)
     actor_mesh.cast(hyperactor.PythonMessage("hello", b"world"))
@@ -113,7 +118,7 @@ async def test_proc_mesh_process_allocator() -> None:
     cmd = importlib.resources.files("monarch.python.tests._monarch").joinpath(
         "bootstrap"
     )
-    allocator = hyperactor.ProcessAllocator(str(cmd))
+    allocator = monarch.ProcessAllocator(str(cmd))
     alloc = await allocator.allocate(spec)
     proc_mesh = await hyperactor.ProcMesh.allocate(alloc)
     actor_mesh = await proc_mesh.spawn("test", MyActor)

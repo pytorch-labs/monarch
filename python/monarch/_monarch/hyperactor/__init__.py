@@ -26,8 +26,8 @@ OncePortReceiver = hyperactor.OncePortReceiver
 AllocConstraints = hyperactor.AllocConstraints
 AllocSpec = hyperactor.AllocSpec
 Alloc = hyperactor.Alloc
-ProcessAllocator = hyperactor.ProcessAllocator
-LocalAllocator = hyperactor.LocalAllocator
+ProcessAllocatorBase = hyperactor.ProcessAllocatorBase
+LocalAllocatorBase = hyperactor.LocalAllocatorBase
 
 ProcMesh = hyperactor.ProcMesh
 PythonActorMesh = hyperactor.PythonActorMesh

@@ -469,8 +469,7 @@ class AllocSpec:
         """
         ...
 
-@final
-class ProcessAllocator:
+class ProcessAllocatorBase:
     def __init__(
         self,
         program: str,
@@ -497,10 +496,8 @@ class ProcessAllocator:
         """
         ...
 
-@final
-class LocalAllocator:
-    @classmethod
-    async def allocate(cls, spec: AllocSpec) -> Alloc:
+class LocalAllocatorBase:
+    async def allocate(self, spec: AllocSpec) -> Alloc:
         """
         Allocate a process according to the provided spec.
 
