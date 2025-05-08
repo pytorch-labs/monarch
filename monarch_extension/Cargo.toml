@@ -25,6 +25,6 @@ monarch_types = { path = "../monarch_types" }
 monarch_worker = { path = "../monarch_worker" }
 nccl-sys = { path = "../nccl-sys" }
 pyo3 = { version = "0.22.6", features = ["anyhow"] }
-tokio = { version = "1.41.0", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.44.2", features = ["full", "test-util", "tracing"] }
 torch-sys = { path = "../torch-sys" }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
