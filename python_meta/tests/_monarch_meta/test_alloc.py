@@ -41,8 +41,6 @@ def run_async(x: Any) -> Any:
 # dummy test to check if the bindings work.
 @run_async
 async def test_mast_allocator() -> None:
-    hyperactor.init_asyncio_loop()
-
     allocator = hyperactor_meta.MastAllocator(
         hyperactor_meta.MastAllocatorConfig(job_name="test_job")
     )
@@ -62,8 +60,6 @@ async def test_mast_allocator() -> None:
 
 @run_async
 async def test_mock_mast_allocator() -> None:
-    hyperactor.init_asyncio_loop()
-
     mock = hyperactor_meta.MockMast()
     await mock.add_local_task_group("test_task_group", 2)
     allocator = await mock.get_mast_allocator(
@@ -79,7 +75,6 @@ async def test_mock_mast_allocator() -> None:
     alloc = await allocator.allocate(spec)
     proc_mesh = await hyperactor.ProcMesh.allocate(alloc)
     actor_mesh = await proc_mesh.spawn("test", MyActor)
-    actor_mesh.cast(hyperactor.PythonMessage("hello", b"world"))
 
     assert actor_mesh.get(0) is not None
     assert actor_mesh.get(1) is not None

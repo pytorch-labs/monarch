@@ -21,7 +21,6 @@ pub fn init_pymodule(module: &Bound<'_, PyModule>) -> PyResult<()> {
     let hyperactor_mod = PyModule::new_bound(module.py(), "hyperactor")?;
 
     hyperactor_mod.add_function(wrap_pyfunction!(proc::init_proc, &hyperactor_mod)?)?;
-    hyperactor_mod.add_function(wrap_pyfunction!(actor::init_asyncio_loop, &hyperactor_mod)?)?;
     hyperactor_mod.add_function(wrap_pyfunction!(
         bootstrap::bootstrap_main,
         &hyperactor_mod

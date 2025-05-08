@@ -8,7 +8,6 @@ import os
 
 
 async def main():
-    hyperactor.init_asyncio_loop()
     await hyperactor.bootstrap_main()
 
 

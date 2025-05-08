@@ -4,7 +4,6 @@ import abc
 from .._lib import hyperactor  # @manual=//monarch/monarch_extension:monarch_extension
 
 init_proc = hyperactor.init_proc
-init_asyncio_loop = hyperactor.init_asyncio_loop
 
 ActorId = hyperactor.ActorId
 ActorHandle = hyperactor.PythonActorHandle
@@ -50,7 +49,6 @@ class Actor(abc.ABC):
 
 __all__ = [
     "init_proc",
-    "init_asyncio_loop",
     "Actor",
     "ActorId",
     "ActorHandle",

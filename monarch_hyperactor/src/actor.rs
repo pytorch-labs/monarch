@@ -229,6 +229,36 @@ impl Actor for PythonActor {
     }
 }
 
+/// Get the event loop state to run PythonActor handlers in. We construct a
+/// fresh event loop in its own thread for us to schedule this work onto, to
+/// avoid disturbing any event loops that the user might be running.
+fn get_task_locals(py: Python) -> &'static pyo3_async_runtimes::TaskLocals {
+    static TASK_LOCALS: OnceLock<pyo3_async_runtimes::TaskLocals> = OnceLock::new();
+
+    // Temporarily release the GIL (as the thread we are about to create needs it).
+    Python::allow_threads(py, || {
+        TASK_LOCALS.get_or_init(|| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _ = std::thread::spawn(move || {
+                Python::with_gil(|py| {
+                    let asyncio = Python::import_bound(py, "asyncio").unwrap();
+                    let event_loop = asyncio.call_method0("new_event_loop").unwrap();
+                    asyncio
+                        .call_method1("set_event_loop", (event_loop.clone(),))
+                        .unwrap();
+
+                    let task_locals = pyo3_async_runtimes::TaskLocals::new(event_loop.clone())
+                        .copy_context(py)
+                        .unwrap();
+                    tx.send(task_locals).unwrap();
+                    event_loop.call_method0("run_forever").unwrap();
+                });
+            });
+            rx.recv().unwrap()
+        })
+    })
+}
+
 #[async_trait]
 impl Handler<PythonMessage> for PythonActor {
     async fn handle(
@@ -248,11 +278,11 @@ impl Handler<PythonMessage> for PythonActor {
             if awaitable.is_none(py) {
                 return Ok(None);
             }
-            let task_locals = TASK_LOCALS
-                .get()
-                .ok_or_else(|| PyRuntimeError::new_err("init_asyncio_loop not called"))?;
-            pyo3_async_runtimes::into_future_with_locals(task_locals, awaitable.into_bound(py))
-                .map(Some)
+            pyo3_async_runtimes::into_future_with_locals(
+                get_task_locals(py),
+                awaitable.into_bound(py),
+            )
+            .map(Some)
         })?;
         if let Some(future) = future {
             future.await?;
@@ -289,25 +319,15 @@ impl Handler<Cast<PythonMessage>> for PythonActor {
             if awaitable.is_none(py) {
                 return Ok(None);
             }
-            let task_locals = TASK_LOCALS
-                .get()
-                .ok_or_else(|| PyRuntimeError::new_err("init_asyncio_loop not called"))?;
-            pyo3_async_runtimes::into_future_with_locals(task_locals, awaitable.into_bound(py))
-                .map(Some)
+            pyo3_async_runtimes::into_future_with_locals(
+                get_task_locals(py),
+                awaitable.into_bound(py),
+            )
+            .map(Some)
         })?;
         if let Some(future) = future {
             future.await?;
         }
         Ok(())
     }
-}
-
-static TASK_LOCALS: OnceLock<pyo3_async_runtimes::TaskLocals> = OnceLock::new();
-
-#[pyfunction]
-#[pyo3(signature = ())]
-pub fn init_asyncio_loop(py: Python<'_>) -> PyResult<()> {
-    let _ =
-        TASK_LOCALS.set(pyo3_async_runtimes::TaskLocals::with_running_loop(py)?.copy_context(py)?);
-    Ok(())
 }

@@ -55,11 +55,7 @@ class ProcMesh:
         return cast(T, service)
 
 
-init_asyncio_loop: Any = cache(hyperactor.init_asyncio_loop)
-
-
 async def local_proc_mesh(*, gpus: Optional[int] = None, hosts: int = 1) -> ProcMesh:
-    init_asyncio_loop()
     if gpus is None:
         gpus = _local_device_count()
     spec = hyperactor.AllocSpec(hyperactor.AllocConstraints(), gpus=gpus, hosts=hosts)
@@ -89,7 +85,6 @@ def _get_bootstrap_args() -> tuple[str, Optional[list[str]], dict[str, str]]:
 async def proc_mesh(
     *, gpus: Optional[int] = None, hosts: int = 1, env: Optional[dict[str, str]] = None
 ) -> ProcMesh:
-    init_asyncio_loop()
     if gpus is None:
         gpus = _local_device_count()
     spec = hyperactor.AllocSpec(hyperactor.AllocConstraints(), gpus=gpus, hosts=hosts)

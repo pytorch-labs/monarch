@@ -21,7 +21,6 @@ class MyActor(Actor):
 
 
 async def main() -> None:
-    hyperactor.init_asyncio_loop()
     proc = hyperactor.Proc()
     print(proc.world_name)
     actor_handle = await proc.spawn(MyActor)

@@ -42,15 +42,6 @@ def init_proc(
     - `timeout`: Number of seconds to wait to successfully connect to the system.
     """
     ...
-
-def init_asyncio_loop() -> None:
-    """
-    Sets the asyncio loop used by hyperactor to dispatch actor handlers.
-    Must be called before any actor dispatches occur.
-
-    This is a temporary workaround until we change our dispatch logic.
-    """
-    ...
 @final
 class Serialized:
     """
