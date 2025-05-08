@@ -49,7 +49,6 @@ use monarch_messages::debugger::DebuggerAction;
 use monarch_messages::worker::Ref;
 use monarch_messages::worker::WorkerActor;
 use monarch_messages::worker::WorkerMessage;
-use monarch_messages::worker::WorkerMessageClient;
 use ndslice::Selection;
 use ndslice::Slice;
 use ndslice::selection::dsl;
@@ -200,13 +199,20 @@ impl ControllerActor {
                         && last_requested_seq != expected_seq
                 },
             ) {
-                for worker in
-                    (0..self.history.world_size()).map(|rank| self.worker_gang_ref.rank(rank))
-                {
-                    let _ = worker
-                        .request_status(this, expected_seq.clone(), true)
-                        .await;
-                }
+                // Send to all workers.
+                self.send(
+                    this,
+                    Ranks::Slice(
+                        ndslice::Slice::new(0, vec![self.history.world_size()], vec![1]).unwrap(),
+                    ),
+                    Serialized::serialize(&WorkerMessage::RequestStatus {
+                        seq: expected_seq.clone(),
+                        controller: true,
+                    })
+                    .unwrap(),
+                )
+                .await?;
+
                 self.last_controller_request_status =
                     Some((expected_seq.clone(), this.clock().now()));
             }
@@ -580,7 +586,6 @@ mod tests {
     use hyperactor::reference::ProcId;
     use hyperactor::reference::WorldId;
     use hyperactor_mesh::comm::CommActorParams;
-    use hyperactor_mesh::comm::multicast::CastMessage;
     use hyperactor_multiprocess::System;
     use hyperactor_multiprocess::proc_actor::ProcMessage;
     use hyperactor_multiprocess::supervision::ProcSupervisionMessage;
@@ -896,10 +901,14 @@ mod tests {
         let (client, client_ref, mut client_rx) = proc
             .attach_actor::<ClientActor, ClientMessage>("client")
             .unwrap();
-        let (_comm_actor, comm_actor_ref, mut _comm_actor_rx) =
-            proc.attach_actor::<CommActor, CastMessage>("comm").unwrap();
+
         let (worker, worker_ref, mut worker_rx) = proc
             .attach_actor::<WorkerActor, WorkerMessage>("worker")
+            .unwrap();
+
+        let comm_handle = proc
+            .spawn::<CommActor>("comm", CommActorParams {})
+            .await
             .unwrap();
 
         let world_id = WorldId(proc.proc_id().world_name().to_string());
@@ -908,7 +917,7 @@ mod tests {
                 "controller",
                 ControllerParams {
                     world_size: 1,
-                    comm_actor_ref,
+                    comm_actor_ref: comm_handle.bind(),
                     worker_gang_ref: GangId(world_id, "worker".to_string()).into(),
                     supervision_query_interval: Duration::from_secs(100000),
                     worker_progress_check_interval: Duration::from_secs(1),
