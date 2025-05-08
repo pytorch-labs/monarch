@@ -80,7 +80,7 @@ pub struct CastMessage {
 #[derive(Serialize, Deserialize, Debug, Clone, Named)]
 pub(crate) struct ForwardMessage {
     /// The destination of the message.
-    pub(crate) dest: RoutingFrame,
+    pub(crate) dests: Vec<RoutingFrame>,
     /// The message to distribute.
     pub(crate) message: CastMessageEnvelope,
 }

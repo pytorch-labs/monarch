@@ -1,13 +1,12 @@
 pub mod multicast;
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Debug;
 use std::ops::ControlFlow;
 
 use anyhow::Result;
-use anyhow::ensure;
 use async_trait::async_trait;
-use futures::future::try_join_all;
 use hyperactor::Actor;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
@@ -46,11 +45,11 @@ impl Actor for CommActor {
 
 impl CommActor {
     /// Forward the message to the comm actor on the given peer rank.
-    async fn forward_single(
+    fn forward_single(
         &self,
         this: &Instance<Self>,
         rank: usize,
-        dest: RoutingFrame,
+        dests: Vec<RoutingFrame>,
         message: CastMessageEnvelope,
     ) -> Result<()> {
         let world_id = message.dest_port.gang_id.world_id();
@@ -58,29 +57,68 @@ impl CommActor {
         let actor_id = ActorId::root(proc_id, this.self_id().name().to_string());
         let comm_actor = ActorRef::<CommActor>::attest(actor_id);
         let port = comm_actor.port::<ForwardMessage>();
-        port.send(this, ForwardMessage { dest, message })?;
+        port.send(this, ForwardMessage { dests, message })?;
         Ok(())
     }
 
-    /// Forward a message to a set of peer nodes.
-    async fn forward(
+    fn get_next_hops(&self, dest: RoutingFrame) -> Result<Vec<RoutingFrame>> {
+        let mut seen = HashSet::new();
+        let mut unique_hops = vec![];
+        dest.next_steps(
+            &mut |_| panic!("Choice encountered in CommActor routing"),
+            &mut |step| {
+                if let RoutingStep::Forward(frame) = step {
+                    let key = RoutingFrameKey::new(
+                        frame.here.clone(),
+                        frame.dim,
+                        NormalizedSelectionKey::new(&frame.selection),
+                    );
+                    if seen.insert(key) {
+                        unique_hops.push(frame);
+                    }
+                }
+                ControlFlow::Continue(())
+            },
+        );
+        Ok(unique_hops)
+    }
+
+    // Recursively resolve next hops for the given routing frame for the given
+    // rank, returning a tuple of whether to deliver to the current node and
+    // frames to forward to peer ranks.
+    fn resolve_routing_one(
         &self,
-        this: &Instance<Self>,
-        ranks: impl IntoIterator<Item = RoutingFrame> + Debug,
-        message: &CastMessageEnvelope,
+        rank: usize,
+        frame: RoutingFrame,
+        deliver_here: &mut bool,
+        next_hops: &mut HashMap<usize, Vec<RoutingFrame>>,
     ) -> Result<()> {
-        try_join_all(
-            ranks
-                .into_iter()
-                .map(async |dest| {
-                    self.forward_single(this, dest.location().unwrap(), dest, message.clone())
-                        .await
-                })
-                // Don't short-circuit, but still propagate errors.
-                .collect::<Vec<_>>(),
-        )
-        .await?;
+        let frame_rank = frame.slice.location(&frame.here)?;
+        if frame_rank == rank {
+            if frame.deliver_here() {
+                *deliver_here = true;
+            } else {
+                for frame in self.get_next_hops(frame)?.into_iter() {
+                    self.resolve_routing_one(rank, frame, deliver_here, next_hops)?;
+                }
+            }
+        } else {
+            next_hops.entry(frame_rank).or_default().push(frame);
+        }
         Ok(())
+    }
+
+    fn resolve_routing(
+        &self,
+        rank: usize,
+        frames: impl IntoIterator<Item = RoutingFrame> + Debug,
+    ) -> Result<(bool, HashMap<usize, Vec<RoutingFrame>>)> {
+        let mut deliver_here = false;
+        let mut next_hops = HashMap::new();
+        for frame in frames.into_iter() {
+            self.resolve_routing_one(rank, frame, &mut deliver_here, &mut next_hops)?;
+        }
+        Ok((deliver_here, next_hops))
     }
 }
 
@@ -92,9 +130,8 @@ impl Handler<CastMessage> for CommActor {
         let slice = cast_message.dest.slice.clone();
         let selection = cast_message.dest.selection.clone();
         let frame = RoutingFrame::root(selection, slice);
-
-        self.forward(this, [frame].into_iter(), &cast_message.message)
-            .await?;
+        let rank = frame.slice.location(&frame.here)?;
+        self.forward_single(this, rank, vec![frame], cast_message.message)?;
         Ok(())
     }
 }
@@ -102,49 +139,25 @@ impl Handler<CastMessage> for CommActor {
 #[async_trait]
 impl Handler<ForwardMessage> for CommActor {
     async fn handle(&mut self, this: &Instance<Self>, fwd_message: ForwardMessage) -> Result<()> {
-        // Ensure we're handling a message for the correct rank
-        let rank = fwd_message
-            .dest
-            .slice
-            .location(&fwd_message.dest.here)
-            .unwrap();
-        ensure!(
-            fwd_message.message.dest_port.gang_id.world_id() == this.self_id().proc_id().world_id()
-        );
-        ensure!(rank == this.self_id().proc_id().rank());
+        let ForwardMessage { dests, message } = fwd_message;
 
-        if fwd_message.dest.deliver_here() {
+        // Resolve/dedup routing frames.
+        let rank = this.self_id().proc_id().rank();
+        let (deliver_here, next_hops) = self.resolve_routing(rank, dests)?;
+
+        // Deliever message here, if necessary.
+        if deliver_here {
             this.post(
-                fwd_message
-                    .message
-                    .dest_port
-                    .port_id(this.self_id().proc_id().rank()),
-                fwd_message.message.data.clone(),
+                message.dest_port.port_id(this.self_id().proc_id().rank()),
+                message.data.clone(),
             );
-        } else {
-            let mut seen = HashSet::new();
-            let mut unique_hops = vec![];
-
-            fwd_message.dest.next_steps(
-                &mut |_| panic!("Choice encountered in CommActor routing"),
-                &mut |step| {
-                    if let RoutingStep::Forward(frame) = step {
-                        let key = RoutingFrameKey::new(
-                            frame.here.clone(),
-                            frame.dim,
-                            NormalizedSelectionKey::new(&frame.selection),
-                        );
-                        if seen.insert(key) {
-                            unique_hops.push(frame);
-                        }
-                    }
-                    ControlFlow::Continue(())
-                },
-            );
-
-            self.forward(this, unique_hops.into_iter(), &fwd_message.message)
-                .await?;
         }
+
+        // Forward to peers.
+        next_hops
+            .into_iter()
+            .map(|(peer, dests)| self.forward_single(this, peer, dests, message.clone()))
+            .collect::<Result<Vec<_>>>()?;
 
         Ok(())
     }
