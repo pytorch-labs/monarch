@@ -10,6 +10,7 @@ use pyo3::types::PyType;
 
 use crate::actor_mesh::PythonActorMesh;
 use crate::mailbox::PyMailbox;
+use crate::runtime::signal_safe_block_on;
 
 #[pyclass(name = "ProcMesh", module = "monarch._monarch.hyperactor")]
 pub struct PyProcMesh {
@@ -35,6 +36,25 @@ fn allocate_proc_mesh<'py>(py: Python<'py>, alloc: &PyAlloc) -> PyResult<Bound<'
     })
 }
 
+fn allocate_proc_mesh_blocking<'py>(py: Python<'py>, alloc: &PyAlloc) -> PyResult<PyProcMesh> {
+    let alloc = match alloc.take() {
+        Some(alloc) => alloc,
+        None => {
+            return Err(PyException::new_err(
+                "Alloc object already been used".to_string(),
+            ));
+        }
+    };
+    signal_safe_block_on(py, async move {
+        let mesh = ProcMesh::allocate(alloc)
+            .await
+            .map_err(|err| PyException::new_err(err.to_string()))?;
+        Ok(PyProcMesh {
+            inner: Arc::new(mesh),
+        })
+    })?
+}
+
 #[pymethods]
 impl PyProcMesh {
     #[classmethod]
@@ -44,6 +64,15 @@ impl PyProcMesh {
         alloc: &PyAlloc,
     ) -> PyResult<Bound<'py, PyAny>> {
         allocate_proc_mesh(py, alloc)
+    }
+
+    #[classmethod]
+    fn allocate_blocking<'py>(
+        _cls: &Bound<'_, PyType>,
+        py: Python<'py>,
+        alloc: &PyAlloc,
+    ) -> PyResult<PyProcMesh> {
+        allocate_proc_mesh_blocking(py, alloc)
     }
 
     fn spawn<'py>(
@@ -64,6 +93,26 @@ impl PyProcMesh {
             };
             Ok(Python::with_gil(|py| python_actor_mesh.into_py(py)))
         })
+    }
+
+    fn spawn_blocking<'py>(
+        &self,
+        py: Python<'py>,
+        name: String,
+        actor: &Bound<'py, PyType>,
+    ) -> PyResult<PyObject> {
+        let pickled_type = PickledPyObject::pickle(actor.as_any())?;
+        let proc_mesh = Arc::clone(&self.inner);
+        signal_safe_block_on(py, async move {
+            let actor_mesh = proc_mesh.spawn(&name, &pickled_type).await?;
+            let python_actor_mesh = PythonActorMesh {
+                inner: Arc::new(actor_mesh),
+                client: PyMailbox {
+                    inner: proc_mesh.client().clone(),
+                },
+            };
+            Ok(Python::with_gil(|py| python_actor_mesh.into_py(py)))
+        })?
     }
 
     #[getter]

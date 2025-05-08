@@ -10,6 +10,8 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use tokio::process::Command;
 
+use crate::runtime::signal_safe_block_on;
+
 #[pyclass(
     name = "LocalAllocatorBase",
     module = "monarch._monarch.hyperactor",
@@ -36,6 +38,20 @@ impl PyLocalAllocator {
                 .map(|inner| PyAlloc::new(Box::new(inner)))
                 .map_err(|e| PyRuntimeError::new_err(format!("{:?}", e)))
         })
+    }
+
+    fn allocate_blocking<'py>(&self, py: Python<'py>, spec: &PyAllocSpec) -> PyResult<PyAlloc> {
+        // We could use Bound here, and acquire the GIL inside of
+        // `signal_safe_block_on`, but it is rather awkward with the current
+        // APIs, and we can anyway support Arc/Mutex pretty easily.
+        let spec = spec.inner.clone();
+        signal_safe_block_on(py, async move {
+            LocalAllocator
+                .allocate(spec)
+                .await
+                .map(|inner| PyAlloc::new(Box::new(inner)))
+                .map_err(|e| PyRuntimeError::new_err(format!("{:?}", e)))
+        })?
     }
 }
 
@@ -80,5 +96,22 @@ impl PyProcessAllocator {
                 .map(|inner| PyAlloc::new(Box::new(inner)))
                 .map_err(|e| PyRuntimeError::new_err(format!("{:?}", e)))
         })
+    }
+
+    fn allocate_blocking<'py>(&self, py: Python<'py>, spec: &PyAllocSpec) -> PyResult<PyAlloc> {
+        // We could use Bound here, and acquire the GIL inside of
+        // `signal_safe_block_on`, but it is rather awkward with the current
+        // APIs, and we can anyway support Arc/Mutex pretty easily.
+        let instance = Arc::clone(&self.inner);
+        let spec = spec.inner.clone();
+        signal_safe_block_on(py, async move {
+            instance
+                .lock()
+                .await
+                .allocate(spec)
+                .await
+                .map(|inner| PyAlloc::new(Box::new(inner)))
+                .map_err(|e| PyRuntimeError::new_err(format!("{:?}", e)))
+        })?
     }
 }

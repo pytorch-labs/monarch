@@ -496,10 +496,30 @@ class ProcessAllocatorBase:
         """
         ...
 
+    def allocate_blocking(self, spec: AllocSpec) -> Alloc:
+        """
+        Allocate a process according to the provided spec, blocking until an
+        alloc is returned.
+
+        Arguments:
+        - `spec`: The spec to allocate according to.
+        """
+        ...
+
 class LocalAllocatorBase:
     async def allocate(self, spec: AllocSpec) -> Alloc:
         """
         Allocate a process according to the provided spec.
+
+        Arguments:
+        - `spec`: The spec to allocate according to.
+        """
+        ...
+
+    def allocate_blocking(self, spec: AllocSpec) -> Alloc:
+        """
+        Allocate a process according to the provided spec, blocking until an
+        alloc is returned.
 
         Arguments:
         - `spec`: The spec to allocate according to.
@@ -519,9 +539,30 @@ class ProcMesh:
         """
         ...
 
+    @classmethod
+    def allocate_blocking(self, alloc: Alloc) -> ProcMesh:
+        """
+        Allocate a process mesh according to the provided alloc.
+        Blocks until the mesh is fully allocated.
+
+        Arguments:
+        - `alloc`: The alloc to allocate according to.
+        """
+        ...
+
     async def spawn(self, name: str, actor: Type[Actor]) -> PythonActorMesh:
         """
         Spawn a new actor on this mesh.
+
+        Arguments:
+        - `name`: Name of the actor.
+        - `actor`: The type of the actor that will be spawned.
+        """
+        ...
+
+    async def spawn_blocking(self, name: str, actor: Type[Actor]) -> PythonActorMesh:
+        """
+        Spawn a new actor on this mesh. Blocks until the actor is fully spawned.
 
         Arguments:
         - `name`: Name of the actor.

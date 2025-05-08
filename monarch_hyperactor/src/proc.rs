@@ -134,6 +134,24 @@ impl PyProc {
             })
         })
     }
+
+    #[pyo3(signature = (actor, name=None))]
+    fn spawn_blocking<'py>(
+        &self,
+        py: Python<'py>,
+        actor: &Bound<'py, PyType>,
+        name: Option<String>,
+    ) -> PyResult<PythonActorHandle> {
+        let proc = self.inner.clone();
+        let pickled_type = PickledPyObject::pickle(actor.as_any())?;
+        Ok(PythonActorHandle {
+            inner: signal_safe_block_on(py, async move {
+                proc.spawn(name.as_deref().unwrap_or("anon"), pickled_type)
+                    .await
+            })
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))??,
+        })
+    }
 }
 
 impl PyProc {
