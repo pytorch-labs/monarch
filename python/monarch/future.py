@@ -13,7 +13,7 @@ class ActorFuture(Generic[R]):
     def get(self) -> R:
         if self._blocking_impl is not None:
             return self._blocking_impl()
-        return asyncio.run(self._impl)
+        return asyncio.run(self._impl())
 
     def __await__(self):
-        return self._impl.__await__()
+        return self._impl().__await__()

@@ -27,7 +27,8 @@ class ProcessAllocator(ProcessAllocatorBase):
         - A future that will be fulfilled when the requested allocation is fulfilled.
         """
         return Future(
-            self.allocate_nonblocking(spec), lambda spec: self.allocate_blocking(spec)
+            lambda: self.allocate_nonblocking(spec),
+            lambda: self.allocate_blocking(spec),
         )
 
 
@@ -48,5 +49,6 @@ class LocalAllocator(LocalAllocatorBase):
         - A future that will be fulfilled when the requested allocation is fulfilled.
         """
         return Future(
-            self.allocate_nonblocking(spec), lambda spec: self.allocate_blocking(spec)
+            lambda: self.allocate_nonblocking(spec),
+            lambda: self.allocate_blocking(spec),
         )

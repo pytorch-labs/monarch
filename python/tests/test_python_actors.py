@@ -309,3 +309,41 @@ async def test_sync_actor():
     c = await proc.spawn("counter", Counter, 5)
     r = await a.sync_endpoint(c).choose()
     assert r == 5
+
+
+def test_gpu_trainer_generator_sync() -> None:
+    trainer_proc = proc_mesh(gpus=1).get()
+    gen_proc = proc_mesh(gpus=1).get()
+    trainer = trainer_proc.spawn("trainer", TrainerActor).get()
+    generator = gen_proc.spawn("gen", GeneratorActor).get()
+
+    generator.init(trainer).broadcast_and_wait().get()
+    trainer.init(generator).broadcast_and_wait().get()
+    trainer.exchange_metadata().broadcast_and_wait().get()
+
+    for _ in range(3):
+        trainer.weights_ready().broadcast_and_wait().get()
+        generator.update_weights().broadcast_and_wait().get()
+
+
+def test_sync_actor_sync_client():
+    proc = local_proc_mesh(gpus=2).get()
+    a = proc.spawn("actor", SyncActor).get()
+    c = proc.spawn("counter", Counter, 5).get()
+    r = a.sync_endpoint(c).choose().get()
+    assert r == 5
+
+
+def test_rank_size_sync() -> None:
+    proc = local_proc_mesh(gpus=2).get()
+    r = proc.spawn("runit", RunIt).get()
+    assert 1 == r.run(lambda: current_rank()["gpus"]).accumulate(0, operator.add).get()
+    assert 4 == r.run(lambda: current_size()["gpus"]).accumulate(0, operator.add).get()
+
+
+def test_accumulate_sync() -> None:
+    proc = local_proc_mesh(gpus=2).get()
+    counter = proc.spawn("counter", Counter, 1).get()
+    counter.incr().broadcast()
+    r = counter.value().accumulate(0, operator.add).get()
+    assert r == 4

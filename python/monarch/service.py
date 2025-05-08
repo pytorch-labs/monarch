@@ -295,7 +295,7 @@ class Message(Generic[P, R]):
                 value = combine(value, x)
             return value
 
-        return Future(impl())
+        return Future(lambda: impl())
 
     def broadcast_and_wait(self) -> Future[None]:
         """
@@ -363,7 +363,7 @@ class PortReceiver(Generic[R]):
             raise payload
 
     def recv(self) -> "Future[R]":
-        return Future(self._recv(), self._blocking_recv)
+        return Future(lambda: self._recv(), self._blocking_recv)
 
 
 singleton_shape = Shape([], NDSlice(offset=0, sizes=[], strides=[]))

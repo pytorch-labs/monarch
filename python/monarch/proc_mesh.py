@@ -1,6 +1,5 @@
 import sys
 
-from functools import cache
 from typing import Any, cast, Optional, Type, TypeVar
 
 import monarch
@@ -37,14 +36,14 @@ class ProcMesh:
 
     def spawn(self, name: str, Class: Type[T], *args: Any, **kwargs: Any) -> Future[T]:
         return Future(
-            self._spawn_nonblocking(name, Class, *args, **kwargs),
+            lambda: self._spawn_nonblocking(name, Class, *args, **kwargs),
             lambda: self._spawn_blocking(name, Class, *args, **kwargs),
         )
 
     @classmethod
     def from_alloc(self, alloc: Alloc) -> Future["ProcMesh"]:
         return Future(
-            _allocate_nonblocking(alloc),
+            lambda: _allocate_nonblocking(alloc),
             lambda: _allocate_blocking(alloc),
         )
 
@@ -115,7 +114,7 @@ def local_proc_mesh_blocking(*, gpus: Optional[int] = None, hosts: int = 1) -> P
 
 def local_proc_mesh(*, gpus: Optional[int] = None, hosts: int = 1) -> Future[ProcMesh]:
     return Future(
-        local_proc_mesh_nonblocking(gpus=gpus, hosts=hosts),
+        lambda: local_proc_mesh_nonblocking(gpus=gpus, hosts=hosts),
         lambda: local_proc_mesh_blocking(gpus=gpus, hosts=hosts),
     )
 
@@ -172,6 +171,6 @@ def proc_mesh(
     *, gpus: Optional[int] = None, hosts: int = 1, env: Optional[dict[str, str]] = None
 ) -> Future[ProcMesh]:
     return Future(
-        proc_mesh_nonblocking(gpus=gpus, hosts=hosts, env=env),
+        lambda: proc_mesh_nonblocking(gpus=gpus, hosts=hosts, env=env),
         lambda: proc_mesh_blocking(gpus=gpus, hosts=hosts, env=env),
     )
