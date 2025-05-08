@@ -88,7 +88,7 @@ async def test_proc_mesh() -> None:
     spec = hyperactor.AllocSpec(hyperactor.AllocConstraints(), replica=2)
     allocator = monarch.LocalAllocator()
     alloc = await allocator.allocate(spec)
-    proc_mesh = await hyperactor.ProcMesh.allocate(alloc)
+    proc_mesh = await hyperactor.ProcMesh.allocate_nonblocking(alloc)
     assert str(proc_mesh) == "<ProcMesh { shape: {replica=2} }>"
 
 
@@ -97,8 +97,8 @@ async def test_actor_mesh() -> None:
     spec = hyperactor.AllocSpec(hyperactor.AllocConstraints(), replica=2)
     allocator = monarch.LocalAllocator()
     alloc = await allocator.allocate(spec)
-    proc_mesh = await hyperactor.ProcMesh.allocate(alloc)
-    actor_mesh = await proc_mesh.spawn("test", MyActor)
+    proc_mesh = await hyperactor.ProcMesh.allocate_nonblocking(alloc)
+    actor_mesh = await proc_mesh.spawn_nonblocking("test", MyActor)
 
     assert actor_mesh.get(0) is not None
     assert actor_mesh.get(1) is not None
@@ -115,8 +115,8 @@ async def test_proc_mesh_process_allocator() -> None:
     )
     allocator = monarch.ProcessAllocator(str(cmd))
     alloc = await allocator.allocate(spec)
-    proc_mesh = await hyperactor.ProcMesh.allocate(alloc)
-    actor_mesh = await proc_mesh.spawn("test", MyActor)
+    proc_mesh = await hyperactor.ProcMesh.allocate_nonblocking(alloc)
+    actor_mesh = await proc_mesh.spawn_nonblocking("test", MyActor)
 
     handle, receiver = actor_mesh.client.open_port()
     actor_mesh.cast(hyperactor.PythonMessage("hello", pickle.dumps(handle.bind())))

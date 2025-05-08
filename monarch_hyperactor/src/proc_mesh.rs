@@ -58,7 +58,7 @@ fn allocate_proc_mesh_blocking<'py>(py: Python<'py>, alloc: &PyAlloc) -> PyResul
 #[pymethods]
 impl PyProcMesh {
     #[classmethod]
-    fn allocate<'py>(
+    fn allocate_nonblocking<'py>(
         _cls: &Bound<'_, PyType>,
         py: Python<'py>,
         alloc: &PyAlloc,
@@ -75,7 +75,7 @@ impl PyProcMesh {
         allocate_proc_mesh_blocking(py, alloc)
     }
 
-    fn spawn<'py>(
+    fn spawn_nonblocking<'py>(
         &self,
         py: Python<'py>,
         name: String,
