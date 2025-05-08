@@ -24,12 +24,15 @@ pub mod selection;
 /// Core types for representing multidimensional shapes and strides.
 pub mod shape;
 
+/// Reshaping transformations for multidimensional slices and shapes.
+pub mod reshape;
+
 /// The selection expression type used to define routing constraints.
 pub use selection::Selection;
 /// DSL-style constructors for building `Selection` expressions.
 pub use selection::dsl;
-/// A range with optional end and step size, used in shape and
-/// selection expressions.
+/// Represents an interval with an optional end and step, used to
+/// define extents in `Shape` and coordinate filters in `Selection`.
 pub use shape::Range;
 /// Describes the size and layout of a multidimensional mesh.
 pub use shape::Shape;
