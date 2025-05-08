@@ -32,6 +32,7 @@ from typing import (
 import monarch
 
 import monarch._monarch.hyperactor as hyperactor
+from monarch import ActorFuture as Future
 from monarch.common.pickle_flatten import flatten, unflatten
 from monarch.common.shape import MeshTrait, NDSlice, Shape
 
@@ -251,7 +252,7 @@ class Message(Generic[P, R]):
         self._endpoint._actor_mesh.cast(message, selection)
         del self._args, self._kwargs
 
-    def choose(self) -> "Future[R]":
+    def choose(self) -> Future[R]:
         """
         Load balanced sends a message to one chosen actor and awaits a result.
 
@@ -261,7 +262,7 @@ class Message(Generic[P, R]):
         self.broadcast(selection="choose", port=port)
         return receiver.recv()
 
-    def call(self) -> "Future[R]":
+    def call(self) -> Future[R]:
         if self._endpoint._actor_mesh.len != 1:
             raise ValueError(
                 f"Can only use 'call' on a single Actor but this actor has shape {self._endpoint._actor_mesh._shape}"
@@ -285,7 +286,7 @@ class Message(Generic[P, R]):
         self,
         identity: A,
         combine: Callable[[A, R], A],
-    ) -> "Future[A]":
+    ) -> Future[A]:
         gen = self.stream()
 
         async def impl():
@@ -296,7 +297,7 @@ class Message(Generic[P, R]):
 
         return Future(impl())
 
-    def broadcast_and_wait(self) -> "Future[None]":
+    def broadcast_and_wait(self) -> Future[None]:
         """
         Broadcast to all actors and wait for each to acknowledge receipt.
 
@@ -363,20 +364,6 @@ class PortReceiver(Generic[R]):
 
     def recv(self) -> "Future[R]":
         return Future(self._recv(), self._blocking_recv)
-
-
-class Future(Generic[R]):
-    def __init__(self, impl, blocking_impl=None):
-        self._impl = impl
-        self._blocking_impl = blocking_impl
-
-    def get(self) -> R:
-        if self._blocking_impl is not None:
-            return self._blocking_impl()
-        return asyncio.run(self._impl)
-
-    def __await__(self):
-        return self._impl.__await__()
 
 
 singleton_shape = Shape([], NDSlice(offset=0, sizes=[], strides=[]))

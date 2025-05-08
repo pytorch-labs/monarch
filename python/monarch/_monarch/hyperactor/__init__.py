@@ -54,6 +54,8 @@ __all__ = [
     "Actor",
     "ActorId",
     "ActorHandle",
+    "Alloc",
+    "AllocSpec",
     "PortId",
     "Proc",
     "Serialized",

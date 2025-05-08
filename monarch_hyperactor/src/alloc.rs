@@ -26,7 +26,11 @@ impl PyLocalAllocator {
         PyLocalAllocator {}
     }
 
-    fn allocate<'py>(&self, py: Python<'py>, spec: &PyAllocSpec) -> PyResult<Bound<'py, PyAny>> {
+    fn allocate_nonblocking<'py>(
+        &self,
+        py: Python<'py>,
+        spec: &PyAllocSpec,
+    ) -> PyResult<Bound<'py, PyAny>> {
         // We could use Bound here, and acquire the GIL inside of `future_into_py`, but
         // it is rather awkward with the current APIs, and we can anyway support Arc/Mutex
         // pretty easily.
@@ -81,7 +85,11 @@ impl PyProcessAllocator {
         }
     }
 
-    fn allocate<'py>(&self, py: Python<'py>, spec: &PyAllocSpec) -> PyResult<Bound<'py, PyAny>> {
+    fn allocate_nonblocking<'py>(
+        &self,
+        py: Python<'py>,
+        spec: &PyAllocSpec,
+    ) -> PyResult<Bound<'py, PyAny>> {
         // We could use Bound here, and acquire the GIL inside of `future_into_py`, but
         // it is rather awkward with the current APIs, and we can anyway support Arc/Mutex
         // pretty easily.

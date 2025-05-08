@@ -3,8 +3,8 @@ import sys
 from functools import cache
 from typing import Any, Awaitable, cast, Optional, Type, TypeVar
 
+import monarch
 import monarch._monarch.hyperactor as hyperactor
-from monarch import LocalAllocator, ProcessAllocator
 
 from monarch.python_local_mesh import _local_device_count
 from monarch.rdma import RDMAManager
@@ -63,7 +63,7 @@ async def local_proc_mesh(*, gpus: Optional[int] = None, hosts: int = 1) -> Proc
     if gpus is None:
         gpus = _local_device_count()
     spec = hyperactor.AllocSpec(hyperactor.AllocConstraints(), gpus=gpus, hosts=hosts)
-    allocator = LocalAllocator()
+    allocator = monarch.LocalAllocator()
     alloc = await allocator.allocate(spec)
     return ProcMesh(await hyperactor.ProcMesh.allocate(alloc))
 
@@ -97,6 +97,6 @@ async def proc_mesh(
     cmd, args, base_env = _get_bootstrap_args()
     env.update(base_env)
     env["HYPERACTOR_MANAGED_SUBPROCESS"] = "1"
-    allocator = ProcessAllocator(cmd, args, env)
+    allocator = monarch.ProcessAllocator(cmd, args, env)
     alloc = await allocator.allocate(spec)
     return ProcMesh(await hyperactor.ProcMesh.allocate(alloc))

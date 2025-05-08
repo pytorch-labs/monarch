@@ -487,7 +487,7 @@ class ProcessAllocatorBase:
         """
         ...
 
-    async def allocate(self, spec: AllocSpec) -> Alloc:
+    async def allocate_nonblocking(self, spec: AllocSpec) -> Alloc:
         """
         Allocate a process according to the provided spec.
 
@@ -507,7 +507,7 @@ class ProcessAllocatorBase:
         ...
 
 class LocalAllocatorBase:
-    async def allocate(self, spec: AllocSpec) -> Alloc:
+    async def allocate_nonblocking(self, spec: AllocSpec) -> Alloc:
         """
         Allocate a process according to the provided spec.
 

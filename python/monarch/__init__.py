@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 # to the _public_api dict and __all__ list. These
 # entries will get loaded on demand.
 
+
 if TYPE_CHECKING:
     from monarch import timer
     from monarch.allocator import LocalAllocator, ProcessAllocator
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
     from monarch.common.stream import get_active_stream, Stream
     from monarch.common.tensor import reduce, reduce_, Tensor
     from monarch.fetch import fetch_shard, inspect, show
+    from monarch.future import ActorFuture
     from monarch.gradient_generator import grad_function, grad_generator
     from monarch.notebook import mast_mesh, reserve_torchx as mast_reserve
     from monarch.python_local_mesh import python_local_mesh
@@ -100,6 +102,7 @@ _public_api = {
     "timer": ("monarch.timer", "timer"),
     "ProcessAllocator": ("monarch.allocator", "ProcessAllocator"),
     "LocalAllocator": ("monarch.allocator", "LocalAllocator"),
+    "ActorFuture": ("monarch.future", "ActorFuture"),
 }
 
 
@@ -166,5 +169,6 @@ __all__ = [
     "timer",
     "ProcessAllocator",
     "LocalAllocator",
+    "ActorFuture",
 ]
 assert sorted(__all__) == sorted(_public_api)
