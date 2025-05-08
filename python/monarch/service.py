@@ -207,97 +207,43 @@ class Endpoint(Generic[P, R]):
         self._signature: inspect.Signature = inspect.signature(impl)
         self._mailbox = mailbox
 
-    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> "Message[P, R]":
-        self._signature.bind(None, *args, **kwargs)
-        return Message(self, args, kwargs)
-
-    def _port(self, once: bool) -> Tuple["Port", "PortReceiver[R]"]:
-        handle, receiver = (
-            self._mailbox.open_once_port() if once else self._mailbox.open_port()
-        )
-        port_id: hyperactor.PortId = handle.bind()
-        return Port(port_id, self._mailbox), PortReceiver(self._mailbox, receiver)
-
-
-class Message(Generic[P, R]):
-    def __init__(self, endpoint: Endpoint[P, R], args: object, kwargs: object):
-        self._endpoint = endpoint
-        self._used = False
-        self._args = args
-        self._kwargs = kwargs
-
-    def port(self, once: bool = False) -> Tuple["Port", "PortReceiver"]:
-        return self._endpoint._port(once)
-
-    def __del__(self):
-        if not self._used:
-            warnings.warn("This message was not used.", UserWarning, stacklevel=2)
-
-    def broadcast(
-        self, *, port: "Optional[Port]" = None, selection: Selection = "all"
-    ) -> None:
-        """
-        Fire-and-forget broadcast invocation of the endpoint across all actors in the mesh.
-
-        This sends the message to all actors but does not wait for any result.
-        """
-        if self._used:
-            raise ValueError(
-                "message has already been sent, create a new message to sent it a different way"
-            )
-        self._used = True
-        message = hyperactor.PythonMessage(
-            self._endpoint._name, _pickle((self._args, self._kwargs, port))
-        )
-        self._endpoint._actor_mesh.cast(message, selection)
-        del self._args, self._kwargs
-
-    def choose(self) -> Future[R]:
+    # the following are all 'adverbs' or different ways to handle the
+    # return values of this endpoint. Adverbs should only ever take *args, **kwargs
+    # of the original call. If we want to add syntax sugar for something that needs additional
+    # arguments, it should be implemented as function indepdendent of endpoint like `send`
+    # and `Accumulator`
+    def choose(self, *args: P.args, **kwargs: P.kwargs) -> Future[R]:
         """
         Load balanced sends a message to one chosen actor and awaits a result.
 
         Load balanced RPC-style entrypoint for request/response messaging.
         """
-        port, receiver = self.port(once=True)
-        self.broadcast(selection="choose", port=port)
-        return receiver.recv()
+        p, r = port(self, once=True)
+        # pyre-ignore
+        send(self, args, kwargs, port=p, selection="choose")
+        return r.recv()
 
-    def call(self) -> Future[R]:
-        if self._endpoint._actor_mesh.len != 1:
+    def call(self, *args: P.args, **kwargs: P.kwargs) -> Future[R]:
+        if self._actor_mesh.len != 1:
             raise ValueError(
-                f"Can only use 'call' on a single Actor but this actor has shape {self._endpoint._actor_mesh._shape}"
+                f"Can only use 'call' on a single Actor but this actor has shape {self._actor_mesh._shape}"
             )
-        return self.choose()
+        return self.choose(*args, **kwargs)
 
-    # TODO: convert into something equivalent that works with futures
-    async def stream(self) -> AsyncGenerator[R, R]:
+    async def stream(self, *args: P.args, **kwargs: P.kwargs) -> AsyncGenerator[R, R]:
         """
         Broadcasts to all actors and yields their responses as a stream / generator.
 
         This enables processing results from multiple actors incrementally as
         they become available. Returns an async generator of response values.
         """
-        port, receiver = self.port()
-        self.broadcast(port=port)
-        for _ in range(self._endpoint._actor_mesh.len):
-            yield await receiver.recv()
+        p, r = port(self)
+        # pyre-ignore
+        send(self, args, kwargs, port=p)
+        for _ in range(self._actor_mesh.len):
+            yield await r.recv()
 
-    def accumulate(
-        self,
-        identity: A,
-        combine: Callable[[A, R], A],
-    ) -> Future[A]:
-        gen = self.stream()
-
-        async def impl():
-            value = identity
-            async for x in gen:
-                value = combine(value, x)
-            return value
-
-        return Future(lambda: impl())
-
-    def broadcast_and_wait(self) -> Future[None]:
+    def broadcast(self, *args: P.args, **kwargs: P.kwargs) -> None:
         """
         Broadcast to all actors and wait for each to acknowledge receipt.
 
@@ -305,7 +251,66 @@ class Message(Generic[P, R]):
         processed the message by awaiting a response from each one. Does not
         return any results.
         """
-        return self.accumulate(None, lambda x, _: x)
+        # pyre-ignore
+        send(self, args, kwargs)
+
+    def broadcast_and_wait(self, *args: P.args, **kwargs: P.kwargs) -> Future[None]:
+        """
+        Broadcast to all actors and wait for each to acknowledge receipt.
+
+        This behaves like `cast`, but ensures that each actor has received and
+        processed the message by awaiting a response from each one. Does not
+        return any results.
+        """
+        return Accumulator(self, None, lambda x, _: x).accumulate(*args, **kwargs)
+
+
+class Accumulator(Generic[P, R, A]):
+    def __init__(
+        self, endpoint: Endpoint[P, R], identity: A, combine: Callable[[A, R], A]
+    ):
+        self._endpoint = endpoint
+        self._identity = identity
+        self._combine = combine
+
+    def accumulate(self, *args: P.args, **kwargs: P.kwargs) -> "Future[A]":
+        gen = self._endpoint.stream(*args, **kwargs)
+
+        async def impl():
+            value = self._identity
+            async for x in gen:
+                value = self._combine(value, x)
+            return value
+
+        return Future(impl)
+
+
+# advance lower-level API for sending messages. This is intentially
+# not part of the Endpoint API because they way it accepts arguments
+# and handles concerns is different.
+def port(endpoint: Endpoint[P, R], once=False) -> Tuple["Port", "PortReceiver[R]"]:
+    handle, receiver = (
+        endpoint._mailbox.open_once_port() if once else endpoint._mailbox.open_port()
+    )
+    port_id: hyperactor.PortId = handle.bind()
+    return Port(port_id, endpoint._mailbox), PortReceiver(endpoint._mailbox, receiver)
+
+
+def send(
+    endpoint: Endpoint[P, R],
+    args: Tuple[Any, ...],
+    kwargs: Dict[str, Any],
+    port: "Optional[Port]" = None,
+    selection: Selection = "all",
+) -> None:
+    """
+    Fire-and-forget broadcast invocation of the endpoint across all actors in the mesh.
+
+    This sends the message to all actors but does not wait for any result.
+    """
+    endpoint._signature.bind(None, *args, **kwargs)
+    message = hyperactor.PythonMessage(endpoint._name, _pickle((args, kwargs, port)))
+    endpoint._actor_mesh.cast(message, selection)
 
 
 class EndpointProperty(Generic[P, R]):
@@ -503,7 +508,7 @@ class Service(MeshTrait):
             self._mailbox,
         )
         # pyre-ignore
-        ep(self._class, *args, **kwargs).broadcast()
+        send(ep, (self._class, *args), kwargs)
 
     def __reduce_ex__(self, protocol: ...) -> "Tuple[Type[Service], Tuple[Any, ...]]":
         return Service, (
