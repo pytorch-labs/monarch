@@ -8,6 +8,7 @@ use anyhow::anyhow;
 use anyhow::ensure;
 use pyo3::PyResult;
 use pyo3::Python;
+use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::PyAnyMethods;
 
@@ -54,7 +55,7 @@ pub fn initialize(py: Python) -> Result<()> {
 /// One additional wrinkle is that `PyErr_CheckSignals` only works on the main
 /// Python thread; if it's called on any other thread it silently does nothing.
 /// So, we check a thread-local to ensure we are on the main thread.
-pub fn signal_safe_block_on<F>(py: Python, future: F) -> Result<F::Output>
+pub fn signal_safe_block_on<F>(py: Python, future: F) -> PyResult<F::Output>
 where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
@@ -70,13 +71,13 @@ where
             // complete or a signal.
             runtime.block_on(async {
                 tokio::select! {
-                    result = handle => result.map_err(|e| anyhow!(e)),
+                    result = handle => result.map_err(|e| PyRuntimeError::new_err(format!("JoinErr: {:?}", e))),
                     signal = async {
                         let sleep_for = std::time::Duration::from_millis(100);
                         loop {
                             // Acquiring the GIL in a loop is sad, hopefully once
                             // every 100ms is fine.
-                            Python::with_gil(|py| {py.check_signals()}).map_err(|e| anyhow!(e))?;
+                            Python::with_gil(|py| {py.check_signals()})?;
                             #[allow(clippy::disallowed_methods)]
                             tokio::time::sleep(sleep_for).await;
                         }
@@ -96,7 +97,7 @@ where
 /// This is used for testing signal handling in signal_safe_block_on.
 /// The function will sleep forever until interrupted by a signal.
 #[pyfunction]
-pub fn sleep_indefinitely_for_unit_tests(py: Python) -> Result<()> {
+pub fn sleep_indefinitely_for_unit_tests(py: Python) -> PyResult<()> {
     // Safe to call multiple times, but ensures anything that could fail within hyperactor runtime like telemetry gets reported.
     hyperactor::initialize();
     // Create a future that sleeps indefinitely
