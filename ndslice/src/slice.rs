@@ -56,7 +56,7 @@ pub enum SliceError {
 /// ```
 // TODO: Consider representing this by arrays parameterized by the slice
 // dimensionality.
-#[derive(Serialize, Deserialize, Clone, PartialEq, Hash, Debug)]
+#[derive(Serialize, Deserialize, Clone, Eq, PartialEq, Hash, Debug)]
 pub struct Slice {
     offset: usize,
     sizes: Vec<usize>,
