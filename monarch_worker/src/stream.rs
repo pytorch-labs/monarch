@@ -308,6 +308,21 @@ impl StreamMessage {
                 in_place: *in_place,
                 out: out.clone(),
             },
+            StreamMessage::SendTensor {
+                result,
+                from_rank,
+                to_rank,
+                tensor,
+                factory,
+                comm,
+            } => StreamMessage::SendTensor {
+                result: *result,
+                from_rank: *from_rank,
+                to_rank: *to_rank,
+                tensor: *tensor,
+                factory: factory.clone(),
+                comm: comm.clone(),
+            },
             other => panic!(
                 "StreamMessage variant not supported in recording: {:?}",
                 other
@@ -324,6 +339,15 @@ impl StreamMessage {
             }
             StreamMessage::BorrowFirstUse { result, .. } => HashSet::from([*result]),
             StreamMessage::Reduce { result, .. } => HashSet::from([*result]),
+            StreamMessage::SendTensor {
+                result, from_rank, ..
+            } => {
+                if from_rank.is_some() {
+                    HashSet::from([*result])
+                } else {
+                    HashSet::new()
+                }
+            }
             // TODO(slurye): Add remaining message types.
             _ => HashSet::new(),
         }
@@ -1295,6 +1319,18 @@ impl StreamMessageHandler for StreamActor {
         factory: Factory,
         comm: Arc<ActorHandle<NcclCommActor>>,
     ) -> Result<()> {
+        if let Some((recording, _)) = self.get_defining_recording() {
+            recording.messages.push(StreamMessage::SendTensor {
+                result,
+                from_rank,
+                to_rank,
+                tensor,
+                factory,
+                comm,
+            });
+            return Ok(());
+        }
+
         if to_rank.is_none() && from_rank.is_none() {
             bail!("tried to send tensor without a to/from rank");
         }
@@ -1316,7 +1352,9 @@ impl StreamMessageHandler for StreamActor {
                     Ok(RValue::Tensor(TensorCell::new(cloned)))
                 }
                 Ok(rval) => bail!("tensor ref is not a tensor: {:?}", rval),
-                Err(err) => Err(err.clone()),
+                Err(err) => Err(Arc::new(CallFunctionError::DependentError(
+                    err.unwrap_dependent_error().unwrap_or(err.clone()),
+                ))),
             };
             self.env.insert(result, output_cell);
             return Ok(());
@@ -1721,6 +1759,20 @@ impl StreamMessageHandler for StreamActor {
                     }
                     StreamMessageHandler::handle(self, this, message).await?;
                 }
+                StreamMessage::SendTensor {
+                    ref tensor,
+                    ref to_rank,
+                    ..
+                } => {
+                    // If this rank is sending a tensor (e.g., to_rank has a value),
+                    // we need to check for existing errors on the input tensor, because
+                    // the error is only propagated to the result ref when this rank
+                    // is also receiving a tensor.
+                    if to_rank.is_some() && error.is_none() {
+                        error = self.get_dependent_error(&[*tensor])?;
+                    }
+                    StreamMessageHandler::handle(self, this, message).await?;
+                }
                 _ => {
                     StreamMessageHandler::handle(self, this, message).await?;
                 }
@@ -1911,6 +1963,10 @@ mod tests {
 
     impl TestSetup {
         async fn new() -> Result<Self> {
+            Self::new_with_world_size(1).await
+        }
+
+        async fn new_with_world_size(world_size: usize) -> Result<Self> {
             test_util::test_setup()?;
 
             let proc = Proc::local();
@@ -1923,7 +1979,7 @@ mod tests {
                 .spawn::<StreamActor>(
                     "stream",
                     StreamParams {
-                        world_size: 1,
+                        world_size,
                         rank: 0,
                         creation_mode: StreamCreationMode::UseDefaultStream,
                         id: 0.into(),
@@ -3515,6 +3571,333 @@ mod tests {
             test_setup.stream_actor.clone(),
             6.into(),
             input_tensor_ref_1,
+            &mut test_setup.controller_rx,
+        )
+        .await;
+
+        Ok(())
+    }
+
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_send_tensor_in_recording() -> Result<()> {
+        let mut test_setup = TestSetup::new_with_world_size(2).await?;
+        let recording_ref = test_setup.next_ref();
+
+        let unique_id = UniqueId::new()?;
+        let comm0 = test_setup.proc.spawn::<NcclCommActor>(
+            "comm0",
+            CommParams::New {
+                device: CudaDevice::new(0.into()),
+                unique_id: unique_id.clone(),
+                world_size: 2,
+                rank: 0,
+            },
+        );
+        let comm1 = test_setup.proc.spawn::<NcclCommActor>(
+            "comm1",
+            CommParams::New {
+                device: CudaDevice::new(1.into()),
+                unique_id,
+                world_size: 2,
+                rank: 1,
+            },
+        );
+        let (comm0, comm1) = tokio::try_join!(comm0, comm1)?;
+        let comm0 = Arc::new(comm0);
+        let comm1 = Arc::new(comm1);
+
+        let factory = Factory {
+            size: vec![3],
+            dtype: torch_sys::ScalarType::Float,
+            layout: torch_sys::Layout::Strided,
+            device: "cuda".try_into().unwrap(),
+        };
+
+        let send_stream = test_setup.stream_actor.clone();
+        let recv_stream = test_setup
+            .proc
+            .spawn::<StreamActor>(
+                "recv_stream",
+                StreamParams {
+                    world_size: 2,
+                    rank: 1,
+                    creation_mode: StreamCreationMode::CreateNewStream,
+                    id: 1.into(),
+                    device: Some(CudaDevice::new(1.into())),
+                    controller_actor: test_setup.controller_actor.clone(),
+                },
+            )
+            .await?;
+
+        send_stream
+            .define_recording(&test_setup.client, recording_ref)
+            .await?;
+        recv_stream
+            .define_recording(&test_setup.client, recording_ref)
+            .await?;
+
+        let formal_tensor_ref_0 = test_setup.next_ref();
+        let formal_tensor_ref_1 = test_setup.next_ref();
+
+        send_stream
+            .recording_formal(&test_setup.client, formal_tensor_ref_0, 0)
+            .await?;
+        send_stream
+            .recording_formal(&test_setup.client, formal_tensor_ref_1, 1)
+            .await?;
+
+        let _ref = test_setup.next_ref();
+        send_stream
+            .send_tensor(
+                &test_setup.client,
+                _ref,
+                None,
+                Some(1),
+                formal_tensor_ref_0,
+                factory.clone(),
+                comm0.clone(),
+            )
+            .await?;
+
+        let result_ref_0 = test_setup.next_ref();
+        let _ref = test_setup.next_ref();
+        recv_stream
+            .send_tensor(
+                &test_setup.client,
+                result_ref_0,
+                Some(0),
+                None,
+                _ref,
+                factory.clone(),
+                comm1,
+            )
+            .await?;
+
+        let result_ref_1 = test_setup.next_ref();
+        send_stream
+            .send_tensor(
+                &test_setup.client,
+                result_ref_1,
+                Some(0),
+                Some(0),
+                formal_tensor_ref_1,
+                factory.clone(),
+                comm0,
+            )
+            .await?;
+
+        send_stream
+            .recording_result(&test_setup.client, result_ref_1, 0)
+            .await?;
+        recv_stream
+            .recording_result(&test_setup.client, result_ref_0, 0)
+            .await?;
+
+        send_stream
+            .finalize_recording(&test_setup.client, recording_ref)
+            .await?;
+        recv_stream
+            .finalize_recording(&test_setup.client, recording_ref)
+            .await?;
+
+        let input_tensor_ref_0 = test_setup.next_ref();
+        let input_tensor_ref_1 = test_setup.next_ref();
+        test_setup
+            .set_tensor(input_tensor_ref_0, &[1.0, 2.0, 3.0])
+            .await?;
+        test_setup
+            .set_tensor(input_tensor_ref_1, &[4.0, 5.0, 6.0])
+            .await?;
+
+        let actual_result_ref_0 = test_setup.next_ref();
+        let actual_result_ref_1 = test_setup.next_ref();
+        let send_fut = send_stream.call_recording(
+            &test_setup.client,
+            0.into(),
+            recording_ref,
+            vec![actual_result_ref_1],
+            vec![input_tensor_ref_0, input_tensor_ref_1],
+        );
+        let recv_fut = recv_stream.call_recording(
+            &test_setup.client,
+            0.into(),
+            recording_ref,
+            vec![actual_result_ref_0],
+            vec![],
+        );
+        tokio::try_join!(send_fut, recv_fut)?;
+
+        assert!(
+            test_setup
+                .allclose(input_tensor_ref_0, &[1.0, 2.0, 3.0])
+                .await
+        );
+        assert!(
+            test_setup
+                .allclose(input_tensor_ref_1, &[4.0, 5.0, 6.0])
+                .await
+        );
+        assert!(
+            test_setup
+                .allclose(actual_result_ref_1, &[4.0, 5.0, 6.0])
+                .await
+        );
+
+        let actual_result_0 = recv_stream
+            .get_tensor_ref_unit_tests_only(&test_setup.client, actual_result_ref_0)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(allclose(
+            &actual_result_0.borrow(),
+            &factory_float_tensor(&[1.0, 2.0, 3.0], "cpu".try_into().unwrap())
+        )?);
+
+        // Validate that failure wasn't reported to controller.
+        check_fetch_result_value(
+            &test_setup.client,
+            send_stream.clone(),
+            1.into(),
+            actual_result_ref_1,
+            &mut test_setup.controller_rx,
+        )
+        .await;
+        check_fetch_result_value(
+            &test_setup.client,
+            recv_stream.clone(),
+            2.into(),
+            actual_result_ref_0,
+            &mut test_setup.controller_rx,
+        )
+        .await;
+
+        let input_error = Arc::new(CallFunctionError::Anyhow(anyhow!("input error")));
+        send_stream
+            .set_tensor_ref_unit_tests_only(
+                &test_setup.client,
+                input_tensor_ref_0,
+                Err(input_error.clone()),
+            )
+            .await?;
+
+        let send_fut = send_stream.call_recording(
+            &test_setup.client,
+            3.into(),
+            recording_ref,
+            vec![actual_result_ref_1],
+            vec![input_tensor_ref_0, input_tensor_ref_1],
+        );
+        let recv_fut = recv_stream.call_recording(
+            &test_setup.client,
+            3.into(),
+            recording_ref,
+            vec![actual_result_ref_0],
+            vec![],
+        );
+        tokio::try_join!(send_fut, recv_fut)?;
+
+        // The result on recv_stream should have a value, but it will be garbage.
+        let _ = recv_stream
+            .get_tensor_ref_unit_tests_only(&test_setup.client, actual_result_ref_0)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        test_setup
+            .validate_dependent_error(actual_result_ref_1, input_error.clone())
+            .await;
+
+        // Input 1 should be untouched.
+        assert!(
+            test_setup
+                .allclose(input_tensor_ref_1, &[4.0, 5.0, 6.0])
+                .await
+        );
+
+        // Validate that failure wasn't reported to controller.
+        check_fetch_result_error(
+            &test_setup.client,
+            send_stream.clone(),
+            4.into(),
+            actual_result_ref_1,
+            &mut test_setup.controller_rx,
+            "input error",
+        )
+        .await;
+        check_fetch_result_value(
+            &test_setup.client,
+            recv_stream.clone(),
+            5.into(),
+            actual_result_ref_0,
+            &mut test_setup.controller_rx,
+        )
+        .await;
+
+        test_setup
+            .set_tensor(input_tensor_ref_0, &[1.0, 2.0, 3.0])
+            .await?;
+        send_stream
+            .set_tensor_ref_unit_tests_only(
+                &test_setup.client,
+                input_tensor_ref_1,
+                Err(input_error.clone()),
+            )
+            .await?;
+
+        let send_fut = send_stream.call_recording(
+            &test_setup.client,
+            6.into(),
+            recording_ref,
+            vec![actual_result_ref_1],
+            vec![input_tensor_ref_0, input_tensor_ref_1],
+        );
+        let recv_fut = recv_stream.call_recording(
+            &test_setup.client,
+            6.into(),
+            recording_ref,
+            vec![actual_result_ref_0],
+            vec![],
+        );
+        tokio::try_join!(send_fut, recv_fut)?;
+
+        let actual_result_0 = recv_stream
+            .get_tensor_ref_unit_tests_only(&test_setup.client, actual_result_ref_0)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(allclose(
+            &actual_result_0.borrow(),
+            &factory_float_tensor(&[1.0, 2.0, 3.0], "cpu".try_into().unwrap())
+        )?);
+
+        assert!(
+            test_setup
+                .allclose(input_tensor_ref_0, &[1.0, 2.0, 3.0])
+                .await
+        );
+
+        test_setup
+            .validate_dependent_error(actual_result_ref_1, input_error)
+            .await;
+
+        // Validate that failure wasn't reported to controller.
+        check_fetch_result_error(
+            &test_setup.client,
+            send_stream.clone(),
+            7.into(),
+            actual_result_ref_1,
+            &mut test_setup.controller_rx,
+            "input error",
+        )
+        .await;
+        check_fetch_result_value(
+            &test_setup.client,
+            recv_stream.clone(),
+            8.into(),
+            actual_result_ref_0,
             &mut test_setup.controller_rx,
         )
         .await;
