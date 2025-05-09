@@ -1104,7 +1104,8 @@ class TestComm(RemoteFunctionsTestBase):
         ) as device_mesh:
             pg = device_mesh.process_group(("host", "gpu"))
             rank = device_mesh.rank("host") * self.N_GPUS + device_mesh.rank("gpu")
-            inspect(barrier(device_ids=[rank], group=pg))
+            with pytest.raises(monarch.common.invocation.RemoteException):
+                inspect(barrier(device_ids=[rank], group=pg))
 
     def test_tensor_dtype_complex(self, backend_type: BackendType) -> None:
         self._test_tensor_dtype_complex(backend_type)
