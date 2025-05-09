@@ -20,15 +20,13 @@ pub fn set_panic_hook() {
     panic::update_hook(move |prev, info| {
         // Ignore AccessError, which would happen if panic occurred outside of
         // BACKTRACE's scope.
+        let backtrace = Backtrace::force_capture();
+        let loc = info.location().map_or_else(
+            || "unavailable".to_owned(),
+            |loc: &panic::Location<'_>| format!("{}:{}:{}", loc.file(), loc.line(), loc.column()),
+        );
         let _result = BACKTRACE.try_with(|entry| match entry.try_borrow_mut() {
             Ok(mut entry_ref) => {
-                let backtrace = Backtrace::force_capture();
-                let loc = info.location().map_or_else(
-                    || "unavailable".to_owned(),
-                    |loc: &panic::Location<'_>| {
-                        format!("{}:{}:{}", loc.file(), loc.line(), loc.column())
-                    },
-                );
                 *entry_ref = Some(format!("panicked at {loc}\n{backtrace}"));
             }
             Err(borrow_mut_error) => {
@@ -38,6 +36,7 @@ pub fn set_panic_hook() {
                 );
             }
         });
+        tracing::error!("stacktrace"=%backtrace, "panic at {loc}");
 
         // Execute the default hood to preserve the default behavior.
         prev(info);

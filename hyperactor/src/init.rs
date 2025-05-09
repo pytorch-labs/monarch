@@ -28,21 +28,42 @@ pub fn initialize() {
 
 #[cfg(target_os = "linux")]
 mod linux {
+    use std::backtrace::Backtrace;
     use std::env;
     use std::process;
 
     use libc::PR_SET_PDEATHSIG;
     use nix::sys::signal::SIGUSR1;
+    use nix::sys::signal::SigHandler;
     use nix::unistd::getpid;
     use nix::unistd::getppid;
     use tokio::signal::unix::SignalKind;
     use tokio::signal::unix::signal;
 
     pub(crate) fn initialize() {
+        // Safety: Because I want to
+        unsafe {
+            extern "C" fn handle_fatal_signal(signo: libc::c_int) {
+                let bt = Backtrace::force_capture();
+                let signame = nix::sys::signal::Signal::try_from(signo).expect("unknown signal");
+                tracing::error!("stacktrace"= %bt, "fatal signal {signo}:{signame} received");
+                std::process::exit(1);
+            }
+            nix::sys::signal::signal(
+                nix::sys::signal::SIGABRT,
+                SigHandler::Handler(handle_fatal_signal),
+            )
+            .expect("unable to register signal handler");
+            nix::sys::signal::signal(
+                nix::sys::signal::SIGSEGV,
+                SigHandler::Handler(handle_fatal_signal),
+            )
+            .expect("unable to register signal handler");
+        }
+
         if env::var("HYPERACTOR_MANAGED_SUBPROCESS").is_err() {
             return;
         }
-
         super::RUNTIME.spawn(async {
             match signal(SignalKind::user_defined1()) {
                 Ok(mut sigusr1) => {
@@ -51,7 +72,7 @@ mod linux {
                         libc::prctl(PR_SET_PDEATHSIG, SIGUSR1);
                     }
                     sigusr1.recv().await;
-                    eprintln!(
+                    tracing::error!(
                         "hyperactor[{}]: parent process {} died; exiting",
                         getpid(),
                         getppid()
