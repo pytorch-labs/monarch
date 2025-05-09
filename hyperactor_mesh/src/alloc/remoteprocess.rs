@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use hyperactor::Named;
@@ -7,6 +8,10 @@ use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelRx;
 use hyperactor::channel::Rx;
 use hyperactor::channel::Tx;
+use hyperactor::mailbox::DialMailboxRouter;
+use hyperactor::mailbox::MailboxServer;
+use hyperactor::mailbox::monitored_return_handle;
+use hyperactor::reference::Reference;
 use hyperactor::serde_json;
 use ndslice::Shape;
 use serde::Deserialize;
@@ -77,7 +82,9 @@ impl RemoteProcessAllocator {
     /// Flow works as follows:
     /// 1. Client sends Allocate message to serve_addr.
     /// 2. Allocator connects to bootstrap_addr, creates Alloc and sends Allocated message.
-    /// 3. Allocator streams one or more Update messages to bootstrap_addr as Alloc progresses.
+    /// 3. Allocator streams one or more Update messages to bootstrap_addr as Alloc progresses
+    ///    making the following changes:
+    ///    * Remap mesh_agent listen address to our own forwarder actor address.
     /// 4. Allocator sends Done message to bootstrap_addr when Alloc is done.
     ///
     /// At any point, client can send Stop message to serve_addr to stop the allocator.
@@ -151,10 +158,25 @@ impl RemoteProcessAllocator {
     async fn handle_allocation_request(
         &self,
         rx: &mut ChannelRx<RemoteProcessAllocatorMessage>,
-        mut alloc: Box<dyn Alloc + Send + Sync>,
+        alloc: Box<dyn Alloc + Send + Sync>,
         bootstrap_addr: ChannelAddr,
         hosts: Vec<String>,
     ) {
+        // start proc message forwarder
+        let router = DialMailboxRouter::new();
+        let (forwarder_addr, forwarder_rx) =
+            match channel::serve(ChannelAddr::any(bootstrap_addr.transport())).await {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!("failed to to bootstrap forwarder actor: {}", e);
+                    return;
+                }
+            };
+        let mailbox_handle = router
+            .clone()
+            .serve(forwarder_rx, monitored_return_handle());
+        tracing::info!("started forwarder on: {}", forwarder_addr);
+
         // Check if we need to write TORCH_ELASTIC_CUSTOM_HOSTNAMES_LIST_FILE
         // See: https://github.com/fairinternal/xlformers/blob/llama4_monarch/tools/launching/torchx/entrypoint/generate_ranks.py
         if let Ok(hosts_file) = std::env::var("TORCH_ELASTIC_CUSTOM_HOSTNAMES_LIST_FILE") {
@@ -183,6 +205,23 @@ impl RemoteProcessAllocator {
             }
         }
 
+        self.handle_allocation_loop(rx, alloc, bootstrap_addr, router, forwarder_addr)
+            .await;
+
+        mailbox_handle.stop();
+        if let Err(e) = mailbox_handle.await {
+            tracing::error!("failed to join forwarder: {}", e);
+        }
+    }
+
+    async fn handle_allocation_loop(
+        &self,
+        rx: &mut ChannelRx<RemoteProcessAllocatorMessage>,
+        mut alloc: Box<dyn Alloc + Send + Sync>,
+        bootstrap_addr: ChannelAddr,
+        router: DialMailboxRouter,
+        forward_addr: ChannelAddr,
+    ) {
         let tx = match channel::dial(bootstrap_addr) {
             Ok(tx) => tx,
             Err(err) => {
@@ -201,6 +240,7 @@ impl RemoteProcessAllocator {
             return;
         }
 
+        let mut mesh_agents_by_proc_id = HashMap::new();
         let mut running = true;
         loop {
             tokio::select! {
@@ -232,6 +272,28 @@ impl RemoteProcessAllocator {
                 e = alloc.next() => {
                     match e {
                         Some(event) => {
+                            let event = match event {
+                                ProcState::Created { .. } => event,
+                                ProcState::Running { proc_id, mesh_agent, addr } => {
+                                    tracing::debug!("remapping mesh_agent {}: addr {} -> {}", mesh_agent, addr, forward_addr);
+                                    mesh_agents_by_proc_id.insert(proc_id.clone(), mesh_agent.clone());
+                                    router.bind(mesh_agent.actor_id().clone().into(), addr);
+                                    ProcState::Running { proc_id, mesh_agent, addr: forward_addr.clone() }
+                                },
+                                ProcState::Stopped(proc_id) => {
+                                    match mesh_agents_by_proc_id.remove(&proc_id) {
+                                        Some(mesh_agent) => {
+                                            tracing::debug!("unmapping mesh_agent {}", mesh_agent);
+                                            let agent_ref: Reference = mesh_agent.actor_id().clone().into();
+                                            router.unbind(&agent_ref);
+                                        },
+                                        None => {
+                                            tracing::warn!("mesh_agent not found for proc_id: {}", proc_id);
+                                        }
+                                    }
+                                    ProcState::Stopped(proc_id)
+                                },
+                            };
                             tracing::debug!("sending event: {:?}", event);
                             if let Err(e) = tx.send(RemoteProcessProcStateMessage::Update(event)).await {
                                 tracing::error!("failed to send event to bootstrap address: {}", e);
@@ -374,7 +436,7 @@ mod test {
                 RemoteProcessProcStateMessage::Update(ProcState::Running {
                     proc_id,
                     mesh_agent,
-                    addr,
+                    addr: _,
                 }) => {
                     let expected_proc_id = format!("test[{}]", i).parse().unwrap();
                     let expected_mesh_agent = ActorRef::<MeshAgent>::attest(
@@ -382,7 +444,6 @@ mod test {
                     );
                     assert_eq!(proc_id, expected_proc_id);
                     assert_eq!(mesh_agent, expected_mesh_agent);
-                    assert_eq!(addr, ChannelAddr::Unix("/proc0".parse().unwrap()))
                 }
                 _ => panic!("unexpected message: {:?}", m),
             }
