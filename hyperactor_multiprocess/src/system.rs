@@ -170,7 +170,6 @@ impl IntoFuture for ServerHandle {
 
 #[cfg(test)]
 mod tests {
-    use std::assert_matches::assert_matches;
     use std::collections::HashMap;
     use std::collections::HashSet;
     use std::time::Duration;
@@ -917,7 +916,7 @@ mod tests {
         system_handle.await;
     }
 
-    #[derive(Debug, Named, Serialize, Deserialize)]
+    #[derive(Debug, Named, Serialize, Deserialize, PartialEq)]
     #[named(dump = false)]
     enum TestMessage {
         Forward(String),
@@ -1012,23 +1011,23 @@ mod tests {
                         actor_idx: 0,
                         port: test.port::<TestMessage>().bind().port_id().1,
                     },
-                    data: Serialized::serialize(&TestMessage::Forward("".to_string()))?,
+                    data: Serialized::serialize(&TestMessage::Forward("abc".to_string()))?,
                 },
             })?;
         }
 
         for mut queue in queues.into_iter() {
             let msg = queue.recv().await.context("missing")?;
-            assert_matches!(msg, TestMessage::Forward(_));
+            assert_eq!(msg, TestMessage::Forward("abc".to_string()));
             let msg = queue.recv().await.context("missing")?;
-            assert_matches!(msg, TestMessage::Forward(_));
+            assert_eq!(msg, TestMessage::Forward("abc".to_string()));
         }
 
         for ((mut proc, handle), test) in comm_actors.into_iter().zip(test_actors.into_iter()) {
             handle.drain_and_stop()?;
-            assert_matches!(handle.await, ActorStatus::Stopped);
+            assert_eq!(handle.await, ActorStatus::Stopped);
             test.drain_and_stop()?;
-            assert_matches!(test.await, ActorStatus::Stopped);
+            assert_eq!(test.await, ActorStatus::Stopped);
             proc.destroy_and_wait(Duration::from_secs(10), None).await?;
         }
         Ok(())
@@ -1132,7 +1131,7 @@ mod tests {
                             actor_idx: 0,
                             port: test.port::<TestMessage>().port_id().1,
                         },
-                        data: Serialized::serialize(&TestMessage::Forward("".to_string()))?,
+                        data: Serialized::serialize(&TestMessage::Forward("abc".to_string()))?,
                     },
                 },
             )?;
@@ -1142,7 +1141,7 @@ mod tests {
         for mut queue in queues.into_iter() {
             for _ in 0..world_size {
                 let msg = queue.recv().await.context("missing")?;
-                assert_matches!(msg, TestMessage::Forward(_));
+                assert_eq!(msg, TestMessage::Forward("abc".to_string()));
             }
         }
         Ok(())
