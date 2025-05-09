@@ -79,8 +79,14 @@ pub struct CastMessage {
 /// This message is not visible to the clients.
 #[derive(Serialize, Deserialize, Debug, Clone, Named)]
 pub(crate) struct ForwardMessage {
+    /// The comm actor who originally casted the message.
+    pub(crate) sender: ActorId,
     /// The destination of the message.
     pub(crate) dests: Vec<RoutingFrame>,
+    /// The sequence number of this message.
+    pub(crate) seq: usize,
+    /// The sequence number of the previous message receieved.
+    pub(crate) last_seq: usize,
     /// The message to distribute.
     pub(crate) message: CastMessageEnvelope,
 }
