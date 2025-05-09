@@ -9,12 +9,11 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional, Union
 
 from monarch.tools.components import conda
-
+from monarch.tools.mesh_spec import mesh_spec_from_metadata, ServerSpec
 from torchx.runner import Runner
 from torchx.specs import AppDef, AppDryRunInfo, CfgVal
 from torchx.specs.builders import parse_args
 from torchx.util.types import decode, decode_optional
-
 
 # [note on workspaces]
 #
@@ -261,6 +260,35 @@ def create(
                 return server_handle
 
     return _run
+
+
+def info(server_handle: str) -> Optional[ServerSpec]:
+    """Calls the ``describe`` API on the scheduler hosting the server to get
+    information about it.
+
+    Returns ``None`` if the server's job is not found in the scheduler's
+    control-plane. This can happen if the job does not exist
+    (e.g. typo in the server_handle) or the job already exited a long time ago.
+
+    NOTE: This function can return non-empty info for jobs that have
+    exited recently.
+    """
+    with _torchx_runner() as runner:
+        status = runner.status(server_handle)
+        if status is None:
+            return None
+
+        appdef = runner.describe(server_handle)
+        if appdef is None:
+            return None
+
+    mesh_specs = []
+    for role in appdef.roles:
+        spec = mesh_spec_from_metadata(appdef, role.name)
+        assert spec is not None, "cannot be 'None' since we iterate over appdef's roles"
+        mesh_specs.append(spec)
+
+    return ServerSpec(name=appdef.name, state=status.state, meshes=mesh_specs)
 
 
 def kill(server_handle: str) -> None:

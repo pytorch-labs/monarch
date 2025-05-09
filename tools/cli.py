@@ -1,10 +1,11 @@
 # pyre-strict
 import argparse
+import json
 import pathlib
 import sys
 
 from fastcli.argparse import inject_fastcli
-from monarch.tools.commands import component_args_from_cli, Config, create, kill
+from monarch.tools.commands import component_args_from_cli, Config, create, info, kill
 from monarch.tools.components import conda
 from torchx.specs.finder import get_component
 
@@ -64,6 +65,25 @@ class CreateCmd:
         print(handle)
 
 
+class InfoCmd:
+    def add_arguments(self, subparser: argparse.ArgumentParser) -> None:
+        subparser.add_argument(
+            "server_handle",
+            type=str,
+            help="monarch server handle (e.g. mast:///job_id)",
+        )
+
+    def run(self, args: argparse.Namespace) -> None:
+        server_spec = info(args.server_handle)
+        if server_spec is None:
+            print(
+                f"Server: {args.server_handle} does not exist",
+                file=sys.stderr,
+            )
+        else:
+            json.dump(server_spec.to_json(), fp=sys.stdout)
+
+
 class KillCmd:
     def add_arguments(self, subparser: argparse.ArgumentParser) -> None:
         subparser.add_argument(
@@ -82,6 +102,7 @@ def main(argv: list[str] = sys.argv[1:]) -> None:
 
     for cmd_name, cmd in {
         "create": CreateCmd(),
+        "info": InfoCmd(),
         "kill": KillCmd(),
     }.items():
         cmd_parser = subparser.add_parser(cmd_name)

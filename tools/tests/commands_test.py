@@ -9,7 +9,8 @@ from facebook.hpc_scheduler.hpcscheduler.types import HpcJobDefinition
 
 from monarch.tools import commands
 from monarch.tools.commands import component_args_from_cli, Config
-from torchx.specs import AppDef, AppDryRunInfo, macros, Role
+from monarch.tools.mesh_spec import MeshSpec, ServerSpec
+from torchx.specs import AppDef, AppDryRunInfo, AppState, AppStatus, macros, Role
 
 
 def test_parser() -> argparse.ArgumentParser:
@@ -132,3 +133,41 @@ class CommandsTest(unittest.TestCase):
         handle = "mast_conda:///test_job_id"
         commands.kill(handle)
         mock_cancel.assert_called_once_with(handle)
+
+    @mock.patch("monarch.tools.commands.Runner.status", return_value=None)
+    def test_info_non_existent_server(self, _: mock.MagicMock) -> None:
+        self.assertIsNone(commands.info("slurm:///job-does-not-exist"))
+
+    @mock.patch("monarch.tools.commands.Runner.describe")
+    @mock.patch("monarch.tools.commands.Runner.status")
+    def test_info(
+        self, mock_status: mock.MagicMock, mock_describe: mock.MagicMock
+    ) -> None:
+        appstatus = AppStatus(state=AppState.RUNNING)
+        mock_status.return_value = appstatus
+
+        appdef = AppDef(
+            name="monarch_test_123",
+            roles=[Role(name="trainer", image="__unused__", num_replicas=4)],
+            metadata={
+                "monarch/meshes/trainer/host_type": "gpu.medium",
+                "monarch/meshes/trainer/gpus": "2",
+            },
+        )
+        mock_describe.return_value = appdef
+
+        self.assertEqual(
+            ServerSpec(
+                name="monarch_test_123",
+                state=appstatus.state,
+                meshes=[
+                    MeshSpec(
+                        name="trainer",
+                        num_hosts=4,
+                        host_type="gpu.medium",
+                        gpus=2,
+                    )
+                ],
+            ),
+            commands.info("slurm:///job-id"),
+        )

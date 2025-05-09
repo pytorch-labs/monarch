@@ -56,6 +56,10 @@ class ComponentsTest(unittest.TestCase):
         }:
             self.assertIn(env_var, mesh.env)
 
+        # --- check mesh spec tags ---
+        appdef.metadata["monarch/meshes/mesh_0/host_type"] = "gtt_any"
+        appdef.metadata["monarch/meshes/mesh_0/gpus"] = "8"
+
     def test_create_two_meshes(self) -> None:
         mesh_specs = [
             "trainer:2:gtt_any_8",

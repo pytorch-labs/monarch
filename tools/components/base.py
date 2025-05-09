@@ -8,12 +8,12 @@ See: https://pytorch.org/torchx/main/basics.html#components
 # pyre-strict
 import copy
 import getpass
-from typing import Dict, List, NamedTuple, Optional
+from typing import Dict, List, Optional
 
 import torchx.components.fb.conda as conda
 import torchx.components.fb.conda_transforms as conda_transforms
 import torchx.specs as specs
-
+from monarch.tools.mesh_spec import MeshSpec, tag_as_metadata
 
 _TAGS = ["monarch"]
 
@@ -59,12 +59,6 @@ class Packages:
 
 
 _EMPTY_PACKAGES = Packages()
-
-
-class MeshSpec(NamedTuple):
-    name: str
-    num_hosts: int
-    host_type: str
 
 
 def hyperactor(
@@ -143,6 +137,8 @@ def hyperactor(
             f"--port={port}",
             f"--program={program}",
         ]
+        mesh.gpus = mesh_role.resource.gpu
+        tag_as_metadata(mesh, appdef)
         mesh_roles.append(mesh_role)
 
     # overwrite appdef's roles with the mesh roles we created

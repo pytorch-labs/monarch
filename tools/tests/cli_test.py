@@ -9,6 +9,8 @@ from typing import Generator
 from unittest import mock
 
 from monarch.tools.cli import main
+from monarch.tools.mesh_spec import MeshSpec, ServerSpec
+from torchx.specs import AppState
 
 _DISABLE_WORKSPACE = ""  # passing --workspace="" disables it for tests
 
@@ -68,6 +70,46 @@ class MainTest(unittest.TestCase):
                 for key in ["PYTHON_EXEC", "CONDA_DIR", "WORKSPACE_DIR"]:
                     self.assertIn(key, env)
                     self.assertIsNotNone(env[key])
+
+    @mock.patch("monarch.tools.cli.info")
+    def test_info(self, mock_cmd_info: mock.MagicMock) -> None:
+        job_name = "imaginary-test-job"
+        mock_cmd_info.return_value = ServerSpec(
+            name=job_name,
+            state=AppState.RUNNING,
+            meshes=[
+                MeshSpec(name="trainer", num_hosts=4, host_type="gpu.medium", gpus=2),
+                MeshSpec(name="generator", num_hosts=16, host_type="gpu.small", gpus=1),
+            ],
+        )
+        with capture_stdout() as buf:
+            main(["info", f"slurm:///{job_name}"])
+            out = buf.getvalue()
+            # CLI does not pretty-print json so that the output can be piped for
+            # further processing. Read the captured stdout and pretty-format
+            # json so that the expected value reads better
+            expected = """
+{
+  "name": "imaginary-test-job",
+  "state": "RUNNING",
+  "meshes": {
+    "trainer": {
+      "host_type": "gpu.medium",
+      "hosts": 4,
+      "gpus": 2
+    },
+    "generator": {
+      "host_type": "gpu.small",
+      "hosts": 16,
+      "gpus": 1
+    }
+  }
+}
+"""
+            self.assertEqual(
+                expected.strip("\n"),
+                json.dumps(json.loads(out), indent=2),
+            )
 
     @mock.patch("monarch.tools.cli.kill")
     def test_kill(self, mock_cmd_kill: mock.MagicMock) -> None:
