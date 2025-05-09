@@ -59,6 +59,7 @@
 #![feature(trait_alias)]
 #![deny(missing_docs)]
 
+pub mod accum;
 pub mod actor;
 pub mod cap;
 pub mod channel;

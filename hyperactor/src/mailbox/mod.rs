@@ -92,6 +92,7 @@ use crate as hyperactor; // for macros
 use crate::Named;
 use crate::OncePortRef;
 use crate::PortRef;
+use crate::accum::Accumulator;
 use crate::actor::Signal;
 use crate::actor::remote::USER_PORT_OFFSET;
 use crate::cap;
@@ -992,6 +993,42 @@ impl Mailbox {
                 receiver,
                 port_id,
                 /*coalesce=*/ false,
+                self.state.clone(),
+            ),
+        )
+    }
+
+    /// Open a new port with an accumulator. This port accepts A::Update type
+    /// messages, accumulate them into A::State with the given accumulator.
+    /// The latest changed state can be received from the returned receiver as
+    /// a single A::State message. If there is no new update, the receiver will
+    /// not receive any message.
+    pub fn open_accum_port<A>(&self, accum: A) -> (PortHandle<A::Update>, PortReceiver<A::State>)
+    where
+        A: Accumulator + Send + Sync + 'static,
+        A::Update: Message,
+        A::State: Message + Default + Clone,
+    {
+        let port_index = self.state.allocate_port();
+        let (sender, receiver) = mpsc::unbounded_channel::<A::State>();
+        let port_id = PortId(self.state.actor_id.clone(), port_index);
+        let state = Mutex::new(A::State::default());
+        let enqueue = move |update: A::Update| {
+            let mut state = state.lock().unwrap();
+            accum.accumulate(&mut state, &update);
+            let _ = sender.send(state.clone());
+            Ok(())
+        };
+        (
+            PortHandle::new(
+                self.clone(),
+                port_index,
+                UnboundedPortSender::Func(Arc::new(enqueue)),
+            ),
+            PortReceiver::new(
+                receiver,
+                port_id,
+                /*coalesce=*/ true,
                 self.state.clone(),
             ),
         )
@@ -1974,6 +2011,7 @@ mod tests {
     use super::*;
     use crate::Actor;
     use crate::PortId;
+    use crate::accum;
     use crate::channel::ChannelTransport;
     use crate::channel::sim;
     use crate::channel::sim::SimAddr;
@@ -2013,6 +2051,37 @@ mod tests {
             monitored_return_handle(),
         );
         assert_eq!(receiver.recv().await.unwrap(), 999u64);
+    }
+
+    #[tokio::test]
+    async fn test_mailbox_accum() {
+        let mbox = Mailbox::new_detached(id!(test[0].test));
+        let (port, mut receiver) = mbox.open_accum_port(accum::max::<u64>());
+
+        port.send(1).unwrap();
+        assert_eq!(receiver.recv().await.unwrap(), 1);
+        port.send(2).unwrap();
+        assert_eq!(receiver.recv().await.unwrap(), 2);
+        port.send(3).unwrap();
+        assert_eq!(receiver.recv().await.unwrap(), 3);
+        // Send a smaller value. Should still receive the previous max.
+        port.send(1).unwrap();
+        assert_eq!(receiver.recv().await.unwrap(), 3);
+        port.send(2).unwrap();
+        assert_eq!(receiver.recv().await.unwrap(), 3);
+        port.send(3).unwrap();
+        assert_eq!(receiver.recv().await.unwrap(), 3);
+        port.send(4).unwrap();
+        assert_eq!(receiver.recv().await.unwrap(), 4);
+        // Send multiple updates. Should only receive the final change.
+        port.send(5).unwrap();
+        port.send(6).unwrap();
+        port.send(7).unwrap();
+        assert_eq!(receiver.recv().await.unwrap(), 7);
+        port.send(1).unwrap();
+        port.send(3).unwrap();
+        port.send(2).unwrap();
+        assert_eq!(receiver.recv().await.unwrap(), 7);
     }
 
     #[tokio::test]
