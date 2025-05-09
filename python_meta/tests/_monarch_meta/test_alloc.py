@@ -6,6 +6,8 @@ from asyncio import AbstractEventLoop
 from typing import Any
 
 from monarch._monarch import hyperactor
+from monarch.proc_mesh import ProcMesh
+from monarch.service import Actor, endpoint
 from monarch_meta._monarch_meta import hyperactor_meta
 
 
@@ -26,6 +28,12 @@ class MyActor(hyperactor.Actor):
         mailbox.post(
             reply_port, hyperactor.PythonMessage("echo", pickle.dumps(coordinates))
         )
+
+
+class MyMonarchActor(Actor):
+    @endpoint
+    async def do_something(self) -> None:
+        pass
 
 
 # have to use a single loop for all tests, otherwise there are
@@ -83,3 +91,29 @@ async def test_mock_mast_allocator() -> None:
     assert actor_mesh.get(4) is None
 
     assert isinstance(actor_mesh.client, hyperactor.Mailbox)
+
+
+@run_async
+async def test_mock_mast_allocator_with_monarch_api() -> None:
+    mock = hyperactor_meta.MockMast()
+    await mock.add_local_task_group("test_task_group", 2)
+
+    allocator = await mock.get_mast_allocator(
+        hyperactor_meta.MastAllocatorConfig(job_name="test_job")
+    )
+
+    spec = hyperactor.AllocSpec(
+        hyperactor.AllocConstraints(
+            {hyperactor_meta.MastAllocator.ALLOC_LABEL_TASK_GROUP: "test_task_group"}
+        ),
+        host=2,
+        gpu=1,
+    )
+
+    alloc = await allocator.allocate(spec)
+    proc_mesh = await ProcMesh.from_alloc(alloc)
+
+    actor_mesh = await proc_mesh.spawn("myactor", MyMonarchActor)
+
+    # we should not hang
+    await asyncio.wait_for(actor_mesh.do_something.broadcast_and_wait(), timeout=10)

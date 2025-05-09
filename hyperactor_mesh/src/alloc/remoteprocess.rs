@@ -277,14 +277,14 @@ impl RemoteProcessAllocator {
                                 ProcState::Running { proc_id, mesh_agent, addr } => {
                                     tracing::debug!("remapping mesh_agent {}: addr {} -> {}", mesh_agent, addr, forward_addr);
                                     mesh_agents_by_proc_id.insert(proc_id.clone(), mesh_agent.clone());
-                                    router.bind(mesh_agent.actor_id().clone().into(), addr);
+                                    router.bind(mesh_agent.actor_id().proc_id().clone().into(), addr);
                                     ProcState::Running { proc_id, mesh_agent, addr: forward_addr.clone() }
                                 },
                                 ProcState::Stopped(proc_id) => {
                                     match mesh_agents_by_proc_id.remove(&proc_id) {
                                         Some(mesh_agent) => {
                                             tracing::debug!("unmapping mesh_agent {}", mesh_agent);
-                                            let agent_ref: Reference = mesh_agent.actor_id().clone().into();
+                                            let agent_ref: Reference = mesh_agent.actor_id().proc_id().clone().into();
                                             router.unbind(&agent_ref);
                                         },
                                         None => {
