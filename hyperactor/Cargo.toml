@@ -46,6 +46,7 @@ thiserror = "2"
 tokio = { version = "1.44.2", features = ["full", "test-util", "tracing"] }
 tokio-rustls = { version = "0.24.1", features = ["dangerous_configuration"] }
 tokio-stream = { version = "0.1.16", features = ["fs", "io-util", "net", "signal", "sync", "time"] }
+tokio-test = "0.4.2"
 tokio-util = { version = "0.7.12", features = ["full"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 tracing-subscriber = { version = "0.3.18", features = ["chrono", "env-filter", "json", "local-time", "parking_lot", "registry"] }

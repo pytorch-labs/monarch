@@ -74,6 +74,7 @@ pub mod proc;
 pub mod reference;
 pub mod simnet;
 pub mod supervision;
+pub mod sync;
 /// Test utilities
 pub mod test_utils;
 
