@@ -63,9 +63,9 @@ impl CollectiveCoorindator {
     }
 
     async fn activate_mesh(&self, world_id: WorldId, step: &str) {
-        let current_step = self.step.lock().await.clone();
-        if current_step != step {
-            *self.step.lock().await = step.to_string();
+        let mut current_step = self.step.lock().await;
+        if *current_step != step {
+            *current_step = step.to_string();
             self.meshes.lock().await.clear();
             self.collective_counter.store(0, Ordering::SeqCst);
             self.result_senders.lock().await.clear();
