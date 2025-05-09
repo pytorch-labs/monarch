@@ -7,6 +7,8 @@ use crate::commands::demo::DemoCommand;
 use crate::commands::procs::ProcsCommand;
 use crate::commands::serve::ServeCommand;
 use crate::commands::show::ShowCommand;
+#[cfg(fbcode_build)]
+use crate::commands::top::TopCommand;
 
 #[derive(Parser)]
 #[command()]
@@ -34,6 +36,9 @@ enum Command {
     #[clap(about = "Show details about processes running in worlds.")]
     #[command(subcommand)]
     Procs(ProcsCommand),
+    #[cfg(fbcode_build)]
+    #[clap(about = "Show a dynamic real-time view of the system")]
+    Top(TopCommand),
 }
 
 #[cfg(fbcode_build)]
@@ -57,5 +62,6 @@ async fn run() -> Result<(), anyhow::Error> {
         Command::Demo(command) => Ok(command.run().await?),
         Command::Show(command) => Ok(command.run().await?),
         Command::Procs(command) => Ok(command.run().await?),
+        Command::Top(command) => Ok(command.run().await?),
     }
 }
