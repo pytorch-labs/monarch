@@ -7,6 +7,7 @@ use hyperactor::PortHandle;
 use hyperactor::actor::ActorHandle;
 use hyperactor::cap;
 use hyperactor::mailbox::PortReceiver;
+use tokio::sync::Mutex;
 use torch_sys::cuda::Event;
 
 use crate::Ref;
@@ -33,19 +34,19 @@ enum BorrowState {
     /// The borrow is created, but not used yet.
     Created {
         first_use_receiver: PortReceiver<(Option<Event>, TensorCellResult)>,
-        last_use_sender: PortHandle<Option<Event>>,
-        last_use_receiver: PortReceiver<Option<Event>>,
+        last_use_sender: PortHandle<(Option<Event>, TensorCellResult)>,
+        last_use_receiver: PortReceiver<(Option<Event>, TensorCellResult)>,
     },
     /// `FirstUsed`: First use of the borrow on the receiving stream. The
     /// receiving stream must wait for the sending stream to reach the
     /// `BorrowCreate`` point before being able to use the borrowed value.
     FirstUsed {
-        last_use_sender: PortHandle<Option<Event>>,
-        last_use_receiver: PortReceiver<Option<Event>>,
+        last_use_sender: PortHandle<(Option<Event>, TensorCellResult)>,
+        last_use_receiver: PortReceiver<(Option<Event>, TensorCellResult)>,
     },
     /// `LastUsed`: Last use of the borrow on the receiving stream.
     LastUsed {
-        last_use_receiver: PortReceiver<Option<Event>>,
+        last_use_receiver: PortReceiver<(Option<Event>, TensorCellResult)>,
     },
     /// `Dropped`: The borrow is dropped. The sending stream must wait for the
     /// receiving stream to reach the `LastUse`` point before being able to use
@@ -98,7 +99,12 @@ impl Borrow {
                 last_use_receiver,
             } => {
                 self.to_stream
-                    .borrow_first_use(caps, self.id, self.result, first_use_receiver)
+                    .borrow_first_use(
+                        caps,
+                        self.id,
+                        self.result,
+                        Arc::new(Mutex::new(first_use_receiver)),
+                    )
                     .await?;
                 (last_use_sender, last_use_receiver)
             }
@@ -143,7 +149,7 @@ impl Borrow {
         match state {
             BorrowState::LastUsed { last_use_receiver } => {
                 self.from_stream
-                    .borrow_drop(caps, self.id, last_use_receiver)
+                    .borrow_drop(caps, self.id, Arc::new(Mutex::new(last_use_receiver)))
                     .await?;
             }
             _ => panic!("Called `drop` on borrow in unexpected state: {:?}", state),

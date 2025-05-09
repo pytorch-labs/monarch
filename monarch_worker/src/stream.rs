@@ -39,6 +39,7 @@ use monarch_types::TryIntoPyObjectUnsafe;
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 use tokio::runtime::Handle;
+use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use torch_sys::BorrowType;
 use torch_sys::CudaDevice;
@@ -98,8 +99,6 @@ enum RecordingState {
         // a recording.
         defined_borrows: HashSet<u64>,
     },
-    // TODO(slurye): Use this variant in a futrue diff.
-    #[allow(dead_code)]
     Running,
 }
 
@@ -131,7 +130,7 @@ pub enum StreamMessage {
         result: Ref,
         /// Port for receiving the first use CUDA event + borrowed tensor from
         /// the provider stream.
-        first_use_receiver: PortReceiver<(Option<Event>, TensorCellResult)>,
+        first_use_receiver: Arc<Mutex<PortReceiver<(Option<Event>, TensorCellResult)>>>,
     },
 
     BorrowLastUse {
@@ -139,14 +138,14 @@ pub enum StreamMessage {
         borrow: u64,
         /// Ref for the borrowed tensor.
         result: Ref,
-        /// Port for sending the last use CUDA event.
-        last_use_sender: PortHandle<Option<Event>>,
+        /// Port for sending the last use CUDA event and borrowed tensor.
+        last_use_sender: PortHandle<(Option<Event>, TensorCellResult)>,
     },
 
     BorrowDrop {
         borrow: u64,
-        /// Port for receiving the last use CUDA event.
-        last_use_receiver: PortReceiver<Option<Event>>,
+        /// Port for receiving the last use CUDA event and borrowed tensor.
+        last_use_receiver: Arc<Mutex<PortReceiver<(Option<Event>, TensorCellResult)>>>,
     },
 
     DeleteRefs(Vec<Ref>),
@@ -254,6 +253,40 @@ impl StreamMessage {
                     remote_process_groups.clone(),
                 )
             }
+            StreamMessage::BorrowCreate {
+                borrow,
+                tensor,
+                first_use_sender,
+            } => StreamMessage::BorrowCreate {
+                borrow: *borrow,
+                tensor: *tensor,
+                first_use_sender: first_use_sender.clone(),
+            },
+            StreamMessage::BorrowFirstUse {
+                borrow,
+                result,
+                first_use_receiver,
+            } => StreamMessage::BorrowFirstUse {
+                borrow: *borrow,
+                result: *result,
+                first_use_receiver: first_use_receiver.clone(),
+            },
+            StreamMessage::BorrowLastUse {
+                borrow,
+                result,
+                last_use_sender,
+            } => StreamMessage::BorrowLastUse {
+                borrow: *borrow,
+                result: *result,
+                last_use_sender: last_use_sender.clone(),
+            },
+            StreamMessage::BorrowDrop {
+                borrow,
+                last_use_receiver,
+            } => StreamMessage::BorrowDrop {
+                borrow: *borrow,
+                last_use_receiver: last_use_receiver.clone(),
+            },
             other => panic!(
                 "StreamMessage variant not supported in recording: {:?}",
                 other
@@ -268,6 +301,7 @@ impl StreamMessage {
             StreamMessage::CallFunction(params, ..) => {
                 params.results.iter().filter_map(|&ref_| ref_).collect()
             }
+            StreamMessage::BorrowFirstUse { result, .. } => HashSet::from([*result]),
             // TODO(slurye): Add remaining message types.
             _ => HashSet::new(),
         }
@@ -782,15 +816,16 @@ impl StreamActor {
         }
     }
 
-    // TODO(slurye): Use this function in a future diff.
-    #[allow(dead_code)]
-    fn get_defining_recording(&mut self) -> Option<&mut Recording> {
+    fn get_defining_recording(&mut self) -> Option<(&mut Recording, &mut HashSet<u64>)> {
         self.active_recording
             .as_mut()
             .and_then(|state| match state {
-                RecordingState::Defining { recording, .. } => {
+                RecordingState::Defining {
+                    recording,
+                    defined_borrows,
+                } => {
                     match self.recordings.get_mut(recording) {
-                        Some(recording) => Some(recording),
+                        Some(recording) => Some((recording, defined_borrows)),
                         // Panic, because this would be a logic error in the program.
                         None => panic!("recording not found: {:?}", recording),
                     }
@@ -813,7 +848,7 @@ impl StreamMessageHandler for StreamActor {
             (DeviceMesh, Vec<String>, Arc<ActorHandle<NcclCommActor>>),
         >,
     ) -> Result<()> {
-        if let Some(recording) = self.get_defining_recording() {
+        if let Some((recording, _)) = self.get_defining_recording() {
             recording.messages.push(StreamMessage::CallFunction(
                 params,
                 device_meshes,
@@ -888,6 +923,19 @@ impl StreamMessageHandler for StreamActor {
         tensor: Ref,
         first_use_sender: PortHandle<(Option<Event>, TensorCellResult)>,
     ) -> Result<()> {
+        if let Some((recording, defined_borrows)) = self.get_defining_recording() {
+            recording.messages.push(StreamMessage::BorrowCreate {
+                borrow,
+                tensor,
+                first_use_sender,
+            });
+            ensure!(
+                defined_borrows.insert(borrow),
+                "duplicate borrow create in recording"
+            );
+            return Ok(());
+        }
+
         let rvalue_result = self
             .env
             .get(&tensor)
@@ -913,16 +961,30 @@ impl StreamMessageHandler for StreamActor {
         _this: &Instance<Self>,
         borrow: u64,
         result: Ref,
-        first_use_receiver: PortReceiver<(Option<Event>, TensorCellResult)>,
+        first_use_receiver: Arc<Mutex<PortReceiver<(Option<Event>, TensorCellResult)>>>,
     ) -> Result<()> {
-        let mut first_use_receiver = first_use_receiver;
-        let (first_use_event, cell) = first_use_receiver.recv().await.map_err(|err| {
-            anyhow!(
-                "failed receiving first use event for borrow {:?}: {:?}",
+        if let Some((recording, _)) = self.get_defining_recording() {
+            recording.messages.push(StreamMessage::BorrowFirstUse {
                 borrow,
-                err
-            )
-        })?;
+                result,
+                first_use_receiver: first_use_receiver.clone(),
+            });
+            return Ok(());
+        }
+
+        let (first_use_event, cell) =
+            first_use_receiver
+                .lock()
+                .await
+                .recv()
+                .await
+                .map_err(|err| {
+                    anyhow!(
+                        "failed receiving first use event for borrow {:?}: {:?}",
+                        borrow,
+                        err
+                    )
+                })?;
 
         if let Some(stream) = self.cuda_stream() {
             stream.wait_event(
@@ -934,7 +996,12 @@ impl StreamMessageHandler for StreamActor {
                 self.env.insert(result, Ok(cell.into()));
             }
             Err(err) => {
-                self.env.insert(result, Err(err.clone()));
+                self.env.insert(
+                    result,
+                    Err(Arc::new(CallFunctionError::DependentError(
+                        err.unwrap_dependent_error().unwrap_or(err),
+                    ))),
+                );
             }
         }
         Ok(())
@@ -945,14 +1012,28 @@ impl StreamMessageHandler for StreamActor {
         _this: &Instance<Self>,
         borrow: u64,
         result: Ref,
-        last_use_sender: PortHandle<Option<Event>>,
+        last_use_sender: PortHandle<(Option<Event>, TensorCellResult)>,
     ) -> Result<()> {
+        if let Some((recording, _)) = self.get_defining_recording() {
+            recording.messages.push(StreamMessage::BorrowLastUse {
+                borrow,
+                result,
+                last_use_sender,
+            });
+            return Ok(());
+        }
+
         let event = self.cuda_stream().map(|stream| stream.record_event(None));
-        let _ = self.env.remove(&result).ok_or(anyhow!(
+        let rvalue_or_err = self.env.remove(&result).ok_or(anyhow!(
             "Invalid reference for borrow_last_use: {result:#?}"
         ))?;
+        let tensor = match rvalue_or_err {
+            Ok(RValue::Tensor(t)) => Ok(t),
+            Err(e) => Err(e),
+            _ => bail!("invalid rvalue type for borrow_last_use"),
+        };
 
-        last_use_sender.send(event).map_err(|err| {
+        last_use_sender.send((event, tensor)).map_err(|err| {
             anyhow!(
                 "failed sending last use event for borrow {:?}: {:?}",
                 borrow,
@@ -965,16 +1046,31 @@ impl StreamMessageHandler for StreamActor {
         &mut self,
         _this: &Instance<Self>,
         borrow: u64,
-        last_use_receiver: PortReceiver<Option<Event>>,
+        last_use_receiver: Arc<Mutex<PortReceiver<(Option<Event>, TensorCellResult)>>>,
     ) -> Result<()> {
-        let mut last_use_receiver = last_use_receiver;
-        let last_use_event = last_use_receiver.recv().await.map_err(|err| {
-            anyhow!(
-                "failed receiving last use event for borrow {:?}: {:?}",
+        if let Some((recording, defined_borrows)) = self.get_defining_recording() {
+            recording.messages.push(StreamMessage::BorrowDrop {
                 borrow,
-                err
-            )
-        })?;
+                last_use_receiver: last_use_receiver.clone(),
+            });
+            ensure!(
+                defined_borrows.remove(&borrow),
+                "borrow drop for borrow not defined in recording"
+            );
+            return Ok(());
+        }
+
+        // The borrowed cell isn't used directly, but we still want to receive it here
+        // so that the underlying tensor isn't dropped until after we synchronize the
+        // CUDA streams.
+        let (last_use_event, _cell) =
+            last_use_receiver.lock().await.recv().await.map_err(|err| {
+                anyhow!(
+                    "failed receiving last use event for borrow {:?}: {:?}",
+                    borrow,
+                    err
+                )
+            })?;
 
         if let Some(stream) = self.cuda_stream() {
             stream.wait_event(
@@ -986,7 +1082,7 @@ impl StreamMessageHandler for StreamActor {
     }
 
     async fn delete_refs(&mut self, _this: &Instance<Self>, refs: Vec<Ref>) -> Result<()> {
-        if let Some(recording) = self.get_defining_recording() {
+        if let Some((recording, _)) = self.get_defining_recording() {
             recording.messages.push(StreamMessage::DeleteRefs(refs));
             return Ok(());
         }
@@ -1393,7 +1489,7 @@ impl StreamMessageHandler for StreamActor {
         argument_index: usize,
     ) -> Result<()> {
         match self.get_defining_recording() {
-            Some(recording) => {
+            Some((recording, _)) => {
                 recording.messages.push(StreamMessage::RecordingFormal {
                     result,
                     argument_index,
@@ -1411,7 +1507,7 @@ impl StreamMessageHandler for StreamActor {
         output_index: usize,
     ) -> Result<()> {
         match self.get_defining_recording() {
-            Some(recording) => {
+            Some((recording, _)) => {
                 recording.messages.push(StreamMessage::RecordingResult {
                     result,
                     output_index,
@@ -1526,6 +1622,10 @@ impl StreamMessageHandler for StreamActor {
                         );
                     }
                 }
+                StreamMessage::BorrowLastUse { ref result, .. } => {
+                    all_defined_refs.remove(result);
+                    StreamMessageHandler::handle(self, this, message.clone_for_recording()).await?;
+                }
                 _ => {
                     StreamMessageHandler::handle(self, this, message.clone_for_recording()).await?;
                 }
@@ -1579,12 +1679,9 @@ impl StreamMessageHandler for StreamActor {
             }
         }
 
-        // Sanity check. The only refs remaining in all_defined_refs should be the
-        // formal refs, since the controller should have generated DeleteRefs messages
-        // for all other refs defined by the recording.
-        assert_eq!(all_defined_refs.len(), formal_to_actual_refs.len());
-
-        // Delete the formal refs.
+        // Delete the formal refs and some subset of the RecordingResult refs. The
+        // controller should have generated DeleteRefs messages for all other refs
+        // defined by the recording.
         StreamMessageHandler::handle(
             self,
             this,
@@ -1680,6 +1777,7 @@ impl StreamMessageHandler for StreamActor {
 #[cfg(test)]
 mod tests {
     use hyperactor::actor::ActorStatus;
+    use hyperactor::cap;
     use hyperactor::id;
     use hyperactor::supervision::ActorSupervisionEvent;
     use monarch_messages::controller::ControllerMessage;
@@ -1703,6 +1801,7 @@ mod tests {
         #[allow(dead_code)]
         supervision_rx: PortReceiver<ActorSupervisionEvent>,
         controller_rx: PortReceiver<ControllerMessage>,
+        controller_actor: ActorRef<ControllerActor>,
         next_ref: Ref,
     }
 
@@ -1736,6 +1835,7 @@ mod tests {
                 client,
                 supervision_rx,
                 controller_rx,
+                controller_actor,
                 next_ref: 0.into(),
             })
         }
@@ -1780,21 +1880,20 @@ mod tests {
         }
     }
 
-    async fn check_fetch_result(
-        test_setup: &mut TestSetup,
+    async fn fetch_result(
+        caps: &impl cap::CanSend,
+        stream_actor: ActorHandle<StreamActor>,
         seq: Seq,
         reference: Ref,
-        expected_backtrace: &str,
     ) {
         let ref_to_send =
             Python::with_gil(|py| PickledPyObject::pickle(reference.into_py(py).bind(py)).unwrap());
 
-        test_setup
-            .stream_actor
+        stream_actor
             .send_value(
-                &test_setup.client,
+                caps,
                 seq,
-                test_setup.stream_actor.actor_id().clone(),
+                stream_actor.actor_id().clone(),
                 Vec::new(),
                 None,
                 vec![WireValue::PyObject(ref_to_send)],
@@ -1803,9 +1902,20 @@ mod tests {
                 None,
             )
             .await
-            .unwrap();
+            .unwrap()
+    }
 
-        let controller_msg = test_setup.controller_rx.recv().await.unwrap();
+    async fn check_fetch_result_error(
+        caps: &impl cap::CanSend,
+        stream_actor: ActorHandle<StreamActor>,
+        seq: Seq,
+        reference: Ref,
+        controller_rx: &mut PortReceiver<ControllerMessage>,
+        expected_backtrace: &str,
+    ) {
+        fetch_result(caps, stream_actor, seq, reference).await;
+
+        let controller_msg = controller_rx.recv().await.unwrap();
         match controller_msg {
             ControllerMessage::FetchResult {
                 seq: actual_seq,
@@ -1819,6 +1929,25 @@ mod tests {
                     err.backtrace
                 );
             }
+            _ => panic!("Unexpected controller message: {:?}", controller_msg),
+        };
+    }
+
+    async fn check_fetch_result_value(
+        caps: &impl cap::CanSend,
+        stream_actor: ActorHandle<StreamActor>,
+        seq: Seq,
+        reference: Ref,
+        controller_rx: &mut PortReceiver<ControllerMessage>,
+    ) {
+        fetch_result(caps, stream_actor, seq, reference).await;
+
+        let controller_msg = controller_rx.recv().await.unwrap();
+        match controller_msg {
+            ControllerMessage::FetchResult {
+                value: Ok(_),
+                seq: actual_seq,
+            } => assert_eq!(seq, actual_seq),
             _ => panic!("Unexpected controller message: {:?}", controller_msg),
         };
     }
@@ -2268,7 +2397,15 @@ mod tests {
         // This tests that the DependentError was never reported to the controller.
         // If it were reported to the controller, the next message would match
         // RemoteFunctionFailed instead of FetchResult.
-        check_fetch_result(&mut test_setup, 3.into(), actual_result0_ref, "bad tensor").await;
+        check_fetch_result_error(
+            &test_setup.client,
+            test_setup.stream_actor.clone(),
+            3.into(),
+            actual_result0_ref,
+            &mut test_setup.controller_rx,
+            "bad tensor",
+        )
+        .await;
 
         Ok(())
     }
@@ -2645,7 +2782,404 @@ mod tests {
         // This tests that the DependentError was never reported to the controller.
         // If it were reported to the controller, the next message would match
         // RemoteFunctionFailed instead of FetchResult.
-        check_fetch_result(&mut test_setup, 3.into(), captured_ref, "RecordingFailed").await;
+        check_fetch_result_error(
+            &test_setup.client,
+            test_setup.stream_actor.clone(),
+            3.into(),
+            captured_ref,
+            &mut test_setup.controller_rx,
+            "RecordingFailed",
+        )
+        .await;
+
+        Ok(())
+    }
+
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_borrow_create_duplicate_borrow() -> Result<()> {
+        let mut test_setup = TestSetup::new().await?;
+        test_setup
+            .stream_actor
+            .define_recording(&test_setup.client, 0.into())
+            .await?;
+
+        let borrow_id = 1;
+        let tensor_ref = test_setup.next_ref();
+        let (first_use_sender, _first_use_receiver) = test_setup.client.open_port();
+
+        test_setup
+            .stream_actor
+            .borrow_create(
+                &test_setup.client,
+                borrow_id,
+                tensor_ref,
+                first_use_sender.clone(),
+            )
+            .await?;
+
+        test_setup
+            .stream_actor
+            .borrow_create(&test_setup.client, borrow_id, tensor_ref, first_use_sender)
+            .await?;
+
+        assert_actor_failed_with_msg(
+            &test_setup.proc,
+            test_setup.stream_actor.actor_id(),
+            "duplicate borrow create in recording".into(),
+        )
+        .await;
+
+        Ok(())
+    }
+
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_borrow_drop_borrow_not_defined() -> Result<()> {
+        let test_setup = TestSetup::new().await?;
+        test_setup
+            .stream_actor
+            .define_recording(&test_setup.client, 0.into())
+            .await?;
+
+        let borrow_id = 1;
+        let (_last_use_sender, last_use_receiver) = test_setup.client.open_port();
+
+        test_setup
+            .stream_actor
+            .borrow_drop(
+                &test_setup.client,
+                borrow_id,
+                Arc::new(Mutex::new(last_use_receiver)),
+            )
+            .await?;
+
+        assert_actor_failed_with_msg(
+            &test_setup.proc,
+            test_setup.stream_actor.actor_id(),
+            "borrow drop for borrow not defined in recording".into(),
+        )
+        .await;
+
+        Ok(())
+    }
+
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_borrow_not_dropped_before_finalize() -> Result<()> {
+        let mut test_setup = TestSetup::new().await?;
+        test_setup
+            .stream_actor
+            .define_recording(&test_setup.client, 0.into())
+            .await?;
+
+        let borrow_id = 1;
+        let tensor_ref = test_setup.next_ref();
+        let (first_use_sender, _first_use_receiver) = test_setup.client.open_port();
+
+        test_setup
+            .stream_actor
+            .borrow_create(
+                &test_setup.client,
+                borrow_id,
+                tensor_ref,
+                first_use_sender.clone(),
+            )
+            .await?;
+
+        // Attempt to finalize the recording without dropping the borrow
+        test_setup
+            .stream_actor
+            .finalize_recording(&test_setup.client, 0.into())
+            .await?;
+
+        assert_actor_failed_with_msg(
+            &test_setup.proc,
+            test_setup.stream_actor.actor_id(),
+            "all borrows created within recording must be dropped within recording".into(),
+        )
+        .await;
+
+        Ok(())
+    }
+
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_borrow_in_recording() -> Result<()> {
+        let mut test_setup = TestSetup::new().await?;
+
+        let borrower_stream = test_setup
+            .proc
+            .spawn::<StreamActor>(
+                "stream1",
+                StreamParams {
+                    world_size: 1,
+                    rank: 0,
+                    creation_mode: StreamCreationMode::CreateNewStream,
+                    id: 1.into(),
+                    device: None,
+                    controller_actor: test_setup.controller_actor.clone(),
+                },
+            )
+            .await?;
+
+        let lender_stream = test_setup.stream_actor.clone();
+
+        let borrow_id = 1;
+        let (first_use_sender, first_use_receiver) = test_setup.client.open_port();
+        let (last_use_sender, last_use_receiver) = test_setup.client.open_port();
+
+        // Stream 1: Define a recording that creates a borrow and drops it.
+        lender_stream
+            .define_recording(&test_setup.client, 0.into())
+            .await?;
+
+        let formal_ref = test_setup.next_ref();
+        lender_stream
+            .recording_formal(&test_setup.client, formal_ref, 0)
+            .await?;
+
+        lender_stream
+            .borrow_create(&test_setup.client, borrow_id, formal_ref, first_use_sender)
+            .await?;
+
+        lender_stream
+            .borrow_drop(
+                &test_setup.client,
+                borrow_id,
+                Arc::new(Mutex::new(last_use_receiver)),
+            )
+            .await?;
+
+        lender_stream
+            .finalize_recording(&test_setup.client, 0.into())
+            .await?;
+
+        let borrower_tensor_ref = test_setup.next_ref();
+        let borrower_tensor = TensorCell::new(factory_float_tensor(
+            &[1.0, 2.0, 3.0],
+            "cuda".try_into().unwrap(),
+        ));
+
+        borrower_stream
+            .set_tensor_ref_unit_tests_only(
+                &test_setup.client,
+                borrower_tensor_ref,
+                Ok(borrower_tensor.clone()),
+            )
+            .await?;
+
+        // Stream 2: Define a recording that uses the borrow from Stream 1.
+        borrower_stream
+            .define_recording(&test_setup.client, 0.into())
+            .await?;
+
+        let borrowed_ref = test_setup.next_ref();
+
+        borrower_stream
+            .borrow_first_use(
+                &test_setup.client,
+                borrow_id,
+                borrowed_ref,
+                Arc::new(Mutex::new(first_use_receiver)),
+            )
+            .await?;
+
+        let result_ref = test_setup.next_ref();
+        borrower_stream
+            .call_function(
+                &test_setup.client,
+                CallFunctionParams {
+                    seq: 100.into(),
+                    function: ResolvableFunction::FunctionPath("torch.ops.aten.add.Tensor".into()),
+                    args: vec![
+                        WireValue::Ref(borrowed_ref),
+                        WireValue::Ref(borrower_tensor_ref),
+                    ],
+                    kwargs: HashMap::new(),
+                    results: vec![Some(result_ref)],
+                    mutates: vec![],
+                    stream: 1.into(),
+                    remote_process_groups: Vec::new(),
+                },
+                HashMap::new(),
+                HashMap::new(),
+            )
+            .await?;
+
+        borrower_stream
+            .borrow_last_use(&test_setup.client, borrow_id, borrowed_ref, last_use_sender)
+            .await?;
+
+        borrower_stream
+            .recording_result(&test_setup.client, result_ref, 0)
+            .await?;
+
+        borrower_stream
+            .finalize_recording(&test_setup.client, 0.into())
+            .await?;
+
+        // Set up a tensor in Stream 1 and call the recording.
+        let tensor = TensorCell::new(factory_float_tensor(
+            &[4.0, 5.0, 6.0],
+            "cuda".try_into().unwrap(),
+        ));
+        let input_tensor_ref = test_setup.next_ref();
+        let result_tensor_ref = test_setup.next_ref();
+        lender_stream
+            .set_tensor_ref_unit_tests_only(
+                &test_setup.client,
+                input_tensor_ref,
+                Ok(tensor.clone()),
+            )
+            .await?;
+
+        let lender_future = lender_stream.call_recording(
+            &test_setup.client,
+            0.into(),
+            0.into(),
+            vec![],
+            vec![input_tensor_ref],
+        );
+
+        let borrower_future = borrower_stream.call_recording(
+            &test_setup.client,
+            0.into(),
+            0.into(),
+            vec![result_tensor_ref],
+            vec![],
+        );
+
+        tokio::try_join!(lender_future, borrower_future)?;
+
+        let result_tensor = borrower_stream
+            .get_tensor_ref_unit_tests_only(&test_setup.client, result_tensor_ref)
+            .await?
+            .unwrap()
+            .unwrap();
+
+        let expected_tensor = TensorCell::new(factory_float_tensor(
+            &[5.0, 7.0, 9.0],
+            "cuda".try_into().unwrap(),
+        ));
+        assert!(allclose(&result_tensor.borrow(), &expected_tensor.borrow()).unwrap());
+
+        // Set borrower_tensor to a tensor with only 2 elements to cause a failure.
+        let invalid_borrower_tensor = TensorCell::new(factory_float_tensor(
+            &[1.0, 2.0],
+            "cuda".try_into().unwrap(),
+        ));
+        borrower_stream
+            .set_tensor_ref_unit_tests_only(
+                &test_setup.client,
+                borrower_tensor_ref,
+                Ok(invalid_borrower_tensor.clone()),
+            )
+            .await?;
+
+        // Call the recording again.
+        let lender_future = lender_stream.call_recording(
+            &test_setup.client,
+            1.into(),
+            0.into(),
+            vec![],
+            vec![input_tensor_ref],
+        );
+
+        let borrower_future = borrower_stream.call_recording(
+            &test_setup.client,
+            1.into(),
+            0.into(),
+            vec![result_tensor_ref],
+            vec![],
+        );
+
+        tokio::try_join!(lender_future, borrower_future)?;
+
+        // Check that the borrower_stream reports the error to the controller.
+        let controller_msg = test_setup.controller_rx.recv().await.unwrap();
+        match controller_msg {
+            ControllerMessage::RemoteFunctionFailed { seq, error } => {
+                assert_eq!(seq, 1.into());
+                assert!(
+                    error.backtrace.contains("recording failed"),
+                    "Unexpected WorkerError: {:?}",
+                    error
+                );
+                assert_eq!(&error.worker_actor_id, borrower_stream.actor_id());
+            }
+            _ => panic!("Unexpected controller message: {:?}", controller_msg),
+        };
+
+        // Check that no error was reported from the lender stream
+        check_fetch_result_value(
+            &test_setup.client,
+            lender_stream.clone(),
+            2.into(),
+            input_tensor_ref,
+            &mut test_setup.controller_rx,
+        )
+        .await;
+
+        // Set the recording's input tensor to an error.
+        let input_error = Arc::new(CallFunctionError::Anyhow(anyhow!("input error")));
+        lender_stream
+            .set_tensor_ref_unit_tests_only(
+                &test_setup.client,
+                input_tensor_ref,
+                Err(input_error.clone()),
+            )
+            .await?;
+
+        let lender_future = lender_stream.call_recording(
+            &test_setup.client,
+            3.into(),
+            0.into(),
+            vec![],
+            vec![input_tensor_ref],
+        );
+
+        let borrower_future = borrower_stream.call_recording(
+            &test_setup.client,
+            3.into(),
+            0.into(),
+            vec![result_tensor_ref],
+            vec![],
+        );
+
+        tokio::try_join!(lender_future, borrower_future)?;
+
+        // Verify that borrower_stream sets a CallFunctionError::DependentError on result_tensor_ref.
+        let result_error = borrower_stream
+            .get_tensor_ref_unit_tests_only(&test_setup.client, result_tensor_ref)
+            .await?
+            .unwrap()
+            .unwrap_err();
+
+        match result_error.as_ref() {
+            CallFunctionError::DependentError(dep_err) => {
+                assert!(Arc::ptr_eq(dep_err, &input_error));
+            }
+            _ => panic!("Unexpected error: {:?}", result_error),
+        }
+
+        // Verify that neither stream sends a failure message to the controller.
+        check_fetch_result_error(
+            &test_setup.client,
+            lender_stream,
+            4.into(),
+            input_tensor_ref,
+            &mut test_setup.controller_rx,
+            "input error",
+        )
+        .await;
+
+        // Verify that neither stream sends a failure message to the controller.
+        check_fetch_result_error(
+            &test_setup.client,
+            borrower_stream,
+            5.into(),
+            result_tensor_ref,
+            &mut test_setup.controller_rx,
+            "input error",
+        )
+        .await;
 
         Ok(())
     }
