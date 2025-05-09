@@ -8,6 +8,7 @@ mod assign;
 pub mod bootstrap;
 pub mod comm;
 pub mod mesh;
+mod metrics;
 pub mod proc_mesh;
 pub mod reference;
 pub mod shortuuid;

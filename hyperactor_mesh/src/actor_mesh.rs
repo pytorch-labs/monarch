@@ -29,6 +29,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::Mesh;
+use crate::metrics;
 use crate::proc_mesh::ProcMesh;
 
 /// Abstracts over shared and borrowed references to a [`ProcMesh`].
@@ -90,6 +91,10 @@ impl<'a, A: RemoteActor> ActorMesh<'a, A> {
     where
         A: RemoteHandles<Cast<M>>,
     {
+        let _ = metrics::ACTOR_MESH_CAST_DURATION.start(hyperactor::kv_pairs!(
+            "message_type" => M::typename(),
+            "message_variant" => message.arm().unwrap_or_default(),
+        ));
         let ranks = sel
             .eval(&EvalOpts::strict(), self.shape().slice())
             .map_err(|err| CastError::InvalidSelection(sel, err))?;
@@ -118,6 +123,10 @@ impl<'a, A: RemoteActor> ActorMesh<'a, A> {
         M: RemoteMessage + Clone,
         A: RemoteHandles<Cast<M>>,
     {
+        let _ = metrics::ACTOR_MESH_CAST_DURATION.start(hyperactor::kv_pairs!(
+            "message_type" => M::typename(),
+            "message_variant" => message.arm().unwrap_or_default(),
+        ));
         let sel_iter = sel
             .eval(&EvalOpts::strict(), shape.slice())
             .map_err(|err| CastError::InvalidSelection(sel, err))?;

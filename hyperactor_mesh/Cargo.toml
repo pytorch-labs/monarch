@@ -19,6 +19,7 @@ bitmaps = "3.2.1"
 enum-as-inner = "0.6.0"
 hyperactor = { path = "../hyperactor" }
 hyperactor_mesh_macros = { path = "../hyperactor_mesh_macros" }
+hyperactor_telemetry = { path = "../hyperactor_telemetry" }
 mockall = "0.13.1"
 ndslice = { path = "../ndslice" }
 rand = { version = "0.8", features = ["small_rng"] }
@@ -30,6 +31,5 @@ tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 
 [dev-dependencies]
 buck-resources = "1"
-hyperactor_telemetry = { path = "../hyperactor_telemetry" }
 timed_test = { path = "../timed_test" }
 tracing-test = { version = "0.2.3", features = ["no-env-filter"] }
