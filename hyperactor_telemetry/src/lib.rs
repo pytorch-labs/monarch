@@ -50,6 +50,7 @@ use tracing_glog::GlogFields;
 use tracing_glog::LocalTime;
 use tracing_subscriber::Layer;
 use tracing_subscriber::filter::LevelFilter;
+use tracing_subscriber::filter::Targets;
 use tracing_subscriber::fmt;
 
 use crate::env::Env;
@@ -402,10 +403,16 @@ pub fn initialize_logging() {
         .event_format(Glog::default().with_timer(LocalTime::default()))
         .fmt_fields(GlogFields::default().compact())
         .with_ansi(std::io::stderr().is_terminal())
-        .with_filter(LevelFilter::from_level(
-            tracing::Level::from_str(&std::env::var("RUST_LOG").unwrap_or(glog_level.to_string()))
-                .expect("Invalid log level"),
-        ));
+        .with_filter(
+            Targets::new()
+                .with_default(LevelFilter::from_level(
+                    tracing::Level::from_str(
+                        &std::env::var("RUST_LOG").unwrap_or(glog_level.to_string()),
+                    )
+                    .expect("Invalid log level"),
+                ))
+                .with_target("opentelemetry", LevelFilter::OFF), // otel has some log span under debug that we don't care about
+        );
 
     use tracing_subscriber::Registry;
     use tracing_subscriber::layer::SubscriberExt;
@@ -488,7 +495,7 @@ pub mod env {
     pub const HYPERACTOR_EXECUTION_ID_ENV: &str = "HYPERACTOR_EXECUTION_ID";
     pub const MAST_HPC_JOB_NAME_ENV: &str = "MAST_HPC_JOB_NAME";
     pub const OTEL_EXPORTER: &str = "HYPERACTOR_OTEL_EXPORTER";
-    const MAST_ENVIRONMENT: &str = "MAST_ENVIRONMENT";
+    pub const MAST_ENVIRONMENT: &str = "MAST_ENVIRONMENT";
 
     /// Forward or generate a uuid for this execution. When running in production on mast, this is provided to
     /// us via the MAST_HPC_JOB_NAME env var. Subprocesses should either forward the MAST_HPC_JOB_NAME
