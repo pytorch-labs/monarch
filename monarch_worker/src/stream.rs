@@ -78,8 +78,6 @@ thread_local! {
 
 #[derive(Debug)]
 struct Recording {
-    // TODO(slurye): Use this field in a future diff.
-    #[allow(dead_code)]
     messages: Vec<StreamMessage>,
 }
 
@@ -188,7 +186,7 @@ pub enum StreamMessage {
 
     SetValue {
         results: Vec<Option<Ref>>,
-        pipe: Result<PortHandle<PipeMessage>, CallFunctionError>,
+        pipe: Result<PortHandle<PipeMessage>, Arc<CallFunctionError>>,
     },
 
     DefineRecording {
@@ -323,6 +321,10 @@ impl StreamMessage {
                 factory: factory.clone(),
                 comm: comm.clone(),
             },
+            StreamMessage::SetValue { results, pipe } => StreamMessage::SetValue {
+                results: results.clone(),
+                pipe: pipe.clone(),
+            },
             other => panic!(
                 "StreamMessage variant not supported in recording: {:?}",
                 other
@@ -348,7 +350,10 @@ impl StreamMessage {
                     HashSet::new()
                 }
             }
-            // TODO(slurye): Add remaining message types.
+            StreamMessage::SetValue { results, .. } => {
+                results.iter().filter_map(|&ref_| ref_).collect()
+            }
+            // TODO(slurye): Add SendValue eventually.
             _ => HashSet::new(),
         }
     }
@@ -371,7 +376,7 @@ impl StreamMessage {
                     HashSet::new()
                 }
             }
-            // TODO(slurye): Add message types that mutate their inputs.
+            // TODO(slurye): Add SendValue eventually.
             _ => HashSet::new(),
         }
     }
@@ -1544,8 +1549,26 @@ impl StreamMessageHandler for StreamActor {
         &mut self,
         this: &Instance<Self>,
         results: Vec<Option<Ref>>,
-        pipe: Result<PortHandle<PipeMessage>, CallFunctionError>,
+        pipe: Result<PortHandle<PipeMessage>, Arc<CallFunctionError>>,
     ) -> Result<()> {
+        if let Some((recording, _)) = self.get_defining_recording() {
+            recording
+                .messages
+                .push(StreamMessage::SetValue { results, pipe });
+            return Ok(());
+        }
+
+        let pipe = match pipe {
+            Ok(pipe) => Ok(pipe),
+            Err(err) => match err.as_ref() {
+                CallFunctionError::DependentError(dep_err) => {
+                    Err(CallFunctionError::DependentError(dep_err.clone()))
+                }
+                CallFunctionError::RefNotFound(ref_) => Err(CallFunctionError::RefNotFound(*ref_)),
+                _ => bail!("unexpected error for pipe in set_value: {:?}", err),
+            },
+        };
+
         let (tx, rx) = this.open_once_port();
         let value = async {
             pipe?
@@ -3899,6 +3922,180 @@ mod tests {
             8.into(),
             actual_result_ref_0,
             &mut test_setup.controller_rx,
+        )
+        .await;
+
+        Ok(())
+    }
+
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_set_value_in_recording_valid_pipe() -> Result<()> {
+        let mut test_setup = TestSetup::new().await?;
+
+        let (pipe_tx, mut pipe_rx) = test_setup.client.open_port();
+
+        let recording_ref = test_setup.next_ref();
+        test_setup
+            .stream_actor
+            .define_recording(&test_setup.client, recording_ref)
+            .await?;
+
+        let result_ref_0 = test_setup.next_ref();
+
+        test_setup
+            .stream_actor
+            .set_value(&test_setup.client, vec![Some(result_ref_0)], Ok(pipe_tx))
+            .await?;
+
+        test_setup
+            .stream_actor
+            .recording_result(&test_setup.client, result_ref_0, 0)
+            .await?;
+
+        test_setup
+            .stream_actor
+            .finalize_recording(&test_setup.client, recording_ref)
+            .await?;
+
+        let real_result_ref = test_setup.next_ref();
+        let recording_fut = test_setup.stream_actor.call_recording(
+            &test_setup.client,
+            0.into(),
+            recording_ref,
+            vec![real_result_ref],
+            vec![],
+        );
+
+        let pipe_fut = async {
+            let msg = pipe_rx.recv().await.unwrap();
+            match msg {
+                PipeMessage::RecvValue(tx) => {
+                    tx.send(PyTree::from(RValue::Tensor(TensorCell::new(
+                        factory_float_tensor(&[1.0, 2.0, 3.0], "cuda".try_into().unwrap()),
+                    ))))
+                    .unwrap();
+                }
+                _ => panic!("Unexpected message"),
+            }
+            Ok(())
+        };
+
+        tokio::try_join!(recording_fut, pipe_fut)?;
+
+        assert!(test_setup.allclose(real_result_ref, &[1.0, 2.0, 3.0]).await);
+
+        // This will cause the next call to set_value to fail.
+        drop(pipe_rx);
+
+        let real_result_ref = test_setup.next_ref();
+        test_setup
+            .stream_actor
+            .call_recording(
+                &test_setup.client,
+                1.into(),
+                recording_ref,
+                vec![real_result_ref],
+                vec![],
+            )
+            .await?;
+
+        let real_result_err = test_setup
+            .stream_actor
+            .get_tensor_ref_unit_tests_only(&test_setup.client, real_result_ref)
+            .await?
+            .unwrap()
+            .unwrap_err();
+        assert!(matches!(
+            real_result_err.as_ref(),
+            CallFunctionError::RecordingFailed { .. }
+        ));
+
+        let controller_msg = test_setup.controller_rx.recv().await.unwrap();
+        match controller_msg {
+            ControllerMessage::RemoteFunctionFailed { seq, error } => {
+                assert_eq!(seq, 1.into());
+                assert!(
+                    error.backtrace.contains("recording failed"),
+                    "Unexpected WorkerError: {:?}",
+                    error
+                );
+            }
+            _ => panic!("Unexpected controller message: {:?}", controller_msg),
+        };
+
+        Ok(())
+    }
+
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_set_value_in_recording_bad_pipe() -> Result<()> {
+        let mut test_setup = TestSetup::new().await?;
+
+        let pipe = Arc::new(CallFunctionError::DependentError(Arc::new(
+            CallFunctionError::Anyhow(anyhow!("bad pipe")),
+        )));
+
+        let recording_ref = test_setup.next_ref();
+        test_setup
+            .stream_actor
+            .define_recording(&test_setup.client, recording_ref)
+            .await?;
+
+        let result_ref_0 = test_setup.next_ref();
+
+        test_setup
+            .stream_actor
+            .set_value(
+                &test_setup.client,
+                vec![Some(result_ref_0)],
+                Err(pipe.clone()),
+            )
+            .await?;
+
+        test_setup
+            .stream_actor
+            .recording_result(&test_setup.client, result_ref_0, 0)
+            .await?;
+
+        test_setup
+            .stream_actor
+            .finalize_recording(&test_setup.client, recording_ref)
+            .await?;
+
+        let real_result_ref = test_setup.next_ref();
+        test_setup
+            .stream_actor
+            .call_recording(
+                &test_setup.client,
+                0.into(),
+                recording_ref,
+                vec![real_result_ref],
+                vec![],
+            )
+            .await?;
+
+        let real_result_err = test_setup
+            .stream_actor
+            .get_tensor_ref_unit_tests_only(&test_setup.client, real_result_ref)
+            .await?
+            .unwrap()
+            .unwrap_err();
+        match real_result_err.as_ref() {
+            CallFunctionError::DependentError(err) => match err.as_ref() {
+                CallFunctionError::Anyhow(err) => {
+                    assert!(err.to_string().contains("bad pipe"));
+                }
+                _ => panic!("Unexpected error: {:?}", real_result_err),
+            },
+            _ => panic!("Unexpected error: {:?}", real_result_err),
+        }
+
+        check_fetch_result_error(
+            &test_setup.client,
+            test_setup.stream_actor.clone(),
+            1.into(),
+            real_result_ref,
+            &mut test_setup.controller_rx,
+            "bad pipe",
         )
         .await;
 

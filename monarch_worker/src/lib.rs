@@ -863,10 +863,10 @@ impl WorkerMessageHandler for WorkerActor {
     ) -> Result<()> {
         // Get a port for the pipe
         let pipe = match self.pipes.get(&pipe) {
-            None => Err(CallFunctionError::RefNotFound(pipe)),
+            None => Err(Arc::new(CallFunctionError::RefNotFound(pipe))),
             Some(pipe) => match pipe.as_ref() {
                 Ok(pipe) => Ok(pipe.port()),
-                Err(e) => Err(CallFunctionError::DependentError(e.clone())),
+                Err(e) => Err(Arc::new(CallFunctionError::DependentError(e.clone()))),
             },
         };
 
