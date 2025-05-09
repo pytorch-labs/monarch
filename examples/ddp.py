@@ -10,7 +10,7 @@ from typing import Callable, cast, Generator, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
-from monarch import fetch_shard, Simulator, Stream, Tensor
+from monarch import fetch_shard, no_mesh, Simulator, Stream, Tensor
 from monarch.common.borrows import Borrow
 from monarch.gradient_generator import grad_generator
 from monarch.memory import dump_memory_snapshot, record_memory_history
@@ -231,7 +231,8 @@ def main(running_as_unittest=False):
                     if args.profile:
                         prof.step()
 
-                    logging.info(f"Step {step} done, loss {loss}")
+                    with no_mesh.activate():
+                        logging.info(f"Step {step} done, loss {loss}")
 
             maybe_dump_snapshot(args.memory_snapshot)
             if tensorboard:
