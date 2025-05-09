@@ -17,5 +17,4 @@ fn main() {
     // Initialize logging with default configuration
     initialize_logging();
     tracing::info!("info log");
-    let _guard = otel_rs::sdk::tracing::FlushGuard {};
 }
