@@ -287,6 +287,27 @@ impl StreamMessage {
                 borrow: *borrow,
                 last_use_receiver: last_use_receiver.clone(),
             },
+            StreamMessage::Reduce {
+                comm,
+                dim_size,
+                result,
+                local_tensor,
+                factory,
+                reduction,
+                scatter,
+                in_place,
+                out,
+            } => StreamMessage::Reduce {
+                comm: comm.clone(),
+                dim_size: *dim_size,
+                result: *result,
+                local_tensor: *local_tensor,
+                factory: factory.clone(),
+                reduction: reduction.clone(),
+                scatter: *scatter,
+                in_place: *in_place,
+                out: out.clone(),
+            },
             other => panic!(
                 "StreamMessage variant not supported in recording: {:?}",
                 other
@@ -302,6 +323,7 @@ impl StreamMessage {
                 params.results.iter().filter_map(|&ref_| ref_).collect()
             }
             StreamMessage::BorrowFirstUse { result, .. } => HashSet::from([*result]),
+            StreamMessage::Reduce { result, .. } => HashSet::from([*result]),
             // TODO(slurye): Add remaining message types.
             _ => HashSet::new(),
         }
@@ -311,6 +333,20 @@ impl StreamMessage {
     fn get_mutated_refs(&self) -> HashSet<Ref> {
         match self {
             StreamMessage::CallFunction(params, ..) => HashSet::from_iter(params.mutates.clone()),
+            StreamMessage::Reduce {
+                out,
+                in_place,
+                local_tensor,
+                ..
+            } => {
+                if *in_place {
+                    HashSet::from([*local_tensor])
+                } else if let Some(out) = out {
+                    HashSet::from([*out])
+                } else {
+                    HashSet::new()
+                }
+            }
             // TODO(slurye): Add message types that mutate their inputs.
             _ => HashSet::new(),
         }
@@ -833,6 +869,21 @@ impl StreamActor {
                 RecordingState::Running => None,
             })
     }
+
+    fn get_dependent_error(&self, refs: &[Ref]) -> Result<Option<Arc<CallFunctionError>>> {
+        for ref_ in refs {
+            let rvalue_or_err = self
+                .env
+                .get(ref_)
+                .ok_or_else(|| anyhow!("tensor not found in stream: {ref_:#?}"))?;
+            if let Err(err) = rvalue_or_err {
+                return Ok(Some(Arc::new(CallFunctionError::DependentError(
+                    err.unwrap_dependent_error().unwrap_or(err.clone()),
+                ))));
+            }
+        }
+        Ok(None)
+    }
 }
 
 #[async_trait]
@@ -1127,6 +1178,21 @@ impl StreamMessageHandler for StreamActor {
         in_place: bool,
         out: Option<Ref>,
     ) -> Result<()> {
+        if let Some((recording, _)) = self.get_defining_recording() {
+            recording.messages.push(StreamMessage::Reduce {
+                comm,
+                dim_size,
+                result,
+                local_tensor,
+                factory,
+                reduction,
+                scatter,
+                in_place,
+                out,
+            });
+            return Ok(());
+        }
+
         let stream = self
             .cuda_stream()
             .expect("reductions not yet supported for non-CUDA workers")
@@ -1189,12 +1255,25 @@ impl StreamMessageHandler for StreamActor {
                     let output_cell = if in_place {
                         input_cell.clone()
                     } else {
-                        out_cell.unwrap_or({
-                            let borrow = input_cell.try_borrow().map_err(|e| anyhow!("{e:?}"))?;
-                            let cloned = deep_clone(&borrow);
-                            TensorCell::new(cloned)
-                        })
+                        out_cell.map_or(
+                            {
+                                let borrow =
+                                    input_cell.try_borrow().map_err(|e| anyhow!("{e:?}"))?;
+                                let cloned = deep_clone(&borrow);
+                                Ok(TensorCell::new(cloned))
+                            },
+                            |out_cell| -> Result<_, anyhow::Error> {
+                                let mut out_borrow =
+                                    out_cell.try_borrow_mut().map_err(|e| anyhow!("{e:?}"))?;
+                                let in_borrow =
+                                    input_cell.try_borrow().map_err(|e| anyhow!("{e:?}"))?;
+                                out_borrow.copy_(&in_borrow);
+                                drop(out_borrow);
+                                Ok(out_cell)
+                            },
+                        )?
                     };
+
                     comm.all_reduce(this, output_cell.clone(), op, stream)
                         .await?;
                     output_cell
@@ -1202,7 +1281,6 @@ impl StreamMessageHandler for StreamActor {
             }
         };
 
-        // Populate result
         self.env.insert(result, Ok(output_cell.into()));
         Ok(())
     }
@@ -1604,7 +1682,7 @@ impl StreamMessageHandler for StreamActor {
                     for ref_ in refs {
                         all_defined_refs.remove(ref_);
                     }
-                    StreamMessageHandler::handle(self, this, message.clone_for_recording()).await?;
+                    StreamMessageHandler::handle(self, this, message).await?;
                 }
                 StreamMessage::CallFunction { .. } if error.is_some() => {
                     // CallFunction is expensive. If the recording already failed, then
@@ -1624,10 +1702,27 @@ impl StreamMessageHandler for StreamActor {
                 }
                 StreamMessage::BorrowLastUse { ref result, .. } => {
                     all_defined_refs.remove(result);
-                    StreamMessageHandler::handle(self, this, message.clone_for_recording()).await?;
+                    StreamMessageHandler::handle(self, this, message).await?;
+                }
+                StreamMessage::Reduce {
+                    local_tensor,
+                    ref out,
+                    ..
+                } => {
+                    // Reduce doesn't propagate errors to the result ref, so we need
+                    // to check for existing errors on the input tensors and set the
+                    // recording's error if necessary.
+                    if error.is_none() {
+                        let inputs_to_check = [Some(local_tensor), out.clone()]
+                            .iter()
+                            .filter_map(|r| *r)
+                            .collect::<Vec<_>>();
+                        error = self.get_dependent_error(inputs_to_check.as_slice())?;
+                    }
+                    StreamMessageHandler::handle(self, this, message).await?;
                 }
                 _ => {
-                    StreamMessageHandler::handle(self, this, message.clone_for_recording()).await?;
+                    StreamMessageHandler::handle(self, this, message).await?;
                 }
             };
 
@@ -1650,6 +1745,15 @@ impl StreamMessageHandler for StreamActor {
                                 error = Some(err.clone());
                             }
                             _ => {
+                                // Need to retrieve the message from the recording again, since
+                                // the original message object was already moved.
+                                let message = self
+                                    .recordings
+                                    .get(&recording)
+                                    .unwrap()
+                                    .messages
+                                    .get(index)
+                                    .unwrap();
                                 error = Some(Arc::new(CallFunctionError::RecordingFailed {
                                     index,
                                     message: format!("{message:?}"),
@@ -1765,7 +1869,7 @@ impl StreamMessageHandler for StreamActor {
     ) -> Result<Option<TensorCellResult>> {
         match self.env.get(&reference) {
             Some(Ok(rvalue)) => match rvalue {
-                RValue::Tensor(tensor) => Ok(Some(Ok(tensor.clone()))),
+                RValue::Tensor(tensor) => Ok(Some(Ok(tensor.clone().try_cpu().unwrap()))),
                 other => bail!("expected tensor, got {:?}", other),
             },
             Some(Err(err)) => Ok(Some(Err(err.clone()))),
@@ -1823,7 +1927,7 @@ mod tests {
                         rank: 0,
                         creation_mode: StreamCreationMode::UseDefaultStream,
                         id: 0.into(),
-                        device: None,
+                        device: Some(CudaDevice::new(0.into())),
                         controller_actor: controller_actor.clone(),
                     },
                 )
@@ -1846,6 +1950,52 @@ mod tests {
                 id: self.next_ref.id + 1,
             };
             ref_
+        }
+
+        async fn set_tensor(&mut self, reference: Ref, data: &[f32]) -> Result<()> {
+            let tensor = TensorCell::new(factory_float_tensor(data, "cuda".try_into().unwrap()));
+            self.stream_actor
+                .set_tensor_ref_unit_tests_only(&self.client, reference, Ok(tensor))
+                .await
+        }
+
+        async fn allclose(&mut self, reference: Ref, data: &[f32]) -> bool {
+            let actual = self
+                .stream_actor
+                .get_tensor_ref_unit_tests_only(&self.client, reference)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            let b = allclose(
+                &factory_float_tensor(data, "cpu".try_into().unwrap()),
+                &actual.borrow(),
+            )
+            .unwrap();
+            b
+        }
+
+        async fn validate_dependent_error(
+            &mut self,
+            reference: Ref,
+            error: Arc<CallFunctionError>,
+        ) {
+            let result_error = self
+                .stream_actor
+                .get_tensor_ref_unit_tests_only(&self.client, reference)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap_err();
+            match result_error.as_ref() {
+                CallFunctionError::DependentError(dep_err) => {
+                    assert!(Arc::ptr_eq(dep_err, &error));
+                }
+                _ => panic!(
+                    "Unexpected error for ref {:?}: {:?}",
+                    reference, result_error
+                ),
+            }
         }
     }
 
@@ -2243,34 +2393,10 @@ mod tests {
             .await?;
 
         let actual0_ref = 3.into();
-        let actual0_tensor = TensorCell::new(factory_float_tensor(
-            &[1.0, 2.0, 3.0],
-            "cuda".try_into().unwrap(),
-        ));
+        test_setup.set_tensor(actual0_ref, &[1.0, 2.0, 3.0]).await?;
 
         let actual1_ref = 4.into();
-        let actual1_tensor = TensorCell::new(factory_float_tensor(
-            &[4.0, 5.0],
-            "cuda".try_into().unwrap(),
-        ));
-
-        test_setup
-            .stream_actor
-            .set_tensor_ref_unit_tests_only(
-                &test_setup.client,
-                actual0_ref,
-                Ok(actual0_tensor.clone()),
-            )
-            .await?;
-
-        test_setup
-            .stream_actor
-            .set_tensor_ref_unit_tests_only(
-                &test_setup.client,
-                actual1_ref,
-                Ok(actual1_tensor.clone()),
-            )
-            .await?;
+        test_setup.set_tensor(actual1_ref, &[4.0, 5.0]).await?;
 
         // Call the recording with valid tensors for the actual inputs,
         // and store the results in refs 5 and 6.
@@ -2288,27 +2414,11 @@ mod tests {
             .await?;
 
         // Ensure the results are correct.
-        let result0_tensor = test_setup
-            .stream_actor
-            .get_tensor_ref_unit_tests_only(&test_setup.client, actual_result0_ref)
-            .await?;
-        let result1_tensor = test_setup
-            .stream_actor
-            .get_tensor_ref_unit_tests_only(&test_setup.client, actual_result1_ref)
-            .await?;
+        assert!(test_setup.allclose(actual_result0_ref, &[4.0, 5.0]).await);
         assert!(
-            allclose(
-                &result0_tensor.unwrap().unwrap().borrow(),
-                &actual1_tensor.borrow()
-            )
-            .unwrap()
-        );
-        assert!(
-            allclose(
-                &result1_tensor.unwrap().unwrap().borrow(),
-                &actual0_tensor.borrow()
-            )
-            .unwrap()
+            test_setup
+                .allclose(actual_result1_ref, &[1.0, 2.0, 3.0])
+                .await
         );
 
         // Ensure the temporary refs associated with the formals/results have
@@ -2382,16 +2492,9 @@ mod tests {
             .await?;
 
         for ref_ in [actual_result0_ref, actual_result1_ref] {
-            let result = test_setup
-                .stream_actor
-                .get_tensor_ref_unit_tests_only(&test_setup.client, ref_)
-                .await
-                .unwrap();
-            let result_error = result.unwrap().unwrap_err();
-            match result_error.as_ref() {
-                CallFunctionError::DependentError(dep_err) => assert!(Arc::ptr_eq(dep_err, &error)),
-                _ => panic!("Unexpected error: {:?}", error),
-            };
+            test_setup
+                .validate_dependent_error(ref_, error.clone())
+                .await;
         }
 
         // This tests that the DependentError was never reported to the controller.
@@ -2582,47 +2685,13 @@ mod tests {
             .await?;
 
         let actual0_ref = test_setup.next_ref();
-        let actual0_tensor = TensorCell::new(factory_float_tensor(
-            &[1.0, 2.0, 3.0],
-            "cuda".try_into().unwrap(),
-        ));
+        test_setup.set_tensor(actual0_ref, &[1.0, 2.0, 3.0]).await?;
 
         let actual1_ref = test_setup.next_ref();
-        let actual1_tensor = TensorCell::new(factory_float_tensor(
-            &[4.0, 5.0, 6.0],
-            "cuda".try_into().unwrap(),
-        ));
-
-        let captured_tensor = TensorCell::new(factory_float_tensor(
-            &[7.0, 8.0, 9.0],
-            "cuda".try_into().unwrap(),
-        ));
+        test_setup.set_tensor(actual1_ref, &[4.0, 5.0, 6.0]).await?;
 
         test_setup
-            .stream_actor
-            .set_tensor_ref_unit_tests_only(
-                &test_setup.client,
-                actual0_ref,
-                Ok(actual0_tensor.clone()),
-            )
-            .await?;
-
-        test_setup
-            .stream_actor
-            .set_tensor_ref_unit_tests_only(
-                &test_setup.client,
-                actual1_ref,
-                Ok(actual1_tensor.clone()),
-            )
-            .await?;
-
-        test_setup
-            .stream_actor
-            .set_tensor_ref_unit_tests_only(
-                &test_setup.client,
-                captured_ref,
-                Ok(captured_tensor.clone()),
-            )
+            .set_tensor(captured_ref, &[7.0, 8.0, 9.0])
             .await?;
 
         let actual_result_ref = test_setup.next_ref();
@@ -2637,34 +2706,14 @@ mod tests {
             )
             .await?;
 
-        let expected_result = TensorCell::new(factory_float_tensor(
-            &[13.0, 16.0, 19.0],
-            "cuda".try_into().unwrap(),
-        ));
-
-        let result_tensor = test_setup
-            .stream_actor
-            .get_tensor_ref_unit_tests_only(&test_setup.client, actual_result_ref)
-            .await?
-            .unwrap()
-            .unwrap();
-
-        assert!(allclose(&result_tensor.borrow(), &expected_result.borrow()).unwrap());
+        assert!(
+            test_setup
+                .allclose(actual_result_ref, &[13.0, 16.0, 19.0])
+                .await
+        );
 
         // Set actual1_tensor to a bad shape which will cause the recording to fail.
-        let actual1_tensor = TensorCell::new(factory_float_tensor(
-            &[4.0, 5.0],
-            "cuda".try_into().unwrap(),
-        ));
-
-        test_setup
-            .stream_actor
-            .set_tensor_ref_unit_tests_only(
-                &test_setup.client,
-                actual1_ref,
-                Ok(actual1_tensor.clone()),
-            )
-            .await?;
+        test_setup.set_tensor(actual1_ref, &[4.0, 5.0]).await?;
 
         let actual_result_ref = test_setup.next_ref();
         test_setup
@@ -2721,19 +2770,7 @@ mod tests {
         };
 
         // Reset input tensor to a valid shape.
-        let actual1_tensor = TensorCell::new(factory_float_tensor(
-            &[4.0, 5.0, 6.0],
-            "cuda".try_into().unwrap(),
-        ));
-
-        test_setup
-            .stream_actor
-            .set_tensor_ref_unit_tests_only(
-                &test_setup.client,
-                actual1_ref,
-                Ok(actual1_tensor.clone()),
-            )
-            .await?;
+        test_setup.set_tensor(actual1_ref, &[4.0, 5.0, 6.0]).await?;
 
         // captured_tensor should still have an error, so calling
         // the recording should set DependentErrors and not report
@@ -2913,7 +2950,7 @@ mod tests {
                     rank: 0,
                     creation_mode: StreamCreationMode::CreateNewStream,
                     id: 1.into(),
-                    device: None,
+                    device: Some(CudaDevice::new(0.into())),
                     controller_actor: test_setup.controller_actor.clone(),
                 },
             )
@@ -3015,20 +3052,13 @@ mod tests {
             .finalize_recording(&test_setup.client, 0.into())
             .await?;
 
-        // Set up a tensor in Stream 1 and call the recording.
-        let tensor = TensorCell::new(factory_float_tensor(
-            &[4.0, 5.0, 6.0],
-            "cuda".try_into().unwrap(),
-        ));
+        // Set up a tensor in the lender stream and call the recording.
         let input_tensor_ref = test_setup.next_ref();
-        let result_tensor_ref = test_setup.next_ref();
-        lender_stream
-            .set_tensor_ref_unit_tests_only(
-                &test_setup.client,
-                input_tensor_ref,
-                Ok(tensor.clone()),
-            )
+        test_setup
+            .set_tensor(input_tensor_ref, &[4.0, 5.0, 6.0])
             .await?;
+
+        let result_tensor_ref = test_setup.next_ref();
 
         let lender_future = lender_stream.call_recording(
             &test_setup.client,
@@ -3056,7 +3086,7 @@ mod tests {
 
         let expected_tensor = TensorCell::new(factory_float_tensor(
             &[5.0, 7.0, 9.0],
-            "cuda".try_into().unwrap(),
+            "cpu".try_into().unwrap(),
         ));
         assert!(allclose(&result_tensor.borrow(), &expected_tensor.borrow()).unwrap());
 
@@ -3178,6 +3208,314 @@ mod tests {
             result_tensor_ref,
             &mut test_setup.controller_rx,
             "input error",
+        )
+        .await;
+
+        Ok(())
+    }
+
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_reduce_in_recording() -> Result<()> {
+        let mut test_setup = TestSetup::new().await?;
+        let recording_ref = test_setup.next_ref();
+
+        let comm = Arc::new(
+            test_setup
+                .proc
+                .spawn::<NcclCommActor>(
+                    "comm",
+                    CommParams::New {
+                        device: CudaDevice::new(0.into()),
+                        unique_id: UniqueId::new()?,
+                        world_size: 1,
+                        rank: 0,
+                    },
+                )
+                .await?,
+        );
+
+        let factory = Factory {
+            size: vec![3],
+            dtype: torch_sys::ScalarType::Float,
+            layout: torch_sys::Layout::Strided,
+            device: "cuda".try_into().unwrap(),
+        };
+
+        let reduction = Reduction::ReduceOp(torch_sys::nccl::ReduceOp::Sum);
+
+        test_setup
+            .stream_actor
+            .define_recording(&test_setup.client, recording_ref)
+            .await?;
+
+        let formal_tensor_ref_0 = test_setup.next_ref();
+        let formal_tensor_ref_1 = test_setup.next_ref();
+        let formal_tensor_ref_2 = test_setup.next_ref();
+
+        test_setup
+            .stream_actor
+            .recording_formal(&test_setup.client, formal_tensor_ref_0, 0)
+            .await?;
+        test_setup
+            .stream_actor
+            .recording_formal(&test_setup.client, formal_tensor_ref_1, 1)
+            .await?;
+        test_setup
+            .stream_actor
+            .recording_formal(&test_setup.client, formal_tensor_ref_2, 2)
+            .await?;
+
+        let intermediate_tensor_ref_0 = test_setup.next_ref();
+
+        // Handle case with in_place = true.
+        test_setup
+            .stream_actor
+            .reduce(
+                &test_setup.client,
+                comm.clone(),
+                1,
+                intermediate_tensor_ref_0,
+                formal_tensor_ref_0,
+                factory.clone(),
+                reduction.clone(),
+                false,
+                true,
+                None,
+            )
+            .await?;
+
+        // Handle case with in_place = false and out = None.
+        let intermediate_tensor_ref_1 = test_setup.next_ref();
+        test_setup
+            .stream_actor
+            .reduce(
+                &test_setup.client,
+                comm.clone(),
+                1,
+                intermediate_tensor_ref_1,
+                formal_tensor_ref_1,
+                factory.clone(),
+                reduction.clone(),
+                false,
+                false,
+                None,
+            )
+            .await?;
+
+        let intermediate_tensor_ref_2 = test_setup.next_ref();
+
+        // Third reduce call with out = formal_tensor_ref_2
+        test_setup
+            .stream_actor
+            .reduce(
+                &test_setup.client,
+                comm.clone(),
+                1,
+                intermediate_tensor_ref_2,
+                intermediate_tensor_ref_1,
+                factory.clone(),
+                reduction.clone(),
+                false,
+                false,
+                Some(formal_tensor_ref_2),
+            )
+            .await?;
+
+        test_setup
+            .stream_actor
+            .recording_result(&test_setup.client, intermediate_tensor_ref_2, 0)
+            .await?;
+
+        test_setup
+            .stream_actor
+            .finalize_recording(&test_setup.client, recording_ref)
+            .await?;
+
+        let input_tensor_ref_0 = test_setup.next_ref();
+        let input_tensor_ref_1 = test_setup.next_ref();
+        let input_tensor_ref_2 = test_setup.next_ref();
+
+        test_setup
+            .set_tensor(input_tensor_ref_0, &[1.0, 2.0, 3.0])
+            .await?;
+
+        test_setup
+            .set_tensor(input_tensor_ref_1, &[4.0, 5.0, 6.0])
+            .await?;
+
+        test_setup
+            .set_tensor(input_tensor_ref_2, &[7.0, 8.0, 9.0])
+            .await?;
+
+        let output_ref = test_setup.next_ref();
+
+        test_setup
+            .stream_actor
+            .call_recording(
+                &test_setup.client,
+                0.into(),
+                recording_ref,
+                vec![output_ref],
+                vec![input_tensor_ref_0, input_tensor_ref_1, input_tensor_ref_2],
+            )
+            .await?;
+
+        // Validate that input_tensor_ref_0 is unchanged.
+        assert!(
+            test_setup
+                .allclose(input_tensor_ref_0, &[1.0, 2.0, 3.0])
+                .await
+        );
+        // All the other inputs/outputs should be equal to input 1
+        for ref_ in [input_tensor_ref_1, input_tensor_ref_2, output_ref] {
+            assert!(test_setup.allclose(ref_, &[4.0, 5.0, 6.0]).await);
+        }
+
+        // Set an error on input 0
+        let input_error = Arc::new(CallFunctionError::Anyhow(anyhow!("input error")));
+        test_setup
+            .stream_actor
+            .set_tensor_ref_unit_tests_only(
+                &test_setup.client,
+                input_tensor_ref_0,
+                Err(input_error.clone()),
+            )
+            .await?;
+
+        test_setup
+            .stream_actor
+            .call_recording(
+                &test_setup.client,
+                1.into(),
+                recording_ref,
+                vec![output_ref],
+                vec![input_tensor_ref_0, input_tensor_ref_1, input_tensor_ref_2],
+            )
+            .await?;
+
+        // Verify that input_tensor_ref_0, input_tensor_ref_2, and output_ref have a dependent error.
+        for ref_ in [input_tensor_ref_0, input_tensor_ref_2, output_ref] {
+            test_setup
+                .validate_dependent_error(ref_, input_error.clone())
+                .await;
+        }
+
+        // Verify that input_tensor_ref_1 is untouched.
+        assert!(
+            test_setup
+                .allclose(input_tensor_ref_1, &[4.0, 5.0, 6.0])
+                .await
+        );
+
+        // Verify that no failure was reported to the controller.
+        check_fetch_result_value(
+            &test_setup.client,
+            test_setup.stream_actor.clone(),
+            2.into(),
+            input_tensor_ref_1,
+            &mut test_setup.controller_rx,
+        )
+        .await;
+
+        // Reset input tensors 0 and 2 to their original values
+        test_setup
+            .set_tensor(input_tensor_ref_0, &[1.0, 2.0, 3.0])
+            .await?;
+        test_setup
+            .set_tensor(input_tensor_ref_2, &[7.0, 8.0, 9.0])
+            .await?;
+
+        // Set an error on input tensor 1
+        test_setup
+            .stream_actor
+            .set_tensor_ref_unit_tests_only(
+                &test_setup.client,
+                input_tensor_ref_1,
+                Err(input_error.clone()),
+            )
+            .await?;
+
+        test_setup
+            .stream_actor
+            .call_recording(
+                &test_setup.client,
+                3.into(),
+                recording_ref,
+                vec![output_ref],
+                vec![input_tensor_ref_0, input_tensor_ref_1, input_tensor_ref_2],
+            )
+            .await?;
+
+        // Validate that the mutated inputs and the output have a dependent error containing
+        // the input error
+        for ref_ in [input_tensor_ref_0, input_tensor_ref_2, output_ref] {
+            test_setup
+                .validate_dependent_error(ref_, input_error.clone())
+                .await;
+        }
+
+        // Validate that no error was reported to the controller
+        check_fetch_result_error(
+            &test_setup.client,
+            test_setup.stream_actor.clone(),
+            4.into(),
+            input_tensor_ref_1,
+            &mut test_setup.controller_rx,
+            "input error",
+        )
+        .await;
+
+        // Reset input tensors 0 and 1 to their original values
+        test_setup
+            .set_tensor(input_tensor_ref_0, &[1.0, 2.0, 3.0])
+            .await?;
+        test_setup
+            .set_tensor(input_tensor_ref_1, &[4.0, 5.0, 6.0])
+            .await?;
+
+        // Set an error on input tensor 2
+        test_setup
+            .stream_actor
+            .set_tensor_ref_unit_tests_only(
+                &test_setup.client,
+                input_tensor_ref_2,
+                Err(input_error.clone()),
+            )
+            .await?;
+
+        test_setup
+            .stream_actor
+            .call_recording(
+                &test_setup.client,
+                5.into(),
+                recording_ref,
+                vec![output_ref],
+                vec![input_tensor_ref_0, input_tensor_ref_1, input_tensor_ref_2],
+            )
+            .await?;
+
+        // Validate that input tensor 1 has its original values
+        assert!(
+            test_setup
+                .allclose(input_tensor_ref_1, &[4.0, 5.0, 6.0])
+                .await
+        );
+
+        // Validate that the mutated inputs and the output have a dependent error containing
+        // the input error
+        for ref_ in [input_tensor_ref_0, input_tensor_ref_2, output_ref] {
+            test_setup
+                .validate_dependent_error(ref_, input_error.clone())
+                .await;
+        }
+
+        // Validate that no error was reported to the controller
+        check_fetch_result_value(
+            &test_setup.client,
+            test_setup.stream_actor.clone(),
+            6.into(),
+            input_tensor_ref_1,
+            &mut test_setup.controller_rx,
         )
         .await;
 
