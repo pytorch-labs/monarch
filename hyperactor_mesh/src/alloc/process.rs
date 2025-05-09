@@ -16,6 +16,7 @@ use hyperactor::channel::ChannelTx;
 use hyperactor::channel::Rx;
 use hyperactor::channel::Tx;
 use hyperactor::channel::TxStatus;
+use hyperactor::sync::monitor;
 use ndslice::Shape;
 use tokio::process::Command;
 use tokio::sync::Mutex;
@@ -107,21 +108,21 @@ enum ChannelState {
 
 struct Child {
     channel: ChannelState,
-    token: CancellationToken,
+    group: monitor::Group,
 }
 
 impl Child {
     fn monitored(mut process: tokio::process::Child) -> (Self, impl Future) {
-        let token = CancellationToken::new();
+        let (group, handle) = monitor::group();
 
         let child = Self {
             channel: ChannelState::NotConnected,
-            token: token.clone(),
+            group,
         };
 
         let monitor = async move {
             tokio::select! {
-                _ = token.cancelled() => {
+                _ = handle => {
                     match process.kill().await {
                         Err(err) => {
                             tracing::error!("error killing process: {}", err);
@@ -133,7 +134,7 @@ impl Child {
                         }
                     }
                 }
-                _ = process.wait() => token.cancel(),
+                _ = process.wait() => (),
             }
         };
 
@@ -141,7 +142,7 @@ impl Child {
     }
 
     fn kill(&self) {
-        self.token.cancel();
+        self.group.fail();
     }
 
     fn connect(&mut self, addr: ChannelAddr) -> bool {
@@ -154,25 +155,13 @@ impl Child {
             Ok(channel) => {
                 let mut status = channel.status().clone();
                 self.channel = ChannelState::Connected(channel);
-                let token = self.token.clone();
                 // Monitor the channel, killing the process if it becomes unavailable
                 // (fails keepalive).
-                tokio::spawn(async move {
-                    let mut status_ok = true;
-                    loop {
-                        if matches!(*status.borrow_and_update(), TxStatus::Closed) {
-                            tracing::error!("channel {}: closed", cloned_addr);
-                            token.cancel();
-                            break;
-                        }
-                        // !status_ok can happen when the channel itself is dropped, though
-                        // in this case, it should be marked as closed.
-                        assert!(status_ok);
-                        status_ok = tokio::select! {
-                            _ = token.cancelled() => break,
-                            result = status.changed() => result.is_ok(),
-                        };
-                    }
+                self.group.spawn(async move {
+                    let _ = status
+                        .wait_for(|status| matches!(status, TxStatus::Closed))
+                        .await;
+                    Result::<(), ()>::Err(())
                 });
             }
             Err(err) => {

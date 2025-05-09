@@ -28,7 +28,8 @@ use tokio::task::JoinSet;
 
 use crate::sync::flag;
 
-/// Create a new monitored group and handle.
+/// Create a new monitored group and handle. The group is aborted
+/// if either group or its handle are dropped.
 pub fn group() -> (Group, Handle) {
     let (flag, guard) = flag::guarded();
     let state = Arc::new(Mutex::new(State::Running {
@@ -37,36 +38,51 @@ pub fn group() -> (Group, Handle) {
     }));
 
     let group = Group(Arc::clone(&state));
-    let handle = Handle(flag, state);
+    let handle = Handle(Some((flag, state)));
 
     (group, handle)
 }
 
 /// A handle to a monitored task group. Handles may be awaited to
 /// wait for the completion of the group (failure or abortion).
-pub struct Handle(flag::Flag, Arc<Mutex<State>>);
+pub struct Handle(Option<(flag::Flag, Arc<Mutex<State>>)>);
 
 impl Handle {
     /// The current status of the group.
     pub fn status(&self) -> Status {
-        self.1.lock().unwrap().status()
+        self.unwrap_state().lock().unwrap().status()
     }
 
     /// Abort the group. This aborts all tasks and returns immediately.
     /// Note that the group status is not guaranteed to converge to
     /// [`Status::Aborted`] as this call may race with failing tasks.
     pub fn abort(&self) {
-        self.1.lock().unwrap().stop(true);
+        self.unwrap_state().lock().unwrap().stop(true)
+    }
+
+    fn unwrap_state(&self) -> &Arc<Mutex<State>> {
+        &self.0.as_ref().unwrap().1
+    }
+
+    fn take(&mut self) -> Option<(flag::Flag, Arc<Mutex<State>>)> {
+        self.0.take()
+    }
+}
+
+impl Drop for Handle {
+    fn drop(&mut self) {
+        if let Some((_, ref state)) = self.0 {
+            state.lock().unwrap().stop(true);
+        }
     }
 }
 
 impl IntoFuture for Handle {
     type Output = Status;
     type IntoFuture = impl Future<Output = Self::Output>;
-    fn into_future(self) -> Self::IntoFuture {
+    fn into_future(mut self) -> Self::IntoFuture {
         async move {
-            let Self(flag, state) = self;
-
+            let (flag, state) = self.take().unwrap();
             flag.await;
             let status = state.lock().unwrap().status();
             status
@@ -113,6 +129,12 @@ impl Group {
                 state.lock().unwrap().stop(false);
             });
         }
+    }
+
+    /// Fail the group. This is equivalent to spawning a task that
+    /// immediately fails.
+    pub fn fail(&self) {
+        self.0.lock().unwrap().stop(false);
     }
 }
 
