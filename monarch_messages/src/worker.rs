@@ -465,6 +465,13 @@ pub enum CallFunctionError {
 
     #[error("error: {0}")]
     Anyhow(#[from] anyhow::Error),
+
+    #[error("recording failed at message {index}: ({message}). Error: {error}")]
+    RecordingFailed {
+        index: usize,
+        message: String,
+        error: Arc<CallFunctionError>,
+    },
 }
 
 impl CallFunctionError {

@@ -247,6 +247,13 @@ impl StreamMessage {
                 output_index: *output_index,
             },
             StreamMessage::DeleteRefs(refs) => StreamMessage::DeleteRefs(refs.clone()),
+            StreamMessage::CallFunction(params, device_meshes, remote_process_groups) => {
+                StreamMessage::CallFunction(
+                    params.clone(),
+                    device_meshes.clone(),
+                    remote_process_groups.clone(),
+                )
+            }
             other => panic!(
                 "StreamMessage variant not supported in recording: {:?}",
                 other
@@ -258,6 +265,9 @@ impl StreamMessage {
     fn get_defined_refs(&self) -> HashSet<Ref> {
         match self {
             StreamMessage::RecordingFormal { result, .. } => HashSet::from([*result]),
+            StreamMessage::CallFunction(params, ..) => {
+                params.results.iter().filter_map(|&ref_| ref_).collect()
+            }
             // TODO(slurye): Add remaining message types.
             _ => HashSet::new(),
         }
@@ -265,8 +275,11 @@ impl StreamMessage {
 
     // Get the set of refs that this message mutates.
     fn get_mutated_refs(&self) -> HashSet<Ref> {
-        // TODO(slurye): Add message types that mutate their inputs.
-        HashSet::new()
+        match self {
+            StreamMessage::CallFunction(params, ..) => HashSet::from_iter(params.mutates.clone()),
+            // TODO(slurye): Add message types that mutate their inputs.
+            _ => HashSet::new(),
+        }
     }
 }
 
@@ -800,6 +813,15 @@ impl StreamMessageHandler for StreamActor {
             (DeviceMesh, Vec<String>, Arc<ActorHandle<NcclCommActor>>),
         >,
     ) -> Result<()> {
+        if let Some(recording) = self.get_defining_recording() {
+            recording.messages.push(StreamMessage::CallFunction(
+                params,
+                device_meshes,
+                remote_process_groups,
+            ));
+            return Ok(());
+        }
+
         params.function.panic_if_requested();
 
         let actual_results = match params.function.as_torch_op() {
@@ -831,11 +853,15 @@ impl StreamMessageHandler for StreamActor {
         match self.handle_results(&params.results, actual_results) {
             Ok(()) => Ok(()),
             Err(err) => {
-                let err_to_set = match &*err {
+                match &*err {
                     // Do not send a response message for dependent errors, as the
                     // original error should have already sent a message.
-                    CallFunctionError::DependentError(e) => e,
-                    // Any other kind of error should send a response message.
+                    CallFunctionError::DependentError(_) => (),
+                    // If a recording is active, the error will be reported to the controller
+                    // elsewhere.
+                    _ if self.active_recording.is_some() => (),
+                    // When no recording is active, any non-dependent error should send a
+                    // response message.
                     _ => {
                         let worker_error = WorkerError {
                             backtrace: format!("{err}"),
@@ -845,11 +871,10 @@ impl StreamMessageHandler for StreamActor {
                         self.controller_actor
                             .remote_function_failed(this, params.seq, worker_error)
                             .await?;
-                        &err
                     }
                 };
                 for ref_ in params.mutates {
-                    self.env.insert(ref_, Err(err_to_set.clone()));
+                    self.env.insert(ref_, Err(err.clone()));
                 }
                 Ok(())
             }
@@ -1437,23 +1462,23 @@ impl StreamMessageHandler for StreamActor {
         // message in the recording that interacts with the recording inputs will
         // interact with the formal ref rather than the actual ref.
         let mut formal_to_actual_refs = HashMap::new();
-        for message in messages.into_iter() {
+        for (index, message) in messages.into_iter().enumerate() {
             let defined_refs = message.get_defined_refs();
-            let mutated_refs_with_formals = message.get_mutated_refs();
-            let mutated_refs_with_actuals = mutated_refs_with_formals
-                .iter()
-                .map(|ref_| match formal_to_actual_refs.get(ref_) {
-                    Some(actual_ref) => *actual_ref,
-                    None => *ref_,
-                })
-                .collect::<HashSet<_>>();
-
             all_defined_refs.extend(defined_refs.clone());
-            all_mutated_refs.extend(
-                mutated_refs_with_actuals
-                    .iter()
-                    .filter(|ref_| !all_defined_refs.contains(*ref_)),
-            );
+
+            let mutated_refs_with_formals = message.get_mutated_refs();
+            all_mutated_refs.extend(mutated_refs_with_formals.iter().filter_map(|ref_| {
+                match formal_to_actual_refs.get(ref_) {
+                    Some(actual_ref) => Some(*actual_ref),
+                    None => {
+                        if all_defined_refs.contains(ref_) {
+                            None
+                        } else {
+                            Some(*ref_)
+                        }
+                    }
+                }
+            }));
 
             match message {
                 StreamMessage::RecordingFormal {
@@ -1479,14 +1504,31 @@ impl StreamMessageHandler for StreamActor {
                         );
                     }
                 },
-                StreamMessage::DeleteRefs(refs) => {
-                    for ref_ in &refs {
+                StreamMessage::DeleteRefs(ref refs) => {
+                    for ref_ in refs {
                         all_defined_refs.remove(ref_);
                     }
-                    StreamMessageHandler::handle(self, this, StreamMessage::DeleteRefs(refs))
-                        .await?;
+                    StreamMessageHandler::handle(self, this, message.clone_for_recording()).await?;
                 }
-                _ => unimplemented!(),
+                StreamMessage::CallFunction { .. } if error.is_some() => {
+                    // CallFunction is expensive. If the recording already failed, then
+                    // just update the necessary refs with the error. Most of the other
+                    // message types need to run regardless because there are other actors
+                    // that expect the call to happen (e.g., all of the borrow messages,
+                    // pipe send/recv, send_tensor, reduce, etc.).
+                    let error = error.clone().unwrap();
+                    for ref_ in defined_refs.iter().chain(mutated_refs_with_formals.iter()) {
+                        self.env.insert(
+                            *ref_,
+                            Err(Arc::new(CallFunctionError::DependentError(
+                                error.unwrap_dependent_error().unwrap_or(error.clone()),
+                            ))),
+                        );
+                    }
+                }
+                _ => {
+                    StreamMessageHandler::handle(self, this, message.clone_for_recording()).await?;
+                }
             };
 
             // It's not entirely trivial to determine whether a message "failed" or not.
@@ -1498,23 +1540,28 @@ impl StreamMessageHandler for StreamActor {
             // defined/mutated refs contain an error, then we know the recording has failed.
             if error.is_none() {
                 // The stream message would have operated on the formal ref rather than the actual
-                // ref, so we check mutated_refs_with_formals rather than mutated_refs_with_actuals.
-                // Later, if there is an error, the error will be propagated to the actuals.
+                // ref, so we check mutated_refs_with_formals. Later, if there is an error,
+                // the error will be propagated to the actuals.
                 for ref_ in defined_refs.iter().chain(mutated_refs_with_formals.iter()) {
                     if let Some(Err(err)) = self.env.get(ref_) {
-                        error = Some(err.clone());
                         match err.as_ref() {
-                            // A DependentError should already have been reported to the controller,
-                            // so we don't need to do anything.
-                            CallFunctionError::DependentError(_) => (),
-                            err => {
+                            // A DependentError should already have been reported to the controller.
+                            CallFunctionError::DependentError(_) => {
+                                error = Some(err.clone());
+                            }
+                            _ => {
+                                error = Some(Arc::new(CallFunctionError::RecordingFailed {
+                                    index,
+                                    message: format!("{message:?}"),
+                                    error: err.clone(),
+                                }));
                                 // Report failure to the controller.
                                 self.controller_actor
                                     .remote_function_failed(
                                         this,
                                         seq,
                                         WorkerError {
-                                            backtrace: format!("{err}"),
+                                            backtrace: format!("{}", error.clone().unwrap()),
                                             worker_actor_id: this.self_id().clone(),
                                         },
                                     )
@@ -1656,6 +1703,7 @@ mod tests {
         #[allow(dead_code)]
         supervision_rx: PortReceiver<ActorSupervisionEvent>,
         controller_rx: PortReceiver<ControllerMessage>,
+        next_ref: Ref,
     }
 
     impl TestSetup {
@@ -1688,7 +1736,16 @@ mod tests {
                 client,
                 supervision_rx,
                 controller_rx,
+                next_ref: 0.into(),
             })
+        }
+
+        fn next_ref(&mut self) -> Ref {
+            let ref_ = self.next_ref;
+            self.next_ref = Ref {
+                id: self.next_ref.id + 1,
+            };
+            ref_
         }
     }
 
@@ -1721,6 +1778,49 @@ mod tests {
                     .is_none()
             );
         }
+    }
+
+    async fn check_fetch_result(
+        test_setup: &mut TestSetup,
+        seq: Seq,
+        reference: Ref,
+        expected_backtrace: &str,
+    ) {
+        let ref_to_send =
+            Python::with_gil(|py| PickledPyObject::pickle(reference.into_py(py).bind(py)).unwrap());
+
+        test_setup
+            .stream_actor
+            .send_value(
+                &test_setup.client,
+                seq,
+                test_setup.stream_actor.actor_id().clone(),
+                Vec::new(),
+                None,
+                vec![WireValue::PyObject(ref_to_send)],
+                HashMap::new(),
+                HashMap::new(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let controller_msg = test_setup.controller_rx.recv().await.unwrap();
+        match controller_msg {
+            ControllerMessage::FetchResult {
+                seq: actual_seq,
+                value: Err(err),
+            } => {
+                assert_eq!(actual_seq, seq);
+                assert!(
+                    err.backtrace.contains(expected_backtrace),
+                    "backtrace did not contain {:?}: {:?}",
+                    expected_backtrace,
+                    err.backtrace
+                );
+            }
+            _ => panic!("Unexpected controller message: {:?}", controller_msg),
+        };
     }
 
     #[async_timed_test(timeout_secs = 60)]
@@ -2107,9 +2207,18 @@ mod tests {
                 .get_tensor_ref_unit_tests_only(&test_setup.client, ref_)
                 .await
                 .unwrap();
-            assert!(
-                matches!(result.unwrap().unwrap_err().as_ref(), CallFunctionError::RefNotFound(err_ref) if *err_ref == nonexistent_ref)
-            );
+            let error = result.unwrap().unwrap_err();
+            match error.as_ref() {
+                CallFunctionError::RecordingFailed {
+                    error: inner_error, ..
+                } => match inner_error.as_ref() {
+                    CallFunctionError::RefNotFound(err_ref) => {
+                        assert_eq!(*err_ref, nonexistent_ref)
+                    }
+                    _ => panic!("Unexpected error inside RecordingFailed: {:?}", inner_error),
+                },
+                _ => panic!("Unexpected error instead of RecordingFailed: {:?}", error),
+            };
         }
 
         assert_refs_do_not_exist(&test_setup, &[formal0_ref, formal1_ref]).await;
@@ -2149,41 +2258,17 @@ mod tests {
                 .get_tensor_ref_unit_tests_only(&test_setup.client, ref_)
                 .await
                 .unwrap();
-            assert!(
-                matches!(result.unwrap().unwrap_err().as_ref(), CallFunctionError::DependentError(dep_err) if Arc::ptr_eq(dep_err, &error))
-            );
+            let result_error = result.unwrap().unwrap_err();
+            match result_error.as_ref() {
+                CallFunctionError::DependentError(dep_err) => assert!(Arc::ptr_eq(dep_err, &error)),
+                _ => panic!("Unexpected error: {:?}", error),
+            };
         }
-
-        let ref_to_send = Python::with_gil(|py| {
-            PickledPyObject::pickle(actual_result0_ref.into_py(py).bind(py)).unwrap()
-        });
-
-        test_setup
-            .stream_actor
-            .send_value(
-                &test_setup.client,
-                3.into(),
-                test_setup.stream_actor.actor_id().clone(),
-                Vec::new(),
-                None,
-                vec![WireValue::PyObject(ref_to_send)],
-                HashMap::new(),
-                HashMap::new(),
-                None,
-            )
-            .await?;
 
         // This tests that the DependentError was never reported to the controller.
         // If it were reported to the controller, the next message would match
         // RemoteFunctionFailed instead of FetchResult.
-        let controller_msg = test_setup.controller_rx.recv().await?;
-        assert!(matches!(
-            controller_msg,
-            ControllerMessage::FetchResult {
-                seq,
-                value: Err(error)
-            } if seq == 3.into() && error.backtrace.contains("bad tensor")
-        ));
+        check_fetch_result(&mut test_setup, 3.into(), actual_result0_ref, "bad tensor").await;
 
         Ok(())
     }
@@ -2240,6 +2325,328 @@ mod tests {
             "init_comm not allowed in recording".into(),
         )
         .await;
+        Ok(())
+    }
+
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_call_function_in_recording() -> Result<()> {
+        let mut test_setup = TestSetup::new().await?;
+
+        // Define a recording equivalent to:
+        // def f(x, y):
+        //   w = x + y
+        //   nonlocal z
+        //   z.add_(1.0)
+        //   return w + z
+        test_setup
+            .stream_actor
+            .define_recording(&test_setup.client, 0.into())
+            .await?;
+
+        let formal0_ref = test_setup.next_ref();
+        let formal0_index = 0;
+        test_setup
+            .stream_actor
+            .recording_formal(&test_setup.client, formal0_ref, formal0_index)
+            .await?;
+
+        let formal1_ref = test_setup.next_ref();
+        let formal1_index = 1;
+        test_setup
+            .stream_actor
+            .recording_formal(&test_setup.client, formal1_ref, formal1_index)
+            .await?;
+
+        let captured_ref = test_setup.next_ref();
+        let result_captured_ref = test_setup.next_ref();
+        let add_one_function =
+            ResolvableFunction::FunctionPath("torch.ops.aten.add_.Scalar".into());
+        let add_tensors_function =
+            ResolvableFunction::FunctionPath("torch.ops.aten.add.Tensor".into());
+
+        let add_result_ref_0 = test_setup.next_ref();
+        test_setup
+            .stream_actor
+            .call_function(
+                &test_setup.client,
+                CallFunctionParams {
+                    seq: 100.into(),
+                    function: add_tensors_function.clone(),
+                    args: vec![WireValue::Ref(formal0_ref), WireValue::Ref(formal1_ref)],
+                    kwargs: HashMap::new(),
+                    results: vec![Some(add_result_ref_0)],
+                    mutates: vec![],
+                    stream: 0.into(),
+                    remote_process_groups: Vec::new(),
+                },
+                HashMap::new(),
+                HashMap::new(),
+            )
+            .await?;
+
+        test_setup
+            .stream_actor
+            .call_function(
+                &test_setup.client,
+                CallFunctionParams {
+                    seq: 101.into(),
+                    function: add_one_function,
+                    args: vec![WireValue::Ref(captured_ref), WireValue::Double(1.0)],
+                    kwargs: HashMap::new(),
+                    results: vec![Some(result_captured_ref)],
+                    mutates: vec![captured_ref],
+                    stream: 0.into(),
+                    remote_process_groups: Vec::new(),
+                },
+                HashMap::new(),
+                HashMap::new(),
+            )
+            .await?;
+
+        let add_result_ref_1 = test_setup.next_ref();
+        test_setup
+            .stream_actor
+            .call_function(
+                &test_setup.client,
+                CallFunctionParams {
+                    seq: 102.into(),
+                    function: add_tensors_function,
+                    args: vec![
+                        WireValue::Ref(add_result_ref_0),
+                        WireValue::Ref(captured_ref),
+                    ],
+                    kwargs: HashMap::new(),
+                    results: vec![Some(add_result_ref_1)],
+                    mutates: vec![],
+                    stream: 0.into(),
+                    remote_process_groups: Vec::new(),
+                },
+                HashMap::new(),
+                HashMap::new(),
+            )
+            .await?;
+
+        test_setup
+            .stream_actor
+            .recording_result(&test_setup.client, add_result_ref_1, 0)
+            .await?;
+
+        test_setup
+            .stream_actor
+            .delete_refs(
+                &test_setup.client,
+                vec![add_result_ref_0, add_result_ref_1, result_captured_ref],
+            )
+            .await?;
+
+        test_setup
+            .stream_actor
+            .finalize_recording(&test_setup.client, 0.into())
+            .await?;
+
+        let actual0_ref = test_setup.next_ref();
+        let actual0_tensor = TensorCell::new(factory_float_tensor(
+            &[1.0, 2.0, 3.0],
+            "cuda".try_into().unwrap(),
+        ));
+
+        let actual1_ref = test_setup.next_ref();
+        let actual1_tensor = TensorCell::new(factory_float_tensor(
+            &[4.0, 5.0, 6.0],
+            "cuda".try_into().unwrap(),
+        ));
+
+        let captured_tensor = TensorCell::new(factory_float_tensor(
+            &[7.0, 8.0, 9.0],
+            "cuda".try_into().unwrap(),
+        ));
+
+        test_setup
+            .stream_actor
+            .set_tensor_ref_unit_tests_only(
+                &test_setup.client,
+                actual0_ref,
+                Ok(actual0_tensor.clone()),
+            )
+            .await?;
+
+        test_setup
+            .stream_actor
+            .set_tensor_ref_unit_tests_only(
+                &test_setup.client,
+                actual1_ref,
+                Ok(actual1_tensor.clone()),
+            )
+            .await?;
+
+        test_setup
+            .stream_actor
+            .set_tensor_ref_unit_tests_only(
+                &test_setup.client,
+                captured_ref,
+                Ok(captured_tensor.clone()),
+            )
+            .await?;
+
+        let actual_result_ref = test_setup.next_ref();
+        test_setup
+            .stream_actor
+            .call_recording(
+                &test_setup.client,
+                0.into(),
+                0.into(),
+                vec![actual_result_ref],
+                vec![actual0_ref, actual1_ref],
+            )
+            .await?;
+
+        let expected_result = TensorCell::new(factory_float_tensor(
+            &[13.0, 16.0, 19.0],
+            "cuda".try_into().unwrap(),
+        ));
+
+        let result_tensor = test_setup
+            .stream_actor
+            .get_tensor_ref_unit_tests_only(&test_setup.client, actual_result_ref)
+            .await?
+            .unwrap()
+            .unwrap();
+
+        assert!(allclose(&result_tensor.borrow(), &expected_result.borrow()).unwrap());
+
+        // Set actual1_tensor to a bad shape which will cause the recording to fail.
+        let actual1_tensor = TensorCell::new(factory_float_tensor(
+            &[4.0, 5.0],
+            "cuda".try_into().unwrap(),
+        ));
+
+        test_setup
+            .stream_actor
+            .set_tensor_ref_unit_tests_only(
+                &test_setup.client,
+                actual1_ref,
+                Ok(actual1_tensor.clone()),
+            )
+            .await?;
+
+        let actual_result_ref = test_setup.next_ref();
+        test_setup
+            .stream_actor
+            .call_recording(
+                &test_setup.client,
+                1.into(),
+                0.into(),
+                vec![actual_result_ref],
+                vec![actual0_ref, actual1_ref],
+            )
+            .await?;
+
+        // Both inputs should still be valid.
+        for ref_ in [actual0_ref, actual1_ref] {
+            let _ = test_setup
+                .stream_actor
+                .get_tensor_ref_unit_tests_only(&test_setup.client, ref_)
+                .await?
+                .unwrap()
+                .unwrap();
+        }
+
+        for ref_ in [captured_ref, actual_result_ref] {
+            let result_error = test_setup
+                .stream_actor
+                .get_tensor_ref_unit_tests_only(&test_setup.client, ref_)
+                .await?
+                .unwrap()
+                .unwrap_err();
+            match result_error.as_ref() {
+                CallFunctionError::RecordingFailed { error, .. } => match error.as_ref() {
+                    CallFunctionError::OperatorFailed(_) => (),
+                    _ => panic!("Unexpected error inside RecordingFailed: {:?}", error),
+                },
+                _ => panic!(
+                    "Unexpected error instead of RecordingFailed: {:?}",
+                    result_error
+                ),
+            }
+        }
+
+        let controller_msg = test_setup.controller_rx.recv().await.unwrap();
+        match controller_msg {
+            ControllerMessage::RemoteFunctionFailed { seq, error } => {
+                assert_eq!(seq, 1.into());
+                assert!(
+                    error.backtrace.contains("recording failed"),
+                    "Unexpected WorkerError: {:?}",
+                    error
+                );
+            }
+            _ => panic!("Unexpected controller message: {:?}", controller_msg),
+        };
+
+        // Reset input tensor to a valid shape.
+        let actual1_tensor = TensorCell::new(factory_float_tensor(
+            &[4.0, 5.0, 6.0],
+            "cuda".try_into().unwrap(),
+        ));
+
+        test_setup
+            .stream_actor
+            .set_tensor_ref_unit_tests_only(
+                &test_setup.client,
+                actual1_ref,
+                Ok(actual1_tensor.clone()),
+            )
+            .await?;
+
+        // captured_tensor should still have an error, so calling
+        // the recording should set DependentErrors and not report
+        // anything to the controller.
+        let actual_result_ref = test_setup.next_ref();
+        test_setup
+            .stream_actor
+            .call_recording(
+                &test_setup.client,
+                2.into(),
+                0.into(),
+                vec![actual_result_ref],
+                vec![actual0_ref, actual1_ref],
+            )
+            .await?;
+
+        // Both inputs should still be valid.
+        for ref_ in [actual0_ref, actual1_ref] {
+            let _ = test_setup
+                .stream_actor
+                .get_tensor_ref_unit_tests_only(&test_setup.client, ref_)
+                .await?
+                .unwrap()
+                .unwrap();
+        }
+
+        for ref_ in [captured_ref, actual_result_ref] {
+            let result_error = test_setup
+                .stream_actor
+                .get_tensor_ref_unit_tests_only(&test_setup.client, ref_)
+                .await?
+                .unwrap()
+                .unwrap_err();
+            match result_error.as_ref() {
+                CallFunctionError::DependentError(dep_err) => match dep_err.as_ref() {
+                    CallFunctionError::RecordingFailed { .. } => (),
+                    _ => panic!("Unexpected error inside DependentError: {:?}", dep_err),
+                },
+                _ => panic!(
+                    "Unexpected error instead of DependentError: {:?}",
+                    result_error
+                ),
+            }
+        }
+
+        // This tests that the DependentError was never reported to the controller.
+        // If it were reported to the controller, the next message would match
+        // RemoteFunctionFailed instead of FetchResult.
+        check_fetch_result(&mut test_setup, 3.into(), captured_ref, "RecordingFailed").await;
+
         Ok(())
     }
 }
