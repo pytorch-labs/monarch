@@ -1,12 +1,16 @@
 //! Dimensional reshaping of slices and shapes.
 //!
-//! This module defines utilities for transforming a `Slice` or
-//! `Shape` by factoring large extents into smaller ones under a given
-//! limit. The result is a reshaped view with increased dimensionality
-//! and fully reversible coordinate mappings.
+//! This module defines utilities for transforming a [`Slice`] or
+//! [`Shape`] by factoring large extents into smaller ones under a
+//! given limit. The result is a reshaped view with increased
+//! dimensionality and fully reversible coordinate mappings.
 //!
 //! This is useful for hierarchical routing, structured fanout, and
 //! other multidimensional layout transformations.
+//!
+//! For [`Shape`]s, reshaping also expands dimension labels using a
+//! `label/N` naming convention, preserving the semantics of the
+//! original shape in the reshaped view.
 //!
 //! See [`reshape_with_limit`] and [`reshape_shape`] for entry points.
 
@@ -359,29 +363,39 @@ pub fn reshape_with_limit(slice: &Slice, limit: Limit, order: Order) -> Reshaped
 
 /// Reshapes a labeled [`Shape`] by factoring large extents into
 /// smaller ones, producing a new shape with expanded dimensionality
-/// and coordinate mappings.
+/// and updated labels.
 ///
-/// This placeholder implementation preserves the original shape and
-/// labels without performing any factoring or transformation. It
-/// serves as a stub for the full `reshape_shape` logic, which will
-/// eventually:
-/// - Factor each dimension's extent under a given [`Limit`]
-/// - Generate expanded labels (e.g., `gpu/0`, `gpu/1`)
-/// - Construct a reshaped [`Shape`] with bijective coordinate
-///   mappings
+/// This uses [`reshape_with_limit`] on the underlying slice and
+/// [`expand_labels`] to generate labels for each factored dimension.
 ///
-/// For now, the returned [`ReshapedShape`] wraps the input `Shape`
-/// unchanged, with dummy identity `forward` and `inverse` mappings.
+/// # Arguments
+/// - `shape`: the labeled shape to reshape
+/// - `limit`: maximum extent allowed per factored dimension
 ///
-/// See [`ReshapedSlice`] for the lower-level strided transformation,
-/// and [`ReshapedShape`] for the high-level labeled representation.
-pub fn reshape_shape(shape: &Shape, _limit: Limit) -> ReshapedShape {
-    let labels = shape.labels().to_vec();
-    let slice = shape.slice().clone();
+/// # Returns
+/// A new [`ReshapedShape`] with an updated [`Shape`] and dimension
+/// factoring metadata.
+///
+/// # Panics
+/// Panics if constructing the new `Shape` fails. This should not
+/// occur unless the reshaped slice and labels are inconsistent (a
+/// programming logic error).
+pub fn reshape_shape(shape: &Shape, limit: Limit) -> ReshapedShape {
+    let reshaped = shape.slice().reshape_with_limit(limit, Order::RowMajor);
+    let original_labels = shape.labels();
+
+    let factored_dims: Vec<(String, Vec<usize>)> = original_labels
+        .iter()
+        .cloned()
+        .zip(reshaped.factors.iter().cloned())
+        .collect();
+
+    let labels = expand_labels(&factored_dims);
+    let shape = Shape::new(labels, reshaped.slice).expect("invalid reshaped shape");
 
     ReshapedShape {
-        shape: Shape::new(labels.clone(), slice).unwrap(),
-        factors: labels.into_iter().map(|l| (l, vec![1])).collect(),
+        shape,
+        factors: factored_dims,
     }
 }
 
@@ -771,5 +785,90 @@ mod tests {
         let factors: Vec<(String, Vec<usize>)> = vec![];
         let expected: Vec<String> = vec![];
         assert_eq!(expand_labels(&factors), expected);
+    }
+
+    #[test]
+    fn test_reshape_shape_noop() {
+        let shape = shape!(x = 4, y = 8);
+        let reshaped = reshape_shape(&shape, Limit::from(8));
+        assert_eq!(reshaped.shape.labels(), &["x", "y"]);
+        assert_eq!(reshaped.shape.slice(), shape.slice());
+    }
+
+    #[test]
+    fn test_reshape_shape_factored() {
+        let shape = shape!(gpu = 8);
+        let reshaped = reshape_shape(&shape, Limit::from(2));
+        assert_eq!(reshaped.shape.labels(), &["gpu/0", "gpu/1", "gpu/2"]);
+        assert_eq!(reshaped.shape.slice().sizes(), &[2, 2, 2]);
+
+        let expected = shape
+            .slice()
+            .reshape_with_limit(Limit::from(2), Order::RowMajor);
+        assert_eq!(reshaped.shape.slice(), &expected.slice);
+    }
+
+    #[test]
+    fn test_reshape_shape_singleton() {
+        let shape = shape!(x = 3);
+        let reshaped = reshape_shape(&shape, Limit::from(8));
+        assert_eq!(reshaped.shape.labels(), &["x"]);
+        assert_eq!(reshaped.shape.slice(), shape.slice());
+    }
+
+    #[test]
+    fn test_reshape_shape_prime_exceeds_limit() {
+        let shape = shape!(x = 11);
+        let reshaped = reshape_shape(&shape, Limit::from(5));
+        assert_eq!(reshaped.shape.labels(), &["x"]);
+        assert_eq!(reshaped.shape.slice(), shape.slice());
+    }
+
+    #[test]
+    fn test_reshape_shape_mixed_dims() {
+        let shape = shape!(zone = 2, gpu = 8);
+        let reshaped = reshape_shape(&shape, Limit::from(2));
+        assert_eq!(
+            reshaped.shape.labels(),
+            &["zone", "gpu/0", "gpu/1", "gpu/2"]
+        );
+        assert_eq!(reshaped.shape.slice().sizes(), &[2, 2, 2, 2]);
+
+        let expected = shape
+            .slice()
+            .reshape_with_limit(Limit::from(2), Order::RowMajor);
+        assert_eq!(reshaped.shape.slice(), &expected.slice);
+    }
+
+    #[test]
+    fn test_reshape_shape_after_selects() {
+        // Original shape: 2 zones, 4 hosts, 8 gpus
+        let original = shape!(zone = 2, host = 4, gpu = 8);
+
+        // Select zone=1 → shape: [1, 4, 8]
+        let selected_zone = original.select("zone", 1).unwrap();
+        assert_eq!(selected_zone.slice().sizes(), &[1, 4, 8]);
+
+        // Select host=2 → shape: [1, 1, 8]
+        let selected_host = selected_zone.select("host", 2).unwrap();
+        assert_eq!(selected_host.slice().sizes(), &[1, 1, 8]);
+
+        // Reshape shape through high-level API
+        let reshaped = reshape_shape(&selected_host, Limit::from(2));
+
+        // Labels should be: zone, host, gpu/0, gpu/1, gpu/2
+        assert_eq!(
+            reshaped.shape.labels(),
+            &["zone", "host", "gpu/0", "gpu/1", "gpu/2"]
+        );
+
+        // Sizes should reflect factored GPU dimension
+        assert_eq!(reshaped.shape.slice().sizes(), &[1, 1, 2, 2, 2]);
+
+        // Check against low-level equivalent reshaped slice
+        let expected = selected_host
+            .slice()
+            .reshape_with_limit(Limit::from(2), Order::RowMajor);
+        assert_eq!(reshaped.shape.slice(), &expected.slice);
     }
 }
