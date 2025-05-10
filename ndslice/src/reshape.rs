@@ -385,6 +385,40 @@ pub fn reshape_shape(shape: &Shape, _limit: Limit) -> ReshapedShape {
     }
 }
 
+/// Expands factored dimension labels into one label per subdimension.
+///
+/// Each input pair `(label, factors)` represents an original
+/// dimension and the extents it was factored into. If a dimension was
+/// not factored, it will have a single-element vector.
+///
+/// For example:
+/// - `[("zone", vec![2]), ("gpu", vec![2, 2, 2])]`
+///   becomes `["zone", "gpu/0", "gpu/1", "gpu/2"]`
+///
+/// This is used to generate new labels for reshaped shapes, where the
+/// dimensionality increases due to factoring.
+///
+/// # Arguments
+/// - `factors`: a list of factored dimension extents, paired with
+///   their labels
+///
+/// # Returns
+/// - A `Vec<String>` of expanded labels, one for each reshaped
+///   dimension.
+pub fn expand_labels(factors: &[(String, Vec<usize>)]) -> Vec<String> {
+    let mut labels = Vec::new();
+    for (label, dims) in factors {
+        if dims.len() == 1 {
+            labels.push(label.clone());
+        } else {
+            for (i, _) in dims.iter().enumerate() {
+                labels.push(format!("{}/{}", label, i));
+            }
+        }
+    }
+    labels
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -709,5 +743,33 @@ mod tests {
         assert_eq!(reshaped.slice.sizes(), &[1, 1, 2, 2, 2]);
 
         assert_layout_preserved!(selected_host.slice(), &reshaped);
+    }
+
+    #[test]
+    fn test_expand_labels_singleton_dims() {
+        let factors = vec![("x".into(), vec![2]), ("y".into(), vec![4])];
+        let expected = vec!["x", "y"];
+        assert_eq!(expand_labels(&factors), expected);
+    }
+
+    #[test]
+    fn test_expand_labels_factored_dims() {
+        let factors = vec![("gpu".into(), vec![2, 2, 2])];
+        let expected = vec!["gpu/0", "gpu/1", "gpu/2"];
+        assert_eq!(expand_labels(&factors), expected);
+    }
+
+    #[test]
+    fn test_expand_labels_mixed_dims() {
+        let factors = vec![("zone".into(), vec![2]), ("gpu".into(), vec![2, 2])];
+        let expected = vec!["zone", "gpu/0", "gpu/1"];
+        assert_eq!(expand_labels(&factors), expected);
+    }
+
+    #[test]
+    fn test_expand_labels_empty() {
+        let factors: Vec<(String, Vec<usize>)> = vec![];
+        let expected: Vec<String> = vec![];
+        assert_eq!(expand_labels(&factors), expected);
     }
 }
