@@ -12,6 +12,7 @@
 
 use std::fmt;
 
+use crate::shape::Shape;
 use crate::slice::Slice;
 
 /// Coordinate vector used throughout reshape logic. Semantically
@@ -55,7 +56,6 @@ pub struct ReshapedSlice {
     pub inverse: Box<dyn Fn(&[usize]) -> Coord + Send + Sync + 'static>,
 }
 
-// Compile-time assertion for safety guarantees.
 #[allow(dead_code)]
 const _: () = {
     fn assert<T: Send + Sync + 'static>() {}
@@ -79,6 +79,54 @@ impl fmt::Display for ReshapedSlice {
             self.slice.offset(),
             self.slice.sizes(),
             self.slice.strides(),
+            self.factors
+        )
+    }
+}
+
+/// A reshaped version of a `Shape`, with factored dimensions and
+/// updated labels.
+///
+///
+/// This type preserves coordinate bijections with the original shape
+/// and provides access to the transformed layout and label mappings.
+pub struct ReshapedShape {
+    /// The reshaped shape, with new labels and underlying factored
+    /// slice.
+    pub shape: Shape,
+
+    /// For each original dimension label, the list of sizes it was
+    /// split into.
+    pub factors: Vec<(String, Vec<usize>)>,
+}
+
+#[allow(dead_code)]
+const _: () = {
+    fn assert<T: Send + Sync + 'static>() {}
+    let _ = assert::<ReshapedShape>;
+};
+
+impl std::fmt::Debug for ReshapedShape {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReshapedShape")
+            .field("labels", &self.shape.labels())
+            .field("sizes", &self.shape.slice().sizes())
+            .field("strides", &self.shape.slice().strides())
+            .field("offset", &self.shape.slice().offset())
+            .field("factors", &self.factors)
+            .finish()
+    }
+}
+
+impl std::fmt::Display for ReshapedShape {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "ReshapedShape {{ [off={} sz={:?} st={:?} lab={:?} fac={:?}] }}",
+            self.shape.slice().offset(),
+            self.shape.slice().sizes(),
+            self.shape.slice().strides(),
+            self.shape.labels(),
             self.factors
         )
     }
@@ -167,6 +215,26 @@ impl ReshapeSliceExt for Slice {
     fn reshape_with_limit(&self, limit: Limit, order: Order) -> ReshapedSlice {
         reshape_with_limit(self, limit, order)
     }
+}
+
+/// Extension trait for reshaping `Shape`s by factoring large dimensions.
+pub trait ReshapeShapeExt {
+    /// Produces a reshaped version of the shape with expanded
+    /// dimensions under the given size limit.
+    fn reshape(&self, limit: Limit) -> ReshapedShape;
+}
+
+impl ReshapeShapeExt for Shape {
+    fn reshape(&self, limit: Limit) -> ReshapedShape {
+        reshape_shape(self, limit)
+    }
+}
+
+/// For convenient `slice.reshape_with_limit()`, `shape.reshape()`
+/// syntax, `use reshape::prelude::*`.
+pub mod prelude {
+    pub use super::ReshapeShapeExt;
+    pub use super::ReshapeSliceExt;
 }
 
 /// Reshapes a slice by factoring each dimension into smaller extents
@@ -286,6 +354,34 @@ pub fn reshape_with_limit(slice: &Slice, limit: Limit, order: Order) -> Reshaped
         order,
         forward,
         inverse,
+    }
+}
+
+/// Reshapes a labeled [`Shape`] by factoring large extents into
+/// smaller ones, producing a new shape with expanded dimensionality
+/// and coordinate mappings.
+///
+/// This placeholder implementation preserves the original shape and
+/// labels without performing any factoring or transformation. It
+/// serves as a stub for the full `reshape_shape` logic, which will
+/// eventually:
+/// - Factor each dimension's extent under a given [`Limit`]
+/// - Generate expanded labels (e.g., `gpu/0`, `gpu/1`)
+/// - Construct a reshaped [`Shape`] with bijective coordinate
+///   mappings
+///
+/// For now, the returned [`ReshapedShape`] wraps the input `Shape`
+/// unchanged, with dummy identity `forward` and `inverse` mappings.
+///
+/// See [`ReshapedSlice`] for the lower-level strided transformation,
+/// and [`ReshapedShape`] for the high-level labeled representation.
+pub fn reshape_shape(shape: &Shape, _limit: Limit) -> ReshapedShape {
+    let labels = shape.labels().to_vec();
+    let slice = shape.slice().clone();
+
+    ReshapedShape {
+        shape: Shape::new(labels.clone(), slice).unwrap(),
+        factors: labels.into_iter().map(|l| (l, vec![1])).collect(),
     }
 }
 
