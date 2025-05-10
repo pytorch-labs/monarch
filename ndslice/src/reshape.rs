@@ -34,14 +34,6 @@ pub struct ReshapedSlice {
     /// into. For example, `[6, 8]` with limit `4` might yield `[[2,
     /// 3], [2, 4]]`.
     pub factors: Vec<Coord>,
-
-    /// Maps a coordinate from the original shape to the reshaped
-    /// coordinate space.
-    pub forward: Box<dyn Fn(&[usize]) -> Coord + Send + Sync + 'static>,
-
-    /// Maps a coordinate from the reshaped space back to the original
-    /// shape.
-    pub inverse: Box<dyn Fn(&[usize]) -> Coord + Send + Sync + 'static>,
 }
 
 #[allow(dead_code)]
@@ -120,6 +112,35 @@ impl std::fmt::Display for ReshapedShape {
     }
 }
 
+/// Constructs a function that maps coordinates from the original
+/// slice to equivalent coordinates in the reshaped slice, preserving
+/// their flat (linear) position.
+pub fn to_reshaped_coord<'a>(
+    original: &'a Slice,
+    reshaped: &'a Slice,
+) -> impl Fn(&[usize]) -> Vec<usize> + 'a {
+    let original = original.clone();
+    let reshaped = reshaped.clone();
+    move |coord: &[usize]| -> Coord {
+        let flat = original.location(coord).unwrap();
+        reshaped.coordinates(flat).unwrap()
+    }
+}
+
+/// Constructs a function that maps coordinates from the reshaped
+/// slice back to equivalent coordinates in the original slice,
+/// preserving their flat (linear) position.
+pub fn to_original_coord<'a>(
+    reshaped: &'a Slice,
+    original: &'a Slice,
+) -> impl Fn(&[usize]) -> Vec<usize> + 'a {
+    let reshaped = reshaped.clone();
+    let original = original.clone();
+    move |coord: &[usize]| -> Coord {
+        let flat = reshaped.location(coord).unwrap();
+        original.coordinates(flat).unwrap()
+    }
+}
 /// A shaping constraint that bounds the maximum extent allowed in any
 /// reshaped dimension.
 ///
@@ -301,29 +322,9 @@ pub fn reshape_with_limit(slice: &Slice, limit: Limit) -> ReshapedSlice {
     }
     let reshaped_slice = Slice::new(slice.offset(), reshaped_sizes, reshaped_strides).unwrap();
 
-    // Step 3: Forward and inverse coordinate mapping.
-    let forward = {
-        let slice = slice.clone();
-        let reshaped = reshaped_slice.clone();
-        Box::new(move |coord: &[usize]| -> Coord {
-            let flat = slice.location(coord).unwrap();
-            reshaped.coordinates(flat).unwrap()
-        })
-    };
-    let inverse = {
-        let reshaped = reshaped_slice.clone();
-        let original = slice.clone();
-        Box::new(move |reshaped_coord: &[usize]| -> Coord {
-            let flat = reshaped.location(reshaped_coord).unwrap();
-            original.coordinates(flat).unwrap()
-        })
-    };
-
     ReshapedSlice {
         slice: reshaped_slice,
         factors: factored_sizes,
-        forward,
-        inverse,
     }
 }
 
@@ -420,11 +421,13 @@ mod tests {
         ($original:expr, $reshaped:expr) => {{
             // Iterate over all coordinates in the original slice.
             for coord in $original.dim_iter($original.num_dim()) {
+                let forward = to_reshaped_coord($original, &$reshaped.slice);
+                let inverse = to_original_coord(&$reshaped.slice, $original);
                 // Apply the forward coordinate mapping from original
                 // to reshaped space.
-                let reshaped_coord = ($reshaped.forward)(&coord);
+                let reshaped_coord = forward(&coord);
                 // Inverse mapping: reshaped coord → original coord.
-                let roundtrip = ($reshaped.inverse)(&reshaped_coord);
+                let roundtrip = inverse(&reshaped_coord);
                 assert_eq!(
                     roundtrip, coord,
                     "Inverse mismatch: reshaped {:?} → original {:?}, expected {:?}",
