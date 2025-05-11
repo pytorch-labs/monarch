@@ -26,7 +26,7 @@ ndslice = { path = "../ndslice" }
 pyo3 = { version = "0.22.6", features = ["anyhow"] }
 serde = { version = "1.0.185", features = ["derive", "rc"] }
 serde_json = { version = "1.0.140", features = ["float_roundtrip", "unbounded_depth"] }
-tokio = { version = "1.44.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.45.0", features = ["full", "test-util", "tracing"] }
 torch-sys = { path = "../torch-sys" }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 

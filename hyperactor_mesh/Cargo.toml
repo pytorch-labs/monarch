@@ -25,8 +25,8 @@ ndslice = { path = "../ndslice" }
 rand = { version = "0.8", features = ["small_rng"] }
 serde = { version = "1.0.185", features = ["derive", "rc"] }
 thiserror = "2"
-tokio = { version = "1.44.2", features = ["full", "test-util", "tracing"] }
-tokio-util = { version = "0.7.12", features = ["full"] }
+tokio = { version = "1.45.0", features = ["full", "test-util", "tracing"] }
+tokio-util = { version = "0.7.15", features = ["full"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 
 [dev-dependencies]
