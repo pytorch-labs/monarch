@@ -61,4 +61,4 @@ jobs:
         python setup.py install
 
         # Run tests
-        # pytest python/tests/ -v
+        pytest python/tests/ -v
