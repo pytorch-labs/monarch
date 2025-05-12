@@ -170,6 +170,7 @@ mod tests {
     use hyperactor::proc::Proc;
     use monarch_messages::controller::ControllerMessage;
     use monarch_messages::worker::WorkerMessage;
+    use monarch_messages::worker::WorkerMessageClient;
     use monarch_messages::worker::WorkerParams;
     use timed_test::async_timed_test;
     use torch_sys::Device;
@@ -180,7 +181,6 @@ mod tests {
     use crate::StreamCreationMode;
     use crate::WireValue;
     use crate::WorkerActor;
-    use crate::WorkerMessageClient;
     use crate::test_util::test_setup;
 
     async fn basic_borrow_test_impl(device: Device) -> Result<()> {

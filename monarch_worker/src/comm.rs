@@ -1021,6 +1021,7 @@ mod tests {
     use futures::future::try_join_all;
     use hyperactor::actor::ActorStatus;
     use hyperactor::proc::Proc;
+    use monarch_messages::worker::WorkerMessageClient;
     use monarch_messages::worker::WorkerParams;
     use ndslice::Slice;
     use timed_test::async_timed_test;
@@ -1038,7 +1039,6 @@ mod tests {
     use crate::WireValue;
     use crate::WorkerActor;
     use crate::WorkerMessage;
-    use crate::WorkerMessageClient;
     use crate::test_util::test_setup;
 
     #[async_timed_test(timeout_secs = 60)]
