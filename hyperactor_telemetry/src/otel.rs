@@ -7,7 +7,7 @@ pub fn tracing_layer<
     }
     #[cfg(not(fbcode_build))]
     {
-        None
+        None::<Box<dyn tracing_subscriber::Layer<S> + Send + Sync>>
     }
 }
 
