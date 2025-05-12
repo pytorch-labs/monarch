@@ -109,6 +109,7 @@ setup(
         "numpy",
         "pyre-extensions",
         "pytest-timeout",
+        "cloudpickle",
     ],
     author="oncall+monarch@xmail.facebook.com",
     description="Monarch: Single controller library",

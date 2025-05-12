@@ -28,6 +28,8 @@ rustup default nightly
 
 # Install non-python dependencies
 with-proxy conda install python=3.10
+with-proxy conda install libunwind
+
 # needs cuda-toolkit-12-0 as that is the version that matches the /usr/local/cuda/ on devservers
 sudo dnf install cuda-toolkit-12-0 libnccl-devel clang-devel
 # install build dependencies
@@ -35,7 +37,18 @@ with-proxy pip install setuptools-rust
 # install torch, can use conda or build it yourself or whatever
 with-proxy pip install torch
 # install other deps, see pyproject.toml for latest
-with-proxy pip install pyzmq requests numpy pyre-extensions
+with-proxy pip install pyzmq requests numpy pyre-extensions pytest-timeout cloudpickle
+
+# install the package
+with-proxy python setup.py install
+# or setup for development
+with-proxy python setup.py develop
+```
+
+If cargo is failing on git remote retrieval, you may have to add the following to your .cargo/config:
+```
+[net]
+git-fetch-with-cli = true
 ```
 
 ## Running examples
@@ -47,6 +60,7 @@ examples. `controller/example.py` is a good starting point to understand Monarch
 basic features. Run the following command to launch the example. It is also
 recommended to run the following file in Bento by selecting the `monarch` Bento
 kernel. In both cases, cli or Bento, it will launch Monarch processes locally.
+You may also define TORCH_MONARCH_LOG_FOLDER to specify the log folder.
 
 ```sh
 MESH_TYPE=RUST_LOCAL python examples/controller/example.py

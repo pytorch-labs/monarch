@@ -5,27 +5,31 @@
 TODO improve
 
 ```sh
-# These instructions assume you have a devserver (and need to use fwdproxy to access the internet)
-
-# install conda and set it up
-feature install genai_conda && conda-setup
 
 # Install nightly rust toolchain
-curl $(fwdproxy-config curl) --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sed 's#curl $_retry#curl $(fwdproxy-config curl) $_retry#g' | env $(fwdproxy-config --format=sh curl) sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-with-proxy rustup toolchain install nightly
+
+rustup toolchain install nightly
 rustup default nightly
 
 # Install non-python dependencies
-with-proxy conda install python=3.10
+conda install python=3.10
+conda install libunwind
+
 # needs cuda-toolkit-12-0 as that is the version that matches the /usr/local/cuda/ on devservers
 sudo dnf install cuda-toolkit-12-0 libnccl-devel clang-devel
 # install build dependencies
-with-proxy pip install setuptools-rust
+pip install setuptools-rust
 # install torch, can use conda or build it yourself or whatever
-with-proxy pip install torch
+pip install torch
 # install other deps, see pyproject.toml for latest
-with-proxy pip install pyzmq requests numpy pyre-extensions
+pip install pyzmq requests numpy pyre-extensions pytest-timeout cloudpickle
+
+# install the package
+python setup.py install
+# or setup for development
+python setup.py develop
 ```
 
 ## Running examples
@@ -37,6 +41,7 @@ examples. `controller/example.py` is a good starting point to understand Monarch
 basic features. Run the following command to launch the example. It is also
 recommended to run the following file in Bento by selecting the `monarch` Bento
 kernel. In both cases, cli or Bento, it will launch Monarch processes locally.
+You may also define TORCH_MONARCH_LOG_FOLDER to specify the log folder.
 
 ## Debugging
 
