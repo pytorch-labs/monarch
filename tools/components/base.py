@@ -13,7 +13,11 @@ from typing import Dict, List, Optional
 import torchx.components.fb.conda as conda
 import torchx.components.fb.conda_transforms as conda_transforms
 import torchx.specs as specs
-from monarch.tools.mesh_spec import MeshSpec, tag_as_metadata
+from monarch.tools.mesh_spec import (
+    DEFAULT_REMOTE_ALLOCATOR_PORT,
+    MeshSpec,
+    tag_as_metadata,
+)
 
 _TAGS = ["monarch"]
 
@@ -68,7 +72,7 @@ def hyperactor(
     #  mesh specs as ':' delimited str for now
     meshes: List[str] = _DEFAULT_MESHES,
     env: Optional[Dict[str, str]] = None,
-    port: int = 29600,
+    port: int = DEFAULT_REMOTE_ALLOCATOR_PORT,
     hyperactor_fbpkg: str = "monarch:prod",
     additional_packages: Packages = _EMPTY_PACKAGES,
     pre_launch_cmd: Optional[str] = None,

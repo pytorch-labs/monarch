@@ -11,6 +11,7 @@ from typing import Dict, List, NamedTuple, Optional
 
 import torchx.specs as specs
 from monarch.tools.components import base
+from monarch.tools.mesh_spec import DEFAULT_REMOTE_ALLOCATOR_PORT
 
 
 _DEFAULT_ENV: dict[str, str] = {
@@ -82,7 +83,7 @@ def hyperactor(
     #  mesh specs as ':' delimited str for now
     meshes: List[str] = _DEFAULT_MESHES,
     env: Optional[Dict[str, str]] = None,
-    port: int = 29600,
+    port: int = DEFAULT_REMOTE_ALLOCATOR_PORT,
     hyperactor_fbpkg: str = "monarch:prod",
     # TODO kiuk@ [3/n][monarch] create run_monarch_mesh_worker.sh and hook it up here
     program: str = f"{specs.macros.img_root}/projects/monarch/scripts/run_monarch_bootstrap.sh",

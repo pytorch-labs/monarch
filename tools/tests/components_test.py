@@ -4,6 +4,7 @@ import getpass
 import unittest
 
 from monarch.tools.components import base, conda
+from monarch.tools.mesh_spec import DEFAULT_REMOTE_ALLOCATOR_PORT
 from torchx import specs
 
 from torchx.components.component_test_base import ComponentTestCase
@@ -29,7 +30,7 @@ class ComponentsTest(unittest.TestCase):
         self.assertEqual(mesh.resource, specs.resource(h="gtt_any"))
 
         # --- check port settings ---
-        default_port = 29600
+        default_port = DEFAULT_REMOTE_ALLOCATOR_PORT
         self.assertDictEqual(mesh.port_map, {"mesh": default_port})
 
         # --- check entrypoint --

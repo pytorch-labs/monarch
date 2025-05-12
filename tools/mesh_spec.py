@@ -1,8 +1,11 @@
+# pyre-strict
 import string
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 from torchx import specs
+
+DEFAULT_REMOTE_ALLOCATOR_PORT = 26600
 
 _TAG_MESHES_PREFIX = "monarch/meshes/${mesh_name}/"
 _TAG_HOST_TYPE: str = _TAG_MESHES_PREFIX + "host_type"
@@ -54,7 +57,7 @@ class ServerSpec:
     state: specs.AppState
     meshes: list[MeshSpec]
 
-    def to_json(self) -> dict:
+    def to_json(self) -> dict[str, Any]:
         """Returns the JSON form of this struct that can be printed to console by:
 
         .. code-block:: python
