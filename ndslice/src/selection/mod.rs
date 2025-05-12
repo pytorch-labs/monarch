@@ -253,6 +253,7 @@ impl std::fmt::Display for LabelKey {
 
 /// An algebra for expressing node selection.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum Selection {
     /// A selection that never matches any node.
     False,
