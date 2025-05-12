@@ -83,23 +83,23 @@ class ComponentsTest(unittest.TestCase):
         missing_field_msg = r"not of the form 'NAME:NUM_HOSTS:HOST_TYPE'"
         with self.assertRaisesRegex(AssertionError, missing_field_msg):
             missing_mesh_name = ["4:gtt_any_8"]
-            base.hyperactor(missing_mesh_name)
+            base.hyperactor(meshes=missing_mesh_name)
 
         with self.assertRaisesRegex(AssertionError, missing_field_msg):
             missing_host_type = ["trainer:4"]
-            base.hyperactor(missing_host_type)
+            base.hyperactor(meshes=missing_host_type)
 
         with self.assertRaisesRegex(AssertionError, missing_field_msg):
             missing_num_hosts = ["trainer:gtt_any_8"]
-            base.hyperactor(missing_num_hosts)
+            base.hyperactor(meshes=missing_num_hosts)
 
         with self.assertRaisesRegex(AssertionError, r"is not a number"):
             num_hosts_not_a_number = ["trainer:two:gtt_any"]
-            base.hyperactor(num_hosts_not_a_number)
+            base.hyperactor(meshes=num_hosts_not_a_number)
 
         with self.assertRaisesRegex(KeyError, r"No named resource found for `foobar`"):
             invalid_host_type = ["trainer:2:foobar"]
-            base.hyperactor(invalid_host_type)
+            base.hyperactor(meshes=invalid_host_type)
 
 
 class ValidateComponentFunctionSyntax(ComponentTestCase):

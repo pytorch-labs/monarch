@@ -21,8 +21,7 @@ class MeshSpec:
     name: str
     num_hosts: int
     host_type: str
-    # set later by looking up the host_type in torchx's named_resources map
-    gpus: int = -1
+    gpus: int
 
 
 def _tag(mesh_name: str, tag_template: str) -> str:
@@ -45,6 +44,26 @@ def mesh_spec_from_metadata(appdef: specs.AppDef, mesh_name: str) -> Optional[Me
             )
 
     return None
+
+
+def mesh_spec_from_str(mesh_spec_str: str) -> MeshSpec:
+    """Parses the given string into a MeshSpec.
+
+    Args:
+        mesh_spec_str: A string representation of the mesh specification
+            in the format 'NAME:NUM_HOSTS:HOST_TYPE' (e.g. 'trainer:8:gpu.medium').
+    """
+    parts = mesh_spec_str.split(":")
+    assert (
+        len(parts) == 3
+    ), f"`{mesh_spec_str}` is not of the form 'NAME:NUM_HOSTS:HOST_TYPE'"
+
+    name, num_hosts, host_type = parts
+    gpus = specs.resource(h=host_type).gpu
+
+    assert num_hosts.isdigit(), f"`{num_hosts}` is not a number in: {mesh_spec_str}"
+
+    return MeshSpec(name, int(num_hosts), host_type, gpus)
 
 
 @dataclass

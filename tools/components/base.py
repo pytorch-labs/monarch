@@ -15,7 +15,7 @@ import torchx.components.fb.conda_transforms as conda_transforms
 import torchx.specs as specs
 from monarch.tools.mesh_spec import (
     DEFAULT_REMOTE_ALLOCATOR_PORT,
-    MeshSpec,
+    mesh_spec_from_str,
     tag_as_metadata,
 )
 
@@ -64,8 +64,11 @@ class Packages:
 
 _EMPTY_PACKAGES = Packages()
 
+_USER: str = getpass.getuser()
+
 
 def hyperactor(
+    name: str = f"monarch-{_USER}",
     # TODO kiuk@ figure out a better way to pass mesh specs
     #  right now TorchX component function signature is limited to
     #  primitives and list, dict of primitives so we encode
@@ -98,25 +101,10 @@ def hyperactor(
         launch_cmd if pre_launch_cmd is None else pre_launch_cmd + " && " + launch_cmd
     )
 
-    job_name = f"monarch-{getpass.getuser()}"
-
-    mesh_specs = []
-    for mesh in meshes:
-        parts = mesh.split(":")
-        assert (
-            len(parts) == 3
-        ), f"`{mesh}` is not of the form 'NAME:NUM_HOSTS:HOST_TYPE'"
-
-        name, num_hosts, host_type = parts
-
-        assert num_hosts.isdigit(), f"`{num_hosts}` is not a number in: {mesh}"
-
-        mesh_specs.append(MeshSpec(name, int(num_hosts), host_type))
-
     # get conda-on-mast role template
     appdef = conda.run(
         *[entrypoint],
-        name=job_name,
+        name=name,
         h="IGNORED",  # overridden later
         num_nodes=_IGNORED,  # overridden later
         env=env,
@@ -128,6 +116,7 @@ def hyperactor(
     template_role.port_map |= {"mesh": port}
 
     mesh_roles = []
+    mesh_specs = [mesh_spec_from_str(mesh) for mesh in meshes]
     for mesh in mesh_specs:
         mesh_role = copy.deepcopy(template_role)
         mesh_role.name = mesh.name
@@ -141,7 +130,6 @@ def hyperactor(
             f"--port={port}",
             f"--program={program}",
         ]
-        mesh.gpus = mesh_role.resource.gpu
         tag_as_metadata(mesh, appdef)
         mesh_roles.append(mesh_role)
 

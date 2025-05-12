@@ -2,7 +2,12 @@ import json
 import unittest
 from dataclasses import asdict
 
-from monarch.tools.mesh_spec import mesh_spec_from_metadata, MeshSpec, tag_as_metadata
+from monarch.tools.mesh_spec import (
+    mesh_spec_from_metadata,
+    mesh_spec_from_str,
+    MeshSpec,
+    tag_as_metadata,
+)
 
 from torchx import specs
 
@@ -24,6 +29,30 @@ class MeshSpecTest(unittest.TestCase):
             },
             appdef.metadata,
         )
+
+    def test_mesh_spec_from_str_incomplete_spec(self) -> None:
+        for spec_str in [
+            "2:gpu.medium",  # missing_mesh_name
+            "trainer:gpu.medium",  # missing_num_hosts
+            "trainer:2",  # missing_host_type
+        ]:
+            with self.assertRaisesRegex(
+                AssertionError, r"not of the form 'NAME:NUM_HOSTS:HOST_TYPE'"
+            ):
+                mesh_spec_from_str(spec_str)
+
+    def test_mesh_spec_from_str_num_hosts_not_an_integer(self) -> None:
+        with self.assertRaisesRegex(AssertionError, "is not a number"):
+            mesh_spec_from_str("trainer:four:gpu.medium")
+
+    def test_mesh_spec_from_str(self) -> None:
+        mesh_spec_str = "trainer:4:gpu.small"
+        mesh_spec = mesh_spec_from_str(mesh_spec_str)
+
+        self.assertEqual("trainer", mesh_spec.name)
+        self.assertEqual(4, mesh_spec.num_hosts)
+        self.assertEqual("gpu.small", mesh_spec.host_type)
+        self.assertEqual(1, mesh_spec.gpus)
 
     def test_mesh_spec_from_metadata(self) -> None:
         appdef = specs.AppDef(
