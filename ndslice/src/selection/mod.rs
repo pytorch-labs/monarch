@@ -811,7 +811,7 @@ impl Selection {
     /// evaluating intersections. Without this reduction, routing may
     /// stall — for example, in intersections like `Intersection(True,
     /// X)`, which should simplify to `X`.
-    pub(crate) fn reduce_intersection(self: Selection, b: Selection) -> Selection {
+    pub fn reduce_intersection(self: Selection, b: Selection) -> Selection {
         match (&self, &b) {
             (Selection::False, _) | (_, Selection::False) => Selection::False,
             (Selection::True, other) | (other, Selection::True) => other.clone(),

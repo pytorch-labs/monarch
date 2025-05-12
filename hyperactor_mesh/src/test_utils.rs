@@ -13,7 +13,7 @@ use crate::actor_mesh::Cast;
 pub struct EmptyMessage();
 
 /// No-op actor.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 #[hyperactor::export(EmptyMessage, Cast<EmptyMessage>)]
 pub struct EmptyActor();
 

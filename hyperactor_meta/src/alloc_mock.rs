@@ -189,6 +189,7 @@ impl MockMast {
 #[cfg(test)]
 mod tests {
     use hyperactor_mesh::ActorMesh;
+    use hyperactor_mesh::Mesh;
     use hyperactor_mesh::ProcMesh;
     use hyperactor_mesh::alloc::AllocConstraints;
     use hyperactor_mesh::alloc::Allocator;
@@ -235,13 +236,7 @@ mod tests {
             .unwrap();
         let proc_mesh = ProcMesh::allocate(alloc).await.unwrap();
         let actor_mesh: ActorMesh<EmptyActor> = proc_mesh.spawn("test", &()).await.unwrap();
-        let mesh_id = mesh_id!(proc_mesh.actor_mesh);
-        let mesh_ref = ActorMeshRef::<EmptyActor>::from_mesh(mesh_id.clone(), &actor_mesh);
 
-        assert!(
-            mesh_ref
-                .cast(proc_mesh.client(), Selection::True, EmptyMessage())
-                .is_ok()
-        );
+        assert!(actor_mesh.cast(Selection::True, EmptyMessage()).is_ok());
     }
 }

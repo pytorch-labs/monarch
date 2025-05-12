@@ -8,6 +8,7 @@ mod assign;
 pub mod bootstrap;
 pub mod comm;
 pub mod mesh;
+pub mod mesh_selection;
 mod metrics;
 pub mod proc_mesh;
 pub mod reference;

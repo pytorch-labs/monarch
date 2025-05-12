@@ -171,6 +171,16 @@ impl<'a, A: RemoteActor> Mesh for ActorMesh<'a, A> {
 
 pub struct SlicedActorMesh<'a, A: RemoteActor>(&'a ActorMesh<'a, A>, Shape);
 
+impl<'a, A: RemoteActor> SlicedActorMesh<'a, A> {
+    pub fn new(actor_mesh: &'a ActorMesh<'a, A>, shape: Shape) -> Self {
+        Self(actor_mesh, shape)
+    }
+
+    pub fn shape(&self) -> &Shape {
+        &self.1
+    }
+}
+
 #[async_trait]
 impl<A: RemoteActor> Mesh for SlicedActorMesh<'_, A> {
     type Node = ActorRef<A>;

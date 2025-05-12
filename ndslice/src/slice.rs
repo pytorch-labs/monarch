@@ -128,6 +128,15 @@ impl Slice {
         }
     }
 
+    /// Create one celled slice.
+    pub fn new_single_multi_dim_cell(dims: usize) -> Self {
+        Self {
+            offset: 0,
+            sizes: vec![1; dims],
+            strides: vec![1; dims],
+        }
+    }
+
     /// The number of dimensions in this slice.
     pub fn num_dim(&self) -> usize {
         self.sizes.len()
