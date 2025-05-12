@@ -183,6 +183,11 @@ impl PySlice {
     fn __repr__(&self) -> PyResult<String> {
         Ok(format!("{:?}", self.inner))
     }
+
+    #[staticmethod]
+    fn new_row_major(sizes: Vec<usize>) -> PySlice {
+        ndslice::Slice::new_row_major(sizes).into()
+    }
 }
 
 impl From<&PySlice> for ndslice::Slice {

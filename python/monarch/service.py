@@ -3,6 +3,7 @@ import contextvars
 import inspect
 
 import itertools
+import logging
 import random
 import traceback
 import warnings
@@ -30,11 +31,12 @@ from typing import (
 )
 
 import monarch
-
 import monarch._monarch.hyperactor as hyperactor
 from monarch import ActorFuture as Future
 from monarch.common.pickle_flatten import flatten, unflatten
 from monarch.common.shape import MeshTrait, NDSlice, Shape
+
+logger = logging.getLogger(__name__)
 
 Allocator = monarch.ProcessAllocator | monarch.LocalAllocator
 
@@ -182,8 +184,16 @@ class ActorMeshRef:
         elif selection == "all":
             if self._actor_mesh is None:
                 # replace me with actual remote actor mesh
-                for rank in self._shape.ranks():
-                    self._mailbox.post(self._please_replace_me_actor_ids[rank], message)
+                call_shape = Shape(
+                    self._shape.labels, NDSlice.new_row_major(self._shape.ndslice.sizes)
+                )
+                for i, rank in enumerate(self._shape.ranks()):
+                    self._mailbox.post_cast(
+                        self._please_replace_me_actor_ids[rank],
+                        i,
+                        call_shape,
+                        message,
+                    )
             else:
                 self._actor_mesh.cast(message)
         else:
@@ -223,12 +233,30 @@ class Endpoint(Generic[P, R]):
         send(self, args, kwargs, port=p, selection="choose")
         return r.recv()
 
-    def call(self, *args: P.args, **kwargs: P.kwargs) -> Future[R]:
+    def call_one(self, *args: P.args, **kwargs: P.kwargs) -> Future[R]:
         if self._actor_mesh.len != 1:
             raise ValueError(
                 f"Can only use 'call' on a single Actor but this actor has shape {self._actor_mesh._shape}"
             )
         return self.choose(*args, **kwargs)
+
+    def call(self, *args: P.args, **kwargs: P.kwargs) -> "Future[ValueMesh[R]]":
+        p, r = port(self, kind=RankedPort)
+        # pyre-ignore
+        send(self, args, kwargs, port=p)
+
+        async def process():
+            results = [None] * self._actor_mesh.len
+            for _ in range(self._actor_mesh.len):
+                rank, value = await r.recv()
+                results[rank] = value
+            call_shape = Shape(
+                self._actor_mesh._shape.labels,
+                NDSlice.new_row_major(self._actor_mesh._shape.ndslice.sizes),
+            )
+            return ValueMesh(call_shape, results)
+
+        return Future(process)
 
     async def stream(self, *args: P.args, **kwargs: P.kwargs) -> AsyncGenerator[R, R]:
         """
@@ -285,15 +313,35 @@ class Accumulator(Generic[P, R, A]):
         return Future(impl)
 
 
-# advance lower-level API for sending messages. This is intentially
-# not part of the Endpoint API because they way it accepts arguments
-# and handles concerns is different.
-def port(endpoint: Endpoint[P, R], once=False) -> Tuple["Port", "PortReceiver[R]"]:
-    handle, receiver = (
-        endpoint._mailbox.open_once_port() if once else endpoint._mailbox.open_port()
-    )
-    port_id: hyperactor.PortId = handle.bind()
-    return Port(port_id, endpoint._mailbox), PortReceiver(endpoint._mailbox, receiver)
+class ValueMesh(MeshTrait, Generic[R]):
+    def __init__(self, shape: Shape, values: List[R]) -> None:
+        self._shape = shape
+        self._values = values
+
+    def _new_with_shape(self, shape: Shape) -> "ValueMesh[R]":
+        return ValueMesh(shape, self._values)
+
+    def item(self, **kwargs):
+        coordinates = [kwargs.pop(label) for label in self._labels]
+        if kwargs:
+            raise KeyError(f"item has extra dimensions: {list(kwargs.keys())}")
+
+        return self._values[self._ndslice.nditem(coordinates)]
+
+    def __iter__(self):
+        labels = self._labels
+        for coordinates, index in zip(
+            itertools.product(*(range(s) for s in self._ndslice.sizes)), self._ndslice
+        ):
+            yield dict(zip(labels, coordinates)), self._values[index]
+
+    @property
+    def _ndslice(self) -> NDSlice:
+        return self._shape.ndslice
+
+    @property
+    def _labels(self) -> Iterable[str]:
+        return self._shape.labels
 
 
 def send(
@@ -342,6 +390,19 @@ class Port:
         )
 
 
+# advance lower-level API for sending messages. This is intentially
+# not part of the Endpoint API because they way it accepts arguments
+# and handles concerns is different.
+def port(
+    endpoint: Endpoint[P, R], once=False, kind=Port
+) -> Tuple["Port", "PortReceiver[R]"]:
+    handle, receiver = (
+        endpoint._mailbox.open_once_port() if once else endpoint._mailbox.open_port()
+    )
+    port_id: hyperactor.PortId = handle.bind()
+    return kind(port_id, endpoint._mailbox), PortReceiver(endpoint._mailbox, receiver)
+
+
 class PortReceiver(Generic[R]):
     def __init__(
         self,
@@ -372,6 +433,11 @@ class PortReceiver(Generic[R]):
 
 
 singleton_shape = Shape([], NDSlice(offset=0, sizes=[], strides=[]))
+
+
+class RankedPort(Port):
+    def send(self, method: str, obj: object) -> None:
+        super().send(method, (MonarchContext.get().rank, obj))
 
 
 class _Actor:
@@ -413,6 +479,7 @@ class _Actor:
 
                 return self.run_async(ctx, self.run_task(port, result))
         except Exception as e:
+            traceback.print_exc()
             s = ServiceCallFailedException(e)
             if port is not None:
                 port.send("exception", s)
@@ -430,7 +497,7 @@ class _Actor:
             if port is not None:
                 port.send("result", result)
         except Exception as e:
-            print("EXCEPTING", e)
+            traceback.print_exc()
             s = ServiceCallFailedException(e)
             if port is not None:
                 port.send("exception", s)

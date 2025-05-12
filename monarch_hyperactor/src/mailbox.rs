@@ -14,6 +14,7 @@ use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::OncePortReceiver;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::mailbox::monitored_return_handle;
+use hyperactor_mesh::actor_mesh::Cast;
 use pyo3::exceptions::PyEOFError;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
@@ -23,6 +24,7 @@ use pyo3::types::PyTuple;
 use crate::actor::PythonMessage;
 use crate::proc::PyActorId;
 use crate::runtime::signal_safe_block_on;
+use crate::shape::PyShape;
 #[derive(Clone, Debug)]
 #[pyclass(name = "Mailbox", module = "monarch._monarch.hyperactor")]
 pub(super) struct PyMailbox {
@@ -84,6 +86,30 @@ impl PyMailbox {
         };
 
         let message = Serialized::serialize(message).map_err(|err| {
+            PyRuntimeError::new_err(format!(
+                "failed to serialize message ({:?}) to Serialized: {}",
+                message, err
+            ))
+        })?;
+        let envelope = MessageEnvelope::new(self.inner.actor_id().clone(), port_id, message);
+        self.inner.post(envelope, monitored_return_handle());
+        Ok(())
+    }
+
+    pub(super) fn post_cast(
+        &self,
+        dest: PyActorId,
+        rank: usize,
+        shape: &PyShape,
+        message: &PythonMessage,
+    ) -> PyResult<()> {
+        let port_id = dest.inner.port_id(Cast::<PythonMessage>::port());
+        let message = Cast {
+            rank,
+            shape: shape.inner.clone(),
+            message: message.clone(),
+        };
+        let message = Serialized::serialize(&message).map_err(|err| {
             PyRuntimeError::new_err(format!(
                 "failed to serialize message ({:?}) to Serialized: {}",
                 message, err

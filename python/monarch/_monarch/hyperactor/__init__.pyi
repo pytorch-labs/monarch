@@ -426,6 +426,15 @@ class Mailbox:
         """
         ...
 
+    def post_cast(
+        self, dest: ActorId | PortId, rank: int, shape: Shape, message: PythonMessage
+    ) -> None:
+        """
+        Post a message to the provided actor. It will be handled using the handle_cast
+        endpoint as if the destination was `rank` of `shape`.
+        """
+        ...
+
     @property
     def actor_id(self) -> ActorId: ...
 

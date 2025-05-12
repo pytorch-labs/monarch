@@ -234,6 +234,11 @@ impl Shape {
                 labels: vec![label.to_string()],
             })
     }
+
+    /// Return the 0-dimensional single element shape
+    pub fn unity() -> Shape {
+        Shape::new(vec![], Slice::new(0, vec![], vec![]).expect("unity")).expect("unity")
+    }
 }
 
 /// Iterator over subshapes obtained by fixing a prefix of dimensions.

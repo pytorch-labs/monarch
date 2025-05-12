@@ -92,12 +92,12 @@ class ParameterClient(Actor):
 
     @endpoint
     async def upload(self, tensor):
-        gh = await self.server.grad_handle.call()
+        gh = await self.server.grad_handle.call_one()
         await gh.write(tensor)
 
     @endpoint
     async def download(self):
-        gh = await self.server.grad_handle.call()
+        gh = await self.server.grad_handle.call_one()
         await gh.read_into(self.buffer)
 
     @endpoint
@@ -114,45 +114,45 @@ async def test_proc_mesh_rdma():
     client_cpu = await proc.spawn(
         "client_cpu", ParameterClient, server, torch.ones(10, 10)
     )
-    x = await client_cpu.get_buffer.call()
+    x = await client_cpu.get_buffer.call_one()
     assert torch.sum(x.view(torch.float32).view(10, 10)) == 100
     zeros = torch.zeros(10, 10)
-    await client_cpu.upload.call(zeros.view(torch.uint8).flatten())
-    await client_cpu.download.call()
-    x = await client_cpu.get_buffer.call()
+    await client_cpu.upload.call_one(zeros.view(torch.uint8).flatten())
+    await client_cpu.download.call_one()
+    x = await client_cpu.get_buffer.call_one()
     assert torch.sum(x.view(torch.float32).view(10, 10)) == 0
 
     # --- Modify server's backing buffer directly ---
-    await server.update.call()
+    await server.update.call_one()
 
     # Should reflect updated values
-    await client_cpu.download.call()
+    await client_cpu.download.call_one()
 
-    buffer = await client_cpu.get_buffer.call()
-    remote_grad = await server.get_grad_buffer.call()
+    buffer = await client_cpu.get_buffer.call_one()
+    remote_grad = await server.get_grad_buffer.call_one()
     assert torch.allclose(buffer.view(torch.float32).view(10, 10), remote_grad)
 
     # --- GPU TESTS ---
     client_gpu = await proc.spawn(
         "client_gpu", ParameterClient, server, torch.ones(10, 10, device="cuda")
     )
-    x = await client_gpu.get_buffer.call()
+    x = await client_gpu.get_buffer.call_one()
     buffer = x.view(torch.float32).view(10, 10)
     assert torch.sum(buffer) == 100
     zeros = torch.zeros(10, 10, device="cuda")
-    await client_gpu.upload.call(zeros.view(torch.uint8).flatten())
-    await client_gpu.download.call()
-    x = await client_gpu.get_buffer.call()
+    await client_gpu.upload.call_one(zeros.view(torch.uint8).flatten())
+    await client_gpu.download.call_one()
+    x = await client_gpu.get_buffer.call_one()
     buffer_gpu = x.view(torch.float32).view(10, 10)
     assert torch.sum(buffer_gpu) == 0
     assert buffer_gpu.device.type == "cuda"
 
     # Modify server state again
-    await server.update.call()
-    await client_gpu.download.call()
-    x = await client_gpu.get_buffer.call()
+    await server.update.call_one()
+    await client_gpu.download.call_one()
+    x = await client_gpu.get_buffer.call_one()
     buffer_gpu = x.view(torch.float32).view(10, 10)
-    remote_grad = await server.get_grad_buffer.call()
+    remote_grad = await server.get_grad_buffer.call_one()
     assert torch.allclose(buffer_gpu.cpu(), remote_grad)
 
 
@@ -349,3 +349,21 @@ def test_accumulate_sync() -> None:
     acc = Accumulator(counter.value, 0, operator.add)
     r = acc.accumulate().get()
     assert r == 4
+
+
+class CastToCounter(Actor):
+    @endpoint
+    def doit(self, c: Counter):
+        return list(c.value.call().get())
+
+
+def test_value_mesh() -> None:
+    proc = local_proc_mesh(gpus=2).get()
+    counter = proc.spawn("counter", Counter, 0).get()
+    counter.slice(hosts=0, gpus=1).incr.broadcast()
+    x = counter.value.call().get()
+    assert 0 == x.item(hosts=0, gpus=0)
+    assert 1 == x.item(hosts=0, gpus=1)
+    assert 1 == x.slice(hosts=0, gpus=1).item()
+    n = proc.spawn("ctc", CastToCounter).get()
+    assert list(x) == n.slice(gpus=0).doit.call_one(counter).get()

@@ -92,6 +92,11 @@ impl PyShape {
     fn len(&self) -> usize {
         self.inner.slice().len()
     }
+
+    #[staticmethod]
+    fn unity() -> PyShape {
+        Shape::unity().into()
+    }
 }
 
 impl From<Shape> for PyShape {
