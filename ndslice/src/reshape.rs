@@ -3,16 +3,16 @@
 //! This module defines utilities for transforming a [`Slice`] or
 //! [`Shape`] by factoring large extents into smaller ones under a
 //! given limit. The result is a reshaped view with increased
-//! dimensionality and fully reversible coordinate mappings.
+//! dimensionality and preserved memory layout.
 //!
 //! This is useful for hierarchical routing, structured fanout, and
 //! other multidimensional layout transformations.
 //!
 //! For [`Shape`]s, reshaping also expands dimension labels using a
 //! `label/N` naming convention, preserving the semantics of the
-//! original shape in the reshaped view.
+//! original shape in the reshaped view_limit.
 //!
-//! See [`reshape_with_limit`] and [`reshape_shape`] for entry points.
+//! See [`view_limit`] and [`reshape_shape`] for entry points.
 
 use std::fmt;
 
@@ -22,47 +22,6 @@ use crate::slice::Slice;
 /// Coordinate vector used throughout reshape logic. Semantically
 /// represents a point in multidimensional space.
 pub type Coord = Vec<usize>;
-
-/// Represents a reshaped version of a `Slice`, with smaller extents
-/// and a bijective coordinate mapping between the original and
-/// transformed space.
-pub struct ReshapedSlice {
-    /// The reshaped slice with factored dimensions.
-    pub slice: Slice,
-
-    /// For each original dimension, the list of sizes it was split
-    /// into. For example, `[6, 8]` with limit `4` might yield `[[2,
-    /// 3], [2, 4]]`.
-    pub factors: Vec<Coord>,
-}
-
-#[allow(dead_code)]
-const _: () = {
-    fn assert<T: Send + Sync + 'static>() {}
-    let _ = assert::<ReshapedSlice>;
-};
-
-impl std::fmt::Debug for ReshapedSlice {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ReshapedSlice")
-            .field("slice", &self.slice)
-            .field("factors", &self.factors)
-            .finish()
-    }
-}
-
-impl fmt::Display for ReshapedSlice {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "ReshapedSlice {{ [off={} sz={:?} st={:?} fac={:?}] }}",
-            self.slice.offset(),
-            self.slice.sizes(),
-            self.slice.strides(),
-            self.factors
-        )
-    }
-}
 
 /// A reshaped version of a `Shape`, with factored dimensions and
 /// updated labels.
@@ -112,6 +71,43 @@ impl std::fmt::Display for ReshapedShape {
     }
 }
 
+/// Returns, for each size, a list of factors that respect the given
+/// limit. If a size is ≤ limit, it is returned as a singleton.
+/// Otherwise, it is factored greedily using divisors ≤ limit, from
+/// largest to smallest.
+///
+/// For best results, dimensions should be chosen to allow factoring
+/// into small values under the selected limit (e.g., ≤ 32).
+/// Large prime numbers cannot be broken down and will remain as-is,
+/// limiting reshaping potential.
+///
+/// Prefer powers of 2 or other highly composite numbers
+/// (e.g., 8, 16, 32, 60, 120) over large primes (e.g., 17, 37, 113)
+/// when designing shapes intended for reshaping.
+pub(crate) fn factor_dims(sizes: &[usize], limit: Limit) -> Vec<Vec<usize>> {
+    let limit = limit.get();
+    sizes
+        .iter()
+        .map(|&size| {
+            if size <= limit {
+                return vec![size];
+            }
+            let mut rem = size;
+            let mut factors = Vec::new();
+            for d in (2..=limit).rev() {
+                while rem % d == 0 {
+                    factors.push(d);
+                    rem /= d;
+                }
+            }
+            if rem > 1 {
+                factors.push(rem);
+            }
+            factors
+        })
+        .collect()
+}
+
 /// Constructs a function that maps coordinates from the original
 /// slice to equivalent coordinates in the reshaped slice, preserving
 /// their flat (linear) position.
@@ -141,12 +137,13 @@ pub fn to_original_coord<'a>(
         original.coordinates(flat).unwrap()
     }
 }
+
 /// A shaping constraint that bounds the maximum extent allowed in any
 /// reshaped dimension.
 ///
 /// This limit controls how a given dimension is factored during
 /// reshaping. Values larger than `limit` are recursively decomposed
-/// into smaller factors (e.g., `reshape_with_limit([1024],
+/// into smaller factors (e.g., `view_limit([1024],
 /// Limit::new(32))` → `[32, 32]`).
 ///
 /// The default limit is `32`, which balances fanout depth and layout
@@ -190,7 +187,7 @@ impl From<usize> for Limit {
 /// view by factoring large extents into smaller ones.
 ///
 /// This is implemented for [`Slice`], enabling ergonomic access to
-/// the [`reshape_with_limit`] functionality as a method.
+/// [`view_limit`] as a method.
 ///
 /// # Example
 /// ```
@@ -199,28 +196,30 @@ impl From<usize> for Limit {
 /// use ndslice::reshape::ReshapeSliceExt;
 ///
 /// let slice = Slice::new_row_major(vec![1024]);
-/// let reshaped = slice.reshape_with_limit(Limit::new(32));
-/// assert_eq!(reshaped.slice.sizes(), &[32, 32]);
+/// let reshaped = slice.view_limit(Limit::new(32));
+/// assert_eq!(reshaped.sizes(), &[32, 32]);
 /// ```
+/// # Returns
+/// A reshaped [`Slice`] with increased dimensionality and preserved
+/// layout.
 pub trait ReshapeSliceExt {
     /// Returns a reshaped version of this structure by factoring each
     /// dimension into smaller extents no greater than `limit`,
-    /// preserving memory layout and providing coordinate mappings.
-    ///
-    /// See [`reshape_with_limit`] for full behavior and rationale.
+    /// preserving memory layout and flat index semantics. See
+    /// [`view_limit`] for full behavior and rationale.
     ///
     /// # Arguments
     /// - `limit`: maximum size allowed in any reshaped dimension
     ///
     /// # Returns
-    /// A [`ReshapedSlice`] with increased dimensionality and stable
-    /// mapping to the original.
-    fn reshape_with_limit(&self, limit: Limit) -> ReshapedSlice;
+    /// A reshaped [`Slice`] with increased dimensionality and a
+    /// bijective mapping to the original.
+    fn view_limit(&self, limit: Limit) -> Slice;
 }
 
 impl ReshapeSliceExt for Slice {
-    fn reshape_with_limit(&self, limit: Limit) -> ReshapedSlice {
-        reshape_with_limit(self, limit)
+    fn view_limit(&self, limit: Limit) -> Slice {
+        view_limit(self, limit)
     }
 }
 
@@ -237,7 +236,7 @@ impl ReshapeShapeExt for Shape {
     }
 }
 
-/// For convenient `slice.reshape_with_limit()`, `shape.reshape()`
+/// For convenient `slice.view_limit()`, `shape.reshape()`
 /// syntax, `use reshape::prelude::*`.
 pub mod prelude {
     pub use super::ReshapeShapeExt;
@@ -249,68 +248,42 @@ pub mod prelude {
 ///
 /// This transformation increases dimensionality by breaking large
 /// sizes into products of smaller factors (e.g., `[1024]` with limit
-/// 32 becomes `[32, 32]`). The result is a new `ReshapedSlice` that
-/// preserves memory layout and provides reversible coordinate
-/// mappings to and from the original shape.
+/// 32 becomes `[32, 32]`). The result is a new [`Slice`] that
+/// preserves memory layout and flat index semantics.
 ///
 /// Factoring is greedy, starting from the largest divisors ≤ `limit`.
 /// Dimensions that cannot be factored under the limit are left
 /// unchanged.
-///
-/// This is useful for hierarchical routing, fanout trees, and other
-/// structured layout schemes.
 ///
 /// # Arguments
 /// - `slice`: the original multidimensional slice
 /// - `limit`: maximum extent allowed in any factored subdimension
 ///
 /// # Returns
-/// A `ReshapedSlice` with updated sizes, strides, and coordinate
-/// mappings.
+/// A reshaped [`Slice`] with updated sizes and strides.
 ///
 /// # Example
 /// ```
 /// use ndslice::Slice;
 /// use ndslice::reshape::Limit;
-/// use ndslice::reshape::reshape_with_limit;
+/// use ndslice::reshape::view_limit;
 ///
 /// let slice = Slice::new_row_major(vec![1024]);
-/// let reshaped = reshape_with_limit(&slice, Limit::new(32));
-/// assert_eq!(reshaped.slice.sizes(), &[32, 32]);
+/// let reshaped = view_limit(&slice, Limit::new(32));
+/// assert_eq!(reshaped.sizes(), &[32, 32]);
 /// ```
-pub fn reshape_with_limit(slice: &Slice, limit: Limit) -> ReshapedSlice {
-    let limit = limit.get();
+pub fn view_limit(slice: &Slice, limit: Limit) -> Slice {
     let orig_sizes = slice.sizes();
     let orig_strides = slice.strides();
 
     // Step 1: Factor each size into subdimensions ≤ limit.
-    let mut factored_sizes: Vec<Vec<usize>> = Vec::new();
-    for &size in orig_sizes {
-        if size <= limit {
-            factored_sizes.push(vec![size]);
-            continue;
-        }
+    let factored_sizes = factor_dims(orig_sizes, limit);
 
-        let mut rem = size;
-        let mut factors = Vec::new();
-        for d in (2..=limit).rev() {
-            while rem % d == 0 {
-                factors.push(d);
-                rem /= d;
-            }
-        }
-        if rem > 1 {
-            factors.push(rem);
-        }
-        factored_sizes.push(factors);
-    }
-
-    // Step 2: Compute reshaped sizes and strides.
+    // Step 2: Compute reshaped sizes and strides (row-major only).
     let reshaped_sizes: Vec<usize> = factored_sizes.iter().flatten().cloned().collect();
     let mut reshaped_strides = Vec::with_capacity(reshaped_sizes.len());
-    // We may assume row-major format exclusively.
+
     for (&orig_stride, factors) in orig_strides.iter().zip(&factored_sizes) {
-        // Reconstruct strides in reverse order (innermost to outermost)
         let mut sub_strides = Vec::with_capacity(factors.len());
         let mut stride = orig_stride;
         for &f in factors.iter().rev() {
@@ -320,20 +293,16 @@ pub fn reshape_with_limit(slice: &Slice, limit: Limit) -> ReshapedSlice {
         sub_strides.reverse();
         reshaped_strides.extend(sub_strides);
     }
-    let reshaped_slice = Slice::new(slice.offset(), reshaped_sizes, reshaped_strides).unwrap();
 
-    ReshapedSlice {
-        slice: reshaped_slice,
-        factors: factored_sizes,
-    }
+    Slice::new(slice.offset(), reshaped_sizes, reshaped_strides).unwrap()
 }
 
 /// Reshapes a labeled [`Shape`] by factoring large extents into
 /// smaller ones, producing a new shape with expanded dimensionality
 /// and updated labels.
 ///
-/// This uses [`reshape_with_limit`] on the underlying slice and
-/// [`expand_labels`] to generate labels for each factored dimension.
+/// This uses [`view_limit`] on the underlying slice and [`expand_labels`]
+/// to generate labels for each factored dimension.
 ///
 /// # Arguments
 /// - `shape`: the labeled shape to reshape
@@ -348,17 +317,16 @@ pub fn reshape_with_limit(slice: &Slice, limit: Limit) -> ReshapedSlice {
 /// occur unless the reshaped slice and labels are inconsistent (a
 /// programming logic error).
 pub fn reshape_shape(shape: &Shape, limit: Limit) -> ReshapedShape {
-    let reshaped = shape.slice().reshape_with_limit(limit);
+    let reshaped_slice = shape.slice().view_limit(limit);
     let original_labels = shape.labels();
+    let original_sizes = shape.slice().sizes();
 
-    let factored_dims: Vec<(String, Vec<usize>)> = original_labels
-        .iter()
-        .cloned()
-        .zip(reshaped.factors.iter().cloned())
-        .collect();
+    let factors = factor_dims(original_sizes, limit);
+    let factored_dims: Vec<(String, Vec<usize>)> =
+        original_labels.iter().cloned().zip(factors).collect();
 
     let labels = expand_labels(&factored_dims);
-    let shape = Shape::new(labels, reshaped.slice).expect("invalid reshaped shape");
+    let shape = Shape::new(labels, reshaped_slice).expect("invalid reshaped shape");
 
     ReshapedShape {
         shape,
@@ -406,6 +374,16 @@ mod tests {
     use crate::Slice;
     use crate::shape;
 
+    #[test]
+    fn test_factor_dims_basic() {
+        assert_eq!(
+            factor_dims(&[6, 8], Limit::from(4)),
+            vec![vec![3, 2], vec![4, 2]]
+        );
+        assert_eq!(factor_dims(&[5], Limit::from(3)), vec![vec![5]]);
+        assert_eq!(factor_dims(&[30], Limit::from(5)), vec![vec![5, 3, 2]]);
+    }
+
     // Verify that reshaping preserves memory layout by checking:
     // 1. Coordinate round-tripping: original → reshaped → original
     // 2. Flat index equality: original and reshaped coordinates map
@@ -421,8 +399,8 @@ mod tests {
         ($original:expr, $reshaped:expr) => {{
             // Iterate over all coordinates in the original slice.
             for coord in $original.dim_iter($original.num_dim()) {
-                let forward = to_reshaped_coord($original, &$reshaped.slice);
-                let inverse = to_original_coord(&$reshaped.slice, $original);
+                let forward = to_reshaped_coord($original, &$reshaped);
+                let inverse = to_original_coord(&$reshaped, $original);
                 // Apply the forward coordinate mapping from original
                 // to reshaped space.
                 let reshaped_coord = forward(&coord);
@@ -436,7 +414,7 @@ mod tests {
                 // Compute flat index in the original slice.
                 let flat_orig = $original.location(&coord).unwrap();
                 // Compute flat index in the reshaped slice.
-                let flat_reshaped = $reshaped.slice.location(&reshaped_coord).unwrap();
+                let flat_reshaped = $reshaped.location(&reshaped_coord).unwrap();
                 // Check that the flat index is preserved by the
                 // reshaping.
                 assert_eq!(
@@ -445,7 +423,7 @@ mod tests {
                     coord, reshaped_coord
                 );
                 // Invert the reshaped flat index back to coordinates.
-                let recovered = $reshaped.slice.coordinates(flat_reshaped).unwrap();
+                let recovered = $reshaped.coordinates(flat_reshaped).unwrap();
                 // Ensure coordinate inversion is correct (round
                 // trip).
                 assert_eq!(
@@ -460,22 +438,24 @@ mod tests {
     #[test]
     fn test_reshape_split_1d_row_major() {
         let s = Slice::new_row_major(vec![1024]);
-        let reshaped = s.reshape_with_limit(Limit::from(8));
+        let reshaped = s.view_limit(Limit::from(8));
 
-        assert_eq!(reshaped.slice.offset(), 0);
-        assert_eq!(reshaped.slice.sizes(), &vec![8, 8, 8, 2]);
-        assert_eq!(reshaped.slice.strides(), &vec![128, 16, 2, 1]);
-        assert_eq!(&reshaped.factors, &vec![[8, 8, 8, 2]]);
+        assert_eq!(reshaped.offset(), 0);
+        assert_eq!(reshaped.sizes(), &vec![8, 8, 8, 2]);
+        assert_eq!(reshaped.strides(), &vec![128, 16, 2, 1]);
+        assert_eq!(
+            factor_dims(s.sizes(), Limit::from(8)),
+            vec![vec![8, 8, 8, 2]]
+        );
+
         assert_layout_preserved!(&s, &reshaped);
     }
 
     #[test]
     fn test_reshape_6_with_limit_2() {
         let s = Slice::new_row_major(vec![6]);
-        let reshaped = reshape_with_limit(&s, Limit::from(2));
-
-        println!("{}", reshaped);
-
+        let reshaped = view_limit(&s, Limit::from(2));
+        assert_eq!(factor_dims(s.sizes(), Limit::from(2)), vec![vec![2, 3]]);
         assert_layout_preserved!(&s, &reshaped);
     }
 
@@ -483,13 +463,13 @@ mod tests {
     fn test_reshape_identity_noop_2d() {
         // All dimensions ≤ limit.
         let original = Slice::new_row_major(vec![4, 8]);
-        let reshaped = original.reshape_with_limit(Limit::from(8));
+        let reshaped = original.view_limit(Limit::from(8));
 
-        assert_eq!(reshaped.slice.sizes(), original.sizes());
-        assert_eq!(reshaped.slice.strides(), original.strides());
-        assert_eq!(reshaped.slice.offset(), original.offset());
+        assert_eq!(reshaped.sizes(), original.sizes());
+        assert_eq!(reshaped.strides(), original.strides());
+        assert_eq!(reshaped.offset(), original.offset());
         assert_eq!(
-            reshaped.factors,
+            vec![vec![4], vec![8]],
             original
                 .sizes()
                 .iter()
@@ -503,12 +483,11 @@ mod tests {
     fn test_reshape_empty_slice() {
         // 0-dimensional slice.
         let original = Slice::new_row_major(vec![]);
-        let reshaped = reshape_with_limit(&original, Limit::from(8));
+        let reshaped = view_limit(&original, Limit::from(8));
 
-        assert_eq!(reshaped.slice.sizes(), original.sizes());
-        assert_eq!(reshaped.slice.strides(), original.strides());
-        assert_eq!(reshaped.slice.offset(), original.offset());
-        assert_eq!(reshaped.factors, Vec::<Vec<usize>>::new());
+        assert_eq!(reshaped.sizes(), original.sizes());
+        assert_eq!(reshaped.strides(), original.strides());
+        assert_eq!(reshaped.offset(), original.offset());
 
         assert_layout_preserved!(&original, &reshaped);
     }
@@ -517,10 +496,13 @@ mod tests {
     fn test_reshape_mixed_dims_3d() {
         // 3D slice with one dimension exceeding the limit.
         let original = Slice::new_row_major(vec![6, 8, 10]);
-        let reshaped = original.reshape_with_limit(Limit::from(4));
+        let reshaped = original.view_limit(Limit::from(4));
 
-        assert_eq!(reshaped.factors, vec![vec![3, 2], vec![4, 2], vec![2, 5]]);
-        assert_eq!(reshaped.slice.sizes(), &[3, 2, 4, 2, 2, 5]);
+        assert_eq!(
+            factor_dims(original.sizes(), Limit::from(4)),
+            vec![vec![3, 2], vec![4, 2], vec![2, 5]]
+        );
+        assert_eq!(reshaped.sizes(), &[3, 2, 4, 2, 2, 5]);
 
         assert_layout_preserved!(&original, &reshaped);
     }
@@ -529,13 +511,13 @@ mod tests {
     fn test_reshape_all_large_dims() {
         // 3D slice with all dimensions exceeding the limit.
         let original = Slice::new_row_major(vec![12, 18, 20]);
-        let reshaped = original.reshape_with_limit(Limit::from(4));
+        let reshaped = original.view_limit(Limit::from(4));
 
         assert_eq!(
-            reshaped.factors,
+            factor_dims(original.sizes(), Limit::from(4)),
             vec![vec![4, 3], vec![3, 3, 2], vec![4, 5]]
         );
-        assert_eq!(reshaped.slice.sizes(), &[4, 3, 3, 3, 2, 4, 5]);
+        assert_eq!(reshaped.sizes(), &[4, 3, 3, 3, 2, 4, 5]);
 
         assert_layout_preserved!(&original, &reshaped);
     }
@@ -544,10 +526,13 @@ mod tests {
     fn test_reshape_split_1d_factors_3_3_2_2() {
         // 36 = 3 × 3 × 2 × 2.
         let original = Slice::new_row_major(vec![36]);
-        let reshaped = reshape_with_limit(&original, Limit::from(3));
+        let reshaped = view_limit(&original, Limit::from(3));
 
-        assert_eq!(reshaped.factors, vec![vec![3, 3, 2, 2]]);
-        assert_eq!(reshaped.slice.sizes(), &[3, 3, 2, 2]);
+        assert_eq!(
+            factor_dims(original.sizes(), Limit::from(3)),
+            vec![vec![3, 3, 2, 2]]
+        );
+        assert_eq!(reshaped.sizes(), &[3, 3, 2, 2]);
         assert_layout_preserved!(&original, &reshaped);
     }
 
@@ -555,11 +540,11 @@ mod tests {
     fn test_reshape_large_prime_dimension() {
         // Prime larger than limit, cannot be factored.
         let original = Slice::new_row_major(vec![7]);
-        let reshaped = reshape_with_limit(&original, Limit::from(4));
+        let reshaped = view_limit(&original, Limit::from(4));
 
         // Should remain as-is since 7 is prime > 4
-        assert_eq!(reshaped.factors, vec![vec![7]]);
-        assert_eq!(reshaped.slice.sizes(), &[7]);
+        assert_eq!(factor_dims(original.sizes(), Limit::from(4)), vec![vec![7]]);
+        assert_eq!(reshaped.sizes(), &[7]);
 
         assert_layout_preserved!(&original, &reshaped);
     }
@@ -568,11 +553,14 @@ mod tests {
     fn test_reshape_split_1d_factors_5_3_2() {
         // 30 = 5 × 3 × 2, all ≤ limit.
         let original = Slice::new_row_major(vec![30]);
-        let reshaped = reshape_with_limit(&original, Limit::from(5));
+        let reshaped = view_limit(&original, Limit::from(5));
 
-        assert_eq!(reshaped.factors, vec![vec![5, 3, 2]]);
-        assert_eq!(reshaped.slice.sizes(), &[5, 3, 2]);
-        assert_eq!(reshaped.slice.strides(), &[6, 2, 1]);
+        assert_eq!(
+            factor_dims(original.sizes(), Limit::from(5)),
+            vec![vec![5, 3, 2]]
+        );
+        assert_eq!(reshaped.sizes(), &[5, 3, 2]);
+        assert_eq!(reshaped.strides(), &[6, 2, 1]);
 
         assert_layout_preserved!(&original, &reshaped);
     }
@@ -581,11 +569,14 @@ mod tests {
     fn test_reshape_factors_2_6_2_8_8() {
         // 12 = 6 × 2, 64 = 8 × 8 — all ≤ 8
         let original = Slice::new_row_major(vec![2, 12, 64]);
-        let reshaped = original.reshape_with_limit(Limit::from(8));
+        let reshaped = original.view_limit(Limit::from(8));
 
-        assert_eq!(reshaped.factors, vec![vec![2], vec![6, 2], vec![8, 8]]);
-        assert_eq!(reshaped.slice.sizes(), &[2, 6, 2, 8, 8]);
-        assert_eq!(reshaped.slice.strides(), &[768, 128, 64, 8, 1]);
+        assert_eq!(
+            factor_dims(original.sizes(), Limit::from(8)),
+            vec![vec![2], vec![6, 2], vec![8, 8]]
+        );
+        assert_eq!(reshaped.sizes(), &[2, 6, 2, 8, 8]);
+        assert_eq!(reshaped.strides(), &[768, 128, 64, 8, 1]);
 
         assert_layout_preserved!(&original, &reshaped);
     }
@@ -594,12 +585,15 @@ mod tests {
     fn test_reshape_all_dims_within_limit() {
         // Original shape: [2, 3, 4] — all ≤ limit (4).
         let original = Slice::new_row_major(vec![2, 3, 4]);
-        let reshaped = original.reshape_with_limit(Limit::from(4));
+        let reshaped = original.view_limit(Limit::from(4));
 
-        assert_eq!(reshaped.factors, vec![vec![2], vec![3], vec![4]]);
-        assert_eq!(reshaped.slice.sizes(), &[2, 3, 4]);
-        assert_eq!(reshaped.slice.strides(), original.strides());
-        assert_eq!(reshaped.slice.offset(), original.offset());
+        assert_eq!(
+            factor_dims(original.sizes(), Limit::from(4)),
+            vec![vec![2], vec![3], vec![4]]
+        );
+        assert_eq!(reshaped.sizes(), &[2, 3, 4]);
+        assert_eq!(reshaped.strides(), original.strides());
+        assert_eq!(reshaped.offset(), original.offset());
 
         assert_layout_preserved!(&original, &reshaped);
     }
@@ -608,10 +602,13 @@ mod tests {
     fn test_reshape_degenerate_dimension() {
         // Degenerate dimension should remain unchanged.
         let original = Slice::new_row_major(vec![1, 12]);
-        let reshaped = original.reshape_with_limit(Limit::from(4));
+        let reshaped = original.view_limit(Limit::from(4));
 
-        assert_eq!(reshaped.factors, vec![vec![1], vec![4, 3]]);
-        assert_eq!(reshaped.slice.sizes(), &[1, 4, 3]);
+        assert_eq!(
+            factor_dims(original.sizes(), Limit::from(4)),
+            vec![vec![1], vec![4, 3]]
+        );
+        assert_eq!(reshaped.sizes(), &[1, 4, 3]);
 
         assert_layout_preserved!(&original, &reshaped);
     }
@@ -628,12 +625,15 @@ mod tests {
 
         // Reshape the selected slice using limit=2 in row-major
         // layout.
-        let reshaped = selected.slice().reshape_with_limit(Limit::from(2));
+        let reshaped = selected.slice().view_limit(Limit::from(2));
 
-        assert_eq!(reshaped.factors, vec![vec![1], vec![3], vec![2, 2]]);
-        assert_eq!(reshaped.slice.sizes(), &[1, 3, 2, 2]);
-        assert_eq!(reshaped.slice.strides(), &[12, 4, 2, 1]);
-        assert_eq!(reshaped.slice.offset(), 12); // Offset verified preserved.
+        assert_eq!(
+            factor_dims(selected.slice().sizes(), Limit::from(2)),
+            vec![vec![1], vec![3], vec![2, 2]]
+        );
+        assert_eq!(reshaped.sizes(), &[1, 3, 2, 2]);
+        assert_eq!(reshaped.strides(), &[12, 4, 2, 1]);
+        assert_eq!(reshaped.offset(), 12); // Offset verified preserved.
 
         assert_layout_preserved!(selected.slice(), &reshaped);
     }
@@ -646,7 +646,7 @@ mod tests {
         let selected = original.select("host", 2).unwrap();
         // Reshape the selected slice using limit=2 in row-major
         // layout.
-        let reshaped = selected.slice().reshape_with_limit(Limit::from(2));
+        let reshaped = selected.slice().view_limit(Limit::from(2));
 
         assert_layout_preserved!(selected.slice(), &reshaped);
     }
@@ -662,10 +662,13 @@ mod tests {
         let selected_host = selected_zone.select("host", 2).unwrap();
         assert_eq!(selected_host.slice().sizes(), &[1, 1, 5]);
         // Reshape with limit = 2.
-        let reshaped = selected_host.slice().reshape_with_limit(Limit::from(2));
+        let reshaped = selected_host.slice().view_limit(Limit::from(2));
 
-        assert_eq!(reshaped.factors, vec![vec![1], vec![1], vec![5]]);
-        assert_eq!(reshaped.slice.sizes(), &[1, 1, 5]);
+        assert_eq!(
+            factor_dims(selected_host.slice().sizes(), Limit::from(2)),
+            vec![vec![1], vec![1], vec![5]]
+        );
+        assert_eq!(reshaped.sizes(), &[1, 1, 5]);
 
         assert_layout_preserved!(selected_host.slice(), &reshaped);
     }
@@ -683,10 +686,13 @@ mod tests {
         assert_eq!(selected_host.slice().sizes(), &[1, 1, 8]);
 
         // Reshape with limit = 2 → gpu=8 should factor
-        let reshaped = selected_host.slice().reshape_with_limit(Limit::from(2));
+        let reshaped = selected_host.slice().view_limit(Limit::from(2));
 
-        assert_eq!(reshaped.factors, vec![vec![1], vec![1], vec![2, 2, 2]]);
-        assert_eq!(reshaped.slice.sizes(), &[1, 1, 2, 2, 2]);
+        assert_eq!(
+            factor_dims(selected_host.slice().sizes(), Limit::from(2)),
+            vec![vec![1], vec![1], vec![2, 2, 2]]
+        );
+        assert_eq!(reshaped.sizes(), &[1, 1, 2, 2, 2]);
 
         assert_layout_preserved!(selected_host.slice(), &reshaped);
     }
@@ -734,8 +740,8 @@ mod tests {
         assert_eq!(reshaped.shape.labels(), &["gpu/0", "gpu/1", "gpu/2"]);
         assert_eq!(reshaped.shape.slice().sizes(), &[2, 2, 2]);
 
-        let expected = shape.slice().reshape_with_limit(Limit::from(2));
-        assert_eq!(reshaped.shape.slice(), &expected.slice);
+        let expected = shape.slice().view_limit(Limit::from(2));
+        assert_eq!(reshaped.shape.slice(), &expected);
     }
 
     #[test]
@@ -764,8 +770,8 @@ mod tests {
         );
         assert_eq!(reshaped.shape.slice().sizes(), &[2, 2, 2, 2]);
 
-        let expected = shape.slice().reshape_with_limit(Limit::from(2));
-        assert_eq!(reshaped.shape.slice(), &expected.slice);
+        let expected = shape.slice().view_limit(Limit::from(2));
+        assert_eq!(reshaped.shape.slice(), &expected);
     }
 
     #[test]
@@ -794,7 +800,7 @@ mod tests {
         assert_eq!(reshaped.shape.slice().sizes(), &[1, 1, 2, 2, 2]);
 
         // Check against low-level equivalent reshaped slice
-        let expected = selected_host.slice().reshape_with_limit(Limit::from(2));
-        assert_eq!(reshaped.shape.slice(), &expected.slice);
+        let expected = selected_host.slice().view_limit(Limit::from(2));
+        assert_eq!(reshaped.shape.slice(), &expected);
     }
 }
