@@ -16,7 +16,6 @@ crate-type = ["cdylib"]
 [dependencies]
 anyhow = "1.0.95"
 async-trait = "0.1.86"
-fbinit = { path = "../../common/rust/shed/fbinit" }
 hyperactor = { path = "../hyperactor" }
 hyperactor_extension = { path = "../hyperactor_extension" }
 hyperactor_mesh = { path = "../hyperactor_mesh" }

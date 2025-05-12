@@ -15,5 +15,4 @@ path = "src/main.rs"
 anyhow = "1.0.95"
 clap = { version = "4.5.30", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 enum_dispatch = "0.3.13"
-fbinit = { path = "../../common/rust/shed/fbinit" }
 regex = "1.11.1"
