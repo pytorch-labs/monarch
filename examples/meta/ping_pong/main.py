@@ -20,8 +20,8 @@ import psutil
 
 from libfb.py.build_info import BuildInfo
 
-from monarch.examples.ping_pong.cli import parse_args
-from monarch.examples.ping_pong.goldenfile import (
+from monarch.examples.meta.ping_pong.cli import parse_args
+from monarch.examples.meta.ping_pong.goldenfile import (
     BuildMode,
     display_comparison_tables,
     display_goldenfiles_table,
@@ -29,7 +29,7 @@ from monarch.examples.ping_pong.goldenfile import (
     LogLevel,
     TracingLayer,
 )
-from monarch.examples.ping_pong.process_management import (
+from monarch.examples.meta.ping_pong.process_management import (
     run_command_with_output,
     wait_for_sync_point,
 )

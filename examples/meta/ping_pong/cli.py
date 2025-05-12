@@ -8,7 +8,7 @@ import argparse
 import enum
 from typing import Type, TypeVar
 
-from monarch.examples.ping_pong.goldenfile import LogLevel, TracingLayer
+from monarch.examples.meta.ping_pong.goldenfile import LogLevel, TracingLayer
 
 # Define a generic type variable for enum types
 E = TypeVar("E", bound=enum.Enum)

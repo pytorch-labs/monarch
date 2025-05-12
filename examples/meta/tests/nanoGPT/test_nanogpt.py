@@ -65,7 +65,7 @@ class TestNanogpt(TestCase):
 
     def test_main(self) -> None:
         config_module = import_module(
-            "monarch.examples.nanoGPT.config.train_shakespeare_char_small"
+            "monarch.examples.meta.nanoGPT.config.train_shakespeare_char_small"
         )
         args = args = [
             config_module.__file__,
@@ -82,7 +82,7 @@ class TestNanogpt(TestCase):
         mocked_pipe.return_value = MockPipe()
 
         config_module = import_module(
-            "monarch.examples.nanoGPT.config.train_shakespeare_char_small"
+            "monarch.examples.meta.nanoGPT.config.train_shakespeare_char_small"
         )
         args = [
             config_module.__file__,
