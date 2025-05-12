@@ -42,10 +42,10 @@ from torch.utils._mode_utils import no_dispatch
 def get_free_port() -> int:
     if socket.has_ipv6:
         family = socket.AF_INET6
-        address = "localhost6"
+        address = "::1"
     else:
         family = socket.AF_INET
-        address = "localhost4"
+        address = "127.0.0.1"
     with socket.socket(family, socket.SOCK_STREAM) as s:
         try:
             s.bind((address, 0))
