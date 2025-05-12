@@ -158,6 +158,16 @@ pub trait Alloc {
     /// shutdown should result in Stop events from all allocs,
     /// followed by the end of the event stream.
     async fn stop(&mut self) -> Result<(), AllocatorError>;
+
+    /// Stop this alloc and wait for all procs to stop. Call will
+    /// block until all ProcState events have been drained.
+    async fn stop_and_wait(&mut self) -> Result<(), AllocatorError> {
+        self.stop().await?;
+        while let Some(event) = self.next().await {
+            tracing::debug!("drained event: {:?}", event);
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
