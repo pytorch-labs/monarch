@@ -7,16 +7,16 @@
 //! Mailboxes are associated with an [`ActorId`] (given by `actor_id`
 //! in the following example):
 //!
-//! ```ignore
+//! ```
 //! # use hyperactor::mailbox::Mailbox;
 //! # use hyperactor::reference::{ActorId, ProcId, WorldId};
 //! # tokio_test::block_on(async {
-//! # let proc_id = ProcId(WorldId(0), 0);
-//! # let actor_id = ActorId(proc_id, 0, 0);
+//! # let proc_id = ProcId(WorldId("world".to_string()), 0);
+//! # let actor_id = ActorId(proc_id, "actor".to_string(), 0);
 //! let mbox = Mailbox::new_detached(actor_id);
 //! let (port, mut receiver) = mbox.open_port::<u64>();
 //!
-//! mbox.send(&port, 123).unwrap();
+//! port.send(123).unwrap();
 //! assert_eq!(receiver.recv().await.unwrap(), 123u64);
 //! # })
 //! ```
@@ -24,17 +24,17 @@
 //! Mailboxes also provide a form of one-shot ports, called [`OncePort`],
 //! that permits at most one message transmission:
 //!
-//! ```ignore
+//! ```
 //! # use hyperactor::mailbox::Mailbox;
 //! # use hyperactor::reference::{ActorId, ProcId, WorldId};
 //! # tokio_test::block_on(async {
-//! # let proc_id = ProcId(WorldId(0), 0);
-//! # let actor_id = ActorId(proc_id, 0, 0);
+//! # let proc_id = ProcId(WorldId("world".to_string()), 0);
+//! # let actor_id = ActorId(proc_id, "actor".to_string(), 0);
 //! let mbox = Mailbox::new_detached(actor_id);
 //!
 //! let (port, receiver) = mbox.open_once_port::<u64>();
 //!
-//! mbox.send_once(port, 123u64).unwrap();
+//! port.send(123u64).unwrap();
 //! assert_eq!(receiver.recv().await.unwrap(), 123u64);
 //! # })
 //! ```
