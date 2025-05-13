@@ -18,7 +18,7 @@ conda install python=3.10
 conda install libunwind
 
 # needs cuda-toolkit-12-0 as that is the version that matches the /usr/local/cuda/ on devservers
-sudo dnf install cuda-toolkit-12-0 libnccl-devel clang-devel
+sudo dnf install cuda-toolkit-12-0 cuda-12-0 libnccl-devel clang-devel
 # install build dependencies
 pip install setuptools-rust
 # install torch, can use conda or build it yourself or whatever
@@ -34,14 +34,7 @@ python setup.py develop
 
 ## Running examples
 
-### Basic Monarch features
-
-In the `examples` folder under `fbcode/monarch`, there are handful of Monarch
-examples. `controller/example.py` is a good starting point to understand Monarch
-basic features. Run the following command to launch the example. It is also
-recommended to run the following file in Bento by selecting the `monarch` Bento
-kernel. In both cases, cli or Bento, it will launch Monarch processes locally.
-You may also define TORCH_MONARCH_LOG_FOLDER to specify the log folder.
+TODO
 
 ## Debugging
 

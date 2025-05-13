@@ -31,7 +31,7 @@ with-proxy conda install python=3.10
 with-proxy conda install libunwind
 
 # needs cuda-toolkit-12-0 as that is the version that matches the /usr/local/cuda/ on devservers
-sudo dnf install cuda-toolkit-12-0 libnccl-devel clang-devel
+sudo dnf install cuda-toolkit-12-0 cuda-12-0 libnccl-devel clang-devel
 # install build dependencies
 with-proxy pip install setuptools-rust
 # install torch, can use conda or build it yourself or whatever
@@ -45,7 +45,9 @@ with-proxy python setup.py install
 with-proxy python setup.py develop
 ```
 
-If cargo is failing on git remote retrieval, you may have to add the following to your .cargo/config:
+If cargo is failing on git remote retrieval, you may have to add the following
+to your .cargo/config:
+
 ```
 [net]
 git-fetch-with-cli = true
