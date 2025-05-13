@@ -688,9 +688,12 @@ mod tests {
     use std::collections::HashSet;
     use std::collections::VecDeque;
     use std::marker::PhantomData;
+    use std::ops::ControlFlow;
 
+    use super::RoutingAction;
     use super::RoutingFrame;
     use super::RoutingFrameKey;
+    use super::RoutingStep;
     use super::print_route;
     use super::print_routing_tree;
     use crate::Slice;
@@ -698,7 +701,6 @@ mod tests {
     use crate::selection::NormalizedSelectionKey;
     use crate::selection::Selection;
     use crate::selection::dsl::*;
-    use crate::selection::routing::RoutingAction;
     use crate::shape;
 
     // A test slice: (zones = 2, hosts = 4, gpus = 8).
@@ -706,56 +708,59 @@ mod tests {
         Slice::new(0usize, vec![2, 4, 8], vec![32, 8, 1]).unwrap()
     }
 
-    // Message type used in the mesh routing simulation.
-    //
-    // Each message tracks its sender (`from`) and its current routing
-    // state (`frame`).
+    /// Message type used in the mesh routing simulation.
+    ///
+    /// Each message tracks the current routing state (`frame`) and
+    /// the full path (`path`) taken from the origin to the current
+    /// node, represented as a list of flat indices.
+    ///
+    /// As the message is forwarded, `path` is extended. This allows
+    /// complete routing paths to be observed at the point of
+    /// delivery.
     struct RoutedMessage<T> {
-        #[allow(dead_code)] // 'from' isn't read
-        from: Vec<usize>,
+        path: Vec<usize>,
         frame: RoutingFrame,
         _payload: PhantomData<T>,
     }
 
     impl<T> RoutedMessage<T> {
-        pub fn new(from: Vec<usize>, frame: RoutingFrame) -> Self {
+        pub fn new(path: Vec<usize>, frame: RoutingFrame) -> Self {
             Self {
-                from,
+                path,
                 frame,
                 _payload: PhantomData,
             }
         }
     }
 
-    // Simulates message routing from the origin coordinate through a
-    // slice, collecting all destination nodes determined by a
-    // `Selection`.
+    // Simulates routing from the origin through a slice using a
+    // `Selection`, collecting all delivery destinations **along with
+    // their routing paths**.
     //
-    // Starts from coordinate `[0, 0, ..., 0]` and proceeds
-    // dimension-by-dimension. At each step, `next_steps` emits
-    // routing steps describing where the message should continue.
+    // Each returned entry is a tuple `(dst, path)`, where `dst` is the
+    // flat index of a delivery node, and `path` is the list of flat
+    // indices representing the route taken from the origin to that node.
     //
-    // A frame is considered a delivery target if:
+    // Routing begins at `[0, 0, ..., 0]` and proceeds
+    // dimension-by-dimension. At each hop, `next_steps` determines the
+    // next set of forwarding frames.
+    //
+    // A node is considered a delivery target if:
     // - its `selection` is `Selection::True`, and
-    // - it is at the final dimension of the slice.
+    // - it is at the final dimension.
     //
-    // Routing continues recursively for all other frames.
-    pub fn collect_routed_nodes(selection: Selection, slice: &Slice) -> Vec<usize> {
-        use std::ops::ControlFlow;
-
-        use crate::selection::routing::RoutingStep;
-
+    // Useful in tests for verifying full routing paths and ensuring
+    // correctness.
+    fn collect_routed_paths(selection: Selection, slice: &Slice) -> Vec<(usize, Vec<usize>)> {
         let mut pending = VecDeque::new();
-        let mut delivered = HashSet::new();
+        let mut delivered = Vec::new();
         let mut seen = HashSet::new();
 
         let root_frame = RoutingFrame::root(selection, slice.clone());
-        pending.push_back(RoutedMessage::<()>::new(
-            root_frame.here.clone(),
-            root_frame,
-        ));
+        let origin = slice.location(&root_frame.here).unwrap();
+        pending.push_back(RoutedMessage::<()>::new(vec![origin], root_frame));
 
-        while let Some(RoutedMessage { frame, .. }) = pending.pop_front() {
+        while let Some(RoutedMessage { path, frame, .. }) = pending.pop_front() {
             let mut visitor = |step: RoutingStep| {
                 if let RoutingStep::Forward(next_frame) = step {
                     let key = RoutingFrameKey::new(
@@ -764,14 +769,16 @@ mod tests {
                         NormalizedSelectionKey::new(&next_frame.selection),
                     );
                     if seen.insert(key) {
+                        let next_rank = slice.location(&next_frame.here).unwrap();
+                        let mut next_path = path.clone();
+                        next_path.push(next_rank);
+
                         match next_frame.action() {
                             RoutingAction::Deliver => {
-                                delivered
-                                    .insert(next_frame.slice.location(&next_frame.here).unwrap());
+                                delivered.push((next_rank, next_path));
                             }
                             RoutingAction::Forward => {
-                                pending
-                                    .push_back(RoutedMessage::new(frame.here.clone(), next_frame));
+                                pending.push_back(RoutedMessage::new(next_path, next_frame));
                             }
                         }
                     }
@@ -785,9 +792,22 @@ mod tests {
             );
         }
 
-        let mut delivered: Vec<_> = delivered.into_iter().collect();
-        delivered.sort();
+        delivered.sort_by_key(|(rank, _)| *rank);
         delivered
+    }
+
+    // Simulates routing from the origin and returns the set of
+    // destination nodes (as flat indices) selected by the
+    // `Selection`.
+    //
+    // This function discards routing paths and retains only the
+    // final delivery targets. It is useful in tests to compare
+    // routing results against selection evaluation.
+    fn collect_routed_nodes(selection: Selection, slice: &Slice) -> Vec<usize> {
+        collect_routed_paths(selection.clone(), &slice)
+            .into_iter()
+            .map(|(dst, _path)| dst)
+            .collect()
     }
 
     macro_rules! assert_routing_eq {
