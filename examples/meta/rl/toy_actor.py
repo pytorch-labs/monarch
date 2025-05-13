@@ -74,18 +74,16 @@ async def main():
     gen_mesh = await proc_mesh(gpus=num_generators, env={})
 
     learner = await learner_mesh.spawn("learner", Learner)
-    weight_buffer = await learner.weights_handle().call()
+    weight_buffer = await learner.weights_handle.call()
     generators = await gen_mesh.spawn("generator", Generator, weight_buffer)
 
-    generation_stream = generators.generate(torch.randn(4, 4, device="cuda")).stream()
+    generation_stream = generators.generate.stream(torch.randn(4, 4, device="cuda"))
     for step in range(3):
         generations = [gen async for gen in generation_stream]
-        loss, rewards = await learner.step(generations).call()
+        loss, rewards = await learner.step.call(generations)
         print(f"step: {step}, loss: {loss}, rewards: {rewards}")
-        generation_stream = generators.generate(
-            torch.randn(4, 4, device="cuda")
-        ).stream()
-        await generators.update().call()
+        generation_stream = generators.generate.stream(torch.randn(4, 4, device="cuda"))
+        await generators.update.call()
 
     print("done")
 
