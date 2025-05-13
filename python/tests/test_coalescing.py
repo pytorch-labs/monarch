@@ -9,6 +9,7 @@ from unittest import main, TestCase
 from unittest.mock import patch
 
 import monarch
+import pytest
 
 import torch
 from monarch import (
@@ -389,6 +390,10 @@ class TestCoalescing(TestCase):
             with self.assertRaisesRegex(TypeError, "DROPPED"):
                 b.add(4)
 
+    @pytest.mark.skipif(
+        torch.cuda.device_count() < 2,
+        reason="Not enough GPUs, this test requires at least 2 GPUs",
+    )
     def test_across_mesh(self):
         with self.local_device_mesh(1, 2) as m:
             m0 = m(gpu=0)
