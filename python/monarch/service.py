@@ -33,6 +33,7 @@ from typing import (
 import monarch
 import monarch._monarch.hyperactor as hyperactor
 from monarch import ActorFuture as Future
+from monarch._monarch.shape import Point
 from monarch.common.pickle_flatten import flatten, unflatten
 from monarch.common.shape import MeshTrait, NDSlice, Shape
 
@@ -55,8 +56,7 @@ T2 = TypeVar("T2")
 class MonarchContext:
     mailbox: hyperactor.Mailbox
     proc_id: str
-    rank: int
-    shape: Shape
+    point: Point
 
     @staticmethod
     def get() -> "MonarchContext":
@@ -319,11 +319,8 @@ class ValueMesh(MeshTrait, Generic[R]):
         return self._values[self._ndslice.nditem(coordinates)]
 
     def __iter__(self):
-        labels = self._labels
-        for coordinates, index in zip(
-            itertools.product(*(range(s) for s in self._ndslice.sizes)), self._ndslice
-        ):
-            yield dict(zip(labels, coordinates)), self._values[index]
+        for rank in self._shape.ranks():
+            yield Point(rank, self._shape), self._values[rank]
 
     @property
     def _ndslice(self) -> NDSlice:
@@ -427,7 +424,7 @@ singleton_shape = Shape([], NDSlice(offset=0, sizes=[], strides=[]))
 
 class RankedPort(Port):
     def send(self, method: str, obj: object) -> None:
-        super().send(method, (MonarchContext.get().rank, obj))
+        super().send(method, (MonarchContext.get().point.rank, obj))
 
 
 class _Actor:
@@ -452,7 +449,7 @@ class _Actor:
         try:
             args, kwargs, port = _unpickle(message.message, mailbox)
 
-            ctx = MonarchContext(mailbox, mailbox.actor_id.proc_id, rank, shape)
+            ctx = MonarchContext(mailbox, mailbox.actor_id.proc_id, Point(rank, shape))
             _context.set(ctx)
 
             if message.method == "__init__":
@@ -619,11 +616,11 @@ def current_actor_name() -> str:
     return str(MonarchContext.get().mailbox.actor_id)
 
 
-def current_rank() -> Dict[str, int]:
+def current_rank() -> Point:
     ctx = MonarchContext.get()
-    return ctx.shape.coordinates(ctx.rank)
+    return ctx.point
 
 
 def current_size() -> Dict[str, int]:
     ctx = MonarchContext.get()
-    return dict(zip(ctx.shape.labels, ctx.shape.ndslice.sizes))
+    return dict(zip(ctx.point.shape.labels, ctx.point.shape.ndslice.sizes))

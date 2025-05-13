@@ -25,7 +25,7 @@ from collections import defaultdict
 
 import monarch
 from monarch.proc_mesh import proc_mesh
-from monarch.service import endpoint, MonarchContext
+from monarch.service import current_rank, current_size, endpoint, MonarchContext
 
 # TODO - figure out logging between actors
 logging.basicConfig(level=logging.INFO)
@@ -296,11 +296,11 @@ class DummyOptimizer:
 
 class Trainer(BaseActor):
     def __init__(self):
-        ctx = MonarchContext.get()
-        self.rank = ctx.rank
-        os.environ["RANK"] = str(ctx.rank)
-        os.environ["LOCAL_RANK"] = str(ctx.rank % GPUS_PER_TRAINER)
-        os.environ["WORLD_SIZE"] = str(ctx.shape.len)
+        rank = current_rank()
+        self.rank = rank.rank
+        os.environ["RANK"] = str(self.rank)
+        os.environ["LOCAL_RANK"] = str(rank["gpu"])
+        os.environ["WORLD_SIZE"] = str(rank.shape.len)
         self.model = DummyModel()
         self.optimizer = DummyOptimizer()
         self.step = 0
@@ -335,14 +335,13 @@ class Generator(BaseActor):
         self.prompts = []
         self.seqs = []
         self.batchsize = 3
-        ctx = MonarchContext.get()
         # local_rank here refers to a parallelism rank within a distributed group
-        self.local_rank = ctx.rank
+        self.local_rank = current_rank().rank
         # global rank refers to the index out of the total number of generators
         self.global_rank = global_rank
-        os.environ["RANK"] = str(ctx.rank)
-        os.environ["LOCAL_RANK"] = str(ctx.rank % GPUS_PER_GENERATOR)
-        os.environ["WORLD_SIZE"] = str(ctx.shape.len)
+        os.environ["RANK"] = str(self.local_rank)
+        os.environ["LOCAL_RANK"] = str(current_rank()["gpu"])
+        os.environ["WORLD_SIZE"] = str(current_size()["gpu"])
         self.model = DummyModel()
 
     @pipeline(input="trainer2generator")

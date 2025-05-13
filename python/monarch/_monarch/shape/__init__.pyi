@@ -1,3 +1,4 @@
+import collections.abc
 from typing import Dict, final, Iterator, List, overload
 
 @final
@@ -132,3 +133,20 @@ class Shape:
     def len(self) -> int: ...
     @staticmethod
     def unity() -> "Shape": ...
+
+class Point(collections.abc.Mapping):
+    """
+    A point inside a multidimensional shape. The rank is the offset into the
+    ndslice that selects which member of the ndslice this point represents.
+    Point behaves like a dictionary, taking named dimensions and returning
+    the index into those dimensions.
+
+    It also additionally lets someone get the underlying shape.
+    """
+    def __new__(cls, rank: int, shape: "Shape") -> "Point": ...
+    def __getitem__(self, label: str) -> int: ...
+    def __len__(self) -> int: ...
+    @property
+    def rank(self) -> int: ...
+    @property
+    def shape(self) -> "Shape": ...
