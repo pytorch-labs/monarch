@@ -88,6 +88,7 @@ pub mod routing;
 pub mod test_utils;
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fmt;
 
 use rand::Rng;
@@ -524,6 +525,29 @@ impl Selection {
 
     /// Lazily evaluates this selection against the given `slice`
     /// yielding flat indices.
+    ///
+    /// Returns a boxed iterator that produces indices of elements
+    /// matching the selection expression when evaluated over `slice`.
+    ///
+    /// # Lifetimes
+    ///
+    /// The returned iterator borrows `slice` because the internal
+    /// iterators are implemented as closures that **capture**
+    /// `&slice` in their environment. Evaluation is lazy, so these
+    /// closures dereference `slice` each time a coordinate is
+    /// visited. The `'a` lifetime ensures that the iterator cannot
+    /// outlive the `slice` it reads from.
+    ///
+    /// # Why `Box<dyn Iterator>`
+    ///
+    /// The selection algebra supports multiple recursive strategies
+    /// (`All`, `Range`, `Intersection`, etc.) that return different
+    /// iterator types (e.g. `Selection::True` =>
+    /// `std::iter::once(...)`, `Selection::False` =>
+    /// `std::iter::empty()`). Returning `impl Iterator` is not
+    /// feasible because the precise type depends on dynamic selection
+    /// structure. Boxing erases this variability and allows a uniform
+    /// return type.
     pub fn eval<'a>(
         &self,
         opts: &EvalOpts,
@@ -868,7 +892,26 @@ impl Selection {
             Selection::Union(a, b) => S::union(a.fold::<S>(), b.fold::<S>()),
         }
     }
+
+    /// Iterator over indices selected by `self` and not in
+    /// `exclusions`.
+    ///
+    /// Evaluates the selection against `slice` using `opts`, then
+    /// filters out any indices present in the exclusion set.
+    /// Evaluation is lazy and streaming; the exclusion set is used
+    /// directly for fast membership checks.
+    pub fn difference<'a>(
+        &self,
+        opts: &EvalOpts,
+        slice: &'a Slice,
+        exclusions: &'a HashSet<usize>,
+    ) -> Result<impl Iterator<Item = usize> + 'a, ShapeError> {
+        Ok(self
+            .eval(opts, slice)?
+            .filter(move |idx| !exclusions.contains(idx)))
+    }
 }
+// impl Selection
 
 /// Trivial all(true) equivalence.
 pub fn is_equivalent_true(sel: impl std::borrow::Borrow<Selection>) -> bool {
@@ -1607,5 +1650,53 @@ mod tests {
     fn test_contains_first() {
         let selection = first(true_());
         selection.contains(&[0, 0, 0]);
+    }
+
+    #[test]
+    fn test_difference_1d() {
+        assert_eq!(
+            true_()
+                .difference(
+                    &EvalOpts::strict(),
+                    &Slice::new_row_major(vec![5]),
+                    &[2usize, 4].into(),
+                )
+                .unwrap()
+                .collect::<Vec<_>>(),
+            vec![0, 1, 3]
+        );
+    }
+
+    #[test]
+    fn test_difference_empty_selection() {
+        assert_eq!(
+            false_()
+                .difference(
+                    &EvalOpts::strict(),
+                    &Slice::new_row_major(vec![3]),
+                    &[0usize, 1].into(),
+                )
+                .unwrap()
+                .collect::<Vec<_>>(),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn test_difference_2d() {
+        // [[0, 1, 2],
+        //  [3, 4, 5]]
+        // Select everything, exclude the second row.
+        assert_eq!(
+            all(all(true_()))
+                .difference(
+                    &EvalOpts::strict(),
+                    &Slice::new_row_major(vec![2, 3]),
+                    &[3usize, 4, 5].into(),
+                )
+                .unwrap()
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
     }
 }
