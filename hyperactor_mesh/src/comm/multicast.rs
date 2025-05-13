@@ -1,10 +1,10 @@
 //! The comm actor that provides message casting and result accumulation.
 
 use hyperactor::Named;
+use hyperactor::RemoteMessage;
 use hyperactor::data::Serialized;
 use hyperactor::reference::ActorId;
 use hyperactor::reference::GangId;
-use hyperactor::reference::Index;
 use hyperactor::reference::PortId;
 use hyperactor::reference::ProcId;
 use ndslice::Slice;
@@ -29,39 +29,89 @@ pub struct Uslice {
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Named)]
 pub struct CastMessageEnvelope {
     /// The sender of this message.
-    pub sender: ActorId,
+    sender: ActorId,
     /// The destination port of the message. It could match multiple actors with
     /// rank wildcard.
-    pub dest_port: DestinationPort,
+    dest_port: DestinationPort,
     /// The serialized message.
-    pub data: Serialized,
+    data: Serialized,
 }
 
-/// Destination port id of a message. It is a `PortId` with the rank masked out.
-/// The rank is resolved by the destination Selection of the message. We can use
-/// `DestinationPort::port_id(rank)` to get the actual `PortId` of the message.
+impl CastMessageEnvelope {
+    /// Create a new CastMessageEnvelope.
+    pub fn new<T: Serialize + Named>(
+        sender: ActorId,
+        dest_port: DestinationPort,
+        message: &T,
+    ) -> anyhow::Result<Self> {
+        let data = Serialized::serialize(message)?;
+        Ok(Self {
+            sender,
+            dest_port,
+            data,
+        })
+    }
+
+    /// Create a new CastMessageEnvelope from serialized data.
+    pub fn from_serialized(sender: ActorId, dest_port: DestinationPort, data: Serialized) -> Self {
+        Self {
+            sender,
+            dest_port,
+            data,
+        }
+    }
+
+    pub(crate) fn dest_port(&self) -> &DestinationPort {
+        &self.dest_port
+    }
+
+    pub(crate) fn data(&self) -> &Serialized {
+        &self.data
+    }
+}
+
+/// Destination port id of a message. It is a `PortId` with the rank masked out,
+/// and the messege is always sent to the root actor because only root actor
+/// can be accessed externally. The rank is resolved by the destination Selection
+/// of the message. We can use `DestinationPort::port_id(rank)` to get the actual
+/// `PortId` of the message.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Named)]
 pub struct DestinationPort {
     /// Destination gang id, consisting of world id and actor name.
-    pub gang_id: GangId,
-    /// Index of destination actors in their proc.
-    pub actor_idx: Index,
+    gang_id: GangId,
     /// The port index of the destination actors, it is derived from the
-    /// message type.
-    pub port: u64,
+    /// message type and cached here.
+    port: u64,
 }
 
 impl DestinationPort {
+    /// Create a new DestinationPort for Actor type A and message type M.
+    pub fn new<M>(gang_id: GangId) -> Self
+    where
+        M: RemoteMessage,
+    {
+        Self {
+            gang_id,
+            port: M::port(),
+        }
+    }
+
     /// Get the actual port id of an actor for a rank.
     pub fn port_id(&self, rank: usize) -> PortId {
         PortId(
             ActorId(
                 ProcId(self.gang_id.world_id().clone(), rank),
                 self.gang_id.name().to_string(),
-                self.actor_idx.clone(),
+                // Only root actor can be accessed externally.
+                0,
             ),
-            self.port.clone(),
+            self.port,
         )
+    }
+
+    /// Get the gang id of the destination actors.
+    pub fn gang_id(&self) -> &GangId {
+        &self.gang_id
     }
 }
 

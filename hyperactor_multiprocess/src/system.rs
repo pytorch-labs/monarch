@@ -193,7 +193,6 @@ mod tests {
     use hyperactor::channel::ChannelTransport;
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
-    use hyperactor::data::Serialized;
     use hyperactor::id;
     use hyperactor::mailbox::BoxedMailboxSender;
     use hyperactor::mailbox::MailboxRouter;
@@ -995,24 +994,20 @@ mod tests {
             test_actors.push(test);
         }
 
-        for ((_, comm), test) in comm_actors.iter().zip(test_actors.iter()) {
+        for (_, comm) in &comm_actors {
             comm.send(CastMessage {
                 dest: Uslice {
                     slice: Slice::new(0, vec![2], vec![1])?,
                     selection: selection::dsl::true_(),
                 },
-                message: CastMessageEnvelope {
-                    sender: ActorId(world.random_user_proc(), "user".into(), 0),
-                    dest_port: DestinationPort {
-                        gang_id: GangId(
-                            comm.actor_id().proc_id().world_id().clone(),
-                            "actor".into(),
-                        ),
-                        actor_idx: 0,
-                        port: test.port::<TestMessage>().bind().port_id().1,
-                    },
-                    data: Serialized::serialize(&TestMessage::Forward("abc".to_string()))?,
-                },
+                message: CastMessageEnvelope::new(
+                    ActorId(world.random_user_proc(), "user".into(), 0),
+                    DestinationPort::new::<TestMessage>(GangId(
+                        comm.actor_id().proc_id().world_id().clone(),
+                        "actor".into(),
+                    )),
+                    &TestMessage::Forward("abc".to_string()),
+                )?,
             })?;
         }
 
@@ -1106,12 +1101,8 @@ mod tests {
             spawned_test.recv().await?;
         }
 
-        let test_actors: Vec<ActorRef<TestActor>> = (0..world_size)
-            .map(|rank| ActorRef::attest(world_id.proc_id(rank).actor_id("test", 0)))
-            .collect();
-
         // Send cast messages to everyeone.
-        for (bootstrap, test) in host_proc_actors.iter().zip(test_actors.iter()) {
+        for bootstrap in &host_proc_actors {
             let comm = bootstrap.comm_actor.bind::<CommActor>();
             comm.send(
                 &client,
@@ -1121,18 +1112,14 @@ mod tests {
                         slice: Slice::new(0, vec![4, 4, 4], vec![16, 4, 1])?,
                         selection: selection::dsl::true_(),
                     },
-                    message: CastMessageEnvelope {
-                        sender: ActorId(world_id.random_user_proc(), "user".into(), 0),
-                        dest_port: DestinationPort {
-                            gang_id: GangId(
-                                comm.actor_id().proc_id().world_id().clone(),
-                                "actor".into(),
-                            ),
-                            actor_idx: 0,
-                            port: test.port::<TestMessage>().port_id().1,
-                        },
-                        data: Serialized::serialize(&TestMessage::Forward("abc".to_string()))?,
-                    },
+                    message: CastMessageEnvelope::new(
+                        ActorId(world_id.random_user_proc(), "user".into(), 0),
+                        DestinationPort::new::<TestMessage>(GangId(
+                            comm.actor_id().proc_id().world_id().clone(),
+                            "actor".into(),
+                        )),
+                        &TestMessage::Forward("abc".to_string()),
+                    )?,
                 },
             )?;
         }

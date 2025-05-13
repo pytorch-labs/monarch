@@ -82,7 +82,7 @@ impl Actor for CommActor {
 impl CommActor {
     /// Forward the message to the comm actor on the given peer rank.
     fn forward(this: &Instance<Self>, rank: usize, message: ForwardMessage) -> Result<()> {
-        let world_id = message.message.dest_port.gang_id.world_id();
+        let world_id = message.message.dest_port().gang_id().world_id();
         let proc_id = world_id.proc_id(rank);
         let actor_id = ActorId::root(proc_id, this.self_id().name().to_string());
         let comm_actor = ActorRef::<CommActor>::attest(actor_id);
@@ -163,8 +163,8 @@ impl CommActor {
         // Deliever message here, if necessary.
         if deliver_here {
             this.post(
-                message.dest_port.port_id(this.self_id().proc_id().rank()),
-                message.data.clone(),
+                message.dest_port().port_id(this.self_id().proc_id().rank()),
+                message.data().clone(),
             );
         }
 

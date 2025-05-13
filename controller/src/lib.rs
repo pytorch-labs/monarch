@@ -380,15 +380,11 @@ impl ControllerMessageHandler for ControllerActor {
                 dsl::union(sel, slice_to_selection(slice))
             }),
         };
-        let message = CastMessageEnvelope {
-            sender: this.self_id().clone(),
-            dest_port: DestinationPort {
-                gang_id: self.worker_gang_ref.gang_id().clone(),
-                actor_idx: 0, // TODO(agallagher): don't hard-code this
-                port: WorkerMessage::port(),
-            },
-            data: message,
-        };
+        let message = CastMessageEnvelope::from_serialized(
+            this.self_id().clone(),
+            DestinationPort::new::<WorkerMessage>(self.worker_gang_ref.gang_id().clone()),
+            message,
+        );
         self.comm_actor_ref.port::<CastMessage>().send(
             this,
             CastMessage {
