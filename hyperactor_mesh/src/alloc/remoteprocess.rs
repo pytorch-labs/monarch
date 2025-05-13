@@ -6,7 +6,6 @@ use hyperactor::Named;
 use hyperactor::WorldId;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
-use hyperactor::channel::ChannelRx;
 use hyperactor::channel::Rx;
 use hyperactor::channel::Tx;
 use hyperactor::channel::TxStatus;
@@ -22,6 +21,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
+use tokio::task::JoinHandle;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::WatchStream;
 use tokio_util::sync::CancellationToken;
@@ -121,6 +121,23 @@ impl RemoteProcessAllocator {
             .await
             .map_err(anyhow::Error::from)?;
 
+        struct ActiveAllocation {
+            handle: JoinHandle<()>,
+            cancel_token: CancellationToken,
+        }
+        async fn ensure_previous_alloc_stopped(active_allocation: &mut Option<ActiveAllocation>) {
+            if let Some(active_allocation) = active_allocation.take() {
+                tracing::info!("previous alloc found, stopping");
+                active_allocation.cancel_token.cancel();
+                // should be ok to wait even if original caller has gone since heartbeat
+                // will eventually timeout and exit the loop.
+                if let Err(e) = active_allocation.handle.await {
+                    tracing::error!("allocation handler failed: {}", e);
+                }
+            }
+        }
+
+        let mut active_allocation: Option<ActiveAllocation> = None;
         loop {
             tokio::select! {
                 msg = rx.recv() => {
@@ -132,16 +149,22 @@ impl RemoteProcessAllocator {
                             heartbeat_interval,
                         }) => {
                             tracing::info!("received allocation request: {:?}", spec);
+
+                            ensure_previous_alloc_stopped(&mut active_allocation).await;
+
                             match process_allocator.allocate(spec.clone()).await {
                                 Ok(alloc) => {
-                                    self.handle_allocation_request(
-                                        &mut rx,
+                                    let cancel_token = CancellationToken::new();
+                                    active_allocation = Some(ActiveAllocation {
+                                        cancel_token: cancel_token.clone(),
+                                        handle: tokio::spawn(Self::handle_allocation_request(
                                         Box::new(alloc) as Box<dyn Alloc + Send + Sync>,
                                         bootstrap_addr,
                                         hosts,
                                         heartbeat_interval,
-                                    )
-                                    .await;
+                                        cancel_token,
+                                    )),
+                                })
                                 }
                                 Err(e) => {
                                     tracing::error!("allocation for {:?} failed: {}", spec, e);
@@ -151,6 +174,8 @@ impl RemoteProcessAllocator {
                         }
                         Ok(RemoteProcessAllocatorMessage::Stop) => {
                             tracing::info!("received stop request");
+
+                            ensure_previous_alloc_stopped(&mut active_allocation).await;
                         }
                         Err(e) => {
                             tracing::error!("upstream channel error: {}", e);
@@ -159,7 +184,10 @@ impl RemoteProcessAllocator {
                     }
                 }
                 _ = self.cancel_token.cancelled() => {
-                    tracing::info!("main loop cancelled cancelled");
+                    tracing::info!("main loop cancelled");
+
+                    ensure_previous_alloc_stopped(&mut active_allocation).await;
+
                     break;
                 }
             }
@@ -169,12 +197,11 @@ impl RemoteProcessAllocator {
     }
 
     async fn handle_allocation_request(
-        &self,
-        rx: &mut ChannelRx<RemoteProcessAllocatorMessage>,
         alloc: Box<dyn Alloc + Send + Sync>,
         bootstrap_addr: ChannelAddr,
         hosts: Vec<String>,
         heartbeat_interval: Duration,
+        cancel_token: CancellationToken,
     ) {
         // start proc message forwarder
         let router = DialMailboxRouter::new();
@@ -219,13 +246,13 @@ impl RemoteProcessAllocator {
             }
         }
 
-        self.handle_allocation_loop(
-            rx,
+        Self::handle_allocation_loop(
             alloc,
             bootstrap_addr,
             router,
             forwarder_addr,
             heartbeat_interval,
+            cancel_token,
         )
         .await;
 
@@ -236,13 +263,12 @@ impl RemoteProcessAllocator {
     }
 
     async fn handle_allocation_loop(
-        &self,
-        rx: &mut ChannelRx<RemoteProcessAllocatorMessage>,
         mut alloc: Box<dyn Alloc + Send + Sync>,
         bootstrap_addr: ChannelAddr,
         router: DialMailboxRouter,
         forward_addr: ChannelAddr,
         heartbeat_interval: Duration,
+        cancel_token: CancellationToken,
     ) {
         let tx = match channel::dial(bootstrap_addr) {
             Ok(tx) => tx,
@@ -268,10 +294,13 @@ impl RemoteProcessAllocator {
         let mut tx_watcher = WatchStream::new(tx_status);
         loop {
             tokio::select! {
-                biased;
-                _ = self.cancel_token.cancelled() => {
-                    tracing::info!("cancelled");
-                    break;
+                _ = cancel_token.cancelled(), if running => {
+                    tracing::info!("cancelled, stopping allocation");
+                    running = false;
+                    if let Err(e) = alloc.stop().await {
+                        tracing::error!("stop failed: {}", e);
+                        break;
+                    }
                 }
                 status = tx_watcher.next(), if running => {
                     match status  {
@@ -282,26 +311,6 @@ impl RemoteProcessAllocator {
                         _ => {
                             tracing::debug!("got channel event: {:?}", status.unwrap());
                             continue;
-                        }
-                    }
-                }
-                m = rx.recv(), if running => {
-                    match m {
-                        Ok(RemoteProcessAllocatorMessage::Stop) => {
-                            tracing::info!("received stop request");
-                            running = false;
-                            if let Err(e) = alloc.stop().await {
-                                tracing::error!("stop failed: {}", e);
-                                break;
-                            }
-                        }
-                        Ok(_) => {
-                            tracing::error!("unexpected message: {:?}", m);
-                            continue;
-                        }
-                        Err(e) => {
-                            tracing::error!("upstream channel receive error: {}", e);
-                            break;
                         }
                     }
                 }
@@ -365,6 +374,7 @@ mod test {
     use std::assert_matches::assert_matches;
 
     use hyperactor::ActorRef;
+    use hyperactor::channel::ChannelRx;
     use hyperactor::id;
     use ndslice::shape;
     use tokio::sync::oneshot;
@@ -377,28 +387,48 @@ mod test {
     use crate::alloc::MockAllocator;
     use crate::proc_mesh::mesh_agent::MeshAgent;
 
-    #[timed_test::async_timed_test(timeout_secs = 5)]
-    async fn test_simple() {
-        hyperactor_telemetry::initialize_logging();
-        let serve_addr = ChannelAddr::any(ChannelTransport::Unix);
-        let bootstrap_addr = ChannelAddr::any(ChannelTransport::Unix);
-        let (_, mut rx) = channel::serve(bootstrap_addr.clone()).await.unwrap();
+    async fn read_all_created(rx: &mut ChannelRx<RemoteProcessProcStateMessage>, alloc_len: usize) {
+        let mut i: usize = 0;
+        while i < alloc_len {
+            let m = rx.recv().await.unwrap();
+            match m {
+                RemoteProcessProcStateMessage::Update(ProcState::Created { .. }) => i += 1,
+                RemoteProcessProcStateMessage::HeartBeat => {}
+                _ => panic!("unexpected message: {:?}", m),
+            }
+        }
+    }
 
-        let spec = AllocSpec {
-            shape: shape!(host = 1, gpu = 2),
-            constraints: AllocConstraints::none(),
-        };
-        let tx = channel::dial(serve_addr.clone()).unwrap();
+    async fn read_all_running(rx: &mut ChannelRx<RemoteProcessProcStateMessage>, alloc_len: usize) {
+        let mut i: usize = 0;
+        while i < alloc_len {
+            let m = rx.recv().await.unwrap();
+            match m {
+                RemoteProcessProcStateMessage::Update(ProcState::Running { .. }) => i += 1,
+                RemoteProcessProcStateMessage::HeartBeat => {}
+                _ => panic!("unexpected message: {:?}", m),
+            }
+        }
+    }
 
-        let alloc_len = spec.shape.slice().len();
+    async fn read_all_stopped(rx: &mut ChannelRx<RemoteProcessProcStateMessage>, alloc_len: usize) {
+        let mut i: usize = 0;
+        while i < alloc_len {
+            let m = rx.recv().await.unwrap();
+            match m {
+                RemoteProcessProcStateMessage::Update(ProcState::Stopped { .. }) => i += 1,
+                RemoteProcessProcStateMessage::HeartBeat => {}
+                _ => panic!("unexpected message: {:?}", m),
+            }
+        }
+    }
 
-        let world_id: WorldId = id!(test_world_id);
-        let mut alloc = MockAlloc::new();
-        alloc.expect_world_id().return_const(world_id.clone());
-        alloc.expect_shape().return_const(spec.shape.clone());
+    fn set_procstate_execptations(alloc: &mut MockAlloc, shape: Shape) {
+        let alloc_len = shape.slice().len();
+        alloc.expect_shape().return_const(shape.clone());
         for i in 0..alloc_len {
             let proc_id = format!("test[{}]", i).parse().unwrap();
-            let coords = spec.shape.slice().coordinates(i).unwrap();
+            let coords = shape.slice().coordinates(i).unwrap();
             alloc
                 .expect_next()
                 .times(1)
@@ -424,6 +454,30 @@ mod test {
                 .times(1)
                 .return_once(|| Some(ProcState::Stopped(proc_id)));
         }
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 5)]
+    async fn test_simple() {
+        hyperactor_telemetry::initialize_logging();
+        let serve_addr = ChannelAddr::any(ChannelTransport::Unix);
+        let bootstrap_addr = ChannelAddr::any(ChannelTransport::Unix);
+        let (_, mut rx) = channel::serve(bootstrap_addr.clone()).await.unwrap();
+
+        let spec = AllocSpec {
+            shape: shape!(host = 1, gpu = 2),
+            constraints: AllocConstraints::none(),
+        };
+        let tx = channel::dial(serve_addr.clone()).unwrap();
+
+        let alloc_len = spec.shape.slice().len();
+
+        let world_id: WorldId = id!(test_world_id);
+        let mut alloc = MockAlloc::new();
+        alloc.expect_world_id().return_const(world_id.clone());
+        alloc.expect_shape().return_const(spec.shape.clone());
+
+        set_procstate_execptations(&mut alloc, spec.shape.clone());
+
         // final none
         alloc.expect_next().return_const(None);
 
@@ -434,7 +488,6 @@ mod test {
             // block after create, running, stopped and done.
             total_messages,
         );
-        let next_tx = mock_wrapper.notify_tx();
         allocator
             .expect_allocate()
             .times(1)
@@ -535,6 +588,196 @@ mod test {
     }
 
     #[timed_test::async_timed_test(timeout_secs = 15)]
+    async fn test_normal_stop() {
+        hyperactor_telemetry::initialize_logging();
+        let serve_addr = ChannelAddr::any(ChannelTransport::Unix);
+        let bootstrap_addr = ChannelAddr::any(ChannelTransport::Unix);
+        let (_, mut rx) = channel::serve(bootstrap_addr.clone()).await.unwrap();
+
+        let spec = AllocSpec {
+            shape: shape!(host = 1, gpu = 2),
+            constraints: AllocConstraints::none(),
+        };
+        let tx = channel::dial(serve_addr.clone()).unwrap();
+
+        let alloc_len = spec.shape.slice().len();
+
+        let world_id: WorldId = id!(test_world_id);
+        let mut alloc = MockAllocWrapper::new_block_next(
+            MockAlloc::new(),
+            // block after all created, all running
+            alloc_len * 2,
+        );
+        let next_tx = alloc.notify_tx();
+        alloc.alloc.expect_world_id().return_const(world_id.clone());
+        alloc.alloc.expect_shape().return_const(spec.shape.clone());
+
+        set_procstate_execptations(&mut alloc.alloc, spec.shape.clone());
+
+        alloc.alloc.expect_next().return_const(None);
+        alloc.alloc.expect_stop().times(1).return_once(|| Ok(()));
+
+        let mut allocator = MockAllocator::new();
+        allocator
+            .expect_allocate()
+            .times(1)
+            .return_once(|_| Ok(alloc));
+
+        let remote_allocator = RemoteProcessAllocator::new();
+        let handle = tokio::spawn({
+            let remote_allocator = remote_allocator.clone();
+            async move {
+                remote_allocator
+                    .start_with_allocator(serve_addr, allocator)
+                    .await
+            }
+        });
+
+        tx.send(RemoteProcessAllocatorMessage::Allocate {
+            spec: spec.clone(),
+            bootstrap_addr,
+            hosts: vec![],
+            heartbeat_interval: Duration::from_millis(200),
+        })
+        .await
+        .unwrap();
+
+        // Allocated
+        let m = rx.recv().await.unwrap();
+        assert_matches!(m, RemoteProcessProcStateMessage::Allocated {world_id, shape} if world_id == world_id && shape == spec.shape);
+
+        read_all_created(&mut rx, alloc_len).await;
+        read_all_running(&mut rx, alloc_len).await;
+
+        // allocation finished. now we stop it.
+        tracing::info!("stopping allocation");
+        tx.send(RemoteProcessAllocatorMessage::Stop).await.unwrap();
+        // receive all stops
+        next_tx.send(()).unwrap();
+
+        read_all_stopped(&mut rx, alloc_len).await;
+
+        remote_allocator.terminate();
+        handle.await.unwrap().unwrap();
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 15)]
+    async fn test_realloc() {
+        hyperactor_telemetry::initialize_logging();
+        let serve_addr = ChannelAddr::any(ChannelTransport::Unix);
+        let bootstrap_addr = ChannelAddr::any(ChannelTransport::Unix);
+        let (_, mut rx) = channel::serve(bootstrap_addr.clone()).await.unwrap();
+
+        let spec = AllocSpec {
+            shape: shape!(host = 1, gpu = 2),
+            constraints: AllocConstraints::none(),
+        };
+        let tx = channel::dial(serve_addr.clone()).unwrap();
+
+        let alloc_len = spec.shape.slice().len();
+
+        let world_id: WorldId = id!(test_world_id);
+        let mut alloc1 = MockAllocWrapper::new_block_next(
+            MockAlloc::new(),
+            // block after all created, all running
+            alloc_len * 2,
+        );
+        let next_tx1 = alloc1.notify_tx();
+        alloc1
+            .alloc
+            .expect_world_id()
+            .return_const(world_id.clone());
+        alloc1.alloc.expect_shape().return_const(spec.shape.clone());
+
+        set_procstate_execptations(&mut alloc1.alloc, spec.shape.clone());
+        alloc1.alloc.expect_next().return_const(None);
+        alloc1.alloc.expect_stop().times(1).return_once(|| Ok(()));
+        // second allocation
+        let mut alloc2 = MockAllocWrapper::new_block_next(
+            MockAlloc::new(),
+            // block after all created, all running
+            alloc_len * 2,
+        );
+        let next_tx2 = alloc2.notify_tx();
+        alloc2
+            .alloc
+            .expect_world_id()
+            .return_const(world_id.clone());
+        alloc2.alloc.expect_shape().return_const(spec.shape.clone());
+        set_procstate_execptations(&mut alloc2.alloc, spec.shape.clone());
+        alloc2.alloc.expect_next().return_const(None);
+        alloc2.alloc.expect_stop().times(1).return_once(|| Ok(()));
+
+        let mut allocator = MockAllocator::new();
+        allocator
+            .expect_allocate()
+            .times(1)
+            .return_once(|_| Ok(alloc1));
+        // second alloc
+        allocator
+            .expect_allocate()
+            .times(1)
+            .return_once(|_| Ok(alloc2));
+
+        let remote_allocator = RemoteProcessAllocator::new();
+        let handle = tokio::spawn({
+            let remote_allocator = remote_allocator.clone();
+            async move {
+                remote_allocator
+                    .start_with_allocator(serve_addr, allocator)
+                    .await
+            }
+        });
+
+        tx.send(RemoteProcessAllocatorMessage::Allocate {
+            spec: spec.clone(),
+            bootstrap_addr: bootstrap_addr.clone(),
+            hosts: vec![],
+            heartbeat_interval: Duration::from_millis(200),
+        })
+        .await
+        .unwrap();
+
+        // Allocated
+        let m = rx.recv().await.unwrap();
+        assert_matches!(m, RemoteProcessProcStateMessage::Allocated {world_id, shape} if world_id == world_id && shape == spec.shape);
+
+        read_all_created(&mut rx, alloc_len).await;
+        read_all_running(&mut rx, alloc_len).await;
+
+        // allocation finished now we request a new one
+        tx.send(RemoteProcessAllocatorMessage::Allocate {
+            spec: spec.clone(),
+            bootstrap_addr,
+            hosts: vec![],
+            heartbeat_interval: Duration::from_millis(200),
+        })
+        .await
+        .unwrap();
+        // unblock next for the first allocation
+        next_tx1.send(()).unwrap();
+        // we expect a stop(), then Stopped proc states, then a new Allocated
+        read_all_stopped(&mut rx, alloc_len).await;
+        let m = rx.recv().await.unwrap();
+        assert_matches!(m, RemoteProcessProcStateMessage::Done(_));
+        let m = rx.recv().await.unwrap();
+        assert_matches!(m, RemoteProcessProcStateMessage::Allocated {world_id, shape} if world_id == world_id && shape == spec.shape);
+        // ProcStates for the new allocation
+        read_all_created(&mut rx, alloc_len).await;
+        read_all_running(&mut rx, alloc_len).await;
+        // finally stop
+        tracing::info!("stopping allocation");
+        tx.send(RemoteProcessAllocatorMessage::Stop).await.unwrap();
+        // receive all stops
+        next_tx2.send(()).unwrap();
+
+        read_all_stopped(&mut rx, alloc_len).await;
+
+        remote_allocator.terminate();
+        handle.await.unwrap().unwrap();
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 15)]
     async fn test_upstream_closed() {
         std::env::set_var("MONARCH_MESSAGE_DELIVERY_TIMEOUT_SECS", "1");
 
@@ -560,36 +803,9 @@ mod test {
         let next_tx = alloc.notify_tx();
         alloc.alloc.expect_world_id().return_const(world_id.clone());
         alloc.alloc.expect_shape().return_const(spec.shape.clone());
-        for i in 0..alloc_len {
-            let proc_id = format!("test[{}]", i).parse().unwrap();
-            let coords = spec.shape.slice().coordinates(i).unwrap();
-            alloc
-                .alloc
-                .expect_next()
-                .times(1)
-                .return_once(|| Some(ProcState::Created { proc_id, coords }));
-        }
-        for i in 0..alloc_len {
-            let proc_id = format!("test[{}]", i).parse().unwrap();
-            let mesh_agent = ActorRef::<MeshAgent>::attest(
-                format!("test[{}].mesh_agent[{}]", i, i).parse().unwrap(),
-            );
-            alloc.alloc.expect_next().times(1).return_once(|| {
-                Some(ProcState::Running {
-                    proc_id,
-                    addr: ChannelAddr::Unix("/proc0".parse().unwrap()),
-                    mesh_agent,
-                })
-            });
-        }
-        for i in 0..alloc_len {
-            let proc_id = format!("test[{}]", i).parse().unwrap();
-            alloc
-                .alloc
-                .expect_next()
-                .times(1)
-                .return_once(|| Some(ProcState::Stopped(proc_id)));
-        }
+
+        set_procstate_execptations(&mut alloc.alloc, spec.shape.clone());
+
         alloc.alloc.expect_next().return_const(None);
         // we expect a stop due to the failure
         // synchronize test with the stop
@@ -628,26 +844,9 @@ mod test {
         let m = rx.recv().await.unwrap();
         assert_matches!(m, RemoteProcessProcStateMessage::Allocated {world_id, shape} if world_id == world_id && shape == spec.shape);
 
-        // All Created events
-        let mut i: usize = 0;
-        while i < alloc_len {
-            let m = rx.recv().await.unwrap();
-            match m {
-                RemoteProcessProcStateMessage::Update(ProcState::Created { .. }) => i += 1,
-                RemoteProcessProcStateMessage::HeartBeat => {}
-                _ => panic!("unexpected message: {:?}", m),
-            }
-        }
-        // All Running events
-        let mut i: usize = 0;
-        while i < alloc_len {
-            let m = rx.recv().await.unwrap();
-            match m {
-                RemoteProcessProcStateMessage::Update(ProcState::Running { .. }) => i += 1,
-                RemoteProcessProcStateMessage::HeartBeat => {}
-                _ => panic!("unexpected message: {:?}", m),
-            }
-        }
+        read_all_created(&mut rx, alloc_len).await;
+        read_all_running(&mut rx, alloc_len).await;
+
         // allocation finished. terminate connection.
         tracing::info!("closing upstream");
         drop(rx);
