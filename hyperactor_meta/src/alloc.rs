@@ -48,6 +48,7 @@ pub static ALLOC_LABEL_TASK_GROUP: &str = concatcp!("mast.", MONARCH_LABEL_PREFI
 
 /// TODO: Remove once we have a way to extract it from the task group API.
 pub static DEFAULT_REMOTE_ALLOCATOR_PORT: u16 = 26600;
+pub static DEFAULT_REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 static DEFAULT_TASK_GROUP_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 
 /// MAST/TW task ID.
@@ -76,6 +77,7 @@ pub struct TaskGroupAlloc {
     ordered_tasks: Vec<(TaskId, HpcTaskExecutionAttempt)>,
     spec: AllocSpec,
     remote_allocator_port: u16,
+    remote_allocator_heartbeat_interval: Duration,
     transport: ChannelTransport,
     world_id: WorldId,
     task_states: HashMap<TaskId, TaskRemoteState>,
@@ -108,6 +110,7 @@ impl TaskGroupAlloc {
         spec: AllocSpec,
         remote_allocator_port: u16,
         transport: ChannelTransport,
+        remote_allocator_heartbeat_interval: Duration,
     ) -> Result<Self, anyhow::Error> {
         let (bootstrap_addr, rx) = channel::serve(ChannelAddr::any(transport.clone()))
             .await
@@ -126,6 +129,7 @@ impl TaskGroupAlloc {
             ordered_tasks: Vec::new(),
             spec,
             remote_allocator_port,
+            remote_allocator_heartbeat_interval,
             transport,
             world_id: Self::get_world_id(task_group_name)?,
             task_states: HashMap::new(),
@@ -216,6 +220,7 @@ impl TaskGroupAlloc {
                     constraints: self.spec.constraints.clone(),
                 },
                 hosts: hosts.clone(),
+                heartbeat_interval: self.remote_allocator_heartbeat_interval,
             })
             .await
             .map_err(anyhow::Error::from)
@@ -588,6 +593,7 @@ impl Alloc for TaskGroupAlloc {
                                     break None;
                                 }
                             }
+                            Ok(RemoteProcessProcStateMessage::HeartBeat) => {}
                             Err(e) => {
                                 tracing::error!("error receiving events: {}", e);
                                 // We've lost our main listening channel. No fixing. Block and let
@@ -666,6 +672,8 @@ pub struct MastAllocatorConfig {
     pub transport: ChannelTransport,
     /// Port to use for remote allocator. Defaults to `DEFAULT_REMOTE_ALLOCATOR_PORT`.
     pub remote_allocator_port: u16,
+    /// Interval to send heartbeats to remote allocator. Defaults to `DEFAULT_REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL`.
+    pub remote_allocator_heartbeat_interval: Duration,
 }
 
 impl Default for MastAllocatorConfig {
@@ -674,6 +682,7 @@ impl Default for MastAllocatorConfig {
             job_name: None,
             transport: ChannelTransport::MetaTls,
             remote_allocator_port: DEFAULT_REMOTE_ALLOCATOR_PORT,
+            remote_allocator_heartbeat_interval: DEFAULT_REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
         }
     }
 }
@@ -811,6 +820,7 @@ impl Allocator for MastAllocator {
             spec,
             self.config.remote_allocator_port,
             self.config.transport.clone(),
+            self.config.remote_allocator_heartbeat_interval,
         )
         .await
         .map_err(AllocatorError::Other)
@@ -1212,6 +1222,7 @@ mod test {
             spec.clone(),
             remote_port,
             ChannelTransport::Unix,
+            DEFAULT_REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
         )
         .await
         .unwrap();
@@ -1340,6 +1351,7 @@ mod test {
             spec.clone(),
             remote_port,
             ChannelTransport::Unix,
+            DEFAULT_REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
         )
         .await
         .unwrap();
@@ -1456,6 +1468,7 @@ mod test {
             spec.clone(),
             remote_port,
             ChannelTransport::Unix,
+            DEFAULT_REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
         )
         .await
         .unwrap();

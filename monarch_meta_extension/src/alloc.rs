@@ -1,10 +1,12 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use hyperactor::channel::ChannelTransport;
 use hyperactor_extension::alloc::PyAlloc;
 use hyperactor_extension::alloc::PyAllocSpec;
 use hyperactor_mesh::alloc::Allocator;
 use hyperactor_meta_lib::alloc::ALLOC_LABEL_TASK_GROUP;
+use hyperactor_meta_lib::alloc::DEFAULT_REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL;
 use hyperactor_meta_lib::alloc::DEFAULT_REMOTE_ALLOCATOR_PORT;
 use hyperactor_meta_lib::alloc::MastAllocator;
 use hyperactor_meta_lib::alloc::MastAllocatorConfig;
@@ -24,6 +26,9 @@ pub struct PyMastAllocatorConfig {
 impl PyMastAllocatorConfig {
     #[classattr]
     const DEFAULT_REMOTE_ALLOCATOR_PORT: u16 = DEFAULT_REMOTE_ALLOCATOR_PORT;
+    #[classattr]
+    const DEFAULT_REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL: Duration =
+        DEFAULT_REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL;
 
     #[new]
     #[pyo3(signature = (job_name=None, transport=None, remote_allocator_port=None))]

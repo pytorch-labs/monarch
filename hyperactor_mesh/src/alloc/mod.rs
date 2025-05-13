@@ -25,6 +25,7 @@ pub use process::ProcessAllocator;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::alloc::test_utils::MockAllocWrapper;
 use crate::proc_mesh::mesh_agent::MeshAgent;
 
 /// Errors that occur during allocation operations.
@@ -71,7 +72,7 @@ pub struct AllocSpec {
 }
 
 /// The core allocator trait, implemented by all allocators.
-#[automock(type Alloc=MockAlloc;)]
+#[automock(type Alloc=MockAllocWrapper;)]
 #[async_trait]
 pub trait Allocator {
     /// The type of [`Alloc`] produced by this allocator.
@@ -167,6 +168,80 @@ pub trait Alloc {
             tracing::debug!("drained event: {:?}", event);
         }
         Ok(())
+    }
+}
+
+pub mod test_utils {
+    use tokio::sync::broadcast::Receiver;
+    use tokio::sync::broadcast::Sender;
+
+    use super::*;
+
+    /// Test wrapper around MockAlloc to allow us to block next() calls since
+    /// mockall doesn't support returning futures.
+    pub struct MockAllocWrapper {
+        pub alloc: MockAlloc,
+        pub block_next_after: usize,
+        notify_tx: Sender<()>,
+        _notify_rx: Receiver<()>,
+        next_unblocked: bool,
+    }
+
+    impl MockAllocWrapper {
+        pub fn new(alloc: MockAlloc) -> Self {
+            Self::new_block_next(alloc, usize::MAX)
+        }
+
+        pub fn new_block_next(alloc: MockAlloc, count: usize) -> Self {
+            let (tx, rx) = tokio::sync::broadcast::channel(1);
+            Self {
+                alloc,
+                block_next_after: count,
+                notify_tx: tx,
+                _notify_rx: rx,
+                next_unblocked: false,
+            }
+        }
+
+        pub fn notify_tx(&self) -> Sender<()> {
+            self.notify_tx.clone()
+        }
+    }
+
+    #[async_trait]
+    impl Alloc for MockAllocWrapper {
+        async fn next(&mut self) -> Option<ProcState> {
+            match self.block_next_after {
+                0 => {
+                    if !self.next_unblocked {
+                        // resubscribe everytime as recv() gets cancelled
+                        self.notify_tx.subscribe().recv().await.unwrap();
+                        self.next_unblocked = true;
+                    }
+                }
+                1.. => {
+                    self.block_next_after -= 1;
+                }
+            }
+
+            self.alloc.next().await
+        }
+
+        fn shape(&self) -> &Shape {
+            self.alloc.shape()
+        }
+
+        fn world_id(&self) -> &WorldId {
+            self.alloc.world_id()
+        }
+
+        fn transport(&self) -> ChannelTransport {
+            self.alloc.transport()
+        }
+
+        async fn stop(&mut self) -> Result<(), AllocatorError> {
+            self.alloc.stop().await
+        }
     }
 }
 
