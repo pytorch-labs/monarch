@@ -11,7 +11,6 @@ use hyperactor::simnet::ProxyMessage;
 use hyperactor::simnet::SpawnMesh;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use tokio::sync::oneshot;
 
 /// A wrapper around [ndslice::Slice] to expose it to python.
 /// It is a compact representation of indices into the flat

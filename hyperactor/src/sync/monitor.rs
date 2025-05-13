@@ -25,6 +25,7 @@ use std::sync::Mutex;
 
 use enum_as_inner::EnumAsInner;
 use tokio::task::JoinSet;
+use tokio_test as _; // Inhibit buck warning. used by doctest.
 
 use crate::sync::flag;
 

@@ -21,7 +21,6 @@ use ndslice::Shape;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::task::JoinSet;
-use tokio_util::sync::CancellationToken;
 
 use super::Alloc;
 use super::AllocSpec;
@@ -150,7 +149,6 @@ impl Child {
             return false;
         }
 
-        let cloned_addr = addr.clone();
         match channel::dial(addr) {
             Ok(channel) => {
                 let mut status = channel.status().clone();
