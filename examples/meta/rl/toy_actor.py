@@ -85,7 +85,7 @@ async def main():
         generation_stream = generators.generate(
             torch.randn(4, 4, device="cuda")
         ).stream()
-        await generators.update().broadcast_and_wait()
+        await generators.update().call()
 
     print("done")
 

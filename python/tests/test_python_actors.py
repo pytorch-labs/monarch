@@ -286,13 +286,13 @@ async def test_gpu_trainer_generator():
     trainer = await trainer_proc.spawn("trainer", TrainerActor)
     generator = await gen_proc.spawn("gen", GeneratorActor)
 
-    await generator.init.broadcast_and_wait(trainer)
-    await trainer.init.broadcast_and_wait(generator)
-    await trainer.exchange_metadata.broadcast_and_wait()
+    await generator.init.call(trainer)
+    await trainer.init.call(generator)
+    await trainer.exchange_metadata.call()
 
     for _ in range(3):
-        await trainer.weights_ready.broadcast_and_wait()
-        await generator.update_weights.broadcast_and_wait()
+        await trainer.weights_ready.call()
+        await generator.update_weights.call()
 
 
 class SyncActor(Actor):
@@ -316,13 +316,13 @@ def test_gpu_trainer_generator_sync() -> None:
     trainer = trainer_proc.spawn("trainer", TrainerActor).get()
     generator = gen_proc.spawn("gen", GeneratorActor).get()
 
-    generator.init.broadcast_and_wait(trainer).get()
-    trainer.init.broadcast_and_wait(generator).get()
-    trainer.exchange_metadata.broadcast_and_wait().get()
+    generator.init.call(trainer).get()
+    trainer.init.call(generator).get()
+    trainer.exchange_metadata.call().get()
 
     for _ in range(3):
-        trainer.weights_ready.broadcast_and_wait().get()
-        generator.update_weights.broadcast_and_wait().get()
+        trainer.weights_ready.call().get()
+        generator.update_weights.call().get()
 
 
 def test_sync_actor_sync_client():

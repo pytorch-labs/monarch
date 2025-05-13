@@ -282,16 +282,6 @@ class Endpoint(Generic[P, R]):
         # pyre-ignore
         send(self, args, kwargs)
 
-    def broadcast_and_wait(self, *args: P.args, **kwargs: P.kwargs) -> Future[None]:
-        """
-        Broadcast to all actors and wait for each to acknowledge receipt.
-
-        This behaves like `cast`, but ensures that each actor has received and
-        processed the message by awaiting a response from each one. Does not
-        return any results.
-        """
-        return Accumulator(self, None, lambda x, _: x).accumulate(*args, **kwargs)
-
 
 class Accumulator(Generic[P, R, A]):
     def __init__(

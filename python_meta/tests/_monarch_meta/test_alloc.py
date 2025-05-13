@@ -116,4 +116,4 @@ async def test_mock_mast_allocator_with_monarch_api() -> None:
     actor_mesh = await proc_mesh.spawn("myactor", MyMonarchActor)
 
     # we should not hang
-    await asyncio.wait_for(actor_mesh.do_something.broadcast_and_wait(), timeout=10)
+    await asyncio.wait_for(actor_mesh.do_something.call(), timeout=10)
