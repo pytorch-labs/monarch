@@ -619,7 +619,10 @@ impl MailboxSender for WeakProc {
     ) {
         match self.upgrade() {
             Some(proc) => proc.post(envelope, return_handle),
-            None => envelope.undeliverable(DeliveryError::BrokenLink, return_handle),
+            None => envelope.undeliverable(
+                DeliveryError::BrokenLink("fail to upgrade WeakProc".to_string()),
+                return_handle,
+            ),
         }
     }
 }

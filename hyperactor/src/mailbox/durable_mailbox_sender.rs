@@ -41,7 +41,12 @@ impl DurableMailboxSender {
                         if append_result.and(flush_result).is_ok() {
                             inner.post(envelope_copy, return_handle);
                         } else {
-                            envelope_copy.undeliverable(DeliveryError::BrokenLink, return_handle);
+                            envelope_copy.undeliverable(
+                                DeliveryError::BrokenLink(
+                                    "failed to append or flush in durable sender".to_string(),
+                                ),
+                                return_handle,
+                            );
                         }
                     }
                 },
@@ -61,7 +66,10 @@ impl MailboxSender for DurableMailboxSender {
         if let Err(mpsc::error::SendError((envelope, return_handle))) =
             self.0.send((envelope, return_handle))
         {
-            envelope.undeliverable(DeliveryError::BrokenLink, return_handle);
+            envelope.undeliverable(
+                DeliveryError::BrokenLink("failed to post in DurableMailboxSender".to_string()),
+                return_handle,
+            );
         }
     }
 }

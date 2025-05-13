@@ -141,7 +141,9 @@ pub fn monitored_return_handle() -> PortHandle<Undeliverable<MessageEnvelope>> {
         let (h, _) = new_undeliverable_port();
         super::init::RUNTIME.spawn(async move {
             while let Ok(Undeliverable(mut envelope)) = rx.recv().await {
-                envelope.set_error(DeliveryError::BrokenLink);
+                envelope.try_set_error(DeliveryError::BrokenLink(
+                    "message returned to undeliverable port".to_string(),
+                ));
                 UndeliverableMailboxSender.post(envelope, /*unused */ h.clone());
             }
         });
@@ -196,8 +198,8 @@ pub enum DeliveryError {
 
     /// A broken link indicates that a link in the message
     /// delivery path has failed.
-    #[error("broken link")]
-    BrokenLink,
+    #[error("broken link: {0}")]
+    BrokenLink(String),
 
     /// A (local) mailbox delivery error.
     #[error("mailbox error: {0}")]
@@ -278,9 +280,12 @@ impl MessageEnvelope {
         self.dest.index() == Signal::port()
     }
 
-    /// Sets a delivery error for the message.
-    fn set_error(&mut self, error: DeliveryError) {
-        self.error = Some(error);
+    /// Tries to sets a delivery error for the message. If the error is already
+    /// set, nothing is updated.
+    fn try_set_error(&mut self, error: DeliveryError) {
+        if self.error.is_none() {
+            self.error = Some(error);
+        }
     }
 
     /// The message has been determined to be undeliverable with the
@@ -291,7 +296,7 @@ impl MessageEnvelope {
         error: DeliveryError,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        self.set_error(error);
+        self.try_set_error(error);
         return_undeliverable(return_handle, self);
     }
 
@@ -891,7 +896,10 @@ impl MailboxClient {
             async move {
                 if let Err(SendError(_, envelope)) = tx.try_post(envelope, return_channel) {
                     // Failed to enqueue.
-                    envelope.undeliverable(DeliveryError::BrokenLink, return_handle_1.clone());
+                    envelope.undeliverable(
+                        DeliveryError::BrokenLink("failed to enqueue in MailboxClient".to_string()),
+                        return_handle_1.clone(),
+                    );
                 }
             }
         });
@@ -940,7 +948,10 @@ impl MailboxSender for MailboxClient {
             self.buffer.send((envelope, return_handle))
         {
             // Failed to enqueue.
-            envelope.undeliverable(DeliveryError::BrokenLink, return_handle);
+            envelope.undeliverable(
+                DeliveryError::BrokenLink("failed to enqueue in MailboxClient".to_string()),
+                return_handle,
+            );
         }
     }
 }
@@ -1847,7 +1858,10 @@ impl MailboxSender for WeakMailboxRouter {
     ) {
         match self.upgrade() {
             Some(router) => router.post(envelope, return_handle),
-            None => envelope.undeliverable(DeliveryError::BrokenLink, return_handle),
+            None => envelope.undeliverable(
+                DeliveryError::BrokenLink("failed to upgrade WeakMailboxRouter".to_string()),
+                return_handle,
+            ),
         }
     }
 }
@@ -2456,7 +2470,9 @@ mod tests {
         // no outstanding return handles it terminates.
         let monitor_handle = tokio::spawn(async move {
             while let Ok(Undeliverable(mut envelope)) = return_receiver.recv().await {
-                envelope.set_error(DeliveryError::BrokenLink);
+                envelope.try_set_error(DeliveryError::BrokenLink(
+                    "returned in unit test".to_string(),
+                ));
                 UndeliverableMailboxSender
                     .post(envelope, /*unused */ monitored_return_handle().clone());
             }
