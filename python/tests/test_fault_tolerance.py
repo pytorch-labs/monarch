@@ -103,7 +103,7 @@ class TestFaultTolerance(TestCase):
             with mesh.activate():
                 t = torch.ones(1)
                 local_t = fetch_shard(t).result()
-            assert torch.equal(local_t, torch.ones(1))
+            assert torch.equal(local_t.cpu(), torch.ones(1))
 
         # Simulate a failure by killing one of the processes
         bootstrap.processes[-1].kill()
@@ -165,7 +165,7 @@ class TestFaultTolerance(TestCase):
         with mesh.activate():
             t = torch.ones(1)
             local_t = fetch_shard(t).result()
-        assert torch.equal(local_t, torch.ones(1))
+        assert torch.equal(local_t.cpu(), torch.ones(1))
 
         # Simulate a failure by killing one of the processes
         bootstrap.processes[-1].kill()
@@ -189,7 +189,7 @@ class TestFaultTolerance(TestCase):
             with mesh.activate():
                 t = torch.ones(1)
                 local_t = fetch_shard(t).result()
-            assert torch.equal(local_t, torch.ones(1))
+            assert torch.equal(local_t.cpu(), torch.ones(1))
 
         initial_size = len(provider._root_client.world_status())
 
@@ -229,7 +229,7 @@ class TestFaultTolerance(TestCase):
             with mesh.activate():
                 t = torch.ones(1)
                 local_t = fetch_shard(t).result()
-            assert torch.equal(local_t, torch.ones(1))
+            assert torch.equal(local_t.cpu(), torch.ones(1))
 
     def test_out_of_order_receive(self) -> None:
         meshes, _ = local_meshes(meshes=8)
@@ -248,7 +248,7 @@ class TestFaultTolerance(TestCase):
         for i, mesh, t in shuffled_meshes:
             with mesh.activate():
                 local_t = fetch_shard(t).result()
-            assert torch.equal(local_t, torch.ones(i + 1))
+            assert torch.equal(local_t.cpu(), torch.ones(i + 1))
 
     def test_mesh_shrink_and_grow(self) -> None:
         # Create multiple meshes using mesh provider
@@ -268,7 +268,7 @@ class TestFaultTolerance(TestCase):
             with mesh.activate():
                 t = torch.ones(i + 1)
                 local_t = fetch_shard(t).result()
-            assert torch.equal(local_t, torch.ones(i + 1))
+            assert torch.equal(local_t.cpu(), torch.ones(i + 1))
 
         # Kill a worker
         mesh_to_kill: MeshWorld = list(bootstrap.mesh_worlds.keys())[1]
@@ -285,7 +285,7 @@ class TestFaultTolerance(TestCase):
                     t = torch.ones(i + 1)
                     local_t = fetch_shard(t).result()
                     with no_mesh.activate():
-                        assert torch.equal(local_t, torch.ones(i + 1))
+                        assert torch.equal(local_t.cpu(), torch.ones(i + 1))
                     healthy_meshes.append(mesh)
                 except DeviceException as e:
                     unhealthy_meshes.append(mesh)
@@ -314,7 +314,7 @@ class TestFaultTolerance(TestCase):
             with mesh.activate():
                 t = torch.ones(i + 1)
                 local_t = fetch_shard(t).result()
-            assert torch.equal(local_t, torch.ones(i + 1))
+            assert torch.equal(local_t.cpu(), torch.ones(i + 1))
 
         # Old world should be evicted and new world should be spawned. So we ended up with the same number of worlds.
         while len((provider._root_client.world_status())) != worlds:
@@ -345,7 +345,7 @@ class TestFaultTolerance(TestCase):
             with mesh.activate():
                 t = torch.ones(i + 1)
                 local_t = fetch_shard(t).result()
-            assert torch.equal(local_t, torch.ones(i + 1))
+            assert torch.equal(local_t.cpu(), torch.ones(i + 1))
 
         # Kill a controller
         mesh_to_kill: MeshWorld = list(bootstrap.mesh_worlds.keys())[1]
@@ -362,7 +362,7 @@ class TestFaultTolerance(TestCase):
                     t = torch.ones(i + 1)
                     local_t = fetch_shard(t).result()
                     with no_mesh.activate():
-                        assert torch.equal(local_t, torch.ones(i + 1))
+                        assert torch.equal(local_t.cpu(), torch.ones(i + 1))
                     healthy_meshes.append(mesh)
                 except DeviceException:
                     detected_failure = True

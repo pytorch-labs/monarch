@@ -32,8 +32,8 @@ class TestMockCuda(TestCase):
             y = 2 * torch.eye(3, device="cuda")
             true_output = torch.tensor(
                 [[0, 2, 4], [6, 8, 10], [12, 14, 16]], dtype=torch.float32
-            )
-            self.assertFalse(torch.equal((x @ y).cpu(), true_output))
+            ).to("cuda")
+            self.assertFalse(torch.equal(x @ y, true_output))
 
     def test_simple_forward_backward(self):
         # This test just makes sure that the forward and backward pass work
