@@ -15,7 +15,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 anyhow = "1.0.95"
-clap = { version = "4.5.30", features = ["derive", "env", "string", "unicode", "wrap_help"] }
+clap = { version = "4.5.38", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 controller = { path = "../controller" }
 hyperactor = { path = "../hyperactor" }
 hyperactor_multiprocess = { path = "../hyperactor_multiprocess" }
