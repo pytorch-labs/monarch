@@ -1,0 +1,5 @@
+syntax: glob
+
+pyrightconfig.json
+*.egg-info
+build

@@ -1,0 +1,101 @@
+#!/bin/bash
+# (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
+
+set -euo pipefail
+
+if [[ $# -eq 0 ]]; then
+  set -- lint typecheck test autocargo
+fi
+
+args=("$@")
+
+function enabled() {
+  local arg="$1"
+  for item in "${args[@]}"; do
+    if [[ "$item" == "$arg" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Make sure ctrl-C terminates the whole thing.
+trap 'printf "\nAborting\n"; exit 1' SIGINT
+
+THIS_DIR=$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null && pwd)
+pushd "$THIS_DIR" >/dev/null
+
+case $MACHTYPE in
+  arm64-*-darwin*) BUCK_ARGS=(@fbcode//mode/mac-arm64) ;;
+  x86_64-*-darwin*) BUCK_ARGS=(@fbcode//mode/mac) ;;
+  aarch64-*-linux*) BUCK_ARGS=(@fbcode//mode/dev-nosan -c=fbcode.arch=aarch64) ;;
+  x86_64-*-linux*) BUCK_ARGS=(@fbcode//mode/dev-nosan) ;;
+  *-cygwin*|*-mingw64*|*-msys*) BUCK_ARGS=(@fbcode//mode/win) ;;
+  *)
+    echo "Unknown \$MACHTYPE '$MACHTYPE'." >&2
+    exit 1
+    ;;
+esac
+
+# Same query as 'arc lint' but limited to this dir.
+CHANGED_FILES=$(hg st -amn --rev 'first(parents(draft() & .) + .)' -- .)
+
+failures=0
+
+if enabled lint && [[ -n $CHANGED_FILES ]]; then
+  # Format first to avoid buck cache misses on later runs.
+  (set -x; arc f @- <<< "$CHANGED_FILES") || ((failures+=1))
+
+  (
+    set -x
+      arc lint \
+      --engine extra \
+      --take RUSTFIX,RUSTFIXDEPS \
+      --lintall \
+      --apply-patches \
+      @- \
+      <<< "$CHANGED_FILES"
+  ) || ((failures+=1))
+
+  # Format again in case something was fixed.
+  (set -x; arc f @- <<< "$CHANGED_FILES") || ((failures+=1))
+fi
+
+if enabled typecheck; then
+  arc pyre check-changed-targets
+fi
+
+if enabled build; then
+  (
+    set -x
+    buck2 uquery \
+      "${BUCK_ARGS[@]}" \
+      'kind("^rust_", fbcode//monarch/...)' \
+    | buck2 build \
+      --skip-incompatible-targets \
+      "${BUCK_ARGS[@]}" \
+      @-
+  ) || ((failures+=1))
+fi
+
+if enabled test; then
+  (
+    set -x
+    buck2 uquery \
+      "${BUCK_ARGS[@]}" \
+      'kind("^rust_", fbcode//monarch/...)' \
+    | buck2 test \
+      --skip-incompatible-targets \
+      "${BUCK_ARGS[@]}" \
+      @-
+  ) || ((failures+=1))
+fi
+
+if enabled autocargo; then
+  (
+    set -x
+    arc autocargo -p monarch
+  ) || ((failures+=1))
+fi
+
+[[ $failures == 0 ]] || exit 1

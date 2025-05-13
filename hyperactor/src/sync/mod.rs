@@ -1,0 +1,8 @@
+//! Synchronization primitives that are used by Hyperactor.
+//!
+//! These are used in related Hyperactor crates as well, and are thus part of the
+//! public API. However, they should not be considered a stable part of the Hyperactor
+//! API itself, and they may be moved to a different crate in the future.
+
+pub mod flag;
+pub mod monitor;

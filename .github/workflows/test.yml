@@ -1,0 +1,64 @@
+name: Build monarch
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: cuda12.6-py3.10-4xlarge
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - name: 4xlarge
+            runs-on: linux.g5.4xlarge.nvidia.gpu
+            torch-spec: '--pre torch --index-url https://download.pytorch.org/whl/nightly/cu126'
+            gpu-arch-type: "cuda"
+            gpu-arch-version: "12.6"
+    uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+    with:
+      timeout: 60
+      runner: ${{ matrix.runs-on }}
+      gpu-arch-type: ${{ matrix.gpu-arch-type }}
+      gpu-arch-version: ${{ matrix.gpu-arch-version }}
+      submodules: recursive
+      script: |
+        conda create -n venv python=3.10 -y
+        conda activate venv
+        export PATH=/opt/rh/devtoolset-10/root/usr/bin/:$PATH
+        python -m pip install --upgrade pip
+
+        # Install native dependencies
+        dnf update -y
+        dnf install clang-devel libunwind libunwind-devel -y
+
+        # Install rust and setup nightly toolchain
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        source $HOME/.cargo/env
+        rustup toolchain install nightly
+        rustup default nightly
+
+        # Install torch
+        pip install ${{ matrix.torch-spec }}
+
+        # Install Python dependencies
+        pip install setuptools-rust
+        pip install pyzmq requests numpy pyre-extensions
+
+        # Test dependencies
+        pip install pytest cloudpickle
+
+        # Build and install monarch
+        python setup.py install
+
+        # Run tests
+        # pytest python/tests/ -v

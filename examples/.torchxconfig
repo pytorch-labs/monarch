@@ -1,0 +1,15 @@
+[mast_conda]
+conda_path_in_fbpkg = conda
+activate_conda = False
+hpcIdentity = infra_research-llm
+workspace_fbpkg_name = monarch_workspace
+conda_pack_ignore_missing_files = True
+git = False
+hpcJobOncall = meta_conda
+modelTypeName = gen_ai_conda
+hpcClusterUuid = MastGenAICluster
+monitoringConfig = GENAI
+conda_fbpkg_id = monarch_conda:stable
+
+[cli:run]
+scheduler = mast_conda

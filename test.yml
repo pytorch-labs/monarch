@@ -1,0 +1,51 @@
+name: Build monarch
+
+ on:
+   push:
+     branches:
+       - main
+   pull_request:
+     branches:
+       - main
+
+ concurrency:
+   group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
+   cancel-in-progress: true
+
+ jobs:
+   test:
+     name: cuda12.6-py3.10-sm90-h100
+     strategy:
+       fail-fast: true
+       matrix:
+         include:
+           - name: H100
+             runs-on: linux.aws.h100
+             torch-spec: '--pre torch --index-url https://download.pytorch.org/whl/nightly/cu126'
+             gpu-arch-type: "cuda"
+             gpu-arch-version: "12.6"
+     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+     with:
+       timeout: 60
+       runner: ${{ matrix.runs-on }}
+       gpu-arch-type: ${{ matrix.gpu-arch-type }}
+       gpu-arch-version: ${{ matrix.gpu-arch-version }}
+       submodules: recursive
+       script: |
+         conda create -n venv python=3.10 -y
+         conda activate venv
+         export PATH=/opt/rh/devtoolset-10/root/usr/bin/:$PATH
+         python -m pip install --upgrade pip
+
+         # Install rust and setup nightly toolchain
+         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+         rustup toolchain install nightly
+         rustup default nightly
+
+         # Install torch
+         pip install ${{ matrix.torch-spec }}
+         # Build dependencies
+         pip install setuptools-rust
+         # Install other deps
+         pip install pyzmq requests numpy pyre-extensions
+         python setup.py install

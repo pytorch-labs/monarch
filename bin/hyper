@@ -1,0 +1,42 @@
+#!/usr/bin/env dotslash
+
+// @generated SignedSource<<8987d21237d6bc69064c6a22fbcee4b2>>
+// MSDK schedule URL: https://www.internalfb.com/intern/msdk/bump/?action=view&schedule_fbid=3367917450005284
+// Sandcastle build trigger URL: https://www.internalfb.com/intern/sandcastle/job/1850183249/
+
+{
+    "name": "hyperactor",
+    "oncall": "oncall+monarch@xmail.facebook.com",
+    "build_info": {
+        "config_script": "fbcode/monarch/hyper/hyper.dotslash.py",
+        "commit_repo": "fbsource",
+        "commit_hash": "54ef965e2e0d1bbb6ec0da374528ceb7b05a0d45",
+        "commit_date": "2025-05-13 06:16:26 PDT",
+        "commit_timestamp": 1747142186,
+        "msdk_package_fbid": "1072579054731548"
+    },
+    "signatures": {
+        "msdk": "<<crypto.managed_sdk.mac:AeYgs-i-F0vRu3DrxZ-GeiI10nw>>"
+    },
+    "platforms": {
+        "linux": {
+            "scheme": "cas",
+            "use_case_id": "dotslash_msdk_prod",
+            "digest": "bc9f2810c54876514276639774c4d273aa43c36841a8940ff97c09da7adb5bf6:48927380",
+            "extract": {
+                "path": "hyper",
+                "decompress": "tar.zst"
+            },
+            "metadata": {
+                "build_inputs": {
+                    "hyper": {
+                        "flags": [
+                            "@fbcode//mode/opt-clang-thinlto"
+                        ],
+                        "target": "fbcode//monarch/hyper:hyper"
+                    }
+                }
+            }
+        }
+    }
+}
