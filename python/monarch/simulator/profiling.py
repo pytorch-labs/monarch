@@ -40,22 +40,23 @@ from torch.utils._mode_utils import no_dispatch
 
 
 def get_free_port() -> int:
-    if socket.has_ipv6:
-        family = socket.AF_INET6
-        address = "::1"
-    else:
-        family = socket.AF_INET
-        address = "127.0.0.1"
-    with socket.socket(family, socket.SOCK_STREAM) as s:
-        try:
-            s.bind((address, 0))
-            s.listen(0)
-            with closing(s):
-                return s.getsockname()[1]
-        except Exception as e:
-            raise Exception(
-                f"Binding failed with address {address} while getting free port {e}"
-            )
+    configs = [(socket.AF_INET6, "::1"), (socket.AF_INET, "127.0.0.1")]
+    errors = []
+
+    for addr_family, address in configs:
+        with socket.socket(addr_family, socket.SOCK_STREAM) as s:
+            try:
+                s.bind((address, 0))
+                s.listen(0)
+                with closing(s):
+                    return s.getsockname()[1]
+            except Exception as e:
+                errors.append(
+                    f"Binding failed with address {address} while getting free port: {e}"
+                )
+
+    # propagate errors if we failed to bind to any of the configs
+    raise Exception(", ".join(errors))
 
 
 # These functions below are from cached_remote_function.py but depending on
