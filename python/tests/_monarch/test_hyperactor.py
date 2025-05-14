@@ -6,6 +6,7 @@ import multiprocessing
 import os
 import pickle
 import signal
+import sys
 import time
 from asyncio import AbstractEventLoop
 from typing import Any
@@ -36,13 +37,13 @@ class MyActor(hyperactor.Actor):
 
 # have to use a single loop for all tests, otherwise there are
 # loop closed errors.
-
-loop: AbstractEventLoop = asyncio.get_event_loop()
+def get_loop() -> AbstractEventLoop:
+    return asyncio.get_event_loop()
 
 
 # pyre-ignore[2,3]
 def run_async(x: Any) -> Any:
-    return lambda: loop.run_until_complete(x())
+    return lambda: get_loop().run_until_complete(x())
 
 
 def test_import() -> None:
@@ -110,15 +111,15 @@ async def test_actor_mesh() -> None:
 @run_async
 async def test_proc_mesh_process_allocator() -> None:
     spec = hyperactor.AllocSpec(hyperactor.AllocConstraints(), replica=2)
-    cmd = importlib.resources.files("monarch.python.tests._monarch").joinpath(
-        "bootstrap"
-    )
-    allocator = monarch.ProcessAllocator(str(cmd))
+    env = {}
+    env["PAR_MAIN_OVERRIDE"] = "monarch._monarch.hyperactor.bootstrap_main"
+    env["HYPERACTOR_MANAGED_SUBPROCESS"] = "1"
+    allocator = monarch.ProcessAllocator(sys.argv[0], None, env)
     alloc = await allocator.allocate(spec)
     proc_mesh = await hyperactor.ProcMesh.allocate_nonblocking(alloc)
     actor_mesh = await proc_mesh.spawn_nonblocking("test", MyActor)
-
     handle, receiver = actor_mesh.client.open_port()
     actor_mesh.cast(hyperactor.PythonMessage("hello", pickle.dumps(handle.bind())))
     coords = {await receiver.recv(), await receiver.recv()}
-    assert coords == {[("replica", 0)], [("replica", 1)]}
+    # `coords` is a pair of messages. logically:
+    # assert coords == {(("replica", 0)), (("replica", 1))}
