@@ -8,6 +8,7 @@ members = [
     "hyperactor_multiprocess",
     "hyperactor_mesh",
     "hyperactor_mesh_macros",
+    "hyperactor_telemetry",
     "ndslice",
     "monarch_extension",
     "monarch_worker",
