@@ -13,8 +13,6 @@ use ndslice::selection::structurally_equal;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::ActorMesh;
-
 #[macro_export]
 macro_rules! mesh_id {
     ($proc_mesh:ident) => {

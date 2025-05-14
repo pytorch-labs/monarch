@@ -804,7 +804,7 @@ mod tests {
     // final delivery targets. It is useful in tests to compare
     // routing results against selection evaluation.
     fn collect_routed_nodes(selection: Selection, slice: &Slice) -> Vec<usize> {
-        collect_routed_paths(selection.clone(), &slice)
+        collect_routed_paths(selection.clone(), slice)
             .into_iter()
             .map(|(dst, _path)| dst)
             .collect()
