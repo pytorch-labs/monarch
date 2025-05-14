@@ -11,7 +11,8 @@ async def main():
     await hyperactor.bootstrap_main()
 
 
-if __name__ == "__main__":
+def invoke_main() -> None:
+    global hyperactor
     # TODO: figure out what from worker_main.py we should reproduce here.
 
     # pyre-ignore[21]
@@ -28,3 +29,8 @@ if __name__ == "__main__":
 
     # Start an event loop for PythonActors to use.
     asyncio.run(main())
+
+
+if __name__ == "__main__":
+    # Do not add code here, it won't be run. Add them to the function called below.
+    invoke_main()  # pragma: no cover
