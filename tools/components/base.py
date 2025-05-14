@@ -103,20 +103,3 @@ def hyperactor(
     conda_transforms.append_tb_logdir_metadata(appdef)
     appdef.metadata["tags"] = ",".join(_TAGS)
     return appdef
-
-
-# TODO kiuk@ move to torchx.workspace.fb.conda_workspace
-def make_fbpkg(
-    fbpkg_name: str,
-    paths: list[str],
-) -> Optional[str]:
-    if not paths:
-        return None
-    else:
-        from torchx.workspace.fb import fbpkg_utils
-
-        return fbpkg_utils.build_fbpkg(
-            fbpkg_name=fbpkg_name,
-            paths=paths,
-            expiration="4w",
-        )
