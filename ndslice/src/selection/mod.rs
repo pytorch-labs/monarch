@@ -87,6 +87,7 @@ pub mod routing;
 
 pub mod test_utils;
 
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt;
@@ -98,6 +99,7 @@ use serde::Serialize;
 use crate::Slice;
 use crate::shape;
 use crate::shape::ShapeError;
+use crate::slice::SliceError;
 
 /// This trait defines an abstract syntax without committing to a
 /// specific representation. It follow the
@@ -765,19 +767,29 @@ impl Selection {
     ///   - `All(All(True))` ≡ `True`
     ///   - `All(All(All(True)))` ≡ `True`
     ///
-    /// This method checks whether the selection, possibly wrapped in
-    /// one or more layers of `All`, is semantically equivalent to
-    /// `True`. It does **not** perform full normalization—only
+    /// This method checks whether the selection is structurally
+    /// identical to True, possibly wrapped in one or more All(...)
+    /// layers. It does **not** perform full normalization—only
     /// structural matching sufficient to recognize this identity.
     ///
     /// Used to detect when a selection trivially selects all elements
     /// at all levels.
-    pub fn is_equivalent_to_true(sel: &Selection) -> bool {
-        match sel {
-            Selection::True => true,
-            Selection::All(inner) => Self::is_equivalent_to_true(inner),
-            _ => false,
+    ///
+    /// ## Limitations
+    ///
+    /// This is a **syntactic check** only. It does *not* recognize
+    /// semantically equivalent expressions such as:
+    ///
+    ///   - `Union(True, True)`
+    ///   - `All(Union(True, False))`
+    ///   - A union of all singleton ranges covering the full space
+    ///
+    /// For a semantic check, use evaluation against a known slice.
+    pub fn is_equivalent_to_true(mut sel: &Selection) -> bool {
+        while let Selection::All(inner) = sel {
+            sel = inner;
         }
+        matches!(sel, Selection::True)
     }
 
     /// Evaluates whether the specified coordinates are part of the selection.
@@ -910,8 +922,67 @@ impl Selection {
             .eval(opts, slice)?
             .filter(move |idx| !exclusions.contains(idx)))
     }
-}
-// impl Selection
+
+    /// Calculate a new `Selection` that excludes the specified flat
+    /// ranks.
+    ///
+    /// This computes `self \ exclusions` by evaluating `self`,
+    /// removing the given ranks, and reconstructing a `Selection`
+    /// that selects exactly the remaining elements.
+    ///
+    /// The result is a concrete, structurally uniform expression with
+    /// predictable construction order and exact correspondence to the
+    /// surviving ranks.
+    pub fn without(
+        &self,
+        slice: &Slice,
+        exclusions: &HashSet<usize>,
+    ) -> Result<Selection, ShapeError> {
+        let remaining = self
+            .difference(&EvalOpts::strict(), slice, exclusions)?
+            .collect::<BTreeSet<_>>();
+        Ok(Selection::of_ranks(slice, &remaining)?)
+    }
+
+    /// Converts a set of flat indices into a symbolic `Selection`
+    /// expression over the given `slice`. Returns an error if any index
+    /// is invalid.
+    ///
+    /// Each flat index is converted into coordinates using
+    /// `slice.coordinates`, then folded into a nested chain of singleton
+    /// ranges. The resulting selection evaluates exactly to the input
+    /// indices.
+    ///
+    /// The selections are combined left-associatively using `union`, but
+    /// since `union` is associative, the grouping does not affect
+    /// correctness.
+    ///
+    /// The input `BTreeSet` ensures:
+    /// - all indices are unique (no redundant singleton ranges),
+    /// - the resulting selection has a stable, deterministic structure,
+    /// - and iteration proceeds in ascending order, which helps produce
+    ///   predictable routing trees and consistent test results.
+    ///
+    /// This choice avoids an explicit sort and makes downstream behavior
+    /// more reproducible and auditable.
+    pub fn of_ranks(slice: &Slice, ranks: &BTreeSet<usize>) -> Result<Selection, SliceError> {
+        let selections = ranks
+            .iter()
+            .map(|&i| {
+                Ok(slice
+                    .coordinates(i)?
+                    .into_iter()
+                    .rev()
+                    .fold(dsl::true_(), |acc, i| dsl::range(i..=i, acc)))
+            })
+            .collect::<Result<Vec<_>, SliceError>>()?;
+
+        Ok(selections
+            .into_iter()
+            .reduce(dsl::union)
+            .unwrap_or_else(dsl::false_))
+    }
+} // impl Selection
 
 /// Trivial all(true) equivalence.
 pub fn is_equivalent_true(sel: impl std::borrow::Borrow<Selection>) -> bool {
@@ -1022,10 +1093,13 @@ macro_rules! select_from {
 #[cfg(test)]
 mod tests {
     use std::assert_matches::assert_matches;
+    use std::collections::BTreeSet;
 
     use super::EvalOpts;
     use super::Selection;
     use super::dsl::*;
+    use super::is_equivalent_true;
+    use super::structurally_equal;
     use crate::Slice;
     use crate::shape;
     use crate::shape::ShapeError;
@@ -1552,12 +1626,7 @@ mod tests {
 
     #[test]
     fn test_13() {
-        use crate::dsl::all;
-        use crate::dsl::true_;
-        use crate::selection::is_equivalent_true;
-
         // Structural identity: `all(true)` <=> `true`.
-
         assert!(is_equivalent_true(true_()));
         assert!(is_equivalent_true(all(true_())));
         assert!(is_equivalent_true(all(all(true_()))));
@@ -1565,6 +1634,11 @@ mod tests {
         assert!(is_equivalent_true(all(all(all(all(true_()))))));
         assert!(is_equivalent_true(all(all(all(all(all(true_())))))));
         // ...
+
+        assert!(!is_equivalent_true(false_()));
+        assert!(!is_equivalent_true(union(true_(), true_())));
+        assert!(!is_equivalent_true(range(0..=0, true_())));
+        assert!(!is_equivalent_true(all(false_())));
     }
 
     #[test]
@@ -1658,7 +1732,7 @@ mod tests {
             true_()
                 .difference(
                     &EvalOpts::strict(),
-                    &Slice::new_row_major(vec![5]),
+                    &Slice::new_row_major([5]),
                     &[2usize, 4].into(),
                 )
                 .unwrap()
@@ -1673,7 +1747,7 @@ mod tests {
             false_()
                 .difference(
                     &EvalOpts::strict(),
-                    &Slice::new_row_major(vec![3]),
+                    &Slice::new_row_major([3]),
                     &[0usize, 1].into(),
                 )
                 .unwrap()
@@ -1691,12 +1765,96 @@ mod tests {
             all(all(true_()))
                 .difference(
                     &EvalOpts::strict(),
-                    &Slice::new_row_major(vec![2, 3]),
+                    &Slice::new_row_major([2, 3]),
                     &[3usize, 4, 5].into(),
                 )
                 .unwrap()
                 .collect::<Vec<_>>(),
             vec![0, 1, 2]
+        );
+    }
+
+    #[test]
+    fn test_selection_of_ranks_1d() {
+        let slice = Slice::new_row_major([5]);
+        let ranks = BTreeSet::from([1, 3]);
+        let selection = Selection::of_ranks(&slice, &ranks).unwrap();
+        assert_eq!(
+            selection
+                .eval(&EvalOpts::strict(), &slice)
+                .unwrap()
+                .collect::<Vec<_>>(),
+            vec![1, 3]
+        )
+    }
+
+    #[test]
+    fn test_selection_of_ranks_empty_set() {
+        let slice = Slice::new_row_major([4]);
+        let ranks = BTreeSet::new();
+        let selection = Selection::of_ranks(&slice, &ranks).unwrap();
+        assert_eq!(
+            selection
+                .eval(&EvalOpts::strict(), &slice)
+                .unwrap()
+                .collect::<Vec<_>>(),
+            vec![]
+        )
+    }
+
+    #[test]
+    fn test_selection_of_ranks_singleton_structural() {
+        let slice = Slice::new_row_major([5]);
+        let ranks = BTreeSet::from([2]);
+        let actual = Selection::of_ranks(&slice, &ranks).unwrap();
+        let expected = range(2..=2, true_());
+        assert!(structurally_equal(&actual, &expected));
+    }
+
+    #[test]
+    fn test_selection_of_ranks_union_2d_structural() {
+        let slice = Slice::new_row_major([2, 3]);
+        // [ [0, 1, 2],
+        //   [3, 4, 5] ]
+        // We'll select (0, 2), (1, 0) and (1, 1).
+        let ranks = BTreeSet::from([2, 3, 4]);
+        let actual = Selection::of_ranks(&slice, &ranks).unwrap();
+        // Each rank becomes a nested selection:
+        // 2 -> (0, 2) -> range(0, range(2, true_()))
+        // 3 -> (1, 0) -> range(1, range(0, true_()))
+        // 4 -> (1, 1) -> range(1, range(1, true_()))
+        //
+        // Their union is:
+        let expected = union(
+            union(range(0, range(2, true_())), range(1, range(0, true_()))),
+            range(1, range(1, true_())),
+        );
+        assert!(structurally_equal(&actual, &expected));
+    }
+
+    #[test]
+    fn test_selection_of_ranks_3d_structural() {
+        let slice = Slice::new_row_major([2, 2, 2]);
+        // [ [ [0, 1],
+        //     [2, 3] ],
+        //   [ [4, 5],
+        //     [6, 7] ] ]
+        let ranks = BTreeSet::from([1, 6]);
+        let actual = Selection::of_ranks(&slice, &ranks).unwrap();
+        let expected = union(
+            range(0, range(0, range(1, true_()))), // (0, 0, 1)
+            range(1, range(1, range(0, true_()))), // (1, 1, 0)
+        );
+        assert!(structurally_equal(&actual, &expected));
+    }
+
+    #[test]
+    fn test_selection_of_ranks_invalid_index() {
+        let slice = Slice::new_row_major([4]);
+        let ranks = BTreeSet::from([0, 4]); // 4 is out of bounds
+        assert!(
+            Selection::of_ranks(&slice, &ranks).is_err(),
+            "expected out-of-bounds error"
         );
     }
 }

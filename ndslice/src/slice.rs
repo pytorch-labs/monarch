@@ -113,7 +113,8 @@ impl Slice {
     }
 
     /// Create a new slice of the given sizes in row-major order.
-    pub fn new_row_major(sizes: Vec<usize>) -> Self {
+    pub fn new_row_major(sizes: impl Into<Vec<usize>>) -> Self {
+        let sizes = sizes.into();
         // "flip it and reverse it" --Missy Elliott
         let mut strides: Vec<usize> = sizes.clone();
         let _ = strides.iter_mut().rev().fold(1, |acc, n| {
