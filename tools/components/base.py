@@ -18,49 +18,13 @@ from monarch.tools.mesh_spec import (
     mesh_spec_from_str,
     tag_as_metadata,
 )
+from torchx.specs.fb.component_helpers import Packages
 
 _TAGS = ["monarch"]
 
 _IGNORED = 1
 
 _DEFAULT_MESHES = ["mesh_0:1:gtt_any"]
-
-
-# TODO kiuk@ move to torchx.components.fb.conda
-class Packages:
-    """Builder for adding various types of fbpkgs to the job spec."""
-
-    def __init__(self) -> None:
-        self.packages: list[str] = []
-        self.python_paths: list[str] = []
-        self.preload_paths: list[str] = []
-
-    def _name(self, fbpkg: str) -> str:
-        return fbpkg.split(":")[0]
-
-    def add_python_lib(self, fbpkg: str, libdir: str = "lib") -> None:
-        """Use for adding python library fbpkgs that need to be added to PYTHONPATH."""
-        self.packages.append(fbpkg)
-        self.python_paths.append(f"/packages/{self._name(fbpkg)}/{libdir}")
-
-    def add_shared_lib(self, fbpkg: str, libpath: str) -> None:
-        """Use for adding *.so libs that need to be added to PRELOAD_PATH."""
-        self.packages.append(fbpkg)
-        self.preload_paths.append(f"/packages/{self._name(fbpkg)}/{libpath}")
-
-    def add_package(self, fbpkg: str) -> None:
-        """Use to add fbpkgs with scripts or binaries that do not need any **PATH manipulations."""
-        self.packages.append(fbpkg)
-
-    def PRELOAD_PATH(self) -> str:
-        return ":".join(self.preload_paths)
-
-    def PYTHONPATH(self) -> str:
-        return ":".join(self.python_paths)
-
-    def image(self) -> str:
-        return ";".join(self.packages)
-
 
 _EMPTY_PACKAGES = Packages()
 
@@ -112,7 +76,7 @@ def hyperactor(
         enable_ttls=True,
     )
     template_role = appdef.roles[0]
-    template_role.image = packages.image()
+    template_role.image = packages.image
     template_role.port_map |= {"mesh": port}
 
     mesh_roles = []

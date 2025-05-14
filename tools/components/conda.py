@@ -85,7 +85,6 @@ def hyperactor(
     env: Optional[Dict[str, str]] = None,
     port: int = DEFAULT_REMOTE_ALLOCATOR_PORT,
     hyperactor_fbpkg: str = "monarch:prod",
-    # TODO kiuk@ [3/n][monarch] create run_monarch_mesh_worker.sh and hook it up here
     program: str = f"{specs.macros.img_root}/projects/monarch/scripts/run_monarch_bootstrap.sh",
     systemd_services: Optional[Dict[str, bool]] = None,
     dump_dir_id: str = "${app_id}",
@@ -113,8 +112,8 @@ def hyperactor(
     if systemd_services.get("paft_zelos_coordinator", False):  # enable_ftar
         packages.add_python_lib("ftar_core_lib:stable")
 
-    env["TORCHX_RUN_PYTHONPATH"] = packages.PYTHONPATH()
-    env["PRELOAD_PATH"] = packages.PRELOAD_PATH()
+    env["TORCHX_RUN_PYTHONPATH"] = packages.PYTHONPATH
+    env["PRELOAD_PATH"] = packages.PRELOAD_PATH
 
     env["XLF_SYSTEMD_SERVICES"] = ",".join(
         [
