@@ -28,7 +28,6 @@ tracing-subscriber = { version = "0.3.18", features = ["chrono", "env-filter", "
 
 [features]
 default = []
-fbcode_build = ["fbinit", "scuba"]
 
 [lints]
 rust = { unexpected_cfgs = { check-cfg = ["cfg(fbcode_build)"], level = "warn" } }
