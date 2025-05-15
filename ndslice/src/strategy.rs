@@ -34,6 +34,40 @@ use crate::selection::Selection;
 use crate::selection::dsl;
 use crate::shape::Range;
 
+/// Generates a random [`Slice`] with up to `max_dims` dimensions,
+/// where each dimension has a size between 1 and `max_len`
+/// (inclusive).
+///
+/// The slice is constructed using standard row-major layout with no
+/// offset, making it suitable for use in evaluation, routing, and
+/// normalization tests.
+///
+/// This generator is used in property-based tests to provide diverse
+/// input shapes for selection and routing logic.
+///
+/// # Parameters
+///
+/// - `max_dims`: Maximum number of dimensions in the generated slice.
+/// - `max_len`: Maximum size per dimension.
+///
+/// # Example
+///
+/// ```
+/// use proptest::prelude::*;
+///
+/// use crate::selection::strategy::gen_slice;
+///
+/// proptest! {
+///     #[test]
+///     fn test_slice_generation(slice in gen_slice(4, 8)) {
+///         assert!(!slice.sizes().is_empty());
+///     }
+/// }
+/// ```
+pub fn gen_slice(max_dims: usize, max_len: usize) -> impl Strategy<Value = Slice> {
+    prop::collection::vec(1..=max_len, 1..=max_dims).prop_map(Slice::new_row_major)
+}
+
 /// Recursively generates a random `Selection` expression of bounded
 /// depth, aligned with the given slice `shape`.
 ///
@@ -110,16 +144,35 @@ pub fn gen_selection(depth: u32, shape: Vec<usize>, dim: usize) -> BoxedStrategy
 mod tests {
     use std::collections::HashSet;
 
+    use proptest::strategy::ValueTree;
     use proptest::test_runner::Config;
     use proptest::test_runner::TestRunner;
 
     use super::*;
-    use crate::Slice;
     use crate::selection::EvalOpts;
     use crate::selection::routing::RoutingFrame;
 
     #[test]
-    fn sample_many() {
+    fn print_some_slices() {
+        let mut runner = TestRunner::new(Config::default());
+
+        for _ in 0..256 {
+            let strat = gen_slice(4, 8); // up to 4 dimensions, max size per dim = 8
+            let value = strat.new_tree(&mut runner).unwrap().current();
+            println!("{:?}", value);
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn test_slice_properties(slice in gen_slice(4, 8)) {
+            let total_size: usize = slice.sizes().iter().product();
+            prop_assert!(total_size > 0);
+        }
+    }
+
+    #[test]
+    fn print_some_selections() {
         let mut runner = TestRunner::new(Config::default());
 
         for _ in 0..256 {
@@ -148,26 +201,27 @@ mod tests {
     // This test uses `trace_route` to observe the path to each
     // overlapping destination node under `S` and `T`, asserting that
     // the results agree.
-    const TEST_SLICE: &[usize] = &[2, 4, 8];
-
     proptest! {
         #![proptest_config(ProptestConfig {
-            cases: 256, ..ProptestConfig::default()
+            cases: 32, ..ProptestConfig::default()
         })]
         #[test]
         fn trace_route_path_determinism(
-            s in gen_selection(3, TEST_SLICE.to_vec(), 0),
-            t in gen_selection(3, TEST_SLICE.to_vec(), 0)
+            slice in gen_slice(4, 8)
         ) {
-            let slice = Slice::new_row_major(TEST_SLICE.to_vec());
+            let shape = slice.sizes().to_vec();
+
+            let mut runner = TestRunner::default();
+            let s = gen_selection(4, shape.clone(), 0).new_tree(&mut runner).unwrap().current();
+            let t = gen_selection(4, shape.clone(), 0).new_tree(&mut runner).unwrap().current();
+
             let eval_opts = EvalOpts::strict();
             let sel_s: HashSet<_> = s.eval(&eval_opts, &slice).unwrap().collect();
             let sel_t: HashSet<_> = t.eval(&eval_opts, &slice).unwrap().collect();
             let ranks: Vec<_> = sel_s.intersection(&sel_t).cloned().collect();
             if ranks.is_empty() {
                 println!("skipping empty intersection");
-            }
-            else {
+            } else {
                 println!("testing {} nodes", ranks.len());
                 for rank in ranks {
                     let coords = slice.coordinates(rank).unwrap();
