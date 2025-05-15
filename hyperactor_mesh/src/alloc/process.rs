@@ -2,8 +2,11 @@
 
 use std::collections::HashMap;
 use std::future::Future;
+use std::os::unix::process::ExitStatusExt;
+use std::process::ExitStatus;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
@@ -29,6 +32,7 @@ use super::AllocSpec;
 use super::Allocator;
 use super::AllocatorError;
 use super::ProcState;
+use super::ProcStopReason;
 use super::logtailer::LogTailer;
 use crate::assign::Ranks;
 use crate::bootstrap;
@@ -102,7 +106,7 @@ pub struct ProcessAlloc {
     // Maps process index to its rank.
     ranks: Ranks<usize>,
     cmd: Arc<Mutex<Command>>,
-    children: JoinSet<usize>,
+    children: JoinSet<(usize, ProcStopReason)>,
     running: bool,
 }
 
@@ -118,10 +122,13 @@ struct Child {
     group: monitor::Group,
     stdout: LogTailer,
     stderr: LogTailer,
+    stop_reason: Arc<OnceLock<ProcStopReason>>,
 }
 
 impl Child {
-    fn monitored(mut process: tokio::process::Child) -> (Self, impl Future) {
+    fn monitored(
+        mut process: tokio::process::Child,
+    ) -> (Self, impl Future<Output = ProcStopReason>) {
         let (group, handle) = monitor::group();
 
         let stdout = LogTailer::tee(
@@ -134,36 +141,60 @@ impl Child {
             process.stderr.take().unwrap(),
             io::stderr(),
         );
+        let stop_reason = Arc::new(OnceLock::new());
 
         let child = Self {
             channel: ChannelState::NotConnected,
             group,
             stdout,
             stderr,
+            stop_reason: Arc::clone(&stop_reason),
         };
 
         let monitor = async move {
-            tokio::select! {
+            let reason = tokio::select! {
                 _ = handle => {
                     match process.kill().await {
-                        Err(err) => {
-                            tracing::error!("error killing process: {}", err);
+                        Err(e) => {
+                            tracing::error!("error killing process: {}", e);
                             // In this cased, we're left with little choice but to
                             // orphan the process.
+                            ProcStopReason::Unknown
                         },
                         Ok(_) => {
-                            let _ = process.wait().await;
+                            Self::exit_status_to_reason(process.wait().await)
                         }
                     }
                 }
-                _ = process.wait() => (),
-            }
+                result = process.wait() => Self::exit_status_to_reason(result),
+            };
+            stop_reason.get_or_init(|| reason).clone()
         };
 
         (child, monitor)
     }
 
-    fn kill(&self) {
+    fn exit_status_to_reason(result: io::Result<ExitStatus>) -> ProcStopReason {
+        match result {
+            Ok(status) if status.success() => ProcStopReason::Stopped,
+            Ok(status) => {
+                if let Some(signal) = status.signal() {
+                    ProcStopReason::Killed(signal, status.core_dumped())
+                } else if let Some(code) = status.code() {
+                    ProcStopReason::Exited(code)
+                } else {
+                    ProcStopReason::Unknown
+                }
+            }
+            Err(e) => {
+                tracing::error!("error waiting for process: {}", e);
+                ProcStopReason::Unknown
+            }
+        }
+    }
+
+    fn stop(&self, reason: ProcStopReason) {
+        let _ = self.stop_reason.set(reason); // first stop wins 
         self.group.fail();
     }
 
@@ -187,7 +218,7 @@ impl Child {
             }
             Err(err) => {
                 self.channel = ChannelState::Failed(err);
-                self.kill();
+                self.stop(ProcStopReason::Watchdog);
             }
         };
         true
@@ -199,7 +230,7 @@ impl Child {
         if let ChannelState::Connected(channel) = &mut self.channel {
             channel.post(message);
         } else {
-            self.kill();
+            self.stop(ProcStopReason::Watchdog);
         }
     }
 }
@@ -209,8 +240,8 @@ impl ProcessAlloc {
 
     // Currently procs and processes are 1:1, so this just fully exits
     // the process.
-    fn kill(&mut self, proc_id: &ProcId) -> Result<(), anyhow::Error> {
-        self.get_mut(proc_id)?.kill();
+    fn stop(&mut self, proc_id: &ProcId, reason: ProcStopReason) -> Result<(), anyhow::Error> {
+        self.get_mut(proc_id)?.stop(reason);
         Ok(())
     }
 
@@ -281,10 +312,7 @@ impl ProcessAlloc {
                 }
                 Ok(rank) => {
                     let (handle, monitor) = Child::monitored(process);
-                    self.children.spawn(async move {
-                        monitor.await;
-                        index
-                    });
+                    self.children.spawn(async move { (index, monitor.await) });
                     self.active.insert(index, handle);
                     // Adjust for shape slice offset for non-zero shapes (sub-shapes).
                     let rank = rank + self.spec.shape.slice().offset();
@@ -350,13 +378,16 @@ impl Alloc for ProcessAlloc {
                     }
                 },
 
-                Some(Ok(index)) = self.children.join_next() => {
+                Some(Ok((index, reason))) = self.children.join_next() => {
                     if let Some(Child { stdout, stderr, ..} ) = self.remove(index) {
                         let (_stdout, _) = stdout.join().await;
                         let (_stderr, _) = stderr.join().await;
                     }
 
-                    break Some(ProcState::Stopped { proc_id: ProcId(WorldId(self.name.to_string()), index), });
+                    break Some(ProcState::Stopped {
+                        proc_id: ProcId(WorldId(self.name.to_string()), index),
+                        reason
+                    });
                 },
             }
         }
@@ -376,7 +407,7 @@ impl Alloc for ProcessAlloc {
 
     async fn stop(&mut self) -> Result<(), AllocatorError> {
         // We rely on the teardown here, and that the process should
-        // exit on its own. We shoudl have a hard timeout here as well,
+        // exit on its own. We should have a hard timeout here as well,
         // so that we never rely on the system functioning correctly
         // for liveness.
         for (_index, child) in self.active.iter_mut() {

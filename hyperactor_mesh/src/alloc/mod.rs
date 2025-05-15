@@ -108,8 +108,10 @@ pub enum ProcState {
         addr: ChannelAddr,
     },
     /// A proc was stopped.
-    // TODO: add reason
-    Stopped { proc_id: ProcId },
+    Stopped {
+        proc_id: ProcId,
+        reason: ProcStopReason,
+    },
 }
 
 impl fmt::Display for ProcState {
@@ -130,9 +132,39 @@ impl fmt::Display for ProcState {
             ProcState::Running { proc_id, addr, .. } => {
                 write!(f, "{}: running at {}", proc_id, addr)
             }
-            ProcState::Stopped { proc_id } => {
-                write!(f, "{}: stopped", proc_id)
+            ProcState::Stopped { proc_id, reason } => {
+                write!(f, "{}: stopped: {}", proc_id, reason)
             }
+        }
+    }
+}
+
+/// The reason a proc stopped.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, EnumAsInner)]
+pub enum ProcStopReason {
+    /// The proc stopped gracefully, e.g., with exit code 0.
+    Stopped,
+    /// The proc exited with the provided error code.
+    Exited(i32),
+    /// The proc was killed. The signal number is indicated;
+    /// the flags determines whether there was a core dump.
+    Killed(i32, bool),
+    /// The proc failed to respond to a watchdog request within a timeout.
+    Watchdog,
+    /// The proc failed for an unknown reason.
+    Unknown,
+}
+
+impl fmt::Display for ProcStopReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Stopped => write!(f, "stopped"),
+            Self::Exited(code) => write!(f, "exited with code {}", code),
+            Self::Killed(signal, dumped) => {
+                write!(f, "killed with signal {} (core dumped={})", signal, dumped)
+            }
+            Self::Watchdog => write!(f, "watchdog failure"),
+            Self::Unknown => write!(f, "unknown"),
         }
     }
 }
@@ -306,7 +338,8 @@ pub(crate) mod testing {
 
         alloc.stop().await.unwrap();
         let mut stopped = HashSet::new();
-        while let Some(ProcState::Stopped { proc_id }) = alloc.next().await {
+        while let Some(ProcState::Stopped { proc_id, reason }) = alloc.next().await {
+            assert_eq!(reason, ProcStopReason::Stopped);
             stopped.insert(proc_id);
         }
         assert!(alloc.next().await.is_none());

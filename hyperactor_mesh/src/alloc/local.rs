@@ -19,6 +19,7 @@ use hyperactor::proc::Proc;
 use ndslice::Shape;
 use tokio::time::sleep;
 
+use super::ProcStopReason;
 use crate::alloc::Alloc;
 use crate::alloc::AllocSpec;
 use crate::alloc::Allocator;
@@ -161,6 +162,7 @@ impl Alloc for LocalAlloc {
                 tracing::error!("error while stopping proc {}: {}", proc_to_stop.rank, err);
             }
             Some(ProcState::Stopped {
+                reason: ProcStopReason::Stopped,
                 proc_id: proc_to_stop.proc.proc_id().clone(),
             })
         }
