@@ -10,13 +10,13 @@ license = "MIT"
 [dependencies]
 anyhow = "1.0.95"
 dashmap = { version = "5.5.3", features = ["rayon", "serde"] }
-fbinit = { path = "../../common/rust/shed/fbinit", optional = true }
+fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main", optional = true }
 hdrhistogram = "7.5"
 lazy_static = { version = "1.5", features = ["spin_no_std"], default-features = false }
 opentelemetry = "0.29"
 opentelemetry_sdk = { version = "0.29.0", features = ["rt-tokio"] }
 rand = { version = "0.8", features = ["small_rng"] }
-scuba = { path = "../../common/rust/shed/scuba_stub", optional = true }
+scuba = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main", optional = true }
 serde = { version = "1.0.185", features = ["derive", "rc"] }
 serde_json = { version = "1.0.140", features = ["float_roundtrip", "unbounded_depth"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
