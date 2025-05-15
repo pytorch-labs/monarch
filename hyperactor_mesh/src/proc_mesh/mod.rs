@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fmt;
 use std::sync::Arc;
 
@@ -125,12 +126,13 @@ impl ProcMesh {
         let running: Vec<_> = running.into_iter().map(Option::unwrap).collect();
 
         // All procs are running, so we now configure them.
+        let mut world_ids = HashSet::new();
         let router = DialMailboxRouter::new_with_default(global_router().boxed());
         for (rank, (addr, _agent)) in running.iter().enumerate() {
-            router.bind(
-                Reference::Proc(proc_ids.get(rank).unwrap().clone()),
-                addr.clone(),
-            );
+            let proc_id = proc_ids.get(rank).unwrap().clone();
+            router.bind(Reference::Proc(proc_id.clone()), addr.clone());
+            // Work around for Allocs that have more than one world.
+            world_ids.insert(proc_id.world_id().clone());
         }
 
         let (router_channel_addr, router_rx) = channel::serve(ChannelAddr::any(alloc.transport()))
@@ -158,6 +160,9 @@ impl ProcMesh {
 
         // Bind this router to the global router, to enable cross-mesh routing.
         // TODO: unbind this when we incorporate mesh destruction too.
+        for world_id in world_ids {
+            global_router().bind(world_id.clone().into(), router.clone());
+        }
         global_router().bind(alloc.world_id().clone().into(), router.clone());
         global_router().bind(client_proc_id.into(), router.clone());
 
