@@ -2,7 +2,9 @@
 from collections import deque
 from typing import Generator, Sequence, TYPE_CHECKING
 
-from monarch._monarch.hyperactor import ActorId
+from monarch._rust_bindings.hyperactor import (  # @manual=//monarch/monarch_extension:monarch_extension
+    ActorId,
+)
 
 from monarch.common.controller_api import MessageResult
 

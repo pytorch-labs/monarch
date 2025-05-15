@@ -1,9 +1,9 @@
 from typing import Any, ClassVar, Dict, final, List
 
-from monarch._monarch.debugger import DebuggerActionType
+from monarch._rust_bindings.debugger import DebuggerActionType
 
-from monarch._monarch.hyperactor import ActorId, Proc, Serialized
-from monarch._monarch.worker import Ref
+from monarch._rust_bindings.hyperactor import ActorId, Proc, Serialized
+from monarch._rust_bindings.worker import Ref
 
 class Exception:
     """

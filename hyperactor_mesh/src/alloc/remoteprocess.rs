@@ -32,7 +32,7 @@ use crate::alloc::Allocator;
 use crate::alloc::ProcState;
 use crate::alloc::ProcessAllocator;
 
-/// Control messages sent from from remote allocator to local allocator.
+/// Control messages sent from remote allocator to local allocator.
 #[derive(Debug, Clone, Serialize, Deserialize, Named)]
 pub enum RemoteProcessAllocatorMessage {
     /// Create allocation with given spec and send updates to bootstrap_addr.

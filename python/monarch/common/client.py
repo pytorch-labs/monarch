@@ -26,7 +26,10 @@ from weakref import WeakKeyDictionary
 import torch
 import torch.distributed
 from monarch._monarch import worker
-from monarch._monarch.client import LogLevel, WorldState
+from monarch._rust_bindings.client import (  # @manual=//monarch/monarch_extension:monarch_extension
+    LogLevel,
+    WorldState,
+)
 from monarch.common import messages
 from monarch.common.borrows import Borrow, StorageAliases
 from monarch.common.controller_api import LogMessage, MessageResult, TController

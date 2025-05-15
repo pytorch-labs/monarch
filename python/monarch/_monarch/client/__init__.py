@@ -1,12 +1,25 @@
-from .._lib import client  # @manual=//monarch/monarch_extension:monarch_extension
+from monarch._rust_bindings.client import (  # @manual=//monarch/monarch_extension:monarch_extension
+    ClientActor,
+    DebuggerMessage,
+    Error,
+    Exception,
+    Failure,
+    LogLevel,
+    LogMessage,
+    SystemSnapshotFilter,
+    WorkerResponse,
+    WorldState,
+)
 
-WorkerResponse = client.WorkerResponse
-Exception = client.Exception
-Error = client.Error
-Failure = client.Failure
-LogMessage = client.LogMessage
-WorldState = client.WorldState
-SystemSnapshotFilter = client.SystemSnapshotFilter
-ClientActor = client.ClientActor
-LogLevel = client.LogLevel
-DebuggerMessage = client.DebuggerMessage
+__all__ = [
+    "ClientActor",
+    "DebuggerMessage",
+    "Error",
+    "Exception",
+    "Failure",
+    "LogLevel",
+    "LogMessage",
+    "SystemSnapshotFilter",
+    "WorkerResponse",
+    "WorldState",
+]

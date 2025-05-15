@@ -13,10 +13,14 @@ from typing import Any
 
 import monarch
 
-from monarch._monarch import hyperactor
+from monarch._monarch.hyperactor import Actor
+
+from monarch._rust_bindings import (  # @manual=//monarch/monarch_extension:monarch_extension
+    hyperactor,
+)
 
 
-class MyActor(hyperactor.Actor):
+class MyActor(Actor):
     async def handle(
         self, mailbox: hyperactor.Mailbox, message: hyperactor.PythonMessage
     ) -> None:

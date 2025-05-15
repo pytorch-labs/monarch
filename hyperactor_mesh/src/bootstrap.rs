@@ -24,7 +24,7 @@ pub(crate) const BOOTSTRAP_INDEX_ENV: &str = "HYPERACTOR_MESH_INDEX";
 #[derive(Debug, Clone, Serialize, Deserialize, Named)]
 pub(crate) struct Process2Allocator(pub usize, pub Process2AllocatorMessage);
 
-/// Control messages sent from from processes to the allocator.
+/// Control messages sent from processes to the allocator.
 #[derive(Debug, Clone, Serialize, Deserialize, Named)]
 pub(crate) enum Process2AllocatorMessage {
     /// Initialize a process2allocator session. The process is

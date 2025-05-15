@@ -13,8 +13,12 @@ from typing import (
 )
 
 import torch
-from monarch._monarch.client import WorldState
-from monarch._monarch.hyperactor import ActorId
+from monarch._rust_bindings.client import (  # @manual=//monarch/monarch_extension:monarch_extension
+    WorldState,
+)
+from monarch._rust_bindings.hyperactor import (  # @manual=//monarch/monarch_extension:monarch_extension
+    ActorId,
+)
 
 from monarch.common import messages
 

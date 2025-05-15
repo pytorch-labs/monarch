@@ -742,7 +742,8 @@ impl ClientActor {
 }
 
 pub(crate) fn init_pymodule(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    let client_msgs_mod = PyModule::new_bound(module.py(), "client")?;
+    let client_msgs_mod =
+        monarch_hyperactor::python_registration::add_new_module(module, "client")?;
     client_msgs_mod.add_class::<WorkerResponse>()?;
     client_msgs_mod.add_class::<PyException>()?;
     client_msgs_mod.add_class::<PyError>()?;
@@ -753,6 +754,5 @@ pub(crate) fn init_pymodule(module: &Bound<'_, PyModule>) -> PyResult<()> {
     client_msgs_mod.add_class::<LogMessage>()?;
     client_msgs_mod.add_class::<PyLogLevel>()?;
     client_msgs_mod.add_class::<DebuggerMessage>()?;
-    module.add_submodule(&client_msgs_mod)?;
     Ok(())
 }

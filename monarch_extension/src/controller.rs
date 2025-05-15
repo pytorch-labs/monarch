@@ -122,13 +122,14 @@ impl Send {
 }
 
 pub(crate) fn init_pymodule(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    let controller_mod = PyModule::new_bound(module.py(), "controller")?;
+    let controller_mod =
+        monarch_hyperactor::python_registration::add_new_module(module, "controller")?;
+
     controller_mod.add_class::<Node>()?;
     controller_mod.add_class::<Send>()?;
     controller_mod.add_class::<ControllerServerRequest>()?;
     controller_mod.add_class::<ControllerServerResponse>()?;
     controller_mod.add_class::<RunCommand>()?;
     controller_mod.add_class::<ControllerCommand>()?;
-    module.add_submodule(&controller_mod)?;
     Ok(())
 }

@@ -4,6 +4,7 @@ use hyperactor::ActorRef;
 use monarch_hyperactor::proc::InstanceWrapper;
 use monarch_hyperactor::proc::PyProc;
 use monarch_hyperactor::proc::PySerialized;
+use monarch_hyperactor::python_registration;
 use monarch_hyperactor::runtime::signal_safe_block_on;
 use monarch_messages::controller::ControllerActor;
 use monarch_messages::controller::ControllerMessageClient;
@@ -124,12 +125,12 @@ impl PdbActor {
 }
 
 pub fn init_pymodule(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    let debugger = PyModule::new_bound(module.py(), "debugger")?;
+    let debugger = python_registration::add_new_module(module, "debugger")?;
+
     debugger.add_class::<PdbActor>()?;
     debugger.add_class::<monarch_messages::debugger::DebuggerAction>()?;
     debugger.add_class::<PyDebuggerMessage>()?;
     debugger.add_function(wrap_pyfunction!(get_bytes_from_write_action, &debugger)?)?;
-    module.add_submodule(&debugger)?;
     Ok(())
 }
 

@@ -16,7 +16,7 @@ def invoke_main() -> None:
     # TODO: figure out what from worker_main.py we should reproduce here.
 
     # pyre-ignore[21]
-    from .._lib import (  # @manual=//monarch/monarch_extension:monarch_extension
+    from ..._rust_bindings import (  # @manual=//monarch/monarch_extension:monarch_extension
         hyperactor,
     )
 

@@ -17,7 +17,7 @@ def main() -> None:
     torch.cuda.init()
 
     # pyre-ignore[21]
-    from monarch._monarch._lib import (  # @manual=//monarch/monarch_extension:monarch_extension
+    from monarch._rust_bindings import (  # @manual=//monarch/monarch_extension:monarch_extension
         worker,
     )
 

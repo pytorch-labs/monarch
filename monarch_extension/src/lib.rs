@@ -9,7 +9,7 @@ mod worker;
 use pyo3::prelude::*;
 
 #[pymodule]
-#[pyo3(name = "_lib")]
+#[pyo3(name = "_rust_bindings")]
 pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
     ::hyperactor::initialize();
     monarch_hyperactor::runtime::initialize(module.py())?;

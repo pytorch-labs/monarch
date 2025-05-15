@@ -4,7 +4,9 @@ from typing import Callable
 
 import pytest
 from monarch import Future, RemoteException
-from monarch._monarch.hyperactor import ActorId
+from monarch._rust_bindings.hyperactor import (  # @manual=//monarch/monarch_extension:monarch_extension
+    ActorId,
+)
 from monarch.common import future
 from monarch.common.client import Client
 

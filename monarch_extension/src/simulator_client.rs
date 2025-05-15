@@ -9,6 +9,7 @@ use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::simnet::OperationalMessage;
 use hyperactor::simnet::ProxyMessage;
 use hyperactor::simnet::SpawnMesh;
+use monarch_hyperactor::python_registration;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
@@ -77,8 +78,7 @@ impl SimulatorClient {
 }
 
 pub(crate) fn init_pymodule(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    let simulator_client_mod = PyModule::new_bound(module.py(), "simulator_client")?;
+    let simulator_client_mod = python_registration::add_new_module(module, "simulator_client")?;
     simulator_client_mod.add_class::<SimulatorClient>()?;
-    module.add_submodule(&simulator_client_mod)?;
     Ok(())
 }

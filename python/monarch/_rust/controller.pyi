@@ -1,10 +1,11 @@
 from enum import Enum
 from typing import Any, final, List, Optional, Tuple, Union
 
-from monarch._monarch.hyperactor import ActorId, Serialized
+from monarch._rust_bindings.hyperactor import ActorId, Serialized
 
-from monarch._monarch.shape import Slice
-from monarch._monarch.worker import Ref, WorkerMessage
+from monarch._rust_bindings.shape import Slice
+
+from monarch._rust_bindings.worker import Ref, WorkerMessage
 
 @final
 class Node:

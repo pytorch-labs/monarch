@@ -1,29 +1,8 @@
 # pyre-strict
 
-from typing import Dict, final, List, Optional, Type
+from typing import Dict, final, List, Optional, Protocol, Type
 
-from monarch._monarch.shape import Shape, Slice as NDSlice
-
-@final
-class Proc:
-    """
-    A python wrapper around hyperactor Proc. This is the root container
-    for all actors in the process.
-    """
-
-    @property
-    def world_name(self) -> str:
-        """The world the Proc is a part of."""
-        ...
-
-    @property
-    def rank(self) -> int:
-        """Rank of the Proc in that world."""
-        ...
-
-    def destroy(self, timeout_in_secs: int) -> List[str]:
-        """Destroy the Proc."""
-        ...
+from monarch._rust_bindings.shape import Shape
 
 def init_proc(
     *,
@@ -45,33 +24,11 @@ def init_proc(
 @final
 class Serialized:
     """
-    An opaque wrapper around a message that has been serialized in a hyperactor
+    An opaque wrapper around a message that hhas been serialized in a hyperactor
     friendly manner.
     """
 
     ...
-
-@final
-class PythonMessage:
-    """
-    A message that can be sent to PythonMessageActor. It is a wrapper
-    around a method name and a serialized message.
-
-    Arguments:
-    - `method`: The name of the method to call.
-    - `message`: The message to send.
-    """
-
-    def __init__(self, method: str, message: bytes) -> None: ...
-    @property
-    def method(self) -> str:
-        """The name of the method to call."""
-        ...
-
-    @property
-    def message(self) -> bytes:
-        """The message to send."""
-        ...
 
 @final
 class ActorId:
@@ -127,7 +84,7 @@ class ActorId:
         """
         ...
 
-class Actor:
+class Actor(Protocol):
     async def handle(self, mailbox: Mailbox, message: PythonMessage) -> None:
         """
         Handle a message from the mailbox.

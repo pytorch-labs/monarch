@@ -1,11 +1,11 @@
-from .._lib import controller  # @manual=//monarch/monarch_extension:monarch_extension
-
-Node = controller.Node
-Send = controller.Send
-ControllerServerRequest = controller.ControllerServerRequest
-RunCommand = controller.RunCommand
-ControllerServerResponse = controller.ControllerServerResponse
-ControllerCommand = controller.ControllerCommand
+from monarch._rust_bindings.controller import (  # @manual=//monarch/monarch_extension:monarch_extension
+    ControllerCommand,
+    ControllerServerRequest,
+    ControllerServerResponse,
+    Node,
+    RunCommand,
+    Send,
+)
 
 __all__ = [
     "Node",

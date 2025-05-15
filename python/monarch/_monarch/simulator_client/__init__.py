@@ -1,7 +1,5 @@
-from .._lib import (  # @manual=//monarch/monarch_extension:monarch_extension
-    simulator_client,
+from monarch._rust_bindings.simulator_client import (  # @manual=//monarch/monarch_extension:monarch_extension
+    SimulatorClient,
 )
-
-SimulatorClient = simulator_client.SimulatorClient
 
 __all__ = ["SimulatorClient"]

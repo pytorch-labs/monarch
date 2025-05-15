@@ -6,6 +6,7 @@ use pyo3::types::PyBytes;
 use pyo3::types::PyDict;
 
 use crate::ndslice::PySlice;
+use crate::python_registration;
 
 #[pyclass(name = "Shape", module = "monarch._monarch.shape", frozen)]
 pub struct PyShape {
@@ -167,7 +168,7 @@ impl PyPoint {
 }
 
 pub fn init_pymodule(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    let shape_mod = PyModule::new_bound(module.py(), "shape")?;
+    let shape_mod = python_registration::add_new_module(module, "shape")?;
     shape_mod.add_class::<PyShape>()?;
     shape_mod.add_class::<PySlice>()?;
     shape_mod.add_class::<PyPoint>()?;

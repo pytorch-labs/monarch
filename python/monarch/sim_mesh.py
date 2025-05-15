@@ -11,10 +11,17 @@ import time
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
-from monarch._monarch.client import ClientActor
-
-from monarch._monarch.hyperactor import ActorId, init_proc, Proc
 from monarch._monarch.simulator_client import SimulatorClient
+
+from monarch._rust_bindings.client import (  # @manual=//monarch/monarch_extension:monarch_extension
+    ClientActor,
+)
+
+from monarch._rust_bindings.hyperactor import (  # @manual=//monarch/monarch_extension:monarch_extension
+    ActorId,
+    init_proc,
+    Proc,
+)
 from monarch.common.client import Client
 from monarch.common.constants import (
     SIM_MESH_CLIENT_SUPERVISION_UPDATE_INTERVAL,

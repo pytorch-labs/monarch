@@ -119,7 +119,7 @@ setup(
     ],
     rust_extensions=[
         RustExtension(
-            "monarch._monarch._lib",
+            "monarch._rust_bindings",
             binding=Binding.PyO3,
             path="monarch_extension/Cargo.toml",
             debug=False,

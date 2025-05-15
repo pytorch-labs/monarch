@@ -1347,7 +1347,7 @@ fn worker_main(py: Python<'_>) -> PyResult<()> {
 }
 
 pub(crate) fn init_pymodule(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    let worker_mod = PyModule::new_bound(module.py(), "worker")?;
+    let worker_mod = monarch_hyperactor::python_registration::add_new_module(module, "worker")?;
 
     worker_mod.add_class::<PyWorkerMessage>()?;
     worker_mod.add_class::<BackendNetworkInit>()?;
@@ -1386,6 +1386,5 @@ pub(crate) fn init_pymodule(module: &Bound<'_, PyModule>) -> PyResult<()> {
     worker_mod.add_class::<WorkerServerResponse>()?;
     worker_mod.add_function(wrap_pyfunction!(worker_main, &worker_mod)?)?;
 
-    module.add_submodule(&worker_mod)?;
     Ok(())
 }

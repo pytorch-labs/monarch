@@ -1,41 +1,42 @@
-from .._lib import worker  # @manual=//monarch/monarch_extension:monarch_extension
+from monarch._rust_bindings.worker import (  # @manual=//monarch/monarch_extension:monarch_extension
+    BackendNetworkInit,
+    BackendNetworkPointToPointInit,
+    BorrowCreate,
+    BorrowDrop,
+    BorrowFirstUse,
+    BorrowLastUse,
+    CallFunction,
+    CallRecording,
+    Cloudpickle,
+    CommandGroup,
+    CreateDeviceMesh,
+    CreatePipe,
+    CreateRemoteProcessGroup,
+    CreateStream,
+    DefineRecording,
+    DeleteRefs,
+    Exit,
+    FunctionPath,
+    PipeRecv,
+    RecordingFormal,
+    RecordingResult,
+    Reduce,
+    ReductionType,
+    Ref,
+    RequestStatus,
+    SendTensor,
+    SendValue,
+    SplitComm,
+    SplitCommForProcessGroup,
+    StreamCreationMode,
+    StreamRef,
+    TensorFactory,
+    WorkerMessage,
+    WorkerServerRequest,
+    WorkerServerResponse,
+)
 
-WorkerMessage = worker.WorkerMessage
-BackendNetworkInit = worker.BackendNetworkInit
-BackendNetworkPointToPointInit = worker.BackendNetworkPointToPointInit
-CallFunction = worker.CallFunction
-CommandGroup = worker.CommandGroup
-CreateStream = worker.CreateStream
-CreateDeviceMesh = worker.CreateDeviceMesh
-CreateRemoteProcessGroup = worker.CreateRemoteProcessGroup
-BorrowCreate = worker.BorrowCreate
-BorrowFirstUse = worker.BorrowFirstUse
-BorrowLastUse = worker.BorrowLastUse
-BorrowDrop = worker.BorrowDrop
-DeleteRefs = worker.DeleteRefs
-RequestStatus = worker.RequestStatus
-Reduce = worker.Reduce
-SendTensor = worker.SendTensor
-CreatePipe = worker.CreatePipe
-SendValue = worker.SendValue
-PipeRecv = worker.PipeRecv
-Exit = worker.Exit
-DefineRecording = worker.DefineRecording
-RecordingFormal = worker.RecordingFormal
-RecordingResult = worker.RecordingResult
-CallRecording = worker.CallRecording
-Ref = worker.Ref
-StreamRef = worker.StreamRef
-TensorFactory = worker.TensorFactory
-FunctionPath = worker.FunctionPath
-Cloudpickle = worker.Cloudpickle
-ReductionType = worker.ReductionType
-StreamCreationMode = worker.StreamCreationMode
 ResolvableFunction = FunctionPath | Cloudpickle
-SplitComm = worker.SplitComm
-SplitCommForProcessGroup = worker.SplitCommForProcessGroup
-WorkerServerRequest = worker.WorkerServerRequest
-WorkerServerResponse = worker.WorkerServerResponse
 
 __all__ = [
     "WorkerMessage",
@@ -73,4 +74,5 @@ __all__ = [
     "CallRecording",
     "WorkerServerRequest",
     "WorkerServerResponse",
+    "StreamRef",
 ]

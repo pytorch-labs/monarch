@@ -1,36 +1,33 @@
 # pyre-strict
 import abc
 
-from .._lib import hyperactor  # @manual=//monarch/monarch_extension:monarch_extension
+from monarch._rust_bindings.hyperactor import (  # @manual=//monarch/monarch_extension:monarch_extension
+    ActorId,
+    Alloc,
+    AllocConstraints,
+    AllocSpec,
+    init_proc,
+    LocalAllocatorBase,
+    Mailbox,
+    OncePortHandle,
+    OncePortReceiver,
+    PickledMessage,
+    PickledMessageClientActor,
+    PortHandle,
+    PortId,
+    PortReceiver,
+    Proc,
+    ProcessAllocatorBase,
+    ProcMesh,
+    PythonActorHandle as ActorHandle,
+    PythonActorMesh,
+    PythonMessage,
+    Serialized,
+)
 
-init_proc = hyperactor.init_proc
-
-ActorId = hyperactor.ActorId
-ActorHandle = hyperactor.PythonActorHandle
-PortId = hyperactor.PortId
-Proc = hyperactor.Proc
-
-Serialized = hyperactor.Serialized
-PickledMessage = hyperactor.PickledMessage
-PickledMessageClientActor = hyperactor.PickledMessageClientActor
-PythonMessage = hyperactor.PythonMessage
-PythonActorHandle = hyperactor.PythonActorHandle
-
-Mailbox = hyperactor.Mailbox
-PortHandle = hyperactor.PortHandle
-PortReceiver = hyperactor.PortReceiver
-OncePortHandle = hyperactor.OncePortHandle
-OncePortReceiver = hyperactor.OncePortReceiver
-
-AllocConstraints = hyperactor.AllocConstraints
-AllocSpec = hyperactor.AllocSpec
-Alloc = hyperactor.Alloc
-ProcessAllocatorBase = hyperactor.ProcessAllocatorBase
-LocalAllocatorBase = hyperactor.LocalAllocatorBase
-
-ProcMesh = hyperactor.ProcMesh
-PythonActorMesh = hyperactor.PythonActorMesh
-Shape = hyperactor.Shape
+from monarch._rust_bindings.shape import (  # @manual=//monarch/monarch_extension:monarch_extension
+    Shape,
+)
 
 
 class Actor(abc.ABC):
@@ -60,7 +57,6 @@ __all__ = [
     "PickledMessage",
     "PickledMessageClientActor",
     "PythonMessage",
-    "PythonActorHandle",
     "Mailbox",
     "PortHandle",
     "PortReceiver",
@@ -69,8 +65,9 @@ __all__ = [
     "Alloc",
     "AllocSpec",
     "AllocConstraints",
-    "ProcessAllocator",
-    "LocalAllocator",
     "ProcMesh",
     "PythonActorMesh",
+    "ProcessAllocatorBase",
+    "Shape",
+    "LocalAllocatorBase",
 ]

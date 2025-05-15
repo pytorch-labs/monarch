@@ -2,7 +2,9 @@
 import traceback
 from typing import Any, List, Optional, Tuple
 
-from monarch._monarch.hyperactor import ActorId
+from monarch._rust_bindings.hyperactor import (  # @manual=//monarch/monarch_extension:monarch_extension
+    ActorId,
+)
 
 
 Seq = int

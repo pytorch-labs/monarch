@@ -2,7 +2,7 @@ from typing import final
 
 from monarch import ActorFuture as Future
 
-from monarch._monarch.hyperactor import (
+from monarch._rust_bindings.hyperactor import (  # @manual=//monarch/monarch_extension:monarch_extension
     Alloc,
     AllocSpec,
     LocalAllocatorBase,

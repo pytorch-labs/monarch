@@ -8,6 +8,7 @@ pub mod mailbox;
 pub mod ndslice;
 pub mod proc;
 pub mod proc_mesh;
+pub mod python_registration;
 pub mod runtime;
 pub mod shape;
 
@@ -18,7 +19,7 @@ use pyo3::types::PyModule;
 use pyo3::wrap_pyfunction;
 
 pub fn init_pymodule(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    let hyperactor_mod = PyModule::new_bound(module.py(), "hyperactor")?;
+    let hyperactor_mod = python_registration::add_new_module(module, "hyperactor")?;
 
     hyperactor_mod.add_function(wrap_pyfunction!(proc::init_proc, &hyperactor_mod)?)?;
     hyperactor_mod.add_function(wrap_pyfunction!(
@@ -53,6 +54,5 @@ pub fn init_pymodule(module: &Bound<'_, PyModule>) -> PyResult<()> {
     // Register common types
     hyperactor_extension::init_pymodule(&hyperactor_mod)?;
 
-    module.add_submodule(&hyperactor_mod)?;
     Ok(())
 }

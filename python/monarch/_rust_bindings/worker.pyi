@@ -1,8 +1,8 @@
 from typing import Callable, final, Optional, Sequence, Tuple
 
 import torch
-from monarch._monarch.hyperactor import ActorId
-from monarch._monarch.shape import Slice
+from monarch._rust_bindings.hyperactor import ActorId
+from monarch._rust_bindings.shape import Slice
 
 @final
 class Ref:
@@ -73,8 +73,11 @@ class TensorFactory:
         self,
         *,
         size: Sequence[int],
+        # pyre-ignore
         dtype: torch.dtype,
+        # pyre-ignore
         layout: torch.layout,
+        # pyre-ignore
         device: torch.device,
     ) -> None: ...
     @property

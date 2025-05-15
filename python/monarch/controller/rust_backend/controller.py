@@ -8,8 +8,15 @@ from typing import cast, List, NamedTuple, Optional, Sequence, Union
 
 from monarch._monarch import client, controller, debugger, worker
 
-from monarch._monarch.client import ClientActor, SystemSnapshotFilter, WorldState
-from monarch._monarch.hyperactor import ActorId, Proc
+from monarch._rust_bindings.client import (  # @manual=//monarch/monarch_extension:monarch_extension
+    ClientActor,
+    SystemSnapshotFilter,
+    WorldState,
+)
+from monarch._rust_bindings.hyperactor import (  # @manual=//monarch/monarch_extension:monarch_extension
+    ActorId,
+    Proc,
+)
 from monarch.common.controller_api import LogMessage, MessageResult
 from monarch.common.device_mesh import no_mesh
 from monarch.common.invocation import DeviceException, RemoteException

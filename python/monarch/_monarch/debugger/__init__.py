@@ -1,6 +1,13 @@
-from .._lib import debugger  # @manual=//monarch/monarch_extension:monarch_extension
+from monarch._rust_bindings.debugger import (  # @manual=//monarch/monarch_extension:monarch_extension
+    DebuggerAction,
+    DebuggerMessage,
+    get_bytes_from_write_action,
+    PdbActor,
+)
 
-PdbActor = debugger.PdbActor
-DebuggerAction = debugger.DebuggerAction
-DebuggerMessage = debugger.DebuggerMessage
-get_bytes_from_write_action = debugger.get_bytes_from_write_action
+__all__ = [
+    "PdbActor",
+    "DebuggerAction",
+    "DebuggerMessage",
+    "get_bytes_from_write_action",
+]

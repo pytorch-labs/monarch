@@ -8,7 +8,7 @@ edition = "2021"
 license = "MIT"
 
 [lib]
-name = "_lib"
+name = "_rust_bindings"
 test = false
 doctest = false
 crate-type = ["cdylib"]

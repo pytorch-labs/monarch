@@ -25,7 +25,9 @@ if __name__ == "__main__":
         torch.cuda.init()
 
     # pyre-ignore[21]
-    from .._lib import worker  # @manual=//monarch/monarch_extension:monarch_extension
+    from ..._rust_bindings import (  # @manual=//monarch/monarch_extension:monarch_extension
+        worker,
+    )
 
     initialize_logging()
 

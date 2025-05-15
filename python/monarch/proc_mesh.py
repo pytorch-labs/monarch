@@ -3,9 +3,11 @@ import sys
 from typing import Any, cast, Optional, Type, TypeVar
 
 import monarch
-import monarch._monarch.hyperactor as hyperactor
+import monarch._rust_bindings.hyperactor as hyperactor  # @manual=//monarch/monarch_extension:monarch_extension
 from monarch import ActorFuture as Future
-from monarch._monarch.hyperactor import Alloc
+from monarch._rust_bindings.hyperactor import (  # @manual=//monarch/monarch_extension:monarch_extension
+    Alloc,
+)
 
 from monarch.python_local_mesh import _local_device_count
 from monarch.rdma import RDMAManager

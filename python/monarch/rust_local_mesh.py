@@ -38,9 +38,11 @@ from monarch._monarch.controller import (
     ControllerServerResponse,
     RunCommand,
 )
-
-from monarch._monarch.hyperactor import ActorId
 from monarch._monarch.worker import WorkerServerRequest, WorkerServerResponse
+
+from monarch._rust_bindings.hyperactor import (  # @manual=//monarch/monarch_extension:monarch_extension
+    ActorId,
+)
 
 from monarch.common.device_mesh import DeviceMesh
 from monarch.common.fake import fake_call

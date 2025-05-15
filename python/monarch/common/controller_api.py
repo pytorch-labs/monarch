@@ -1,7 +1,11 @@
 # pyre-unsafe
 from typing import Any, List, NamedTuple, Optional, Protocol, Sequence, Union
 
-from monarch._monarch.client import DebuggerMessage, LogLevel, WorldState
+from monarch._rust_bindings.client import (  # @manual=//monarch/monarch_extension:monarch_extension
+    DebuggerMessage,
+    LogLevel,
+    WorldState,
+)
 
 from monarch.common.invocation import DeviceException, RemoteException, Seq
 from monarch.common.reference import Ref

@@ -12,6 +12,8 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::PyAnyMethods;
 
+use crate::python_registration;
+
 pub fn get_tokio_runtime() -> &'static tokio::runtime::Runtime {
     static INSTANCE: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     INSTANCE.get_or_init(|| {
@@ -116,10 +118,10 @@ pub fn sleep_indefinitely_for_unit_tests(py: Python) -> PyResult<()> {
 
 /// Initialize the runtime module and expose Python functions
 pub fn init_pymodule(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    let runtime_mod = PyModule::new_bound(module.py(), "runtime")?;
+    let runtime_mod = python_registration::add_new_module(module, "runtime")?;
+
     let sleep_indefinitely_fn =
         wrap_pyfunction_bound!(sleep_indefinitely_for_unit_tests, module.py())?;
     runtime_mod.add_function(sleep_indefinitely_fn)?;
-    module.add_submodule(&runtime_mod)?;
     Ok(())
 }

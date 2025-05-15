@@ -34,7 +34,9 @@ from typing import (
 import numpy as np
 
 import torch
-from monarch._monarch.hyperactor import ActorId
+from monarch._rust_bindings.hyperactor import (  # @manual=//monarch/monarch_extension:monarch_extension
+    ActorId,
+)
 from monarch.common import messages
 from monarch.common.controller_api import LogMessage, MessageResult
 from monarch.common.device_mesh import DeviceMesh

@@ -6,7 +6,9 @@ from unittest import IsolatedAsyncioTestCase
 
 from monarch import ProcessAllocator
 
-from monarch._monarch import hyperactor
+from monarch._rust_bindings import (  # @manual=//monarch/monarch_extension:monarch_extension
+    hyperactor,
+)
 
 
 class TestAlloc(IsolatedAsyncioTestCase):
