@@ -385,7 +385,7 @@ impl Proc {
         mbox
     }
 
-    /// Attach a mailbox to the proc with the provided root name, and bind an `[ActorRef]`.
+    /// Attach a mailbox to the proc with the provided root name, and bind an [`ActorRef`].
     /// This is intended only for testing, and will be replaced by simpled utilities.
     pub fn attach_actor<R, M>(
         &self,

@@ -2,6 +2,7 @@
 //! (local) allocator, [`ProcessAllocator`].
 
 pub mod local;
+pub(crate) mod logtailer;
 pub mod process;
 pub mod remoteprocess;
 
