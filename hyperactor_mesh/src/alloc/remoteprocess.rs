@@ -326,7 +326,7 @@ impl RemoteProcessAllocator {
                                     router.bind(mesh_agent.actor_id().proc_id().clone().into(), addr);
                                     ProcState::Running { proc_id, mesh_agent, addr: forward_addr.clone() }
                                 },
-                                ProcState::Stopped(proc_id) => {
+                                ProcState::Stopped {proc_id} => {
                                     match mesh_agents_by_proc_id.remove(&proc_id) {
                                         Some(mesh_agent) => {
                                             tracing::debug!("unmapping mesh_agent {}", mesh_agent);
@@ -337,7 +337,7 @@ impl RemoteProcessAllocator {
                                             tracing::warn!("mesh_agent not found for proc_id: {}", proc_id);
                                         }
                                     }
-                                    ProcState::Stopped(proc_id)
+                                    ProcState::Stopped{proc_id}
                                 },
                             };
                             tracing::debug!("sending event: {:?}", event);
@@ -452,7 +452,7 @@ mod test {
             alloc
                 .expect_next()
                 .times(1)
-                .return_once(|| Some(ProcState::Stopped(proc_id)));
+                .return_once(|| Some(ProcState::Stopped { proc_id }));
         }
     }
 
@@ -561,7 +561,7 @@ mod test {
         while i < alloc_len {
             let m = rx.recv().await.unwrap();
             match m {
-                RemoteProcessProcStateMessage::Update(ProcState::Stopped(proc_id)) => {
+                RemoteProcessProcStateMessage::Update(ProcState::Stopped { proc_id }) => {
                     let expected_proc_id = format!("test[{}]", i).parse().unwrap();
                     assert_eq!(proc_id, expected_proc_id);
                     i += 1;

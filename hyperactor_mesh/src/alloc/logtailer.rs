@@ -6,8 +6,11 @@ use std::ops::DerefMut;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use tokio::io;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncRead;
+use tokio::io::AsyncWrite;
+use tokio::io::AsyncWriteExt;
 use tokio::io::BufReader;
 
 /// A tailer (ring buffer) of (text) log lines.
@@ -27,6 +30,18 @@ impl LogTailer {
     /// background, while keeping at most `max` log lines in its buffer. The tailer
     /// stops when the stream is ended (i.e., returns an EOF).
     pub fn new(max: usize, stream: impl AsyncRead + Send + Unpin + 'static) -> Self {
+        Self::tee(max, stream, io::sink())
+    }
+
+    /// Create a new tailer given a `stream`. The tailer tails the reader in the
+    /// background, while keeping at most `max` log lines in its buffer. The tailer
+    /// stops when the stream is ended (i.e., returns an EOF). All lines read by the
+    /// tailer are teed onto the provided `tee` stream.
+    pub fn tee(
+        max: usize,
+        stream: impl AsyncRead + Send + Unpin + 'static,
+        mut tee: impl AsyncWrite + Send + Unpin + 'static,
+    ) -> Self {
         let state = Arc::new(Mutex::new(State {
             next: 0,
             lines: Vec::with_capacity(max),
@@ -44,6 +59,7 @@ impl LogTailer {
                 if reader.read_line(&mut buffer).await? == 0 {
                     break Ok(());
                 }
+                let _ = tee.write_all(buffer.as_bytes()).await;
                 while buffer.ends_with('\n') {
                     buffer.pop();
                 }
@@ -107,6 +123,18 @@ mod tests {
         let (lines, result) = LogTailer::new(5, reader).join().await;
         assert!(result.is_ok());
         assert_eq!(lines, vec!["hello".to_string(), "world".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_tee() {
+        let reader = Cursor::new("hello\nworld\n".as_bytes());
+        let (write, read) = io::duplex(64); // 64-byte internal buffer
+        let (lines, result) = LogTailer::tee(5, reader, write).join().await;
+        assert!(result.is_ok());
+        assert_eq!(lines, vec!["hello".to_string(), "world".to_string()]);
+        let mut lines = BufReader::new(read).lines();
+        assert_eq!(lines.next_line().await.unwrap().unwrap(), "hello");
+        assert_eq!(lines.next_line().await.unwrap().unwrap(), "world");
     }
 
     #[tokio::test]

@@ -160,7 +160,9 @@ impl Alloc for LocalAlloc {
             {
                 tracing::error!("error while stopping proc {}: {}", proc_to_stop.rank, err);
             }
-            Some(ProcState::Stopped(proc_to_stop.proc.proc_id().clone()))
+            Some(ProcState::Stopped {
+                proc_id: proc_to_stop.proc.proc_id().clone(),
+            })
         }
     }
 

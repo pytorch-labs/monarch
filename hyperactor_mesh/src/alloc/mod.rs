@@ -109,7 +109,7 @@ pub enum ProcState {
     },
     /// A proc was stopped.
     // TODO: add reason
-    Stopped(ProcId),
+    Stopped { proc_id: ProcId },
 }
 
 impl fmt::Display for ProcState {
@@ -130,7 +130,7 @@ impl fmt::Display for ProcState {
             ProcState::Running { proc_id, addr, .. } => {
                 write!(f, "{}: running at {}", proc_id, addr)
             }
-            ProcState::Stopped(proc_id) => {
+            ProcState::Stopped { proc_id } => {
                 write!(f, "{}: stopped", proc_id)
             }
         }
@@ -306,7 +306,7 @@ pub(crate) mod testing {
 
         alloc.stop().await.unwrap();
         let mut stopped = HashSet::new();
-        while let Some(ProcState::Stopped(proc_id)) = alloc.next().await {
+        while let Some(ProcState::Stopped { proc_id }) = alloc.next().await {
             stopped.insert(proc_id);
         }
         assert!(alloc.next().await.is_none());

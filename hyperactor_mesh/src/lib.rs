@@ -1,6 +1,7 @@
 //! This crate provides hyperactor's mesh abstractions.
 
 #![feature(assert_matches)]
+#![feature(impl_trait_in_bindings)]
 
 pub mod actor_mesh;
 pub mod alloc;

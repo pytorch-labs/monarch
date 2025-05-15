@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
+use std::process::Stdio;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -18,6 +19,7 @@ use hyperactor::channel::Tx;
 use hyperactor::channel::TxStatus;
 use hyperactor::sync::monitor;
 use ndslice::Shape;
+use tokio::io;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::task::JoinSet;
@@ -27,6 +29,7 @@ use super::AllocSpec;
 use super::Allocator;
 use super::AllocatorError;
 use super::ProcState;
+use super::logtailer::LogTailer;
 use crate::assign::Ranks;
 use crate::bootstrap;
 use crate::bootstrap::Allocator2Process;
@@ -34,11 +37,16 @@ use crate::bootstrap::Process2Allocator;
 use crate::bootstrap::Process2AllocatorMessage;
 use crate::shortuuid::ShortUuid;
 
+/// The maximum number of log lines to tail keep for managed processes.
+const MAX_TAIL_LOG_LINES: usize = 100;
+
 /// An allocator that allocates procs by executing managed (local)
 /// processes. ProcessAllocator is configured with a [`Command`] (template)
 /// to spawn external processes. These processes must invoke [`hyperactor_mesh::bootstrap`] or
 /// [`hyperactor_mesh::bootstrap_or_die`], which is responsible for coordinating
 /// with the allocator.
+///
+/// The process allocator tees the stdout and stderr of each proc to the parent process.
 pub struct ProcessAllocator {
     cmd: Arc<Mutex<Command>>,
 }
@@ -108,15 +116,30 @@ enum ChannelState {
 struct Child {
     channel: ChannelState,
     group: monitor::Group,
+    stdout: LogTailer,
+    stderr: LogTailer,
 }
 
 impl Child {
     fn monitored(mut process: tokio::process::Child) -> (Self, impl Future) {
         let (group, handle) = monitor::group();
 
+        let stdout = LogTailer::tee(
+            MAX_TAIL_LOG_LINES,
+            process.stdout.take().unwrap(),
+            io::stdout(),
+        );
+        let stderr = LogTailer::tee(
+            MAX_TAIL_LOG_LINES,
+            process.stderr.take().unwrap(),
+            io::stderr(),
+        );
+
         let child = Self {
             channel: ChannelState::NotConnected,
             group,
+            stdout,
+            stderr,
         };
 
         let monitor = async move {
@@ -234,6 +257,8 @@ impl ProcessAlloc {
             self.bootstrap_addr.to_string(),
         );
         cmd.env(bootstrap::BOOTSTRAP_INDEX_ENV, index.to_string());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
 
         // Opt-in to signal handling (`PR_SET_PDEATHSIG`) so that the
         // spawned subprocess will automatically exit when the parent
@@ -270,9 +295,9 @@ impl ProcessAlloc {
         }
     }
 
-    fn remove(&mut self, index: usize) {
+    fn remove(&mut self, index: usize) -> Option<Child> {
         self.ranks.unassign(index);
-        self.active.remove(&index);
+        self.active.remove(&index)
     }
 }
 
@@ -326,8 +351,12 @@ impl Alloc for ProcessAlloc {
                 },
 
                 Some(Ok(index)) = self.children.join_next() => {
-                    self.remove(index);
-                    break Some(ProcState::Stopped(ProcId(WorldId(self.name.to_string()), index)));
+                    if let Some(Child { stdout, stderr, ..} ) = self.remove(index) {
+                        let (_stdout, _) = stdout.join().await;
+                        let (_stderr, _) = stderr.join().await;
+                    }
+
+                    break Some(ProcState::Stopped { proc_id: ProcId(WorldId(self.name.to_string()), index), });
                 },
             }
         }

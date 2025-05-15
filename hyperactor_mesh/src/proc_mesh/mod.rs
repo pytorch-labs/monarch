@@ -111,7 +111,7 @@ impl ProcMesh {
                         rank
                     );
                 }
-                ProcState::Stopped(proc_id) => {
+                ProcState::Stopped { proc_id } => {
                     if let Some(rank) = proc_ids.unassign(proc_id.clone()) {
                         let _ = running.remove(rank);
                         tracing::info!("proc {} rank {}: stopped", proc_id, rank);
