@@ -1,9 +1,9 @@
 # pyre-unsafe
 from unittest import main, TestCase
 
-import monarch.common.mock_cuda
-
+import pytest
 import torch
+import monarch.common.mock_cuda  # usort: skip
 
 
 def simple_forward_backward(device: str) -> None:
@@ -22,6 +22,9 @@ def simple_forward_backward(device: str) -> None:
     return y, m[0].weight.grad, m[0].bias.grad
 
 
+# Mock cuda depends on initialization load order
+# For OSS, run this test separately until it can be run in a subprocess.
+@pytest.mark.oss_skip
 class TestMockCuda(TestCase):
     def setUp(self) -> None:
         return super().setUp()

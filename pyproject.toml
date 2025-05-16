@@ -12,3 +12,9 @@ readme = "README.md"
 description = "Monarch: Single controller library"
 dependencies = ["torch", "pyzmq", "requests", "numpy", "pyre-extensions", "pytest-timeout", "cloudpickle"]
 requires-python = ">= 3.10"
+
+[tool.pytest.ini_options]
+
+markers = [
+    "oss_skip: marks tests to skip in OSS CI",
+]
