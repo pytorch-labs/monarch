@@ -1,25 +1,19 @@
 use std::collections::HashMap;
 use std::env;
-use std::io;
-use std::io::Write;
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::Context;
 use anyhow::Result;
-use chrono::DateTime;
-use chrono::Utc;
 use employee::EmployeeClient;
 use employee::Unixname;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
 use hyperactor_multiprocess::system_actor::SYSTEM_ACTOR_REF;
 use hyperactor_multiprocess::system_actor::SystemMessageClient;
 use hyperactor_multiprocess::system_actor::SystemSnapshotFilter;
 use rfe_thrift::SQLQueryResult;
 use rfe_thrift_srclients::RockfortExpress;
 use rfe_thrift_srclients::make_RockfortExpress_srclient;
-use tabwriter::TabWriter;
+use tui::top::ActorInfo;
+use tui::top::App;
 use utils::system_address::SystemAddr;
 
 #[derive(clap::Args, Debug)]
@@ -28,93 +22,86 @@ pub struct TopCommand {
     system_addr: SystemAddr,
 }
 
-#[derive(Debug, Default)]
-struct State {
-    // The unix epoch when the state was recorded in scuba
-    ts_sec: u64,
-    // A map from ActorId to the received messages in the last time window
-    message_count: HashMap<String, usize>,
-}
-
-impl State {
-    fn update(&mut self, new: State, ts_sec: u64) {
-        self.ts_sec = ts_sec;
-        // Reset all of the counts to 0
-        for count in self.message_count.values_mut() {
-            *count = 0;
-        }
-        self.message_count.extend(new.message_count);
-    }
-
-    fn show(&self) -> Result<()> {
-        let mut tw = TabWriter::new(io::stdout());
-        let time_string = time_string_from_ts_sec(self.ts_sec)?;
-        write!(tw, "{}\n", time_string)?;
-        let max_key_length = self
-            .message_count
-            .keys()
-            .map(|k| k.len())
-            .max()
-            .unwrap_or(10);
-        let mut pairs: Vec<(_, _)> = self.message_count.iter().collect();
-        pairs.sort_by(|a, b| b.1.cmp(a.1));
-        for (key, value) in &pairs {
-            write!(
-                tw,
-                "{key:max_key_length$}: {value}\n",
-                key = key,
-                value = value
-            )?;
-        }
-        write!(tw, "==================================================")?;
-        tw.flush()?;
-        Ok(())
-    }
-}
-
-fn time_string_from_ts_sec(ts_sec: u64) -> Result<String> {
-    let date_time: DateTime<Utc> = DateTime::from_timestamp(ts_sec.try_into()?, 0)
-        .ok_or(anyhow::anyhow!("failed to pase datetime from {}", ts_sec))?;
-    Ok(date_time.to_rfc2822())
-}
-
 impl TopCommand {
     pub async fn run(self) -> anyhow::Result<()> {
-        let mut system = hyperactor_multiprocess::System::new(self.system_addr.clone().into());
+        color_eyre::install().unwrap();
+        let mut terminal = ratatui::init();
+        let mut system = hyperactor_multiprocess::System::new(self.system_addr.into());
         let client = system.attach().await.expect("failed to attach to system");
+
         let snapshot = SYSTEM_ACTOR_REF
             .snapshot(&client, SystemSnapshotFilter::all())
             .await
             .expect("failed to snapshot system");
         let execution_id = snapshot.execution_id;
-        println!("Running top for execution_id: {}", &execution_id);
 
         let user = env::var("USER").context("Failed to get USER environment variable")?;
         let fb = fbinit::expect_init();
         let client = make_RockfortExpress_srclient!(fb)?;
         let employee_client = EmployeeClient::new(fb)?;
-
         let fbid = employee_client
             .get_fbid_from_unixname(Unixname(user.clone()))
             .await?
             .ok_or_else(|| anyhow::anyhow!("Couldn't get FBID for user {}", user))?
             .0 as i64;
-        let mut ts = 0;
 
-        let mut current_state = State::default();
-        loop {
-            let new_ts = max_ts_sec(client.clone(), &user, fbid, &execution_id).await?;
-            if new_ts != ts {
-                ts = new_ts;
-                let new_state = state(client.clone(), &user, fbid, &execution_id, ts).await?;
-                current_state.update(new_state, new_ts);
-                if let Err(e) = current_state.show() {
-                    tracing::error!("error showing statue: {}", e);
-                }
-            }
-            RealClock.sleep(Duration::from_secs(5)).await;
-        }
+        let mut app = App::new(execution_id.clone());
+        let fetch_actors = async || {
+            fetch_actors_from_scuba(client.clone(), user.as_str(), execution_id.as_str(), fbid)
+                .await
+        };
+        let result = app.run(&mut terminal, fetch_actors).await;
+
+        ratatui::restore();
+        result
     }
+}
+
+async fn fetch_actors_from_scuba(
+    client: Arc<dyn RockfortExpress + Send + Sync>,
+    user: &str,
+    execution_id: &str,
+    fbid: i64,
+) -> Result<Vec<ActorInfo>> {
+    let ts = max_ts_sec(client.clone(), user, fbid, execution_id).await?;
+
+    let query = format!(
+        "
+        SELECT
+            dest_actor_id, SUM(sum)
+        FROM monarch_metrics
+        WHERE
+            execution_id = '{}'
+            AND dest_actor_id is not NULL
+            AND time={}
+        GROUP BY dest_actor_id
+        ",
+        execution_id, ts,
+    );
+    let result = client
+        .querySQL(
+            &rfe_thrift::QueryCommon {
+                user_name: Some(user.to_string()),
+                user_id: Some(fbid),
+                ..Default::default()
+            },
+            &query,
+        )
+        .await?;
+
+    let new_actors = scuba_result_to_message_count(result)?;
+
+    let mut actors = new_actors
+        .into_iter()
+        .map(|(actor_id, message_count)| ActorInfo {
+            actor_id,
+            message_count,
+        })
+        .collect::<Vec<_>>();
+
+    actors.sort_by(|a, b| b.message_count.cmp(&a.message_count));
+
+    Ok(actors)
 }
 
 /// find out the max time of a scuba log
@@ -152,45 +139,6 @@ async fn max_ts_sec(
         ))?
         .parse::<u64>()?;
     Ok(ts_sec)
-}
-
-/// Fetch the state at specific ts.
-async fn state(
-    client: Arc<dyn RockfortExpress + Send + Sync>,
-    user: &str,
-    user_id: i64,
-    execution_id: &str,
-    ts_sec: u64,
-) -> Result<State> {
-    let query = format!(
-        "
-        SELECT
-            dest_actor_id, SUM(sum)
-        FROM monarch_metrics
-        WHERE
-            execution_id = '{}'
-            AND dest_actor_id is not NULL
-            AND time={}
-        GROUP BY dest_actor_id
-        ",
-        execution_id, ts_sec,
-    );
-    let result = client
-        .querySQL(
-            &rfe_thrift::QueryCommon {
-                user_name: Some(user.to_string()),
-                user_id: Some(user_id),
-                ..Default::default()
-            },
-            &query,
-        )
-        .await?;
-    let message_count = scuba_result_to_message_count(result)?;
-    let ret = State {
-        ts_sec,
-        message_count,
-    };
-    Ok(ret)
 }
 
 fn scuba_result_to_message_count(result: SQLQueryResult) -> Result<HashMap<String, usize>> {
