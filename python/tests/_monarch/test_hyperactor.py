@@ -8,6 +8,7 @@ import sys
 import time
 
 import monarch
+import pytest
 
 from monarch._monarch.hyperactor import Actor
 
@@ -94,6 +95,9 @@ async def test_actor_mesh() -> None:
     assert isinstance(actor_mesh.client, hyperactor.Mailbox)
 
 
+# oss_skip: hangs when run through pytest but not when run through buck
+# pyre-ignore[56]
+@pytest.mark.oss_skip
 async def test_proc_mesh_process_allocator() -> None:
     spec = hyperactor.AllocSpec(hyperactor.AllocConstraints(), replica=2)
     env = {}

@@ -16,8 +16,13 @@ import subprocess
 import time
 import unittest
 
+import pytest
 
+
+# oss_skip: importlib not pulling resource correctly in git CI, needs to be revisited
 class TestSignalSafeBlockOn(unittest.TestCase):
+    # pyre-ignore[56]
+    @pytest.mark.oss_skip
     def test_sigint_handling(self) -> None:
         """
         Test that a process using signal_safe_block_on can be interrupted with SIGINT.

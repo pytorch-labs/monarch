@@ -4,6 +4,8 @@ from contextlib import contextmanager
 from typing import Generator, Optional
 from unittest import TestCase
 
+import pytest
+
 import torch
 from monarch import fetch_shard
 from monarch.common.device_mesh import DeviceMesh
@@ -34,6 +36,8 @@ def local_sim_mesh(
         raise
 
 
+# oss_skip: importlib not pulling resource correctly in git CI, needs to be revisited
+@pytest.mark.oss_skip
 class TestSimBackend(TestCase):
     def test_local_mesh_setup(self):
         with local_sim_mesh():

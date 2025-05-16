@@ -1,6 +1,8 @@
 # pyre-unsafe
 import unittest
 
+import pytest
+
 import torch
 
 from monarch.common import messages
@@ -89,6 +91,7 @@ class TestRuntimeEstimator(unittest.TestCase):
         self.assertEqual(runtime.get_runtime("kernel_launch"), 8_000)
         self.assertEqual(runtime.get_runtime("wait_event"), 9_000)
 
+    @pytest.mark.oss_skip
     def test_runtime_profiler(self) -> None:
         m1 = torch.rand(1000, 2000).cuda()
         m2 = torch.rand(2000, 4000).cuda()
