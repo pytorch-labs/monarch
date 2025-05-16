@@ -20,6 +20,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use std::time::SystemTime;
 
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -127,6 +128,24 @@ pub struct ActorLedgerSnapshot {
     pub roots: HashMap<ActorId, ActorTreeSnapshot>,
 }
 
+/// A event for one row of log.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Event {
+    /// Time when the event happend.
+    pub time: SystemTime,
+    /// The payload of the event.
+    pub fields: Vec<(String, recorder::Value)>,
+}
+
+impl From<recorder::Event> for Event {
+    fn from(event: recorder::Event) -> Event {
+        Event {
+            time: event.time,
+            fields: event.fields(),
+        }
+    }
+}
+
 /// A snapshot of an actor tree (rooted at a pid=0 actor).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ActorTreeSnapshot {
@@ -151,7 +170,7 @@ pub struct ActorTreeSnapshot {
     pub children: HashMap<Index, ActorTreeSnapshot>,
 
     /// Recent events emitted by the actor's logging.
-    pub events: Vec<Vec<(String, recorder::Value)>>,
+    pub events: Vec<Event>,
 
     /// The current set of spans entered by the actor. These should be active
     /// only while the actor is entered in a handler.
@@ -258,7 +277,7 @@ impl ActorLedger {
                 .recording
                 .tail()
                 .into_iter()
-                .map(|event| event.fields())
+                .map(Event::from)
                 .collect(),
             spans: cell
                 .state

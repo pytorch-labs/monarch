@@ -2,6 +2,8 @@ use std::io;
 use std::io::Write;
 
 use anyhow::Context;
+use chrono::DateTime;
+use chrono::Local;
 #[cfg(not(fbcode_build))]
 use hyper::utils::system_address::SystemAddr;
 use hyperactor::ActorId;
@@ -138,11 +140,13 @@ impl ShowCommand {
                 write!(tw, "events:\n")?;
                 for event in tree.events.iter() {
                     let map: serde_json::Map<_, _> = event
+                        .fields
                         .iter()
                         .map(|(key, value)| (key.clone(), value.to_json()))
                         .collect();
+                    let dt: DateTime<Local> = event.time.into();
 
-                    write!(tw, "\t{}\n", serde_json::to_string(&map)?)?;
+                    write!(tw, "{}\t{}\n", dt, serde_json::to_string(&map)?)?;
                 }
                 write!(tw, "spans:\n")?;
                 for spans in tree.spans.iter() {
