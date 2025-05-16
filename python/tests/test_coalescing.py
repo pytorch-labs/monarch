@@ -49,7 +49,7 @@ def setUpModule():
 
 def tearDownModule():
     global local
-    local.__exit__()
+    local.__exit__(None, None, None)
 
 
 class TestCoalescing(TestCase):
@@ -390,9 +390,9 @@ class TestCoalescing(TestCase):
                 b.add(4)
 
     def test_across_mesh(self):
-        with self.local_device_mesh(1, 2) as m:
-            m0 = m(gpu=0)
-            m1 = m(gpu=1)
+        with self.local_device_mesh(2, 1) as m:
+            m0 = m(host=0)
+            m1 = m(host=1)
 
             @compile
             def foo(a, b):
