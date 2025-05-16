@@ -102,7 +102,7 @@ impl PyMastAllocator {
     }
 }
 
-pub fn init_pymodule(module: &Bound<'_, PyModule>) -> PyResult<()> {
+pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyMastAllocatorConfig>()?;
     module.add_class::<PyMastAllocator>()?;
     Ok(())

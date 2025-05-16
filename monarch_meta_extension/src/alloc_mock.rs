@@ -108,7 +108,7 @@ impl PyMockMast {
     }
 }
 
-pub fn init_pymodule(module: &Bound<'_, PyModule>) -> PyResult<()> {
+pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyMockMast>()?;
     Ok(())
 }

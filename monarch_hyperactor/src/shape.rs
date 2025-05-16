@@ -1,3 +1,4 @@
+use hyperactor_extension::python_registration;
 use ndslice::Shape;
 use ndslice::Slice;
 use pyo3::exceptions::PyValueError;
@@ -6,7 +7,6 @@ use pyo3::types::PyBytes;
 use pyo3::types::PyDict;
 
 use crate::ndslice::PySlice;
-use crate::python_registration;
 
 #[pyclass(name = "Shape", module = "monarch._monarch.shape", frozen)]
 pub struct PyShape {
@@ -167,8 +167,8 @@ impl PyPoint {
     }
 }
 
-pub fn init_pymodule(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    let shape_mod = python_registration::add_new_module(module, "shape")?;
+pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    let shape_mod = python_registration::get_or_add_new_module(module, "shape")?;
     shape_mod.add_class::<PyShape>()?;
     shape_mod.add_class::<PySlice>()?;
     shape_mod.add_class::<PyPoint>()?;

@@ -121,9 +121,9 @@ impl Send {
     }
 }
 
-pub(crate) fn init_pymodule(module: &Bound<'_, PyModule>) -> PyResult<()> {
+pub(crate) fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     let controller_mod =
-        monarch_hyperactor::python_registration::add_new_module(module, "controller")?;
+        hyperactor_extension::python_registration::get_or_add_new_module(module, "controller")?;
 
     controller_mod.add_class::<Node>()?;
     controller_mod.add_class::<Send>()?;

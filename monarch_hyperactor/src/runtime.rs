@@ -6,13 +6,12 @@ use std::time::Duration;
 use anyhow::Result;
 use anyhow::anyhow;
 use anyhow::ensure;
+use hyperactor_extension::python_registration;
 use pyo3::PyResult;
 use pyo3::Python;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::PyAnyMethods;
-
-use crate::python_registration;
 
 pub fn get_tokio_runtime() -> &'static tokio::runtime::Runtime {
     static INSTANCE: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -117,8 +116,8 @@ pub fn sleep_indefinitely_for_unit_tests(py: Python) -> PyResult<()> {
 }
 
 /// Initialize the runtime module and expose Python functions
-pub fn init_pymodule(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    let runtime_mod = python_registration::add_new_module(module, "runtime")?;
+pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    let runtime_mod = python_registration::get_or_add_new_module(module, "runtime")?;
 
     let sleep_indefinitely_fn =
         wrap_pyfunction_bound!(sleep_indefinitely_for_unit_tests, module.py())?;

@@ -8,7 +8,6 @@ pub mod mailbox;
 pub mod ndslice;
 pub mod proc;
 pub mod proc_mesh;
-pub mod python_registration;
 pub mod runtime;
 pub mod shape;
 
@@ -18,14 +17,16 @@ use pyo3::prelude::*;
 use pyo3::types::PyModule;
 use pyo3::wrap_pyfunction;
 
-pub fn init_pymodule(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    let hyperactor_mod = python_registration::add_new_module(module, "hyperactor")?;
+pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    let hyperactor_mod =
+        hyperactor_extension::python_registration::get_or_add_new_module(module, "hyperactor")?;
 
-    hyperactor_mod.add_function(wrap_pyfunction!(proc::init_proc, &hyperactor_mod)?)?;
     hyperactor_mod.add_function(wrap_pyfunction!(
         bootstrap::bootstrap_main,
         &hyperactor_mod
     )?)?;
+
+    hyperactor_mod.add_function(wrap_pyfunction!(proc::init_proc, &hyperactor_mod)?)?;
 
     hyperactor_mod.add_class::<proc::PyProc>()?;
     hyperactor_mod.add_class::<proc::PyActorId>()?;
@@ -48,11 +49,10 @@ pub fn init_pymodule(module: &Bound<'_, PyModule>) -> PyResult<()> {
     hyperactor_mod.add_class::<alloc::PyLocalAllocator>()?;
 
     hyperactor_mod.add_class::<proc_mesh::PyProcMesh>()?;
-    hyperactor_mod.add_class::<actor_mesh::PythonActorMesh>()?;
-    hyperactor_mod.add_class::<shape::PyShape>()?;
 
-    // Register common types
-    hyperactor_extension::init_pymodule(&hyperactor_mod)?;
+    hyperactor_mod.add_class::<actor_mesh::PythonActorMesh>()?;
+
+    hyperactor_mod.add_class::<shape::PyShape>()?;
 
     Ok(())
 }

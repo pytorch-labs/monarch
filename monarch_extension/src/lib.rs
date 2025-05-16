@@ -14,14 +14,15 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
     ::hyperactor::initialize();
     monarch_hyperactor::runtime::initialize(module.py())?;
 
-    monarch_hyperactor::shape::init_pymodule(module)?;
-    client::init_pymodule(module)?;
-    worker::init_pymodule(module)?;
-    controller::init_pymodule(module)?;
-    monarch_hyperactor::init_pymodule(module)?;
-    monarch_hyperactor::runtime::init_pymodule(module)?;
-    debugger::init_pymodule(module)?;
-    simulator_client::init_pymodule(module)?;
+    monarch_hyperactor::shape::register_python_bindings(module)?;
+    client::register_python_bindings(module)?;
+    worker::register_python_bindings(module)?;
+    controller::register_python_bindings(module)?;
+    monarch_hyperactor::register_python_bindings(module)?;
+    monarch_hyperactor::runtime::register_python_bindings(module)?;
+    debugger::register_python_bindings(module)?;
+    simulator_client::register_python_bindings(module)?;
+    hyperactor_extension::register_python_bindings(module)?;
 
     Ok(())
 }

@@ -1346,8 +1346,9 @@ fn worker_main(py: Python<'_>) -> PyResult<()> {
     })
 }
 
-pub(crate) fn init_pymodule(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    let worker_mod = monarch_hyperactor::python_registration::add_new_module(module, "worker")?;
+pub(crate) fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    let worker_mod =
+        hyperactor_extension::python_registration::get_or_add_new_module(module, "worker")?;
 
     worker_mod.add_class::<PyWorkerMessage>()?;
     worker_mod.add_class::<BackendNetworkInit>()?;

@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use hyperactor::ActorRef;
+use hyperactor_extension::python_registration;
 use monarch_hyperactor::proc::InstanceWrapper;
 use monarch_hyperactor::proc::PyProc;
 use monarch_hyperactor::proc::PySerialized;
-use monarch_hyperactor::python_registration;
 use monarch_hyperactor::runtime::signal_safe_block_on;
 use monarch_messages::controller::ControllerActor;
 use monarch_messages::controller::ControllerMessageClient;
@@ -124,8 +124,8 @@ impl PdbActor {
     }
 }
 
-pub fn init_pymodule(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    let debugger = python_registration::add_new_module(module, "debugger")?;
+pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    let debugger = python_registration::get_or_add_new_module(module, "debugger")?;
 
     debugger.add_class::<PdbActor>()?;
     debugger.add_class::<monarch_messages::debugger::DebuggerAction>()?;

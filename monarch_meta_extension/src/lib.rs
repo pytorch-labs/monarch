@@ -16,8 +16,8 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
     ::hyperactor::initialize();
 
     let hyperactor_mod = PyModule::new_bound(module.py(), "hyperactor_meta")?;
-    alloc::init_pymodule(&hyperactor_mod)?;
-    alloc_mock::init_pymodule(&hyperactor_mod)?;
+    alloc::register_python_bindings(&hyperactor_mod)?;
+    alloc_mock::register_python_bindings(&hyperactor_mod)?;
 
     module.add_submodule(&hyperactor_mod)?;
     Ok(())

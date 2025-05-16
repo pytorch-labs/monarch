@@ -18,6 +18,7 @@ anyhow = "1.0.95"
 clap = { version = "4.5.38", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 controller = { path = "../controller" }
 hyperactor = { path = "../hyperactor" }
+hyperactor_extension = { path = "../hyperactor_extension" }
 hyperactor_multiprocess = { path = "../hyperactor_multiprocess" }
 monarch_hyperactor = { path = "../monarch_hyperactor" }
 monarch_messages = { path = "../monarch_messages" }
