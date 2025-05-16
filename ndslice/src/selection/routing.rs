@@ -387,7 +387,7 @@ impl RoutingFrame {
                 ControlFlow::Continue(())
             }
 
-            Selection::Range(ref range, inner) => {
+            Selection::Range(range, inner) => {
                 let size = self.slice.sizes()[self.dim];
                 let (min, max, step) = range.resolve(size);
 
