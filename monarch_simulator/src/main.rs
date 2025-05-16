@@ -4,7 +4,7 @@ use std::process::ExitCode;
 use anyhow::Result;
 use clap::Parser;
 use hyperactor::channel::ChannelAddr;
-use monarch_simulator_lib::bootstrap::boostrap;
+use monarch_simulator_lib::bootstrap::bootstrap;
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -33,7 +33,7 @@ async fn main() -> Result<ExitCode> {
     let system_addr = args.system_addr.clone();
     tracing::info!("starting Monarch simulation");
 
-    let operational_listener_handle = boostrap(system_addr).await?;
+    let operational_listener_handle = bootstrap(system_addr, 1).await?;
 
     operational_listener_handle
         .await

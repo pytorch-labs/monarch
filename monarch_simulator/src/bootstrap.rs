@@ -8,6 +8,7 @@ use hyperactor::ActorHandle;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::ProcId;
+use hyperactor::WorldId;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::sim::SimAddr;
 use hyperactor::channel::sim::operational_message_receiver;
@@ -27,8 +28,6 @@ use torch_sys::Layout;
 use torch_sys::ScalarType;
 
 use crate::SimulatorError;
-use crate::controller::SimControllerActor;
-use crate::controller::SimControllerParams;
 use crate::simulator::Simulator;
 use crate::worker::Fabric;
 use crate::worker::MockWorkerParams;
@@ -92,7 +91,8 @@ pub async fn spawn_system(system_addr: ChannelAddr) -> Result<ServerHandle> {
 pub async fn spawn_controller(
     system_addr: ChannelAddr,
     controller_actor_id: ActorId,
-    worker_actor_id: ActorId,
+    worker_world_id: WorldId,
+    world_size: usize,
 ) -> anyhow::Result<ActorHandle<ProcActor>> {
     let (bootstrap_addr, listen_addr) = bootstrap_and_listen_address(&system_addr, true)?;
     tracing::info!(
@@ -101,8 +101,7 @@ pub async fn spawn_controller(
         &bootstrap_addr
     );
 
-    let worker_world_id = worker_actor_id.proc_id().world_id();
-    let worker_name = worker_actor_id.name();
+    let worker_name = "worker";
     let supervision_query_interval = Duration::from_secs(2);
     let supervision_update_interval = Duration::from_secs(2);
     let worker_progress_check_interval = Duration::from_secs(10);
@@ -112,7 +111,7 @@ pub async fn spawn_controller(
         bootstrap_addr,
         Some(listen_addr),
         controller_actor_id,
-        1, /* num_procs */
+        world_size,
         worker_world_id.clone(),
         worker_name.to_string(),
         supervision_query_interval,
@@ -128,46 +127,19 @@ pub async fn spawn_controller(
     Ok(proc_actor_handle)
 }
 
-// TODO(lky): delete spawn_sim_controller.
-/// Spawns the sim controller proc and actor.
-#[tracing::instrument("spawn_sim_controller")]
-pub async fn spawn_sim_controller(
-    system_addr: ChannelAddr,
-    controller_actor_id: ActorId,
-    worker_actor_id: ActorId,
-) -> anyhow::Result<ActorHandle<ProcActor>> {
-    let (bootstrap_addr, listen_addr) = bootstrap_and_listen_address(&system_addr, true)?;
-    tracing::info!(
-        "controller listen addr: {}, bootstrap addr: {}",
-        &listen_addr,
-        &bootstrap_addr
-    );
-
-    let (proc_actor_handle, controller_actor_ref) = SimControllerActor::bootstrap(
-        controller_actor_id,
-        listen_addr,
-        bootstrap_addr,
-        SimControllerParams::new(worker_actor_id),
-        Duration::from_secs(1),
-    )
-    .await?;
-    tracing::info!(
-        "controller starts with id: {}",
-        controller_actor_ref.actor_id()
-    );
-
-    Ok(proc_actor_handle)
-}
-
 /// Spawns workers. Right now, only one mocked worker is spawned. TODO: spawn multiple workers.
 #[tracing::instrument("spawn_worker")]
 pub async fn spawn_sim_worker(
     system_addr: ChannelAddr,
-    worker_actor_id: ActorId,
+    worker_world_id: WorldId,
     controller_actor_id: ActorId,
+    world_size: usize,
+    rank: usize,
 ) -> anyhow::Result<ActorHandle<ProcActor>> {
     let (bootstrap_addr, listen_addr) = bootstrap_and_listen_address(&system_addr, true)?;
-    let world_id = worker_actor_id.proc_id().world_id();
+    let worker_proc_id = ProcId(worker_world_id.clone(), rank);
+    let worker_actor_id = ActorId(worker_proc_id.clone(), "worker".into(), 0);
+
     tracing::info!(
         "worker {} listen addr: {}, bootstrap addr: {}",
         &worker_actor_id,
@@ -175,11 +147,10 @@ pub async fn spawn_sim_worker(
         &bootstrap_addr
     );
 
-    let supervision_update_interval = Duration::from_secs(1);
-    let worker_proc_id = worker_actor_id.proc_id();
+    let supervision_update_interval = Duration::from_secs(10);
     let bootstrap = ProcActor::bootstrap(
-        worker_proc_id.clone(),
-        world_id.clone(),
+        worker_proc_id,
+        worker_world_id,
         listen_addr,
         bootstrap_addr,
         supervision_update_interval,
@@ -218,14 +189,14 @@ pub async fn spawn_sim_worker(
 /// Bootstrap the simulation. Spawns the system, controllers, and workers.
 /// Args:
 ///    system_addr: The address of the system actor.
-pub async fn boostrap(system_addr: ChannelAddr) -> Result<JoinHandle<()>> {
+pub async fn bootstrap(system_addr: ChannelAddr, world_size: usize) -> Result<JoinHandle<()>> {
     // TODO: enable supervision events.
     let mut operational_message_rx = operational_message_receiver().await?;
     let simulator = Arc::new(Mutex::new(Simulator::new(system_addr.clone()).await?));
     let operational_listener_handle = {
         let simulator = simulator.clone();
         tokio::spawn(async move {
-            handle_operational_message(&mut operational_message_rx, simulator).await
+            handle_operational_message(&mut operational_message_rx, simulator, world_size).await
         })
     };
 
@@ -235,6 +206,7 @@ pub async fn boostrap(system_addr: ChannelAddr) -> Result<JoinHandle<()>> {
 async fn handle_operational_message(
     operational_message_rx: &mut UnboundedReceiver<OperationalMessage>,
     simulator: Arc<Mutex<Simulator>>,
+    world_size: usize,
 ) {
     while let Some(msg) = operational_message_rx.recv().await {
         tracing::info!("received operational message: {:?}", msg);
@@ -244,11 +216,10 @@ async fn handle_operational_message(
                 controller_actor_id,
                 worker_world,
             }) => {
-                let worker_actor_id = ActorId(ProcId(worker_world, 0), "root".into(), 0);
                 if let Err(e) = simulator
                     .lock()
                     .await
-                    .spawn_mesh(system_addr, controller_actor_id, worker_actor_id)
+                    .spawn_mesh(system_addr, controller_actor_id, worker_world, world_size)
                     .await
                 {
                     tracing::error!("failed to spawn mesh: {:?}", e);

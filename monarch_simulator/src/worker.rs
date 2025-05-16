@@ -243,7 +243,7 @@ impl WorkerMessageHandler for WorkerActor {
         params: CallFunctionParams,
     ) -> Result<()> {
         tracing::info!("worker received call_function: {:#?}", &params);
-        match params.function {
+        match &params.function {
             ResolvableFunction::FunctionPath(FunctionPath { ref path }) => {
                 tracing::info!("function path: {:#?}", &path);
                 if path == PAFT_RECONFIG_FTAR_FCN {
@@ -281,7 +281,7 @@ impl WorkerMessageHandler for WorkerActor {
                 self.env.insert(result, self.mock_tensor()?);
             }
         }
-        match params.function.as_torch_op() {
+        match &params.function.as_torch_op() {
             Some((op, _)) => {
                 self.call_torch_op(op, params.args, params.kwargs, this.self_id().clone())
                     .await;
@@ -664,7 +664,7 @@ impl WorkerActor {
 
     async fn call_torch_op(
         &self,
-        op: String,
+        op: &str,
         args: Vec<WireValue>,
         kwargs: HashMap<String, WireValue>,
         actor_id: ActorId,
@@ -691,7 +691,7 @@ impl WorkerActor {
 
         HANDLE
             .send_event(TorchOpEvent::new(
-                op.clone(),
+                op.to_string(),
                 tx.bind(),
                 mailbox,
                 args_string,

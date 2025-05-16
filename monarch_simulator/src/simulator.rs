@@ -6,6 +6,7 @@ use futures::FutureExt;
 use futures::future::BoxFuture;
 use hyperactor::ActorHandle;
 use hyperactor::ActorId;
+use hyperactor::WorldId;
 use hyperactor::channel::ChannelAddr;
 use hyperactor_multiprocess::proc_actor::ProcActor;
 use hyperactor_multiprocess::system::ServerHandle;
@@ -18,8 +19,8 @@ use crate::bootstrap::spawn_system;
 /// The simulator manages all of the meshes and the system handle.
 #[derive(Debug)]
 pub struct Simulator {
-    /// A map from world name to actor handle.
-    worlds: HashMap<String, ActorHandle<ProcActor>>,
+    /// A map from world name to actor handles in that world.
+    worlds: HashMap<String, Vec<ActorHandle<ProcActor>>>,
     system_handle: ServerHandle,
 }
 
@@ -35,31 +36,48 @@ impl Simulator {
         &mut self,
         system_addr: ChannelAddr,
         controller_actor_id: ActorId,
-        worker_actor_id: ActorId,
+        worker_world_id: WorldId,
+        world_size: usize,
     ) -> Result<()> {
         let controller = spawn_controller(
             system_addr.clone(),
             controller_actor_id.clone(),
-            worker_actor_id.clone(),
+            worker_world_id.clone(),
+            world_size,
         )
         .await?;
-        self.worlds
-            .insert(controller_actor_id.world_name().to_string(), controller);
-        let worker =
-            spawn_sim_worker(system_addr, worker_actor_id.clone(), controller_actor_id).await?;
-        self.worlds
-            .insert(worker_actor_id.world_name().to_string(), worker);
+        self.worlds.insert(
+            controller_actor_id.world_name().to_string(),
+            vec![controller],
+        );
+
+        for rank in 0..world_size {
+            let worker = spawn_sim_worker(
+                system_addr.clone(),
+                worker_world_id.clone(),
+                controller_actor_id.clone(),
+                world_size,
+                rank,
+            )
+            .await?;
+            self.worlds
+                .entry(worker_world_id.name().to_string())
+                .or_insert(vec![])
+                .push(worker);
+        }
         Ok(())
     }
 
     /// Kills the actors within the given world.
     /// Returns error if there's no world found in the current simulator.
     pub fn kill_world(&mut self, world_name: &str) -> Result<(), SimulatorError> {
-        let actor = self
+        let actors = self
             .worlds
             .remove(world_name)
             .ok_or(SimulatorError::WorldNotFound(world_name.to_string()))?;
-        actor.drain_and_stop()?;
+        for actor in actors {
+            actor.drain_and_stop()?;
+        }
         Ok(())
     }
 }
@@ -73,8 +91,10 @@ impl IntoFuture for Simulator {
     fn into_future(self) -> Self::IntoFuture {
         let future = async move {
             self.system_handle.await;
-            for actor in self.worlds.into_values() {
-                actor.await;
+            for actors in self.worlds.into_values() {
+                for actor in actors {
+                    actor.await;
+                }
             }
         };
 
@@ -120,7 +140,7 @@ mod tests {
                 0,
             ));
             worker_actor_ids.push(ActorId(
-                ProcId(WorldId(worker_world_name), 0),
+                ProcId(WorldId(worker_world_name.clone()), 0),
                 "root".into(),
                 0,
             ));
@@ -128,7 +148,8 @@ mod tests {
                 .spawn_mesh(
                     system_addr.clone(),
                     controller_actor_ids.last().unwrap().clone(),
-                    worker_actor_ids.last().unwrap().clone(),
+                    WorldId(worker_world_name),
+                    1,
                 )
                 .await
                 .unwrap();
@@ -136,7 +157,7 @@ mod tests {
 
         assert_eq!(simulator.worlds.len(), n_meshes * 2);
         let world_name = controller_actor_ids[0].world_name();
-        let controller_actor_handle = simulator.worlds.get(world_name).unwrap();
+        let controller_actor_handle = simulator.worlds.get(world_name).unwrap().first().unwrap();
         assert_eq!(controller_actor_handle.actor_id().world_name(), world_name);
 
         simulator.kill_world(world_name).unwrap();
