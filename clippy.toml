@@ -1,0 +1,6 @@
+disallowed-methods = [
+    { path = "tokio::time::sleep", reason = "use `hyperactor::clock::Clock::sleep` instead." },
+    { path = "std::thread::sleep", reason = "use `hyperactor::clock::Clock::sleep` instead." },
+    { path = "tokio::time::Instant::now", reason = "use `hyperactor::clock::Clock::now` instead." },
+    { path = "std::time::SystemTime::now", reason = "use `hyperactor::clock::Clock::system_time_now` instead." },
+]

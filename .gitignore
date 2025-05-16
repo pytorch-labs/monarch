@@ -1,0 +1,17 @@
+syntax: glob
+
+python/**/*.so
+python/**/*.json
+python/**/*.html
+python/**/*.pkl
+python/monarch.egg-info/*
+*.egg
+build/*
+dist/*
+monarch.egg-info/*
+python/monarch/monarch_controller
+
+.ipynb_checkpoints
+
+# Rust stuff
+target/

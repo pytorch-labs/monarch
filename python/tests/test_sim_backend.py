@@ -1,0 +1,44 @@
+# pyre-unsafe
+
+from contextlib import contextmanager
+from typing import Generator, Optional
+from unittest import TestCase
+
+import torch
+from monarch import fetch_shard
+from monarch.common.device_mesh import DeviceMesh
+from monarch.sim_mesh import sim_mesh
+
+
+@contextmanager
+def local_sim_mesh(
+    hosts: int = 1,
+    # TODO: support multiple gpus in a mesh.
+    gpu_per_host: int = 1,
+    activate: bool = True,
+    proxy_addr: Optional[str] = None,
+) -> Generator[DeviceMesh, None, None]:
+    dms = sim_mesh(
+        n_meshes=1, hosts=hosts, gpus_per_host=gpu_per_host, proxy_addr=proxy_addr
+    )
+    dm = dms[0]
+    try:
+        if activate:
+            with dm.activate():
+                yield dm
+        else:
+            yield dm
+        dm.exit()
+    except Exception:
+        dm.client._shutdown = True
+        raise
+
+
+class TestSimBackend(TestCase):
+    def test_local_mesh_setup(self):
+        with local_sim_mesh():
+            t = torch.zeros(3, 4)
+            t.add_(1)
+            local_t = fetch_shard(t).result()
+        # consider support specifying the return value in the mock worker.
+        assert local_t is not None

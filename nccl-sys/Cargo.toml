@@ -1,0 +1,16 @@
+[package]
+name = "nccl-sys"
+version = "0.0.0"
+authors = ["Facebook"]
+edition = "2021"
+license = "MIT"
+links = "nccl"
+
+[dependencies]
+cxx = "1.0.119"
+serde = { version = "1.0.185", features = ["derive", "rc"] }
+
+[build-dependencies]
+bindgen = "0.70.1"
+which = "6.0.3"
+glob = "0.3.1"

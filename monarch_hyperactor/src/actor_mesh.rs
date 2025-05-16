@@ -1,0 +1,49 @@
+use std::sync::Arc;
+
+use hyperactor::ActorRef;
+use hyperactor_mesh::ActorMesh;
+use hyperactor_mesh::Mesh;
+use pyo3::exceptions::PyException;
+use pyo3::prelude::*;
+
+use crate::actor::PythonActor;
+use crate::actor::PythonMessage;
+use crate::mailbox::PyMailbox;
+use crate::proc::PyActorId;
+use crate::shape::PyShape;
+
+#[pyclass(name = "PythonActorMesh", module = "monarch._monarch.hyperactor")]
+pub struct PythonActorMesh {
+    pub(super) inner: Arc<ActorMesh<'static, PythonActor>>,
+    pub(super) client: PyMailbox,
+}
+
+#[pymethods]
+impl PythonActorMesh {
+    fn cast(&self, message: &PythonMessage) -> PyResult<()> {
+        use ndslice::selection::dsl::*;
+        self.inner
+            .cast(all(true_()), message.clone())
+            .map_err(|err| PyException::new_err(err.to_string()))?;
+        Ok(())
+    }
+
+    // Consider defining a "PythonActorRef", which carries specifically
+    // a reference to python message actors.
+    fn get(&self, rank: usize) -> Option<PyActorId> {
+        self.inner
+            .get(rank)
+            .map(ActorRef::into_actor_id)
+            .map(PyActorId::from)
+    }
+
+    #[getter]
+    fn client(&self) -> PyMailbox {
+        self.client.clone()
+    }
+
+    #[getter]
+    fn shape(&self) -> PyShape {
+        PyShape::from(self.inner.shape().clone())
+    }
+}

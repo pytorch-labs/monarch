@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools", "torch", "setuptools-rust", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "monarch"
+authors = [
+    {email = "oncall+monarch@xmail.facebook.com"},
+]
+version = "1.0"
+readme = "README.md"
+description = "Monarch: Single controller library"
+dependencies = ["torch", "pyzmq", "requests", "numpy", "pyre-extensions", "pytest-timeout", "cloudpickle"]
+requires-python = ">= 3.10"

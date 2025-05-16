@@ -1,0 +1,430 @@
+#![allow(dead_code)] // some things currently used only in tests
+
+use std::collections::HashMap;
+use std::future::Future;
+use std::os::unix::process::ExitStatusExt;
+use std::process::ExitStatus;
+use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::OnceLock;
+
+use async_trait::async_trait;
+use enum_as_inner::EnumAsInner;
+use hyperactor::ProcId;
+use hyperactor::WorldId;
+use hyperactor::channel;
+use hyperactor::channel::ChannelAddr;
+use hyperactor::channel::ChannelError;
+use hyperactor::channel::ChannelTransport;
+use hyperactor::channel::ChannelTx;
+use hyperactor::channel::Rx;
+use hyperactor::channel::Tx;
+use hyperactor::channel::TxStatus;
+use hyperactor::sync::monitor;
+use ndslice::Shape;
+use tokio::io;
+use tokio::process::Command;
+use tokio::sync::Mutex;
+use tokio::task::JoinSet;
+
+use super::Alloc;
+use super::AllocSpec;
+use super::Allocator;
+use super::AllocatorError;
+use super::ProcState;
+use super::ProcStopReason;
+use super::logtailer::LogTailer;
+use crate::assign::Ranks;
+use crate::bootstrap;
+use crate::bootstrap::Allocator2Process;
+use crate::bootstrap::Process2Allocator;
+use crate::bootstrap::Process2AllocatorMessage;
+use crate::shortuuid::ShortUuid;
+
+/// The maximum number of log lines to tail keep for managed processes.
+const MAX_TAIL_LOG_LINES: usize = 100;
+
+/// An allocator that allocates procs by executing managed (local)
+/// processes. ProcessAllocator is configured with a [`Command`] (template)
+/// to spawn external processes. These processes must invoke [`hyperactor_mesh::bootstrap`] or
+/// [`hyperactor_mesh::bootstrap_or_die`], which is responsible for coordinating
+/// with the allocator.
+///
+/// The process allocator tees the stdout and stderr of each proc to the parent process.
+pub struct ProcessAllocator {
+    cmd: Arc<Mutex<Command>>,
+}
+
+impl ProcessAllocator {
+    /// Create a new allocator using the provided command (template).
+    /// The command is used to spawn child processes that host procs.
+    /// The binary should yield control to [`hyperactor_mesh::bootstrap`]
+    /// or [`hyperactor_mesh::bootstrap_or_die`] or after initialization.
+    pub fn new(cmd: Command) -> Self {
+        Self {
+            cmd: Arc::new(Mutex::new(cmd)),
+        }
+    }
+}
+
+#[async_trait]
+impl Allocator for ProcessAllocator {
+    type Alloc = ProcessAlloc;
+
+    async fn allocate(&mut self, spec: AllocSpec) -> Result<ProcessAlloc, AllocatorError> {
+        let (bootstrap_addr, rx) = channel::serve(ChannelAddr::any(ChannelTransport::Unix))
+            .await
+            .map_err(anyhow::Error::from)?;
+
+        let name = ShortUuid::generate();
+        let n = spec.shape.slice().len();
+        Ok(ProcessAlloc {
+            name: name.clone(),
+            world_id: WorldId(name.to_string()),
+            spec: spec.clone(),
+            bootstrap_addr,
+            rx,
+            index: 0,
+            active: HashMap::new(),
+            ranks: Ranks::new(n),
+            cmd: Arc::clone(&self.cmd),
+            children: JoinSet::new(),
+            running: true,
+        })
+    }
+}
+
+/// An allocation produced by [`ProcessAllocator`].
+pub struct ProcessAlloc {
+    name: ShortUuid,
+    world_id: WorldId, // to provide storage
+    spec: AllocSpec,
+    bootstrap_addr: ChannelAddr,
+    rx: channel::ChannelRx<Process2Allocator>,
+    index: usize,
+    active: HashMap<usize, Child>,
+    // Maps process index to its rank.
+    ranks: Ranks<usize>,
+    cmd: Arc<Mutex<Command>>,
+    children: JoinSet<(usize, ProcStopReason)>,
+    running: bool,
+}
+
+#[derive(EnumAsInner)]
+enum ChannelState {
+    NotConnected,
+    Connected(ChannelTx<Allocator2Process>),
+    Failed(ChannelError),
+}
+
+struct Child {
+    channel: ChannelState,
+    group: monitor::Group,
+    stdout: LogTailer,
+    stderr: LogTailer,
+    stop_reason: Arc<OnceLock<ProcStopReason>>,
+}
+
+impl Child {
+    fn monitored(
+        mut process: tokio::process::Child,
+    ) -> (Self, impl Future<Output = ProcStopReason>) {
+        let (group, handle) = monitor::group();
+
+        let stdout = LogTailer::tee(
+            MAX_TAIL_LOG_LINES,
+            process.stdout.take().unwrap(),
+            io::stdout(),
+        );
+        let stderr = LogTailer::tee(
+            MAX_TAIL_LOG_LINES,
+            process.stderr.take().unwrap(),
+            io::stderr(),
+        );
+        let stop_reason = Arc::new(OnceLock::new());
+
+        let child = Self {
+            channel: ChannelState::NotConnected,
+            group,
+            stdout,
+            stderr,
+            stop_reason: Arc::clone(&stop_reason),
+        };
+
+        let monitor = async move {
+            let reason = tokio::select! {
+                _ = handle => {
+                    match process.kill().await {
+                        Err(e) => {
+                            tracing::error!("error killing process: {}", e);
+                            // In this cased, we're left with little choice but to
+                            // orphan the process.
+                            ProcStopReason::Unknown
+                        },
+                        Ok(_) => {
+                            Self::exit_status_to_reason(process.wait().await)
+                        }
+                    }
+                }
+                result = process.wait() => Self::exit_status_to_reason(result),
+            };
+            stop_reason.get_or_init(|| reason).clone()
+        };
+
+        (child, monitor)
+    }
+
+    fn exit_status_to_reason(result: io::Result<ExitStatus>) -> ProcStopReason {
+        match result {
+            Ok(status) if status.success() => ProcStopReason::Stopped,
+            Ok(status) => {
+                if let Some(signal) = status.signal() {
+                    ProcStopReason::Killed(signal, status.core_dumped())
+                } else if let Some(code) = status.code() {
+                    ProcStopReason::Exited(code)
+                } else {
+                    ProcStopReason::Unknown
+                }
+            }
+            Err(e) => {
+                tracing::error!("error waiting for process: {}", e);
+                ProcStopReason::Unknown
+            }
+        }
+    }
+
+    fn stop(&self, reason: ProcStopReason) {
+        let _ = self.stop_reason.set(reason); // first stop wins 
+        self.group.fail();
+    }
+
+    fn connect(&mut self, addr: ChannelAddr) -> bool {
+        if !self.channel.is_not_connected() {
+            return false;
+        }
+
+        match channel::dial(addr) {
+            Ok(channel) => {
+                let mut status = channel.status().clone();
+                self.channel = ChannelState::Connected(channel);
+                // Monitor the channel, killing the process if it becomes unavailable
+                // (fails keepalive).
+                self.group.spawn(async move {
+                    let _ = status
+                        .wait_for(|status| matches!(status, TxStatus::Closed))
+                        .await;
+                    Result::<(), ()>::Err(())
+                });
+            }
+            Err(err) => {
+                self.channel = ChannelState::Failed(err);
+                self.stop(ProcStopReason::Watchdog);
+            }
+        };
+        true
+    }
+
+    fn post(&mut self, message: Allocator2Process) {
+        // We're here simply assuming that if we're not connected, we're about to
+        // be killed.
+        if let ChannelState::Connected(channel) = &mut self.channel {
+            channel.post(message);
+        } else {
+            self.stop(ProcStopReason::Watchdog);
+        }
+    }
+}
+
+impl ProcessAlloc {
+    // Also implement exit (for graceful exit)
+
+    // Currently procs and processes are 1:1, so this just fully exits
+    // the process.
+    fn stop(&mut self, proc_id: &ProcId, reason: ProcStopReason) -> Result<(), anyhow::Error> {
+        self.get_mut(proc_id)?.stop(reason);
+        Ok(())
+    }
+
+    fn get(&self, proc_id: &ProcId) -> Result<&Child, anyhow::Error> {
+        self.active.get(&self.index(proc_id)?).ok_or_else(|| {
+            anyhow::anyhow!(
+                "proc {} not currently active in alloc {}",
+                proc_id,
+                self.name
+            )
+        })
+    }
+
+    fn get_mut(&mut self, proc_id: &ProcId) -> Result<&mut Child, anyhow::Error> {
+        self.active.get_mut(&self.index(proc_id)?).ok_or_else(|| {
+            anyhow::anyhow!(
+                "proc {} not currently active in alloc {}",
+                &proc_id,
+                self.name
+            )
+        })
+    }
+
+    fn index(&self, proc_id: &ProcId) -> Result<usize, anyhow::Error> {
+        anyhow::ensure!(
+            proc_id.world_name().parse::<ShortUuid>()? == self.name,
+            "proc {} does not belong to alloc {}",
+            proc_id,
+            self.name
+        );
+        Ok(proc_id.rank())
+    }
+
+    async fn maybe_spawn(&mut self) -> Option<ProcState> {
+        if self.active.len() >= self.spec.shape.slice().len() {
+            return None;
+        }
+        let mut cmd = self.cmd.lock().await;
+        let index = self.index;
+        self.index += 1;
+
+        cmd.env(
+            bootstrap::BOOTSTRAP_ADDR_ENV,
+            self.bootstrap_addr.to_string(),
+        );
+        cmd.env(bootstrap::BOOTSTRAP_INDEX_ENV, index.to_string());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+
+        // Opt-in to signal handling (`PR_SET_PDEATHSIG`) so that the
+        // spawned subprocess will automatically exit when the parent
+        // process dies.
+        cmd.env("HYPERACTOR_MANAGED_SUBPROCESS", "1");
+
+        let proc_id = ProcId(WorldId(self.name.to_string()), index);
+        match cmd.spawn() {
+            Err(err) => {
+                // Should we proactively retry here, or do we always just
+                // wait for another event request?
+                tracing::error!("spawn {}: {}", index, err);
+                None
+            }
+            Ok(mut process) => match self.ranks.assign(index) {
+                Err(_index) => {
+                    tracing::info!("could not assign rank to {}", proc_id);
+                    let _ = process.kill().await;
+                    None
+                }
+                Ok(rank) => {
+                    let (handle, monitor) = Child::monitored(process);
+                    self.children.spawn(async move { (index, monitor.await) });
+                    self.active.insert(index, handle);
+                    // Adjust for shape slice offset for non-zero shapes (sub-shapes).
+                    let rank = rank + self.spec.shape.slice().offset();
+                    let coords = self.spec.shape.slice().coordinates(rank).unwrap();
+                    Some(ProcState::Created { proc_id, coords })
+                }
+            },
+        }
+    }
+
+    fn remove(&mut self, index: usize) -> Option<Child> {
+        self.ranks.unassign(index);
+        self.active.remove(&index)
+    }
+}
+
+#[async_trait]
+impl Alloc for ProcessAlloc {
+    async fn next(&mut self) -> Option<ProcState> {
+        if !self.running && self.active.is_empty() {
+            return None;
+        }
+
+        loop {
+            if self.running {
+                if let state @ Some(_) = self.maybe_spawn().await {
+                    return state;
+                }
+            }
+
+            let transport = self.transport().clone();
+
+            tokio::select! {
+                Ok(Process2Allocator(index, message)) = self.rx.recv() => {
+                    let child = match self.active.get_mut(&index) {
+                        None => {
+                            tracing::info!("message {:?} from zombie {}", message, index);
+                            continue;
+                        }
+                        Some(child) => child,
+                    };
+
+                    match message {
+                        Process2AllocatorMessage::Hello(addr) => {
+                            if !child.connect(addr.clone()) {
+                                tracing::error!("received multiple hellos from {}", index);
+                                continue;
+                            }
+
+                            child.post(Allocator2Process::StartProc(
+                                ProcId(WorldId(self.name.to_string()), index),
+                                transport,
+                            ));
+                        }
+
+                        Process2AllocatorMessage::StartedProc(proc_id, mesh_agent, addr) => {
+                            break Some(ProcState::Running {
+                                proc_id,
+                                mesh_agent,
+                                addr,
+                            });
+                        }
+                    }
+                },
+
+                Some(Ok((index, reason))) = self.children.join_next() => {
+                    if let Some(Child { stdout, stderr, ..} ) = self.remove(index) {
+                        let (_stdout, _) = stdout.join().await;
+                        let (_stderr, _) = stderr.join().await;
+                    }
+
+                    break Some(ProcState::Stopped {
+                        proc_id: ProcId(WorldId(self.name.to_string()), index),
+                        reason
+                    });
+                },
+            }
+        }
+    }
+
+    fn shape(&self) -> &Shape {
+        &self.spec.shape
+    }
+
+    fn world_id(&self) -> &WorldId {
+        &self.world_id
+    }
+
+    fn transport(&self) -> ChannelTransport {
+        ChannelTransport::Unix
+    }
+
+    async fn stop(&mut self) -> Result<(), AllocatorError> {
+        // We rely on the teardown here, and that the process should
+        // exit on its own. We should have a hard timeout here as well,
+        // so that we never rely on the system functioning correctly
+        // for liveness.
+        for (_index, child) in self.active.iter_mut() {
+            child.post(Allocator2Process::StopAndExit(0));
+        }
+
+        self.running = false;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(fbcode_build)] // we use an external binary, produced by buck
+    crate::alloc_test_suite!(ProcessAllocator::new(Command::new(
+        buck_resources::get("monarch/hyperactor_mesh/bootstrap").unwrap()
+    )));
+}

@@ -1,0 +1,16 @@
+[workspace]
+
+members = [
+    "controller",
+    "hyper",
+    "hyperactor",
+    "hyperactor_macros",
+    "hyperactor_multiprocess",
+    "hyperactor_mesh",
+    "hyperactor_mesh_macros",
+    "ndslice",
+    "monarch_extension",
+    "monarch_worker",
+    "nccl-sys",
+    "torch-sys",
+]
