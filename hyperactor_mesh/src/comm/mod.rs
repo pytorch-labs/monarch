@@ -14,6 +14,7 @@ use hyperactor::ActorRef;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Named;
+use hyperactor::data::Serialized;
 use ndslice::Slice;
 use ndslice::selection::NormalizedSelectionKey;
 use ndslice::selection::routing::RoutingFrame;
@@ -162,9 +163,11 @@ impl CommActor {
     ) -> Result<()> {
         // Deliever message here, if necessary.
         if deliver_here {
+            // TODO(pzhang) split reply ports so children can reply to this comm
+            // actor instead of parent.
             this.post(
                 message.dest_port().port_id(this.self_id().proc_id().rank()),
-                message.data().clone(),
+                Serialized::serialize(message.data())?,
             );
         }
 

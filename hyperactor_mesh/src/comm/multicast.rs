@@ -1,8 +1,13 @@
 //! The comm actor that provides message casting and result accumulation.
 
 use hyperactor::Named;
+use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
+use hyperactor::actor::RemoteActor;
 use hyperactor::data::Serialized;
+use hyperactor::message::Castable;
+use hyperactor::message::ErasedUnbound;
+use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::reference::ActorId;
 use hyperactor::reference::GangId;
 use hyperactor::reference::PortId;
@@ -34,17 +39,17 @@ pub struct CastMessageEnvelope {
     /// rank wildcard.
     dest_port: DestinationPort,
     /// The serialized message.
-    data: Serialized,
+    data: ErasedUnbound,
 }
 
 impl CastMessageEnvelope {
     /// Create a new CastMessageEnvelope.
-    pub fn new<T: Serialize + Named>(
+    pub fn new<T: Castable + Serialize + Named>(
         sender: ActorId,
         dest_port: DestinationPort,
-        message: &T,
+        message: T,
     ) -> anyhow::Result<Self> {
-        let data = Serialized::serialize(message)?;
+        let data = ErasedUnbound::try_from_message(message)?;
         Ok(Self {
             sender,
             dest_port,
@@ -52,12 +57,14 @@ impl CastMessageEnvelope {
         })
     }
 
-    /// Create a new CastMessageEnvelope from serialized data.
+    /// Create a new CastMessageEnvelope from serialized data. Only use this
+    /// when the message do not contain reply ports. Or it does but you are okay
+    /// with the destination actors reply to the client actor directly.
     pub fn from_serialized(sender: ActorId, dest_port: DestinationPort, data: Serialized) -> Self {
         Self {
             sender,
             dest_port,
-            data,
+            data: ErasedUnbound::new(data),
         }
     }
 
@@ -65,7 +72,7 @@ impl CastMessageEnvelope {
         &self.dest_port
     }
 
-    pub(crate) fn data(&self) -> &Serialized {
+    pub(crate) fn data(&self) -> &ErasedUnbound {
         &self.data
     }
 }
@@ -86,13 +93,14 @@ pub struct DestinationPort {
 
 impl DestinationPort {
     /// Create a new DestinationPort for Actor type A and message type M.
-    pub fn new<M>(gang_id: GangId) -> Self
+    pub fn new<A, M>(gang_id: GangId) -> Self
     where
-        M: RemoteMessage,
+        A: RemoteActor + RemoteHandles<IndexedErasedUnbound<M>>,
+        M: Castable + RemoteMessage,
     {
         Self {
             gang_id,
-            port: M::port(),
+            port: IndexedErasedUnbound::<M>::port(),
         }
     }
 

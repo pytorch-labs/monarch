@@ -68,6 +68,7 @@ pub mod clock;
 pub mod data;
 mod init;
 pub mod mailbox;
+pub mod message;
 pub mod metrics;
 pub mod panic_handler;
 mod parse;

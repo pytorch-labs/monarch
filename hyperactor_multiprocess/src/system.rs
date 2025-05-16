@@ -197,6 +197,11 @@ mod tests {
     use hyperactor::mailbox::BoxedMailboxSender;
     use hyperactor::mailbox::MailboxRouter;
     use hyperactor::mailbox::open_port;
+    use hyperactor::message::Bind;
+    use hyperactor::message::Bindings;
+    use hyperactor::message::IndexedErasedUnbound;
+    use hyperactor::message::Unbind;
+    use hyperactor::message::Unbound;
     use hyperactor::proc::Proc;
     use hyperactor::test_utils::proc_supervison::ProcSupervisionCoordinator;
     use hyperactor::test_utils::tracing::set_tracing_env_filter;
@@ -921,8 +926,21 @@ mod tests {
         Forward(String),
     }
 
+    // TODO(pzhang) add macro to auto implement these traits.
+    impl Unbind for TestMessage {
+        fn unbind(self) -> anyhow::Result<Unbound<Self>> {
+            Ok(Unbound::new(self, Bindings::default()))
+        }
+    }
+
+    impl Bind for TestMessage {
+        fn bind(self, _bindings: &Bindings) -> anyhow::Result<Self> {
+            Ok(self)
+        }
+    }
+
     #[derive(Debug)]
-    #[hyperactor::export_spawn(TestMessage)]
+    #[hyperactor::export_spawn(TestMessage, IndexedErasedUnbound<TestMessage>)]
     struct TestActor {
         // Forward the received message to this port, so it can be inspected by
         // the unit test.
@@ -1002,11 +1020,11 @@ mod tests {
                 },
                 message: CastMessageEnvelope::new(
                     ActorId(world.random_user_proc(), "user".into(), 0),
-                    DestinationPort::new::<TestMessage>(GangId(
+                    DestinationPort::new::<TestActor, TestMessage>(GangId(
                         comm.actor_id().proc_id().world_id().clone(),
                         "actor".into(),
                     )),
-                    &TestMessage::Forward("abc".to_string()),
+                    TestMessage::Forward("abc".to_string()),
                 )?,
             })?;
         }
@@ -1114,11 +1132,11 @@ mod tests {
                     },
                     message: CastMessageEnvelope::new(
                         ActorId(world_id.random_user_proc(), "user".into(), 0),
-                        DestinationPort::new::<TestMessage>(GangId(
+                        DestinationPort::new::<TestActor, TestMessage>(GangId(
                             comm.actor_id().proc_id().world_id().clone(),
                             "actor".into(),
                         )),
-                        &TestMessage::Forward("abc".to_string()),
+                        TestMessage::Forward("abc".to_string()),
                     )?,
                 },
             )?;

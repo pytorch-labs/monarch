@@ -743,7 +743,7 @@ pub struct PortRef<M: RemoteMessage> {
 impl<M: RemoteMessage> PortRef<M> {
     /// The caller attests that the provided PortId can be
     /// converted to a reachable, typed port reference.
-    pub(crate) fn attest(port_id: PortId) -> Self {
+    pub fn attest(port_id: PortId) -> Self {
         Self {
             port_id,
             phantom: PhantomData,
@@ -753,6 +753,11 @@ impl<M: RemoteMessage> PortRef<M> {
     /// This port's ID.
     pub fn port_id(&self) -> &PortId {
         &self.port_id
+    }
+
+    /// Mutable reference to this port's ID.
+    pub fn port_id_mut(&mut self) -> &mut PortId {
+        &mut self.port_id
     }
 
     /// Convert this PortRef into its corresponding port id.

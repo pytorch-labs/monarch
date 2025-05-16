@@ -39,6 +39,8 @@ use crate::mailbox::MessageEnvelope;
 use crate::mailbox::PortHandle;
 use crate::mailbox::Undeliverable;
 use crate::mailbox::log::MessageLogError;
+use crate::message::Castable;
+use crate::message::IndexedErasedUnbound;
 use crate::proc::Instance;
 use crate::proc::InstanceCell;
 use crate::proc::Ports;
@@ -171,6 +173,24 @@ impl<A: Actor> Handler<Undeliverable<MessageEnvelope>> for A {
         message: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
         self.handle_undeliverable_message(this, message).await
+    }
+}
+
+/// This handler enables actors to unbind the [IndexedErasedUnbound]
+/// message, and forward the result to corresponding handler.
+#[async_trait]
+impl<A, M> Handler<IndexedErasedUnbound<M>> for A
+where
+    A: Handler<M>,
+    M: Castable,
+{
+    async fn handle(
+        &mut self,
+        this: &Instance<Self>,
+        msg: IndexedErasedUnbound<M>,
+    ) -> anyhow::Result<()> {
+        let message = msg.downcast()?.bind()?;
+        Handler::handle(self, this, message).await
     }
 }
 

@@ -50,6 +50,7 @@ use hyperactor::ActorRef;
 use hyperactor::Instance;
 use hyperactor::actor::ActorHandle;
 use hyperactor::forward;
+use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::reference::ActorId;
 use hyperactor::supervision::ActorSupervisionEvent;
 use itertools::Itertools;
@@ -113,7 +114,7 @@ impl RemoteProcessGroupState {
 ///
 /// See [`WorkerMessage`] for what it can do!
 #[derive(Debug)]
-#[hyperactor::export_spawn(WorkerMessage)]
+#[hyperactor::export_spawn(WorkerMessage, IndexedErasedUnbound<WorkerMessage>)]
 pub struct WorkerActor {
     device: Option<CudaDevice>,
     streams: HashMap<StreamRef, Arc<ActorHandle<StreamActor>>>,

@@ -382,7 +382,9 @@ impl ControllerMessageHandler for ControllerActor {
         };
         let message = CastMessageEnvelope::from_serialized(
             this.self_id().clone(),
-            DestinationPort::new::<WorkerMessage>(self.worker_gang_ref.gang_id().clone()),
+            DestinationPort::new::<WorkerActor, WorkerMessage>(
+                self.worker_gang_ref.gang_id().clone(),
+            ),
             message,
         );
         self.comm_actor_ref.port::<CastMessage>().send(
@@ -577,6 +579,7 @@ mod tests {
     use hyperactor::mailbox::PortHandle;
     use hyperactor::mailbox::PortReceiver;
     use hyperactor::mailbox::monitored_return_handle;
+    use hyperactor::message::IndexedErasedUnbound;
     use hyperactor::proc::Proc;
     use hyperactor::reference::GangId;
     use hyperactor::reference::ProcId;
@@ -607,6 +610,8 @@ mod tests {
             .unwrap();
         let (worker, worker_ref, mut worker_rx) = proc
             .attach_actor::<WorkerActor, WorkerMessage>("worker")
+            .unwrap();
+        IndexedErasedUnbound::<WorkerMessage>::bind_for_test_only(worker_ref.clone(), &worker)
             .unwrap();
 
         let comm_handle = proc
@@ -790,6 +795,8 @@ mod tests {
         let (worker, worker_ref, mut worker_rx) = proc
             .attach_actor::<WorkerActor, WorkerMessage>("worker")
             .unwrap();
+        IndexedErasedUnbound::<WorkerMessage>::bind_for_test_only(worker_ref.clone(), &worker)
+            .unwrap();
 
         let comm_handle = proc
             .spawn::<CommActor>("comm", CommActorParams {})
@@ -900,6 +907,8 @@ mod tests {
 
         let (worker, worker_ref, mut worker_rx) = proc
             .attach_actor::<WorkerActor, WorkerMessage>("worker")
+            .unwrap();
+        IndexedErasedUnbound::<WorkerMessage>::bind_for_test_only(worker_ref.clone(), &worker)
             .unwrap();
 
         let comm_handle = proc
@@ -1078,8 +1087,12 @@ mod tests {
         let (worker1, worker1_ref, _) = proc
             .attach_actor::<WorkerActor, WorkerMessage>("worker")
             .unwrap();
+        IndexedErasedUnbound::<WorkerMessage>::bind_for_test_only(worker1_ref.clone(), &worker1)
+            .unwrap();
         let (worker2, worker2_ref, _) = proc2
             .attach_actor::<WorkerActor, WorkerMessage>("worker")
+            .unwrap();
+        IndexedErasedUnbound::<WorkerMessage>::bind_for_test_only(worker2_ref.clone(), &worker2)
             .unwrap();
 
         let controller_handle = proc

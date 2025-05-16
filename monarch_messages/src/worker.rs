@@ -16,6 +16,11 @@ use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Named;
 use hyperactor::RefClient;
+use hyperactor::message::Bind;
+use hyperactor::message::Bindings;
+use hyperactor::message::IndexedErasedUnbound;
+use hyperactor::message::Unbind;
+use hyperactor::message::Unbound;
 use hyperactor::reference::ActorId;
 use monarch_types::SerializablePyErr;
 use ndslice::Slice;
@@ -728,7 +733,7 @@ pub enum WorkerMessage {
         commands: Vec<WorkerMessage>,
     },
 
-    /// Defines an input tensor for a recording.  
+    /// Defines an input tensor for a recording.
     RecordingFormal {
         /// The ref that will be used to pass the input tensor to the
         /// recording.
@@ -739,7 +744,7 @@ pub enum WorkerMessage {
         stream: StreamRef,
     },
 
-    /// Defines an output tensor for a recording.  
+    /// Defines an output tensor for a recording.
     RecordingResult {
         /// The ref that will be used to store the output tensor.
         result: Ref,
@@ -782,6 +787,20 @@ pub enum WorkerMessage {
     },
 }
 
+// WorkerMessage currently has no accumulation reply port.
+// TODO(pzhang) add macro to auto implement these traits.
+impl Unbind for WorkerMessage {
+    fn unbind(self) -> anyhow::Result<Unbound<Self>> {
+        Ok(Unbound::new(self, Bindings::default()))
+    }
+}
+
+impl Bind for WorkerMessage {
+    fn bind(self, _bindings: &Bindings) -> anyhow::Result<Self> {
+        Ok(self)
+    }
+}
+
 /// The parameters to spawn a worker actor.
 #[derive(Debug, Clone, Serialize, Deserialize, Named)]
 pub struct WorkerParams {
@@ -799,4 +818,8 @@ pub struct WorkerParams {
     pub controller_actor: ActorRef<ControllerActor>,
 }
 
-hyperactor::alias!(WorkerActor, WorkerMessage);
+hyperactor::alias!(
+    WorkerActor,
+    WorkerMessage,
+    IndexedErasedUnbound<WorkerMessage>
+);
