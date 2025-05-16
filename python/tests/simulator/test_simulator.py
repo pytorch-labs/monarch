@@ -97,8 +97,8 @@ class TestSimulator:
             trace_mode=SimulatorTraceMode.EVERYTHING,
         ).mesh
         other_stream = Stream("other")
-        torch.set_default_device("cuda")
-        with mesh.activate():
+
+        with mesh.activate(), torch.device("cuda"):
             ac1 = torch.randn(100, 100)
             ac2 = torch.mm(ac1, ac1)
             ac3 = torch.nn.init.uniform_(ac2)
@@ -138,8 +138,8 @@ class TestSimulator:
             hosts=2, gpus=2, trace_path=trace_path, group_workers=group_workers
         ).mesh
         pp_meshes = [mesh(host=0), mesh(host=1)]
-        torch.set_default_device("cuda")
-        with pp_meshes[0].activate():
+
+        with pp_meshes[0].activate(), torch.device("cuda"):
             x = cast(Tensor, torch.randn(100, 100))
             y = x.to_mesh(pp_meshes[0])  # noqa
             z = x.to_mesh(pp_meshes[1])  # noqa
@@ -183,8 +183,7 @@ class TestSimulator:
         ).mesh
         reducer_stream = Stream("reducer_stream")
 
-        torch.set_default_device("cuda")
-        with mesh.activate():
+        with mesh.activate(), torch.device("cuda"):
             x = cast(Tensor, torch.randn(100, 100))
             y = cast(Tensor, torch.randn(100, 100))
             z = cast(Tensor, torch.randn(100, 100))
