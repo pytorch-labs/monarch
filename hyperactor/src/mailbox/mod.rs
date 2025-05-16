@@ -305,6 +305,39 @@ impl MessageEnvelope {
     pub fn error(&self) -> Option<&DeliveryError> {
         self.error.as_ref()
     }
+
+    fn open(self) -> (MessageMetadata, Serialized) {
+        let Self {
+            sender,
+            dest,
+            data,
+            error,
+        } = self;
+
+        (
+            MessageMetadata {
+                sender,
+                dest,
+                error,
+            },
+            data,
+        )
+    }
+
+    fn seal(metadata: MessageMetadata, data: Serialized) -> Self {
+        let MessageMetadata {
+            sender,
+            dest,
+            error,
+        } = metadata;
+
+        Self {
+            sender,
+            dest,
+            data,
+            error,
+        }
+    }
 }
 
 impl fmt::Display for MessageEnvelope {
@@ -318,6 +351,12 @@ impl fmt::Display for MessageEnvelope {
             ),
         }
     }
+}
+
+struct MessageMetadata {
+    sender: ActorId,
+    dest: PortId,
+    error: Option<DeliveryError>,
 }
 
 /// Errors that occur during mailbox operations. Each error is associated
@@ -1174,6 +1213,7 @@ impl MailboxSender for Mailbox {
                 return_handle,
             ),
             Entry::Occupied(entry) => {
+                let (metadata, data) = envelope.open();
                 // We use the entry API here so that we can remove the
                 // entry while holding an (entry) reference. The DashMap
                 // documentation suggests that deadlocks are possible
@@ -1181,13 +1221,15 @@ impl MailboxSender for Mailbox {
                 // but surely this applies only to the same thread? This
                 // would also imply we have to be careful holding any
                 // sort of reference across .await points.
-                match entry.get().send_serialized(envelope.data()) {
+                match entry.get().send_serialized(data) {
                     Ok(false) => {
                         entry.remove();
                     }
                     Ok(true) => (),
-                    Err(err) => envelope
-                        .undeliverable(DeliveryError::Mailbox(format!("{}", err)), return_handle),
+                    Err(SerializedSenderError { data, error }) => MessageEnvelope::seal(
+                        metadata, data,
+                    )
+                    .undeliverable(DeliveryError::Mailbox(format!("{}", error)), return_handle),
                 }
             }
         }
@@ -1482,6 +1524,14 @@ impl<M> Drop for OncePortReceiver<M> {
     }
 }
 
+/// Error that that occur during SerializedSender's send operation.
+pub struct SerializedSenderError {
+    /// The message was tried to send.
+    pub data: Serialized,
+    /// The mailbox sender error that occurred.
+    pub error: MailboxSenderError,
+}
+
 /// SerializedSender encapsulates senders:
 ///   - It performs type erasure (and thus it is object-safe).
 ///   - It abstracts over [`Port`]s and [`OncePort`]s, by dynamically tracking the
@@ -1493,9 +1543,7 @@ trait SerializedSender: Send + Sync {
     ///
     /// Send_serialized returns true whenever the port remains valid
     /// after the send operation.
-    ///
-    /// TODO: serialized should be owned
-    fn send_serialized(&self, serialized: &Serialized) -> Result<bool, MailboxSenderError>;
+    fn send_serialized(&self, serialized: Serialized) -> Result<bool, SerializedSenderError>;
 }
 
 /// A sender to an M-typed unbounded port.
@@ -1570,19 +1618,29 @@ impl<M: Message> Clone for UnboundedSender<M> {
 }
 
 impl<M: RemoteMessage> SerializedSender for UnboundedSender<M> {
-    fn send_serialized(&self, serialized: &Serialized) -> Result<bool, MailboxSenderError> {
-        let message: M = serialized.deserialized().map_err(|err| {
-            MailboxSenderError::new_bound(
-                self.port_id.clone(),
-                MailboxSenderErrorKind::Deserialize(M::typename(), err),
-            )
-        })?;
+    fn send_serialized(&self, serialized: Serialized) -> Result<bool, SerializedSenderError> {
+        match serialized.deserialized() {
+            Ok(message) => {
+                self.sender
+                    .send(message)
+                    .map_err(|err| SerializedSenderError {
+                        data: serialized,
+                        error: MailboxSenderError::new_bound(
+                            self.port_id.clone(),
+                            MailboxSenderErrorKind::Other(err),
+                        ),
+                    })?;
 
-        self.sender.send(message).map_err(|err| {
-            MailboxSenderError::new_bound(self.port_id.clone(), MailboxSenderErrorKind::Other(err))
-        })?;
-
-        Ok(true)
+                Ok(true)
+            }
+            Err(err) => Err(SerializedSenderError {
+                data: serialized,
+                error: MailboxSenderError::new_bound(
+                    self.port_id.clone(),
+                    MailboxSenderErrorKind::Deserialize(M::typename(), err),
+                ),
+            }),
+        }
     }
 }
 
@@ -1641,14 +1699,20 @@ impl<M: Message> Clone for OnceSender<M> {
 }
 
 impl<M: RemoteMessage> SerializedSender for OnceSender<M> {
-    fn send_serialized(&self, serialized: &Serialized) -> Result<bool, MailboxSenderError> {
-        let message: M = serialized.deserialized().map_err(|err| {
-            MailboxSenderError::new_bound(
-                self.port_id.clone(),
-                MailboxSenderErrorKind::Deserialize(M::typename(), err),
-            )
-        })?;
-        self.send_once(message)
+    fn send_serialized(&self, serialized: Serialized) -> Result<bool, SerializedSenderError> {
+        match serialized.deserialized() {
+            Ok(message) => self.send_once(message).map_err(|e| SerializedSenderError {
+                data: serialized,
+                error: e,
+            }),
+            Err(err) => Err(SerializedSenderError {
+                data: serialized,
+                error: MailboxSenderError::new_bound(
+                    self.port_id.clone(),
+                    MailboxSenderErrorKind::Deserialize(M::typename(), err),
+                ),
+            }),
+        }
     }
 }
 

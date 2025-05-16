@@ -780,14 +780,14 @@ impl<M: RemoteMessage> PortRef<M> {
                 MailboxSenderErrorKind::Serialize(err.into()),
             )
         })?;
-        self.send_serialized(caps, &serialized);
+        self.send_serialized(caps, serialized);
         Ok(())
     }
 
     /// Send a serialized message to this port, provided a sending capability, such as
     /// [`crate::actor::Instance`].
-    pub fn send_serialized(&self, caps: &impl cap::CanSend, message: &Serialized) {
-        caps.post(self.port_id.clone(), message.clone());
+    pub fn send_serialized(&self, caps: &impl cap::CanSend, message: Serialized) {
+        caps.post(self.port_id.clone(), message);
     }
 }
 
