@@ -8,14 +8,6 @@ pub struct PySelection {
     inner: Selection,
 }
 
-#[pymethods]
-impl PySelection {
-    #[getter]
-    fn __repr__(&self) -> String {
-        format!("{:?}", self.inner)
-    }
-}
-
 impl From<Selection> for PySelection {
     fn from(inner: Selection) -> Self {
         Self { inner }
@@ -24,6 +16,11 @@ impl From<Selection> for PySelection {
 
 #[pymethods]
 impl PySelection {
+    #[getter]
+    fn __repr__(&self) -> String {
+        format!("{:?}", self.inner)
+    }
+
     #[classmethod]
     #[pyo3(name = "from_string")]
     pub fn parse(_cls: Bound<'_, PyType>, input: &str) -> PyResult<Self> {
