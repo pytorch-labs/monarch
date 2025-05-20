@@ -301,6 +301,11 @@ impl IValue {
                 ))
             })
     }
+
+    pub(crate) fn from_py_object_or_none(obj: &Bound<'_, PyAny>) -> Option<IValue> {
+        ffi::py_object_is_ivalue(obj.clone().into())
+            .then(|| ffi::ivalue_from_arbitrary_py_object(obj.into()).unwrap())
+    }
 }
 
 // impl `From` for all IValue kinds.

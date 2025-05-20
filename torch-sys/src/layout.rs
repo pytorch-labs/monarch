@@ -14,6 +14,13 @@ unsafe impl ExternType for Layout {
     type Kind = cxx::kind::Trivial;
 }
 
+impl Layout {
+    pub(crate) fn from_py_object_or_none(obj: &Bound<'_, PyAny>) -> Option<Self> {
+        ffi::py_object_is_layout(obj.clone().into())
+            .then(|| ffi::layout_from_py_object(obj.into()).unwrap())
+    }
+}
+
 impl FromPyObject<'_> for Layout {
     fn extract_bound(obj: &Bound<'_, PyAny>) -> PyResult<Self> {
         ffi::layout_from_py_object(obj.into()).map_err(|e| {

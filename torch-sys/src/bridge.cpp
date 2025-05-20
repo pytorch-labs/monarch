@@ -402,6 +402,18 @@ IValue ivalue_from_arbitrary_py_object(PyObject* unowned) {
   return torch::jit::toIValue(obj, inferredType.type());
 }
 
+bool py_object_is_ivalue(PyObject* unowned) {
+  auto obj = py::reinterpret_steal<py::object>(unowned);
+  auto inferredType = torch::jit::tryToInferType(obj);
+  if (!inferredType.success()) {
+    return false;
+  }
+  // TODO(agallagher): Arbitrary Python objects -- which we can't and don't want
+  // to package into an `IValue` -- will be inferred as a `Class` type.  Throw
+  // here so that we'll fallback to parsing into `RValue::PyObject`.
+  return !inferredType.type()->cast<at::ClassType>();
+}
+
 c10::Device device_from_py_object(PyObject* unowned) {
   auto obj = py::reinterpret_steal<py::object>(unowned);
   if (!THPDevice_Check(obj.ptr())) {
@@ -429,6 +441,11 @@ PyObject* scalar_type_to_py_object(c10::ScalarType scalar_type) {
   return Py_NewRef(dtype);
 }
 
+bool py_object_is_scalar_type(PyObject* unowned) {
+  auto obj = py::reinterpret_steal<py::object>(unowned);
+  return THPDtype_Check(obj.ptr());
+}
+
 c10::Layout layout_from_py_object(PyObject* unowned) {
   auto obj = py::reinterpret_steal<py::object>(unowned);
   if (!THPLayout_Check(obj.ptr())) {
@@ -443,6 +460,11 @@ PyObject* layout_to_py_object(c10::Layout layout) {
   return Py_NewRef(thp_layout);
 }
 
+bool py_object_is_layout(PyObject* unowned) {
+  auto obj = py::reinterpret_steal<py::object>(unowned);
+  return THPLayout_Check(obj.ptr());
+}
+
 c10::MemoryFormat memory_format_from_py_object(PyObject* unowned) {
   auto obj = py::reinterpret_steal<py::object>(unowned);
   if (!THPMemoryFormat_Check(obj.ptr())) {
@@ -455,6 +477,11 @@ c10::MemoryFormat memory_format_from_py_object(PyObject* unowned) {
 PyObject* memory_format_to_py_object(c10::MemoryFormat memory_format) {
   auto thp_memory_format = torch::utils::getTHPMemoryFormat(memory_format);
   return Py_NewRef(thp_memory_format);
+}
+
+bool py_object_is_memory_format(PyObject* unowned) {
+  auto obj = py::reinterpret_steal<py::object>(unowned);
+  return THPMemoryFormat_Check(obj.ptr());
 }
 
 PyObject* tensor_to_py_object(Tensor tensor) {

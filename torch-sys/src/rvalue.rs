@@ -159,13 +159,16 @@ impl TryIntoPyObjectUnsafe<PyAny> for &RValue {
 
 impl FromPyObject<'_> for RValue {
     fn extract_bound(obj: &pyo3::Bound<'_, pyo3::PyAny>) -> pyo3::PyResult<Self> {
-        if let Ok(val) = obj.extract::<ScalarType>() {
+        // It's crucial for correctness to try converting to IValue after we've
+        // tried the other non-PyObject variants, because the IValue conversion
+        // will actually succeed when obj is a ScalarType, Layout, or MemoryFormat.
+        if let Some(val) = ScalarType::from_py_object_or_none(obj) {
             Ok(RValue::ScalarType(val))
-        } else if let Ok(val) = obj.extract::<Layout>() {
+        } else if let Some(val) = Layout::from_py_object_or_none(obj) {
             Ok(RValue::Layout(val))
-        } else if let Ok(val) = obj.extract::<MemoryFormat>() {
+        } else if let Some(val) = MemoryFormat::from_py_object_or_none(obj) {
             Ok(RValue::MemoryFormat(val))
-        } else if let Ok(val) = IValue::extract_bound(obj) {
+        } else if let Some(val) = IValue::from_py_object_or_none(obj) {
             Ok(val.into())
         } else {
             Ok(RValue::PyObject(PickledPyObject::pickle(obj)?))

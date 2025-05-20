@@ -209,10 +209,12 @@ pub(crate) mod ffi {
         // Layout
         fn layout_from_py_object(obj: FFIPyObject) -> Result<Layout>;
         fn layout_to_py_object(layout: Layout) -> FFIPyObject;
+        fn py_object_is_layout(obj: FFIPyObject) -> bool;
 
         // MemoryFormat
         fn memory_format_from_py_object(obj: FFIPyObject) -> Result<MemoryFormat>;
         fn memory_format_to_py_object(memory_format: MemoryFormat) -> FFIPyObject;
+        fn py_object_is_memory_format(obj: FFIPyObject) -> bool;
 
         // Tensor
         fn tensor_from_py_object(obj: FFIPyObject) -> Result<Tensor>;
@@ -273,6 +275,7 @@ pub(crate) mod ffi {
         // Convert to Python object.
         fn scalar_type_from_py_object(obj: FFIPyObject) -> Result<ScalarType>;
         fn scalar_type_to_py_object(scalar_type: ScalarType) -> FFIPyObject;
+        fn py_object_is_scalar_type(obj: FFIPyObject) -> bool;
 
         /// # Safety
         /// - **Mutability**:
@@ -322,6 +325,7 @@ pub(crate) mod ffi {
         // Interop with Python object.
         fn arbitrary_ivalue_to_py_object(val: IValue) -> Result<FFIPyObject>;
         fn ivalue_from_arbitrary_py_object(obj: FFIPyObject) -> Result<IValue>;
+        fn py_object_is_ivalue(obj: FFIPyObject) -> bool;
         /// Converts the provided Python object to an `IValue` with the provided
         /// type. If the object is not convertible to the provided type, an
         /// exception will be thrown.
