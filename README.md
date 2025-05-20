@@ -31,7 +31,7 @@ pip install setuptools-rust
 # install torch, can use conda or build it yourself or whatever
 pip install torch
 # install other deps, see pyproject.toml for latest
-pip install pyzmq requests numpy pyre-extensions pytest-timeout cloudpickle
+pip install pyzmq requests numpy pyre-extensions pytest-timeout cloudpickle pytest-asyncio
 
 # install the package
 python setup.py install

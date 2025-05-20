@@ -1,4 +1,5 @@
 # pyre-strict
+# pyre-ignore-all-errors[56]
 
 import multiprocessing
 import os
@@ -69,12 +70,14 @@ def test_no_hang_on_shutdown() -> None:
     assert code == signal.SIGTERM, code
 
 
+@pytest.mark.asyncio
 async def test_allocator() -> None:
     spec = AllocSpec(AllocConstraints(), replica=2)
     allocator = monarch.LocalAllocator()
     _ = await allocator.allocate(spec)
 
 
+@pytest.mark.asyncio
 async def test_proc_mesh() -> None:
     spec = AllocSpec(AllocConstraints(), replica=2)
     allocator = monarch.LocalAllocator()
@@ -83,6 +86,7 @@ async def test_proc_mesh() -> None:
     assert str(proc_mesh) == "<ProcMesh { shape: {replica=2} }>"
 
 
+@pytest.mark.asyncio
 async def test_actor_mesh() -> None:
     spec = AllocSpec(AllocConstraints(), replica=2)
     allocator = monarch.LocalAllocator()

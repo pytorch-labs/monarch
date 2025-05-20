@@ -1,6 +1,8 @@
 import operator
 from types import ModuleType
 
+import pytest
+
 import torch
 
 from monarch.proc_mesh import local_proc_mesh, proc_mesh
@@ -54,6 +56,7 @@ class ParameterServer(Actor):
         return self.grad_buffer
 
 
+@pytest.mark.asyncio
 async def test_choose():
     proc = await local_proc_mesh(gpus=2)
     v = await proc.spawn("counter", Counter, 3)
@@ -65,6 +68,7 @@ async def test_choose():
     assert result == result2
 
 
+@pytest.mark.asyncio
 async def test_stream():
     proc = await local_proc_mesh(gpus=2)
     v = await proc.spawn("counter2", Counter, 3)
@@ -94,6 +98,7 @@ class ParameterClient(Actor):
         return self.buffer
 
 
+@pytest.mark.asyncio
 async def test_proc_mesh_rdma():
     proc = await proc_mesh(gpus=1)
     server = await proc.spawn("server", ParameterServer)
@@ -156,6 +161,7 @@ class From(Actor):
         return [x async for x in to.whoami.stream()]
 
 
+@pytest.mark.asyncio
 async def test_mesh_passed_to_mesh():
     proc = await local_proc_mesh(gpus=2)
     f = await proc.spawn("from", From)
@@ -165,6 +171,7 @@ async def test_mesh_passed_to_mesh():
     assert all[0] != all[1]
 
 
+@pytest.mark.asyncio
 async def test_mesh_passed_to_mesh_on_different_proc_mesh():
     proc = await local_proc_mesh(gpus=2)
     proc2 = await local_proc_mesh(gpus=2)
@@ -175,6 +182,7 @@ async def test_mesh_passed_to_mesh_on_different_proc_mesh():
     assert all[0] != all[1]
 
 
+@pytest.mark.asyncio
 async def test_actor_slicing():
     proc = await local_proc_mesh(gpus=2)
     proc2 = await local_proc_mesh(gpus=2)
@@ -190,6 +198,7 @@ async def test_actor_slicing():
     assert result[0] == result[1]
 
 
+@pytest.mark.asyncio
 async def test_aggregate():
     proc = await local_proc_mesh(gpus=2)
     counter = await proc.spawn("counter", Counter, 1)
@@ -205,6 +214,7 @@ class RunIt(Actor):
         return fn()
 
 
+@pytest.mark.asyncio
 async def test_rank_size():
     proc = await local_proc_mesh(gpus=2)
     r = await proc.spawn("runit", RunIt)
@@ -262,6 +272,7 @@ class GeneratorActor(Actor):
         ), f"{torch.sum(self.generator.weight.data)=}, {self.step=}"
 
 
+@pytest.mark.asyncio
 async def test_gpu_trainer_generator():
     trainer_proc = await proc_mesh(gpus=1)
     gen_proc = await proc_mesh(gpus=1)
@@ -283,6 +294,7 @@ class SyncActor(Actor):
         return a_counter.value.choose().get()
 
 
+@pytest.mark.asyncio
 async def test_sync_actor():
     proc = await local_proc_mesh(gpus=2)
     a = await proc.spawn("actor", SyncActor)
