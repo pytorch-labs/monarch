@@ -6,6 +6,7 @@ use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 
 use fxhash::FxHasher32;
+use nccl_sys::bridge::nccl_comm_dump;
 use nccl_sys::*;
 use serde::Deserialize;
 use serde::Serialize;
@@ -306,6 +307,41 @@ fn check_tensor(tensor: &Tensor, is_p2p: bool) -> Result<(), NcclError> {
 
     Ok(())
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+// These fields should match the JSON output of ncclCommDump exactly.
+#[allow(non_snake_case)]
+/// Contains information from a NCCL communicator, used for analytics and telemetry.
+/// See ncclCommDump from NCCLX for more details.
+/// https://docs.google.com/document/d/1ReXt2IKsjlzCUyi8bN4o5aFlmOYq7_FgduvOkqp95k4/edit?tab=t.0
+pub struct NcclCommDump {
+    /// Total number of ranks in the communicator
+    pub nRanks: String,
+    /// Number of hosts/nodes in this communicator
+    pub nNodes: String,
+    /// PG name from PyTorch
+    pub commDesc: String,
+    /// Rank of this communicator.
+    pub rank: String,
+    /// Communicator global id with hex format uint64, same on all ranks. E.g., d2e75d47d0db84bf
+    pub commHash: String,
+    /// Node id of this rank in nodes included in communicator
+    pub node: String,
+    /// Total number of local ranks on each node in communicator
+    pub localRanks: String,
+    /// Local rank on each node in communicator
+    pub localRank: String,
+
+    // CollTrace dump results (collective granularity state)
+    /// Completed collectives captured from kernel side.
+    pub CT_pastColls: Option<String>,
+    /// Currently ongoing collectives captured from kernel side.
+    /// It may include single node collective which doesn’t covered by ProxyTrace.
+    pub CT_currentColl: Option<String>,
+    /// Scheduled but not yet started collectives captured from kernel side.
+    pub CT_pendingColls: Option<String>,
+}
+
 /// Wraps a NCCL communicator, and provides a Tensor-based interface it.
 ///
 /// This implements a subset of the `c10d::ProcessGroup`API.
@@ -825,6 +861,26 @@ impl Communicator {
             ))?)
         }
     }
+
+    pub fn comm_dump(&self) -> Result<NcclCommDump, NcclError> {
+        let mut map =
+            nccl_comm_dump(self.inner).map_err(|e| NcclError::from(nccl_check(e).unwrap_err()))?;
+        let map_as_str = format!("{:#?}", map);
+        let map_as_str = map_as_str.as_str();
+        Ok(NcclCommDump {
+            localRanks: map.remove("localRanks").expect(map_as_str),
+            rank: map.remove("rank").unwrap(),
+            commDesc: map.remove("commDesc").unwrap(),
+            nNodes: map.remove("nNodes").unwrap(),
+            localRank: map.remove("localRank").unwrap(),
+            nRanks: map.remove("nRanks").unwrap(),
+            commHash: map.remove("commHash").unwrap(),
+            node: map.remove("node").unwrap(),
+            CT_pastColls: map.remove("CT_pastColls"),
+            CT_currentColl: map.remove("CT_currentColl"),
+            CT_pendingColls: map.remove("CT_pendingColls"),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -1091,6 +1147,36 @@ mod tests {
                     1 => (),
                     _ => unreachable!(),
                 };
+            }));
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
+    }
+
+    #[cfg(feature = "ncclx")]
+    #[test]
+    fn comm_dump() {
+        let unique_id = UniqueId::new().unwrap();
+        let mut handles = Vec::new();
+        for i in 0..2 {
+            let unique_id = unique_id.clone();
+            handles.push(std::thread::spawn(move || {
+                let device = CudaDevice::new(DeviceIndex(i));
+                set_device(device).unwrap();
+                let stream = Stream::new();
+                let tensor = cuda_full(&[2, 2], 1.0);
+
+                let cell = TensorCell::new(tensor);
+                let mut comm = Communicator::new(device, 2, unique_id, i.into()).unwrap();
+                // Use at least one collective on each rank to get some useful
+                // output.
+                comm.all_reduce(&cell, ReduceOp::Sum, &stream).unwrap();
+                stream.synchronize();
+
+                let dump = comm.comm_dump().unwrap();
+                stream.synchronize();
+                assert_eq!(dump.rank, format!("{}", i));
             }));
         }
         for handle in handles {

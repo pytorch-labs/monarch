@@ -38,6 +38,7 @@ use torch_sys::backend::Work;
 use torch_sys::cuda::Event;
 use torch_sys::cuda::Stream;
 use torch_sys::nccl::Communicator;
+use torch_sys::nccl::NcclCommDump;
 use torch_sys::nccl::NcclConfig;
 use torch_sys::nccl::NcclError;
 use torch_sys::nccl::NcclStatus;
@@ -111,6 +112,8 @@ pub enum CommMessage {
         Option<NcclConfig>,
         #[reply] OncePortHandle<Option<ActorHandle<NcclCommActor>>>,
     ),
+
+    CommDump(#[reply] OncePortHandle<NcclCommDump>),
 }
 
 /// Represents a single NCCL communicator.
@@ -413,6 +416,13 @@ impl CommMessageHandler for NcclCommActor {
         })
         .await
         .unwrap()?)
+    }
+
+    async fn comm_dump(&mut self, _this: &Instance<Self>) -> Result<NcclCommDump> {
+        let comm = self.comm.clone();
+        spawn_blocking(move || comm.lock().comm_dump())
+            .await?
+            .map_err(|e| anyhow!("Nccl Error from ncclCommDump: {}", e))
     }
 }
 
@@ -1796,6 +1806,65 @@ mod tests {
             )
             .unwrap()
         );
+        Ok(())
+    }
+
+    #[cfg(feature = "ncclx")]
+    #[async_timed_test(timeout_secs = 240)]
+    async fn test_comm_dump() -> Result<()> {
+        test_setup()?;
+        let proc = Proc::local();
+        let client = proc.attach("client")?;
+
+        let unique_id = UniqueId::new()?;
+        let device0 = CudaDevice::new(DeviceIndex(0));
+        let handle0 = proc.spawn::<NcclCommActor>(
+            "comm0",
+            CommParams::New {
+                device: device0,
+                unique_id: unique_id.clone(),
+                world_size: 2,
+                rank: 0,
+            },
+        );
+
+        let device1 = CudaDevice::new(DeviceIndex(1));
+        let handle1 = proc.spawn::<NcclCommActor>(
+            "comm1",
+            CommParams::New {
+                device: device1,
+                unique_id,
+                world_size: 2,
+                rank: 1,
+            },
+        );
+        let (handle0, handle1) = tokio::join!(handle0, handle1);
+        let (handle0, handle1) = (handle0?, handle1?);
+
+        let cell0 = TensorCell::new(factory_float_tensor(&[1.0], device0.into()));
+        let cell1 = TensorCell::new(factory_float_tensor(&[1.0], device1.into()));
+        // Run an all_reduce on both ranks so that comm_dump has some interesting
+        // output.
+        handle0
+            .all_reduce(
+                &client,
+                cell0.clone(),
+                ReduceOp::Sum,
+                Stream::get_current_stream_on_device(device0),
+            )
+            .await?;
+        handle1
+            .all_reduce(
+                &client,
+                cell1.clone(),
+                ReduceOp::Sum,
+                Stream::get_current_stream_on_device(device1),
+            )
+            .await?;
+        let dump0 = handle0.comm_dump(&client).await?;
+        let dump1 = handle1.comm_dump(&client).await?;
+        assert_eq!(dump0.rank, format!("{}", 0));
+        assert_eq!(dump1.rank, format!("{}", 1));
         Ok(())
     }
 }
