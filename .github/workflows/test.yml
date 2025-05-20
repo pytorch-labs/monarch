@@ -61,5 +61,5 @@ jobs:
         python setup.py install
 
         # Run tests
-        pytest python/tests/ -v -m "not oss_skip"
+        pytest python/tests/ -s -v -m "not oss_skip"
         python python/tests/test_mock_cuda.py
