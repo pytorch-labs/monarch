@@ -19,10 +19,7 @@ use pyo3::types::PyDict;
 /// A python class that wraps a Rust Alloc trait object. It represents what
 /// is shown on the python side. Internals are not exposed.
 /// It ensures that the Alloc is only used once (i.e. moved) in rust.
-#[pyclass(
-    name = "Alloc",
-    module = "monarch._rust_bindings.hyperactor_extension.alloc"
-)]
+#[pyclass(name = "Alloc", module = "monarch._monarch.hyperactor")]
 pub struct PyAlloc {
     pub inner: Arc<Mutex<Option<PyAllocWrapper>>>,
 }
@@ -70,10 +67,7 @@ impl Alloc for PyAllocWrapper {
     }
 }
 
-#[pyclass(
-    name = "AllocConstraints",
-    module = "monarch._rust_bindings.hyperactor_extension.alloc"
-)]
+#[pyclass(name = "AllocConstraints", module = "monarch._monarch.hyperactor")]
 pub struct PyAllocConstraints {
     inner: AllocConstraints,
 }
@@ -92,10 +86,7 @@ impl PyAllocConstraints {
     }
 }
 
-#[pyclass(
-    name = "AllocSpec",
-    module = "monarch._rust_bindings.hyperactor_extension.alloc"
-)]
+#[pyclass(name = "AllocSpec", module = "monarch._monarch.hyperactor")]
 pub struct PyAllocSpec {
     pub inner: AllocSpec,
 }
@@ -139,12 +130,4 @@ impl PyAllocSpec {
             },
         })
     }
-}
-
-pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    module.add_class::<PyAlloc>()?;
-    module.add_class::<PyAllocConstraints>()?;
-    module.add_class::<PyAllocSpec>()?;
-
-    Ok(())
 }

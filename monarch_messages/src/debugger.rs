@@ -18,7 +18,7 @@ pub fn register_python_bindings(debugger: &Bound<'_, PyModule>) -> PyResult<()> 
 
 /// Enumerates the actions relevant to PDB debugging sessions.
 #[derive(Debug, Deserialize, Clone, Serialize, PartialEq)]
-#[pyo3::pyclass(frozen, module = "monarch._rust_bindings.monarch_messages.debugger")]
+#[pyo3::pyclass(frozen, module = "monarch._monarch.debugger")]
 pub enum DebuggerAction {
     /// Sent from worker to client to indicate that the worker has entered
     /// a pdb debugging session.

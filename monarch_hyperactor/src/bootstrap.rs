@@ -4,7 +4,6 @@ use pyo3::PyAny;
 use pyo3::PyResult;
 use pyo3::Python;
 use pyo3::pyfunction;
-use pyo3::types::PyAnyMethods;
 use pyo3::types::PyModule;
 use pyo3::types::PyModuleMethods;
 use pyo3::wrap_pyfunction;
@@ -18,12 +17,7 @@ pub fn bootstrap_main(py: Python) -> PyResult<Bound<PyAny>> {
 }
 
 pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResult<()> {
-    let f = wrap_pyfunction!(bootstrap_main, hyperactor_mod)?;
-    f.setattr(
-        "__module__",
-        "monarch._rust_bindings.monarch_hyperactor.bootstrap",
-    )?;
-    hyperactor_mod.add_function(f)?;
+    hyperactor_mod.add_function(wrap_pyfunction!(bootstrap_main, hyperactor_mod)?)?;
 
     Ok(())
 }

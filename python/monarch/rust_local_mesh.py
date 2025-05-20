@@ -32,20 +32,16 @@ from typing import (
     TypeVar,
 )
 
-from monarch._rust_bindings.controller.bootstrap import (
+from monarch._monarch.controller import (
     ControllerCommand,
     ControllerServerRequest,
     ControllerServerResponse,
     RunCommand,
 )
+from monarch._monarch.worker import WorkerServerRequest, WorkerServerResponse
 
 from monarch._rust_bindings.monarch_hyperactor.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
     ActorId,
-)
-
-from monarch._rust_bindings.monarch_worker.bootstrap import (
-    WorkerServerRequest,
-    WorkerServerResponse,
 )
 
 from monarch.common.device_mesh import DeviceMesh

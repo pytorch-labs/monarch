@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 
 from typing import Dict, Generator, Sequence, Tuple
 
-from monarch._rust_bindings.monarch_hyperactor.shape import Shape, Slice
+from monarch._monarch.shape import Shape, Slice
 
 from typing_extensions import Self
 

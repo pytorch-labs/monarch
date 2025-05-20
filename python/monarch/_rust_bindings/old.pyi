@@ -2,7 +2,7 @@
 
 from typing import Dict, final, List, Optional, Protocol, Type
 
-from monarch._rust_bindings.hyperactor_extension.alloc import Alloc, AllocSpec
+from monarch._rust_bindings.hyperactor_extension import Alloc, AllocSpec
 from monarch._rust_bindings.monarch_hyperactor.selection import Selection
 
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape

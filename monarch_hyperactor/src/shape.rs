@@ -7,11 +7,7 @@ use pyo3::types::PyDict;
 
 use crate::ndslice::PySlice;
 
-#[pyclass(
-    name = "Shape",
-    module = "monarch._rust_bindings.monarch_hyperactor.shape",
-    frozen
-)]
+#[pyclass(name = "Shape", module = "monarch._monarch.shape", frozen)]
 pub struct PyShape {
     pub(super) inner: Shape,
 }
@@ -109,12 +105,7 @@ impl From<Shape> for PyShape {
     }
 }
 
-#[pyclass(
-    name = "Point",
-    module = "monarch._rust_bindings.monarch_hyperactor.shape",
-    subclass,
-    frozen
-)]
+#[pyclass(name = "Point", module = "monarch._monarch.shape", subclass, frozen)]
 
 struct PyPoint {
     rank: usize,

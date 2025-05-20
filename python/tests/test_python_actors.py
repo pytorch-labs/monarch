@@ -1,5 +1,4 @@
 import operator
-from types import ModuleType
 
 import torch
 
@@ -348,19 +347,3 @@ def test_value_mesh() -> None:
     assert 1 == x.slice(hosts=0, gpus=1).item()
     n = proc.spawn("ctc", CastToCounter).get()
     assert list(x) == n.slice(gpus=0).doit.call_one(counter).get()
-
-
-def test_rust_binding_modules_correct() -> None:
-    import monarch._rust_bindings as bindings
-
-    def check(module, path):
-        for name, value in module.__dict__.items():
-            if name.startswith("__"):
-                continue
-            if isinstance(value, ModuleType):
-                check(value, f"{path}.{name}")
-            elif hasattr(value, "__module__"):
-                assert value.__name__ == name
-                assert value.__module__ == path
-
-    check(bindings, "monarch._rust_bindings")

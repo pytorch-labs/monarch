@@ -2,7 +2,7 @@
 
 from typing import Optional
 
-from monarch._rust_bindings.hyperactor_extension.alloc import Alloc, AllocSpec
+from monarch._rust_bindings.hyperactor_extension import Alloc, AllocSpec
 
 class ProcessAllocatorBase:
     def __init__(

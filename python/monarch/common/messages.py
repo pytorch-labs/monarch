@@ -15,7 +15,7 @@ from typing import (
     TYPE_CHECKING,
 )
 
-from monarch._rust_bindings.monarch_extension import worker
+from monarch._monarch import worker
 from monarch.common.function import ResolvableFromCloudpickle, ResolvableFunction
 from monarch.common.invocation import DeviceException, RemoteException
 from monarch.common.reference import Referenceable

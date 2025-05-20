@@ -26,7 +26,7 @@ from weakref import WeakKeyDictionary
 
 import torch
 import torch.distributed
-from monarch._rust_bindings.monarch_extension import worker
+from monarch._monarch import worker
 from monarch._rust_bindings.monarch_extension.client import (  # @manual=//monarch/monarch_extension:monarch_extension
     LogLevel,
     WorldState,

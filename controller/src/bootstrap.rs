@@ -64,7 +64,7 @@ static LABEL_NAME_WORKER: &str = concatcp!(WORLD_LABEL_PREFIX, "worker");
 static LABEL_NAME_CONTROLLER_ACTOR_ID: &str = concatcp!(WORLD_LABEL_PREFIX, "controllerActorId");
 
 #[derive(Clone, Debug, Serialize, Deserialize, Args)]
-#[pyclass(module = "monarch._rust_bindings.controller.bootstrap")]
+#[pyclass]
 pub struct ControllerCommand {
     /// The worker world to create
     #[arg(long)]
@@ -180,7 +180,7 @@ impl ControllerCommand {
 /// The ones for System / Host should probably be moved to the hyperactor
 /// multiprocess crate.
 #[derive(Clone, Debug, Serialize, Deserialize, Subcommand)]
-#[pyclass(module = "monarch._rust_bindings.controller.bootstrap")]
+#[pyclass]
 pub enum RunCommand {
     System {
         /// The system address to bootstrap with.
@@ -219,7 +219,7 @@ pub enum RunCommand {
     Controller(ControllerCommand),
 }
 
-#[pyclass(frozen, module = "monarch._rust_bindings.controller.bootstrap")]
+#[pyclass(frozen, module = "monarch._monarch.worker")]
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ControllerServerRequest {
     Run(RunCommand),
@@ -237,7 +237,7 @@ impl ControllerServerRequest {
     }
 }
 
-#[pyclass(frozen, module = "monarch._rust_bindings.controller.bootstrap")]
+#[pyclass(frozen, module = "monarch._monarch.worker")]
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ControllerServerResponse {
     Finished { error: Option<String> },
@@ -640,12 +640,4 @@ pub fn parse_key_val(s: &str) -> anyhow::Result<(String, String)> {
         None => Err(anyhow::anyhow!("invalid KEY=value: no `=` found in `{s}`")),
         Some((a, b)) => Ok((a.to_owned(), b.to_owned())),
     }
-}
-
-pub fn register_python_bindings(controller_mod: &Bound<'_, PyModule>) -> PyResult<()> {
-    controller_mod.add_class::<ControllerServerRequest>()?;
-    controller_mod.add_class::<ControllerServerResponse>()?;
-    controller_mod.add_class::<RunCommand>()?;
-    controller_mod.add_class::<ControllerCommand>()?;
-    Ok(())
 }

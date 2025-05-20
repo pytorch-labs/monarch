@@ -36,7 +36,7 @@ use pyo3::types::PyNone;
 use tokio::sync::Mutex;
 use torch_sys::RValue;
 
-#[pyclass(frozen, module = "monarch._rust_bindings.monarch_extension.client")]
+#[pyclass(frozen, module = "monarch._monarch.client")]
 struct WorkerResponse {
     seq: Seq,
     result: Option<Result<Serialized, Exception>>,
@@ -111,11 +111,7 @@ impl WorkerResponse {
     }
 }
 
-#[pyclass(
-    frozen,
-    name = "WorldState",
-    module = "monarch._rust_bindings.monarch_extension.client"
-)]
+#[pyclass(frozen, name = "WorldState", module = "monarch._monarch.client")]
 pub struct PyWorldState {
     inner: WorldSnapshot,
 }
@@ -141,7 +137,7 @@ impl PyWorldState {
 #[pyclass(
     frozen,
     name = "SystemSnapshotFilter",
-    module = "monarch._rust_bindings.monarch_extension.client"
+    module = "monarch._monarch.client"
 )]
 pub struct PySystemSnapshotFilter {
     inner: SystemSnapshotFilter,
@@ -221,11 +217,7 @@ impl From<PySystemSnapshotFilter> for SystemSnapshotFilter {
     }
 }
 
-#[pyclass(
-    frozen,
-    name = "ProcInfo",
-    module = "monarch._rust_bindings.monarch_extension.client"
-)]
+#[pyclass(frozen, name = "ProcInfo", module = "monarch._monarch.client")]
 pub struct PyProcInfo {
     inner: WorldSnapshotProcInfo,
 }
@@ -248,7 +240,7 @@ impl PyProcInfo {
     frozen,
     subclass,
     name = "Exception",
-    module = "monarch._rust_bindings.monarch_extension.client"
+    module = "monarch._monarch.client"
 )]
 pub struct PyException {
     inner: Exception,
@@ -268,7 +260,7 @@ impl PyException {
     }
 }
 
-#[pyclass(frozen, extends = PyException, subclass, name = "Error", module = "monarch._rust_bindings.monarch_extension.client")]
+#[pyclass(frozen, extends = PyException, subclass, name = "Error", module = "monarch._monarch.client")]
 pub struct PyError;
 
 #[pymethods]
@@ -353,7 +345,7 @@ impl PyError {
     eq,
     eq_int,
     name = "LogLevel",
-    module = "monarch._rust_bindings.monarch_extension.client"
+    module = "monarch._monarch.client"
 )]
 enum PyLogLevel {
     Info,
@@ -383,11 +375,7 @@ impl PyLogLevel {
     const INFO: PyLogLevel = PyLogLevel::Info;
 }
 
-#[pyclass(
-    frozen,
-    name = "LogMessage",
-    module = "monarch._rust_bindings.monarch_extension.client"
-)]
+#[pyclass(frozen, name = "LogMessage", module = "monarch._monarch.client")]
 pub struct LogMessage {
     level: PyLogLevel,
     message: String,
@@ -417,7 +405,7 @@ impl LogMessage {
     }
 }
 
-#[pyclass(frozen, extends = PyException, subclass, name = "Failure", module = "monarch._rust_bindings.monarch_extension.client")]
+#[pyclass(frozen, extends = PyException, subclass, name = "Failure", module = "monarch._monarch.client")]
 pub struct PyFailure;
 
 #[pymethods]
@@ -485,7 +473,7 @@ impl PyFailure {
     frozen,
     get_all,
     name = "DebuggerMessage",
-    module = "monarch._rust_bindings.monarch_extension.client"
+    module = "monarch._monarch.client"
 )]
 pub struct DebuggerMessage {
     debugger_actor_id: PyActorId,
@@ -504,7 +492,7 @@ impl DebuggerMessage {
     }
 }
 
-#[pyclass(module = "monarch._rust_bindings.monarch_extension.client")]
+#[pyclass(module = "monarch._monarch.client")]
 pub struct ClientActor {
     instance: Arc<Mutex<InstanceWrapper<ClientMessage>>>,
 }

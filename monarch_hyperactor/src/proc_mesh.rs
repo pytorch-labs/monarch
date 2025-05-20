@@ -12,10 +12,7 @@ use crate::actor_mesh::PythonActorMesh;
 use crate::mailbox::PyMailbox;
 use crate::runtime::signal_safe_block_on;
 
-#[pyclass(
-    name = "ProcMesh",
-    module = "monarch._rust_bindings.monarch_hyperactor.proc_mesh"
-)]
+#[pyclass(name = "ProcMesh", module = "monarch._monarch.hyperactor")]
 pub struct PyProcMesh {
     pub(super) inner: Arc<ProcMesh>,
 }

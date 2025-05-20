@@ -14,7 +14,7 @@ use crate::runtime::signal_safe_block_on;
 
 #[pyclass(
     name = "LocalAllocatorBase",
-    module = "monarch._rust_bindings.monarch_hyperactor.alloc",
+    module = "monarch._monarch.hyperactor",
     subclass
 )]
 pub struct PyLocalAllocator;
@@ -61,7 +61,7 @@ impl PyLocalAllocator {
 
 #[pyclass(
     name = "ProcessAllocatorBase",
-    module = "monarch._rust_bindings.monarch_hyperactor.alloc",
+    module = "monarch._monarch.hyperactor",
     subclass
 )]
 pub struct PyProcessAllocator {

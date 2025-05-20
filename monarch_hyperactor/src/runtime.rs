@@ -118,10 +118,6 @@ pub fn sleep_indefinitely_for_unit_tests(py: Python) -> PyResult<()> {
 pub fn register_python_bindings(runtime_mod: &Bound<'_, PyModule>) -> PyResult<()> {
     let sleep_indefinitely_fn =
         wrap_pyfunction_bound!(sleep_indefinitely_for_unit_tests, runtime_mod.py())?;
-    sleep_indefinitely_fn.setattr(
-        "__module__",
-        "monarch._rust_bindings.monarch_hyperactor.runtime",
-    )?;
     runtime_mod.add_function(sleep_indefinitely_fn)?;
     Ok(())
 }

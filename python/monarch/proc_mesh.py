@@ -5,7 +5,7 @@ from typing import Any, cast, Optional, Type, TypeVar
 import monarch
 from monarch import ActorFuture as Future
 
-from monarch._rust_bindings.hyperactor_extension.alloc import (  # @manual=//monarch/monarch_extension:monarch_extension  # @manual=//monarch/monarch_extension:monarch_extension
+from monarch._rust_bindings.hyperactor_extension import (  # @manual=//monarch/monarch_extension:monarch_extension  # @manual=//monarch/monarch_extension:monarch_extension
     Alloc,
     AllocConstraints,
     AllocSpec,

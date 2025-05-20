@@ -8,9 +8,7 @@ This is used to test the signal handling behavior of signal_safe_block_on.
 
 import sys
 
-from monarch._rust_bindings.monarch_hyperactor.runtime import (  # @manual
-    sleep_indefinitely_for_unit_tests,
-)
+from monarch._monarch.runtime import sleep_indefinitely_for_unit_tests  # @manual
 
 
 def main() -> None:

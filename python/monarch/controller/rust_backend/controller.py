@@ -6,12 +6,8 @@ from collections import deque
 from logging import Logger
 from typing import cast, List, NamedTuple, Optional, Sequence, Union
 
-from monarch._rust_bindings.monarch_extension import (
-    client,
-    controller,
-    debugger,
-    worker,
-)
+from monarch._monarch import client, controller, debugger, worker
+
 from monarch._rust_bindings.monarch_extension.client import (  # @manual=//monarch/monarch_extension:monarch_extension
     ClientActor,
     SystemSnapshotFilter,
@@ -21,7 +17,6 @@ from monarch._rust_bindings.monarch_hyperactor.proc import (  # @manual=//monarc
     ActorId,
     Proc,
 )
-from monarch._rust_bindings.monarch_messages.debugger import DebuggerAction
 from monarch.common.controller_api import LogMessage, MessageResult
 from monarch.common.device_mesh import no_mesh
 from monarch.common.invocation import DeviceException, RemoteException
@@ -136,7 +131,7 @@ class RustController:
         return results
 
     def _run_debugger_loop(self, message: client.DebuggerMessage) -> None:
-        if not isinstance(message.action, DebuggerAction.Paused):
+        if not isinstance(message.action, debugger.DebuggerAction.Paused):
             raise RuntimeError(
                 f"Unexpected debugger message {message} when no debugger session is running"
             )
@@ -152,7 +147,9 @@ class RustController:
 
             self._actor.send(
                 debugger_actor_id,
-                debugger.DebuggerMessage(action=DebuggerAction.Attach()).serialize(),
+                debugger.DebuggerMessage(
+                    action=debugger.DebuggerAction.Attach()
+                ).serialize(),
             )
 
             while True:
@@ -164,7 +161,7 @@ class RustController:
                     continue
 
                 if msg.debugger_actor_id != debugger_actor_id:
-                    if isinstance(msg.action, DebuggerAction.Paused):
+                    if isinstance(msg.action, debugger.DebuggerAction.Paused):
                         self._pending_debugger_sessions.append(msg.debugger_actor_id)
                         continue
                     else:
@@ -174,18 +171,18 @@ class RustController:
                         )
 
                 action = msg.action
-                if isinstance(action, DebuggerAction.Detach):
+                if isinstance(action, debugger.DebuggerAction.Detach):
                     break
-                elif isinstance(action, DebuggerAction.Read):
+                elif isinstance(action, debugger.DebuggerAction.Read):
                     self._actor.send(
                         debugger_actor_id,
                         debugger.DebuggerMessage(
-                            action=DebuggerAction.Write(
+                            action=debugger.DebuggerAction.Write(
                                 bytes=debugger_read(action.requested_size)
                             )
                         ).serialize(),
                     )
-                elif isinstance(action, DebuggerAction.Write):
+                elif isinstance(action, debugger.DebuggerAction.Write):
                     debugger_write(
                         debugger.get_bytes_from_write_action(action).decode()
                     )

@@ -109,18 +109,9 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         module,
         "monarch_extension.simulator_client",
     )?)?;
-    hyperactor_extension::alloc::register_python_bindings(&get_or_add_new_module(
+    hyperactor_extension::register_python_bindings(&get_or_add_new_module(
         module,
-        "hyperactor_extension.alloc",
-    )?)?;
-    ::controller::bootstrap::register_python_bindings(&get_or_add_new_module(
-        module,
-        "controller.bootstrap",
-    )?)?;
-
-    ::monarch_worker::bootstrap::register_python_bindings(&get_or_add_new_module(
-        module,
-        "monarch_worker.bootstrap",
+        "hyperactor_extension",
     )?)?;
 
     Ok(())

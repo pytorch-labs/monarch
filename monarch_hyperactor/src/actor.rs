@@ -29,7 +29,7 @@ use crate::proc::PySerialized;
 use crate::runtime::signal_safe_block_on;
 use crate::shape::PyShape;
 
-#[pyclass(frozen, module = "monarch._rust_bindings.monarch_hyperactor.actor")]
+#[pyclass(frozen, module = "monarch._monarch.hyperactor")]
 #[derive(Serialize, Deserialize, Named)]
 pub struct PickledMessage {
     sender_actor_id: ActorId,
@@ -73,7 +73,7 @@ impl PickledMessage {
     }
 }
 
-#[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.actor")]
+#[pyclass(module = "monarch._monarch.hyperactor")]
 pub struct PickledMessageClientActor {
     instance: Arc<Mutex<InstanceWrapper<PickledMessage>>>,
 }
@@ -148,7 +148,7 @@ impl PickledMessageClientActor {
     }
 }
 
-#[pyclass(frozen, module = "monarch._rust_bindings.monarch_hyperactor.actor")]
+#[pyclass(frozen, module = "monarch._monarch.hyperactor")]
 #[derive(Clone, Serialize, Deserialize, Named)]
 pub struct PythonMessage {
     method: String,
@@ -188,7 +188,7 @@ impl PythonMessage {
     }
 }
 
-#[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.actor")]
+#[pyclass(module = "monarch._monarch.hyperactor")]
 pub(super) struct PythonActorHandle {
     pub(super) inner: ActorHandle<PythonActor>,
 }

@@ -58,7 +58,7 @@ use crate::wire_value::WireValue;
     Ord,
     From
 )]
-#[pyo3::pyclass(frozen, module = "monarch._rust_bindings.monarch_extension.worker")]
+#[pyo3::pyclass(frozen, module = "monarch._monarch.worker")]
 pub struct StreamRef {
     #[pyo3(get)]
     pub id: u64,
@@ -110,7 +110,7 @@ impl StreamRef {
     Ord,
     From
 )]
-#[pyo3::pyclass(frozen, module = "monarch._rust_bindings.monarch_extension.worker")]
+#[pyo3::pyclass(frozen, module = "monarch._monarch.worker")]
 pub struct Ref {
     #[pyo3(get)]
     pub id: u64,
@@ -184,7 +184,7 @@ impl Display for Ref {
 /// global reference.
 // TODO: do some validation on the namespace/opname/overload
 #[derive(PartialEq, Serialize, Deserialize, Debug, Clone)]
-#[pyo3::pyclass(frozen, module = "monarch._rust_bindings.monarch_extension.worker")]
+#[pyo3::pyclass(frozen, module = "monarch._monarch.worker")]
 pub struct FunctionPath {
     #[pyo3(get)]
     pub path: String,
@@ -234,7 +234,7 @@ impl FunctionPath {
 /// global reference.
 // TODO: do some validation on the namespace/opname/overload
 #[derive(PartialEq, Serialize, Deserialize, Debug, Clone, From)]
-#[pyo3::pyclass(frozen, module = "monarch._rust_bindings.monarch_extension.worker")]
+#[pyo3::pyclass(frozen, module = "monarch._monarch.worker")]
 pub struct Cloudpickle {
     #[serde(with = "serde_bytes")]
     bytes: Vec<u8>,
@@ -372,11 +372,7 @@ pub enum Reduction {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[pyo3::pyclass(
-    frozen,
-    name = "TensorFactory",
-    module = "monarch._rust_bindings.monarch_extension.worker"
-)]
+#[pyo3::pyclass(frozen, name = "TensorFactory", module = "monarch._monarch.worker")]
 pub struct Factory {
     pub size: Vec<i64>,
     #[serde(with = "torch_sys::ScalarTypeDef")]
@@ -430,7 +426,7 @@ impl Factory {
 
 /// Controls what CUDA stream an actor will use.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
-#[pyo3::pyclass(module = "monarch._rust_bindings.monarch_extension.worker", eq, eq_int)]
+#[pyo3::pyclass(module = "monarch._monarch.worker", eq, eq_int)]
 pub enum StreamCreationMode {
     /// Use the default stream for the current device.
     UseDefaultStream,

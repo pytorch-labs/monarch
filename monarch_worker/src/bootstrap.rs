@@ -115,7 +115,7 @@ fn parse_key_val(s: &str) -> anyhow::Result<(String, String)> {
     }
 }
 
-#[pyclass(frozen, module = "monarch._rust_bindings.monarch_worker.bootstrap")]
+#[pyclass(frozen, module = "monarch._monarch.worker")]
 #[derive(Debug, Serialize, Deserialize)]
 pub enum WorkerServerRequest {
     Run {
@@ -138,7 +138,7 @@ impl WorkerServerRequest {
     }
 }
 
-#[pyclass(frozen, module = "monarch._rust_bindings.monarch_worker.bootstrap")]
+#[pyclass(frozen, module = "monarch._monarch.worker")]
 #[derive(Debug, Serialize, Deserialize)]
 pub enum WorkerServerResponse {
     Finished { error: Option<String> },
@@ -204,13 +204,6 @@ pub fn worker_server(inp: impl BufRead, mut outp: impl Write) -> Result<()> {
     // reasons -- does this avoid some slow Python shutdown code?
     //Ok(())
     std::process::exit(0);
-}
-
-pub fn register_python_bindings(worker_mod: &Bound<'_, PyModule>) -> PyResult<()> {
-    worker_mod.add_class::<WorkerServerRequest>()?;
-    worker_mod.add_class::<WorkerServerResponse>()?;
-
-    Ok(())
 }
 
 #[cfg(test)]

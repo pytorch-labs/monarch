@@ -1,3 +1,7 @@
+use controller::bootstrap::ControllerCommand;
+use controller::bootstrap::ControllerServerRequest;
+use controller::bootstrap::ControllerServerResponse;
+use controller::bootstrap::RunCommand;
 /// These the controller messages that are exposed to python to allow the client to construct and
 /// send messages to the controller. For more details of the definitions take a look at
 /// [`monarch_messages::controller::ControllerMessage`].
@@ -13,11 +17,7 @@ use pyo3::prelude::*;
 
 use crate::worker::PyWorkerMessage;
 
-#[pyclass(
-    frozen,
-    get_all,
-    module = "monarch._rust_bindings.monarch_extension.controller"
-)]
+#[pyclass(frozen, get_all, module = "monarch._monarch.controller")]
 struct Node {
     seq: Seq,
     defs: Vec<Ref>,
@@ -59,7 +59,7 @@ enum PyRanks {
     SliceList(Vec<PySlice>),
 }
 
-#[pyclass(frozen, module = "monarch._rust_bindings.monarch_extension.controller")]
+#[pyclass(frozen, module = "monarch._monarch.controller")]
 struct Send {
     ranks: Ranks,
     message: Serialized,
@@ -124,5 +124,9 @@ impl Send {
 pub(crate) fn register_python_bindings(controller_mod: &Bound<'_, PyModule>) -> PyResult<()> {
     controller_mod.add_class::<Node>()?;
     controller_mod.add_class::<Send>()?;
+    controller_mod.add_class::<ControllerServerRequest>()?;
+    controller_mod.add_class::<ControllerServerResponse>()?;
+    controller_mod.add_class::<RunCommand>()?;
+    controller_mod.add_class::<ControllerCommand>()?;
     Ok(())
 }

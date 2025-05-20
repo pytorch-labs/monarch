@@ -6,7 +6,7 @@
 ///        wheel and the rest of the codebase especially while things are in flux. Plus we are also
 ///        building everything in hyperactor_python into this wheel already (i.e. hyperactor deps).
 ///     2. In order to support autoreload in bento, potentially pickling in the future etc we need to
-///        have a well defined module for these deps which needs to be monarch._rust_bindings.monarch_hyperactor.proc and
+///        have a well defined module for these deps which needs to be monarch._monarch.hyperactor and
 ///        and making that the module of the classes in hyperactor python is weird.
 use std::collections::HashMap;
 use std::hash::DefaultHasher;
@@ -61,10 +61,7 @@ use crate::runtime::signal_safe_block_on;
 
 /// Wrapper around a proc that provides utilities to implement a python actor.
 #[derive(Clone, Debug)]
-#[pyclass(
-    name = "Proc",
-    module = "monarch._rust_bindings.monarch_hyperactor.proc"
-)]
+#[pyclass(name = "Proc", module = "monarch._monarch.hyperactor")]
 pub struct PyProc {
     pub(super) inner: Proc,
 }
@@ -233,11 +230,7 @@ pub fn init_proc(
     })?
 }
 
-#[pyclass(
-    frozen,
-    name = "ActorId",
-    module = "monarch._rust_bindings.monarch_hyperactor.proc"
-)]
+#[pyclass(frozen, name = "ActorId", module = "monarch._monarch.hyperactor")]
 #[derive(Clone)]
 pub struct PyActorId {
     pub(super) inner: ActorId,
@@ -343,11 +336,7 @@ enum InstanceStatus {
 
 /// Wrapper around a [`Serialized`] that allows returning it to python and
 /// passed to python based detached actors to send to other actors.
-#[pyclass(
-    frozen,
-    name = "Serialized",
-    module = "monarch._rust_bindings.monarch_hyperactor.proc"
-)]
+#[pyclass(frozen, name = "Serialized", module = "monarch._monarch.hyperactor")]
 #[derive(Debug)]
 pub struct PySerialized {
     inner: Serialized,
@@ -651,12 +640,7 @@ async fn check_actor_supervision_state(
 }
 
 pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResult<()> {
-    let f = wrap_pyfunction!(init_proc, hyperactor_mod)?;
-    f.setattr(
-        "__module__",
-        "monarch._rust_bindings.monarch_hyperactor.proc",
-    )?;
-    hyperactor_mod.add_function(f)?;
+    hyperactor_mod.add_function(wrap_pyfunction!(init_proc, hyperactor_mod)?)?;
 
     hyperactor_mod.add_class::<PyProc>()?;
     hyperactor_mod.add_class::<PyActorId>()?;

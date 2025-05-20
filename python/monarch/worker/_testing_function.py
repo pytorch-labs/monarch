@@ -9,11 +9,11 @@ import torch
 import torch.distributed as dist
 import torch.nn as nn
 import torch.optim as optim
-from monarch._rust_bindings.monarch_extension.debugger import (  # @manual=//monarch/monarch_extension:monarch_extension
+from monarch._monarch.debugger import (  # @manual=//monarch/monarch_extension:monarch_extension
+    DebuggerAction,
     get_bytes_from_write_action,
     PdbActor,
 )
-from monarch._rust_bindings.monarch_messages.debugger import DebuggerAction
 from monarch.common import opaque_ref
 from monarch.common.pipe import Pipe
 from monarch.common.process_group import SingleControllerProcessGroupWrapper

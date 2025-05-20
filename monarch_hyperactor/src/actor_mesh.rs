@@ -12,10 +12,7 @@ use crate::mailbox::PyMailbox;
 use crate::proc::PyActorId;
 use crate::shape::PyShape;
 
-#[pyclass(
-    name = "PythonActorMesh",
-    module = "monarch._rust_bindings.monarch_hyperactor.actor_mesh"
-)]
+#[pyclass(name = "PythonActorMesh", module = "monarch._monarch.hyperactor")]
 pub struct PythonActorMesh {
     pub(super) inner: Arc<ActorMesh<'static, PythonActor>>,
     pub(super) client: PyMailbox,

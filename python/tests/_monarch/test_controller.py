@@ -4,11 +4,7 @@
 
 from unittest import TestCase
 
-from monarch._rust_bindings.monarch_extension import (  # @manual=//monarch/monarch_extension:monarch_extension
-    controller,
-    worker,
-)
-from monarch._rust_bindings.monarch_hyperactor import shape
+from monarch._monarch import controller, shape, worker
 
 
 class TestController(TestCase):

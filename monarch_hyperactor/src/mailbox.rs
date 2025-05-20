@@ -26,10 +26,7 @@ use crate::proc::PyActorId;
 use crate::runtime::signal_safe_block_on;
 use crate::shape::PyShape;
 #[derive(Clone, Debug)]
-#[pyclass(
-    name = "Mailbox",
-    module = "monarch._rust_bindings.monarch_hyperactor.mailbox"
-)]
+#[pyclass(name = "Mailbox", module = "monarch._monarch.hyperactor")]
 pub(super) struct PyMailbox {
     pub(super) inner: Mailbox,
 }
@@ -212,10 +209,7 @@ impl std::fmt::Debug for PyPortId {
 }
 
 #[derive(Clone, Debug)]
-#[pyclass(
-    name = "PortHandle",
-    module = "monarch._rust_bindings.monarch_hyperactor.mailbox"
-)]
+#[pyclass(name = "PortHandle", module = "monarch._monarch.hyperactor")]
 pub(super) struct PythonPortHandle {
     inner: PortHandle<PythonMessage>,
 }
@@ -238,10 +232,7 @@ impl PythonPortHandle {
 }
 
 #[derive(Debug)]
-#[pyclass(
-    name = "PortReceiver",
-    module = "monarch._rust_bindings.monarch_hyperactor.mailbox"
-)]
+#[pyclass(name = "PortReceiver", module = "monarch._monarch.hyperactor")]
 pub(super) struct PythonPortReceiver {
     inner: Arc<tokio::sync::Mutex<PortReceiver<PythonMessage>>>,
 }
@@ -267,10 +258,7 @@ impl PythonPortReceiver {
 }
 
 #[derive(Debug)]
-#[pyclass(
-    name = "OncePortHandle",
-    module = "monarch._rust_bindings.monarch_hyperactor.mailbox"
-)]
+#[pyclass(name = "OncePortHandle", module = "monarch._monarch.hyperactor")]
 pub(super) struct PythonOncePortHandle {
     inner: Option<OncePortHandle<PythonMessage>>,
 }
@@ -298,10 +286,7 @@ impl PythonOncePortHandle {
     }
 }
 
-#[pyclass(
-    name = "OncePortReceiver",
-    module = "monarch._rust_bindings.monarch_hyperactor.mailbox"
-)]
+#[pyclass(name = "OncePortReceiver", module = "monarch._monarch.hyperactor")]
 pub(super) struct PythonOncePortReceiver {
     inner: std::sync::Mutex<Option<OncePortReceiver<PythonMessage>>>,
 }

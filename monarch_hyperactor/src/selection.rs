@@ -3,11 +3,7 @@ use pyo3::PyResult;
 use pyo3::prelude::*;
 use pyo3::types::PyType;
 
-#[pyclass(
-    name = "Selection",
-    module = "monarch._rust_bindings.monarch_hyperactor.selection",
-    frozen
-)]
+#[pyclass(name = "Selection", module = "monarch._monarch.selection", frozen)]
 pub struct PySelection {
     inner: Selection,
 }

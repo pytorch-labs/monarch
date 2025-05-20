@@ -2,7 +2,7 @@
 
 from typing import final, Type
 
-from monarch._rust_bindings.hyperactor_extension.alloc import Alloc
+from monarch._rust_bindings.hyperactor_extension import Alloc
 from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
 from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
 from monarch._rust_bindings.monarch_hyperactor.proc import Actor

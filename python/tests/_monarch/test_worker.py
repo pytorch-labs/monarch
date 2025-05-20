@@ -8,8 +8,7 @@ from unittest import TestCase
 
 import cloudpickle
 
-from monarch._rust_bindings.monarch_extension import worker
-from monarch._rust_bindings.monarch_hyperactor import shape
+from monarch._monarch import shape, worker
 from pyre_extensions import none_throws
 
 

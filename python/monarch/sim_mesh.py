@@ -14,7 +14,6 @@ from typing import Callable, Dict, Iterable, List, Optional, Tuple
 from monarch._rust_bindings.monarch_extension.client import (  # @manual=//monarch/monarch_extension:monarch_extension  # @manual=//monarch/monarch_extension:monarch_extension
     ClientActor,
 )
-
 from monarch._rust_bindings.monarch_extension.simulator_client import (  # @manual=//monarch/monarch_extension:monarch_extension
     bootstrap_simulator_backend,
     SimulatorClient,

@@ -9,16 +9,15 @@ import pytest
 import torch
 
 from monarch import DeviceMesh, fetch_shard, remote, rust_local_mesh
+from monarch._monarch.debugger import (
+    DebuggerAction,
+    DebuggerMessage as PdbDebuggerMessage,
+    get_bytes_from_write_action,
+)
 from monarch._rust_bindings.monarch_extension.client import (  # @manual=//monarch/monarch_extension:monarch_extension
     ClientActor,
     DebuggerMessage as ClientDebuggerMessage,
 )
-
-from monarch._rust_bindings.monarch_extension.debugger import (
-    DebuggerMessage as PdbDebuggerMessage,
-    get_bytes_from_write_action,
-)
-from monarch._rust_bindings.monarch_messages.debugger import DebuggerAction
 from monarch.rust_local_mesh import LoggingLocation, SocketType
 from monarch_supervisor.logging import fix_exception_lines
 
