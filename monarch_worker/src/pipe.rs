@@ -227,6 +227,7 @@ impl<T: Serialize + DeserializeOwned> Pipe<T> for StreamPipe {
         let len = bytes.len();
         self.writer.write_all(&len.to_be_bytes())?;
         self.writer.write_all(&bytes)?;
+        self.writer.flush()?;
         Ok(())
     }
 
@@ -366,7 +367,7 @@ impl PipeMessageHandler for PipeActor {
         // TODO(agallagher): Propagate failures and use a timeout?
         tokio::select! {
             res = self.handle.wait() => bail!("pipe server exited: {:?}", res),
-            res = self.pipe.as_mut().unwrap().recv() => res,
+            res = self.pipe.as_mut().unwrap().recv() => res
         }
     }
 }

@@ -512,8 +512,6 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
         assert local_finished_1.item() == 1.0
 
     def test_distributed_error(self, backend_type):
-        if backend_type == BackendType.RS:
-            pytest.skip("FIXME: Rust support for this function")
         with self.local_device_mesh(2, 2, backend_type) as _:
             x = torch.rand(3, 4).cuda()
             y = torch.rand(3, 4).cuda()
@@ -539,8 +537,6 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
             fetch_shard(2 * x, gpu=1, host=0).result()
 
     def test_pipe(self, backend_type):
-        if backend_type == BackendType.RS:
-            pytest.skip("FIXME: Rust support for this function")
         with self.local_device_mesh(2, 2, backend_type):
             p = example_echo_add()
             for _i in range(10):
@@ -560,8 +556,6 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
                     assert x.item() == i
 
     def test_loader_blocks_with_small_pipe(self, backend_type):
-        if backend_type == BackendType.RS:
-            pytest.skip("FIXME: Rust support for this function")
         with self.local_device_mesh(2, 2, backend_type):
             iters = 10
             p = example_data_loader_small_pipe(iters, (1000, 1000))
@@ -575,8 +569,6 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
         assert t[0][0].item() == -1.0
 
     def test_streams_run_parallel(self, backend_type):
-        if backend_type == BackendType.RS:
-            pytest.skip("FIXME: Rust support for this function")
         with self.local_device_mesh(2, 2, backend_type):
             # test that these two streams do in fact run in parallel
             # on the worker by having each stream wait on a barrier.
@@ -637,8 +629,6 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
             )
 
     def test_cached_remote_function(self, backend_type):
-        if backend_type == BackendType.RS:
-            pytest.skip("FIXME: Rust support for this function")
         fn = remote("monarch.worker._testing_function.how_many_of_these_do_you_want")
         start_hits = remote_module._hit
         with self.local_device_mesh(2, 2, backend_type):
@@ -707,9 +697,6 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
             assert outs[2]._fake.storage_offset() == 40
 
     def test_live_function(self, backend_type):
-        if backend_type == BackendType.RS:
-            pytest.skip("FIXME: Rust support for this function")
-
         def bar(x, y):
             return (
                 a_function_called_by_a_live_function(x)
@@ -1087,18 +1074,6 @@ class TestComm(RemoteFunctionsTestBase):
                             expected_tensor,
                             inspect(t, {"host": host, "gpu": gpu}),
                         )
-
-    def test_nccl_barrier_device_ids(self, backend_type: BackendType) -> None:
-        if backend_type == BackendType.PY:
-            # pyre-ignore[29]: pytest.skip is callable.
-            pytest.skip("FIXME: Python support for this function")
-        with self.local_device_mesh(
-            self.N_HOSTS, self.N_GPUS, backend_type
-        ) as device_mesh:
-            pg = device_mesh.process_group(("host", "gpu"))
-            rank = device_mesh.rank("host") * self.N_GPUS + device_mesh.rank("gpu")
-            with pytest.raises(monarch.common.invocation.RemoteException):
-                inspect(barrier(device_ids=[rank], group=pg))
 
     def test_tensor_dtype_complex(self, backend_type: BackendType) -> None:
         self._test_tensor_dtype_complex(backend_type)

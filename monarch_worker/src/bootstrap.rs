@@ -98,8 +98,12 @@ pub fn bootstrap_pipe() -> Result<(), anyhow::Error> {
     // Value of 4 is arbitrary as our side does not need to do buffering.
     let mut pipe = StreamPipe::new(std::io::stdin(), std::io::stdout(), 4);
     let init: OutOfProcessSetupParams = pipe.recv()?;
+    // Create a PyPipe that allows unsafe object conversion. This allows the pipe to
+    // receive tensors, which we know is safe because StreamPipe receives the serialized
+    // tensors from out-of-process, and they therefore can't be owned by anything except
+    // the pipe's python code.
     run_py_pipe(
-        PyPipe::new(Box::new(pipe), init.ranks, init.sizes),
+        PyPipe::new(Box::new(pipe), init.ranks, init.sizes, true),
         init.function,
         init.args,
         init.kwargs,

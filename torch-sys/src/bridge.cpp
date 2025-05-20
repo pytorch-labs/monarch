@@ -502,6 +502,7 @@ Tensor tensor_from_py_object(PyObject* unowned) {
 // TODO: We can do better for IValue serde as we dont need pickle compat here.
 const char kIValueStart = '\x01';
 const char kTensorsStart = '\x02';
+const char kWrappedNumberStart = '\x03';
 rust::Vec<uint8_t> serialize_ivalue(const IValue& iv) {
   if (iv.isTensor() && !iv.toTensor().defined()) {
     // Special case for undefined tensors as pickle doesnt
@@ -523,6 +524,18 @@ rust::Vec<uint8_t> serialize_ivalue(const IValue& iv) {
     }
     std::copy(
         tensors_data.begin(), tensors_data.end(), std::back_inserter(out));
+    // Tensor serialization doesn't maintain the wrapped number flag, so we
+    // need to manually serialize it. This is important to maintain because
+    // it has implications for the output type of torch ops.
+    out.push_back(kWrappedNumberStart);
+    for (size_t i = 0; i < tensors.size(); ++i) {
+      uint8_t offset = i % sizeof(uint8_t);
+      if (offset == 0) {
+        out.push_back(0);
+      }
+      out.back() |= static_cast<uint8_t>(
+          tensors.at(i).unsafeGetTensorImpl()->is_wrapped_number() << offset);
+    }
   }
   out.push_back(kIValueStart);
   out.reserve(out.size() + pickle_data.size());
@@ -559,6 +572,33 @@ IValue deserialize_ivalue(rust::Slice<const uint8_t> buf) {
     rust::Slice<const uint8_t> tensor_data(buf.data() + i, tensors_size);
     tensors = load<std::vector<Tensor>>(tensor_data);
     i += tensors_size;
+    if (i >= buf.size() || buf.at(i) != kWrappedNumberStart) {
+      throw std::runtime_error(
+          "Invalid IValue serialization: missing wrapped number start byte");
+    }
+    for (size_t tensor_index = 0; tensor_index < tensors.size();
+         tensor_index++) {
+      uint8_t offset = tensor_index % sizeof(uint8_t);
+      if (offset == 0) {
+        i++;
+      }
+      if (i >= buf.size()) {
+        throw std::runtime_error(
+            "Invalid IValue serialization: wrapped number data truncated");
+      }
+      bool wrapped_number = (buf.at(i) >> offset) & 0x01;
+      if (wrapped_number) {
+        // You would think we could just call
+        // set_wrapped_number(wrapped_number), but you'd be wrong. Internally,
+        // set_wrapped_number asserts a 0-dim tensor regardless of whether its
+        // argument is true or false, so we can only call set_wrapped_number
+        // safely when wrapped_number == true.
+        tensors.at(tensor_index)
+            .unsafeGetTensorImpl()
+            ->set_wrapped_number(true);
+      }
+    }
+    i++;
   }
   if (i >= buf.size() || buf.at(i++) != kIValueStart) {
     throw std::runtime_error(
