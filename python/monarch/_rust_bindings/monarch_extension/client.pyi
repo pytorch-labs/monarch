@@ -74,7 +74,7 @@ class Failure(Exception):
 class WorkerResponse:
     """
     Response that has been sent back from a worker through the controller
-    to the client./python/monarch/_monarch/client/__init__.pyi. This does not get created by in python outside of unittests.
+    to the client. This does not get created by in python outside of unittests.
     """
 
     @property

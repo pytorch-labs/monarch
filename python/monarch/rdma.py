@@ -6,8 +6,9 @@ from dataclasses import dataclass
 from traceback import extract_tb, StackSummary
 from typing import cast, Dict, Optional, Tuple
 
-import monarch._monarch.hyperactor as hyperactor
 import torch
+
+from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 
 from monarch.service import Actor, ActorMeshRef, endpoint, MonarchContext, Service
 
@@ -49,7 +50,7 @@ class RDMAManager(Actor):
                 RDMAManager,
                 ActorMeshRef.from_actor_id(
                     ctx.mailbox,
-                    hyperactor.ActorId.from_string(f"{proc_id}.rdma_manager[0]"),
+                    ActorId.from_string(f"{proc_id}.rdma_manager[0]"),
                 ),
                 ctx.mailbox,
             ),

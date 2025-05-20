@@ -60,7 +60,7 @@ from monarch.rust_backend_mesh import (
 )
 
 logger: logging.Logger = logging.getLogger(__name__)
-_MONARCH_WORKER_MAIN = "monarch._monarch.worker.worker_main"
+_MONARCH_WORKER_MAIN = "monarch.worker_main"
 
 try:
     from __manifest__ import fbmake  # noqa

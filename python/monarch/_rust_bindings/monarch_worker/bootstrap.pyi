@@ -3,7 +3,6 @@ from typing import final, Optional, Tuple
 class WorkerServerRequest:
     """
     Python binding for the Rust WorkerServerRequest enum.
-    Defined in the monarch._monarch.worker module.
     """
 
     @final
@@ -54,7 +53,6 @@ class WorkerServerRequest:
 class WorkerServerResponse:
     """
     Python binding for the Rust WorkerServerResponse enum.
-    Defined in the monarch._monarch.worker module.
     """
 
     @final

@@ -5,9 +5,9 @@
 from unittest import TestCase
 
 import torch
-
-from monarch._monarch import hyperactor
 from monarch._rust_bindings.monarch_extension import client
+
+from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from pyre_extensions import none_throws
 
 
@@ -16,7 +16,7 @@ class TestClient(TestCase):
         err = client.Error.new_for_unit_test(
             7,
             8,
-            hyperactor.ActorId(world_name="test", rank=0, actor_name="actor"),
+            ActorId(world_name="test", rank=0, actor_name="actor"),
             "test error",
         )
         resp = client.WorkerResponse.new_for_unit_test(

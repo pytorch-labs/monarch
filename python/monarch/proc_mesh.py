@@ -125,7 +125,7 @@ def local_proc_mesh(*, gpus: Optional[int] = None, hosts: int = 1) -> Future[Pro
     )
 
 
-_BOOTSTRAP_MAIN = "monarch._monarch.hyperactor.bootstrap_main"
+_BOOTSTRAP_MAIN = "monarch.bootstrap_main"
 
 
 def _get_bootstrap_args() -> tuple[str, Optional[list[str]], dict[str, str]]:

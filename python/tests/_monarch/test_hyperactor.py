@@ -10,12 +10,11 @@ import time
 import monarch
 import pytest
 
-from monarch._monarch.hyperactor import Actor
-
 from monarch._rust_bindings.hyperactor_extension.alloc import (  # @manual=//monarch/monarch_extension:monarch_extension
     AllocConstraints,
     AllocSpec,
 )
+
 from monarch._rust_bindings.monarch_hyperactor.actor import PythonMessage
 
 from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
@@ -23,7 +22,7 @@ from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
 
 
-class MyActor(Actor):
+class MyActor:
     async def handle(self, mailbox: Mailbox, message: PythonMessage) -> None:
         return None
 
@@ -40,9 +39,9 @@ class MyActor(Actor):
 
 def test_import() -> None:
     try:
-        import monarch._monarch.hyperactor  # noqa
+        import monarch._rust_bindings  # noqa
     except ImportError as e:
-        raise ImportError(f"hyperactor failed to import: {e}")
+        raise ImportError(f"monarch._rust_bindings failed to import: {e}")
 
 
 def test_actor_id() -> None:
@@ -53,7 +52,8 @@ def test_actor_id() -> None:
 
 def test_no_hang_on_shutdown() -> None:
     def test_fn() -> None:
-        import monarch._monarch.hyperactor  # noqa
+        import monarch._rust_bindings  # noqa
+        import torch  # noqa
 
         time.sleep(100)
 
@@ -103,7 +103,7 @@ async def test_actor_mesh() -> None:
 async def test_proc_mesh_process_allocator() -> None:
     spec = AllocSpec(AllocConstraints(), replica=2)
     env = {}
-    env["PAR_MAIN_OVERRIDE"] = "monarch._monarch.hyperactor.bootstrap_main"
+    env["PAR_MAIN_OVERRIDE"] = "monarch.bootstrap_main"
     env["HYPERACTOR_MANAGED_SUBPROCESS"] = "1"
     allocator = monarch.ProcessAllocator(sys.argv[0], None, env)
     alloc = await allocator.allocate(spec)

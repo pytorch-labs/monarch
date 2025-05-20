@@ -189,7 +189,6 @@ class RunCommand:
 class ControllerServerRequest:
     """
     Python binding for the Rust ControllerServerRequest enum.
-    Defined in the monarch._monarch.worker module.
     """
 
     @final
@@ -234,7 +233,6 @@ class ControllerServerRequest:
 class ControllerServerResponse:
     """
     Python binding for the Rust ControllerServerResponse enum.
-    Defined in the monarch._monarch.worker module.
     """
 
     @final

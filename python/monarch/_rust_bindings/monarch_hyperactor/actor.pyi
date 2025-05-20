@@ -1,6 +1,8 @@
 # pyre-strict
 
-from typing import final, List
+from typing import final, List, Protocol
+
+from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
 
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId, Proc, Serialized
 
@@ -124,3 +126,14 @@ class PythonActorHandle:
         Bind this actor. The returned actor id can be used to reach the actor externally.
         """
         ...
+
+class Actor(Protocol):
+    async def handle(self, mailbox: Mailbox, message: PythonMessage) -> None: ...
+    async def handle_cast(
+        self,
+        mailbox: Mailbox,
+        rank: int,
+        coordinates: list[tuple[str, int]],
+        message: PythonMessage,
+    ) -> None:
+        await self.handle(mailbox, message)
