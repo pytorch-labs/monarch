@@ -1279,7 +1279,15 @@ def local_meshes(
         system_factory=system_factory,
     )
     with bootstrap:
-        yield dms
+        maybe_error = None
+        try:
+            yield dms
+        except Exception as e:
+            maybe_error = e
+            raise
+        finally:
+            for dm in dms:
+                dm.exit(maybe_error)
 
 
 def local_meshes_and_bootstraps(
