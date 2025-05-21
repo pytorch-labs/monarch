@@ -37,6 +37,9 @@ pip install pyzmq requests numpy pyre-extensions pytest-timeout cloudpickle
 python setup.py install
 # or setup for development
 python setup.py develop
+
+# run unit tests. consider -s for more verbose output
+pytest python/tests/ -v -m "not oss_skip"
 ```
 
 ## Running examples
