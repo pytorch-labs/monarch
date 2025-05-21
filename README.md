@@ -112,6 +112,7 @@ device mesh.
 
 Below is an example demonstrating how to use `monarch.memory`:
 
+
 ```py
     ...
     monarch.memory.record_memory_history()
