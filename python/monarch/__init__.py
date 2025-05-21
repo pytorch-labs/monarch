@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     from monarch.common.opaque_ref import OpaqueRef
     from monarch.common.pipe import create_pipe, Pipe, remote_generator
     from monarch.common.remote import remote
+    from monarch.common.selection import Selection
     from monarch.common.shape import NDSlice, Shape
     from monarch.common.stream import get_active_stream, Stream
     from monarch.common.tensor import reduce, reduce_, Tensor
@@ -76,6 +77,7 @@ _public_api = {
     "RemoteException": ("monarch.common.invocation", "RemoteException"),
     "Shape": ("monarch.common.shape", "Shape"),
     "NDSlice": ("monarch.common.shape", "NDSlice"),
+    "Selection": ("monarch.common.selection", "Selection"),
     "OpaqueRef": ("monarch.common.opaque_ref", "OpaqueRef"),
     "create_pipe": ("monarch.common.pipe", "create_pipe"),
     "Pipe": ("monarch.common.pipe", "Pipe"),
@@ -143,6 +145,7 @@ __all__ = [
     "Future",
     "RemoteException",
     "Shape",
+    "Selection",
     "NDSlice",
     "OpaqueRef",
     "create_pipe",
