@@ -7,17 +7,35 @@
 # pyre-strict
 import argparse
 import json
-import pathlib
 import sys
 
 from fastcli.argparse import inject_fastcli
-from monarch.tools.commands import component_args_from_cli, Config, create, info, kill
-from monarch.tools.components import conda
+from monarch.tools.commands import (
+    component_args_from_cli,
+    create,
+    info,
+    kill,
+    torchx_runner,
+)
+from monarch.tools.config import (  # @manual=//monarch/tools/config/meta:defaults
+    Config,
+    defaults,
+)
 from torchx.specs.finder import get_component
 
-_DEFAULT_WORKSPACE = str(
-    pathlib.Path.home() / "fbsource" / "genai" / "xlformers-branches" / "main_monarch"
-)
+
+def config_from_cli_args(args: argparse.Namespace) -> Config:
+    config = defaults.config(args.scheduler, args.workspace)
+
+    if args.scheduler_args:
+        with torchx_runner() as runner:
+            opts = runner.scheduler_run_opts(config.scheduler)
+            for cfg_str in args.scheduler_args:
+                parsed_cfg = opts.cfg_from_str(cfg_str)
+                config.scheduler_args.update(parsed_cfg)
+
+    config.dryrun = args.dryrun
+    return config
 
 
 class CreateCmd:
@@ -26,7 +44,6 @@ class CreateCmd:
             "-s",
             "--scheduler",
             type=str,
-            default="mast_conda",
             help="Scheduler to submit to",
         )
         subparser.add_argument(
@@ -44,12 +61,12 @@ class CreateCmd:
         )
         subparser.add_argument(
             "--workspace",
-            default=_DEFAULT_WORKSPACE,
-            help="The local directory to fbpkg and make available on the job",
+            help="The local directory to build into the job's image and make available on the job."
+            " Pass --workspace='' to disable any default workspaces configured for the scheduler",
         )
         subparser.add_argument(
             "--component",
-            help="A custom TorchX component to use (defaults to monarch.tools.components.conda.hyperactor)",
+            help="A custom TorchX component to use",
         )
         subparser.add_argument(
             "-arg",
@@ -60,11 +77,12 @@ class CreateCmd:
         )
 
     def run(self, args: argparse.Namespace) -> None:
-        config = Config()
-        config.apply_cli_args(args)
+        config = config_from_cli_args(args)
 
         component_fn = (
-            get_component(args.component).fn if args.component else conda.hyperactor
+            get_component(args.component).fn
+            if args.component
+            else defaults.component_fn(config.scheduler)
         )
         component_args = component_args_from_cli(component_fn, args.component_args)
         handle = create(config, component_fn)(**component_args)
@@ -102,8 +120,8 @@ class KillCmd:
         kill(args.server_handle)
 
 
-def main(argv: list[str] = sys.argv[1:]) -> None:
-    parser = argparse.ArgumentParser(description="Fallback Monarch Python CLI")
+def get_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Monarch CLI")
     subparser = parser.add_subparsers(title="COMMANDS")
 
     for cmd_name, cmd in {
@@ -114,6 +132,11 @@ def main(argv: list[str] = sys.argv[1:]) -> None:
         cmd_parser = subparser.add_parser(cmd_name)
         cmd.add_arguments(cmd_parser)
         cmd_parser.set_defaults(func=cmd.run)
+    return parser
+
+
+def main(argv: list[str] = sys.argv[1:]) -> None:
+    parser = get_parser()
 
     # merges this (python) CLI args with rust's
     # see: https://fburl.com/wiki/kznp42c4

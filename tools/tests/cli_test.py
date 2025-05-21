@@ -6,25 +6,18 @@
 
 # pyre-strict
 
-import contextlib
-import io
 import json
+import os
 import unittest
-from importlib import resources
-from typing import Generator
 from unittest import mock
 
-from monarch.tools.cli import main
+from monarch.tools.cli import config_from_cli_args, get_parser, main
+from monarch.tools.config import Config
 from monarch.tools.mesh_spec import MeshSpec, ServerSpec
+from monarch.tools.tests.utils import capture_stdout
 from torchx.specs import AppState
 
-_DISABLE_WORKSPACE = ""  # passing --workspace="" disables it for tests
-
-
-@contextlib.contextmanager
-def capture_stdout() -> Generator[io.StringIO, None, None]:
-    with io.StringIO() as buf, contextlib.redirect_stdout(buf):
-        yield buf
+_CURRENT_WORKING_DIR: str = os.getcwd()
 
 
 class MainTest(unittest.TestCase):
@@ -33,49 +26,21 @@ class MainTest(unittest.TestCase):
             main(["--help"])
             self.assertEqual(cm.exception.code, 0)
 
-    def test_create_dryrun_default(self) -> None:
-        with capture_stdout() as buf:
-            main(
-                [
-                    "create",
-                    "--dryrun",
-                    f"--workspace={_DISABLE_WORKSPACE}",
-                    "-cfg=conda_fbpkg_id=_unused_:1",
-                ]
-            )
-            out = buf.getvalue()
-        # correctness of the create command is tested in commands_test.py
-        # so just make sure the output of the cli is sane
-        self.assertTrue(json.loads(out))
-
-    def test_create_dryrun_two_meshes(self) -> None:
-        num_hosts = 4
-
-        with resources.path("monarch.tools.components", "conda.py") as component_file:
-            with capture_stdout() as buf:
-                main(
-                    [
-                        "create",
-                        "--dryrun",
-                        "-cfg=conda_fbpkg_id=_unused_:1",
-                        f"--workspace={_DISABLE_WORKSPACE}",
-                        f"--component={component_file}:hyperactor",
-                        f"-arg=meshes=trainers:{num_hosts}:gtt_any,generators:{num_hosts*2}:gtt_any",
-                    ]
-                )
-                out = buf.getvalue()
-
-            tgs = {tg["name"]: tg for tg in json.loads(out)["hpcTaskGroups"]}
-            self.assertEqual(2, len(tgs))
-            self.assertEqual(num_hosts, tgs["trainers"]["taskCount"])
-            self.assertEqual(num_hosts * 2, tgs["generators"]["taskCount"])
-
-            # for mast_conda scheduler only
-            for _, tg in tgs.items():
-                env = tg["spec"]["env"]
-                for key in ["PYTHON_EXEC", "CONDA_DIR", "WORKSPACE_DIR"]:
-                    self.assertIn(key, env)
-                    self.assertIsNotNone(env[key])
+    @mock.patch(
+        # prevent images from actually being pulled during tests
+        "torchx.schedulers.local_scheduler.ImageProvider.fetch",
+        return_value=_CURRENT_WORKING_DIR,
+    )
+    def test_create_dryrun_default(self, _) -> None:
+        # use local_cwd as a representative scheduler to run the test with
+        main(
+            [
+                "create",
+                "-s=local_cwd",
+                "--dryrun",
+                "-arg=image=_DUMMY_IMAGE:0",
+            ]
+        )
 
     @mock.patch("monarch.tools.cli.info")
     def test_info(self, mock_cmd_info: mock.MagicMock) -> None:
@@ -122,3 +87,32 @@ class MainTest(unittest.TestCase):
         handle = "mast_conda:///test-job-id"
         main(["kill", handle])
         mock_cmd_kill.assert_called_once_with(handle)
+
+    def test_config_from_cli_args(self) -> None:
+        parser = get_parser()
+        args = parser.parse_args(
+            [
+                "create",
+                "--scheduler=slurm",
+                # supports both 'comma'-delimited and repeated '-cfg'
+                "-cfg=partition=test",
+                "-cfg=mail-user=foo@bar.com,mail-type=FAIL",
+                "--dryrun",
+                "--workspace=/mnt/users/foo",
+            ]
+        )
+
+        config = config_from_cli_args(args)
+        self.assertEqual(
+            Config(
+                scheduler="slurm",
+                scheduler_args={
+                    "partition": "test",
+                    "mail-user": "foo@bar.com",
+                    "mail-type": "FAIL",
+                },
+                dryrun=True,
+                workspace="/mnt/users/foo",
+            ),
+            config,
+        )
