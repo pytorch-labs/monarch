@@ -11,7 +11,6 @@ import re
 import sys
 import traceback
 from contextlib import contextmanager
-from enum import Enum
 from typing import Generator
 
 import monarch
@@ -324,8 +323,6 @@ class TestController:
             _ = b.to_mesh(sm1)
 
     def test_broadcast_one(self, backend_type):
-        if backend_type == BackendType.RS:
-            pytest.skip("deadlocks on rust")
         with self.local_device_mesh(2, 2, backend_type) as device_mesh:
             for dim in ("host", "gpu"):
                 subset = device_mesh(**{dim: 1})
@@ -341,9 +338,6 @@ class TestController:
                     assert torch.allclose(a.expand(2, -1), b, rtol=0, atol=0)
 
     def test_broadcast_two(self, backend_type):
-        if backend_type == BackendType.RS:
-            pytest.skip("deadlocks on rust")
-
         with self.local_device_mesh(2, 2, backend_type) as device_mesh:
             subset = device_mesh(host=1, gpu=1)
             with subset.activate():
