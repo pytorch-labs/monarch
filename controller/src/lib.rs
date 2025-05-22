@@ -310,7 +310,11 @@ fn slice_to_selection(slice: Slice) -> Selection {
         ([], []) => dsl::range(slice.offset()..=slice.offset(), dsl::true_()),
         // Special case trivial range `Selection`.
         ([size, rsizes @ ..], [stride, ..]) if rsizes.iter().all(|s| *s == 1) => dsl::range(
-            Range(slice.offset(), Some(slice.offset() + *size), *stride),
+            Range(
+                slice.offset(),
+                Some(slice.offset() + *size * *stride),
+                *stride,
+            ),
             dsl::true_(),
         ),
         // Fallback to more heavy-weight translation for everything else.
