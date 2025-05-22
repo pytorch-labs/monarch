@@ -4,6 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-strict
 import json
 import unittest
 from dataclasses import asdict
@@ -12,6 +13,7 @@ from monarch.tools.mesh_spec import (
     mesh_spec_from_metadata,
     mesh_spec_from_str,
     MeshSpec,
+    ServerSpec,
     tag_as_metadata,
 )
 
@@ -87,7 +89,37 @@ class MeshSpecTest(unittest.TestCase):
   "name": "trainer",
   "num_hosts": 4,
   "host_type": "gpu.medium",
-  "gpus": 2
+  "gpus": 2,
+  "port": 26600
 }
 """
         self.assertEqual(expected.strip("\n"), json.dumps(asdict(mesh_spec), indent=2))
+
+
+class ServerSpecTest(unittest.TestCase):
+    def get_test_server_spec(self) -> ServerSpec:
+        return ServerSpec(
+            name="monarch-foo-1a2b3c",
+            state=specs.AppState.RUNNING,
+            meshes=[
+                MeshSpec(name="trainer", num_hosts=4, host_type="gpu.medium", gpus=2),
+                MeshSpec(name="generator", num_hosts=8, host_type="gpu.small", gpus=1),
+            ],
+        )
+
+    def test_get_mesh_spec(self) -> None:
+        server_spec = self.get_test_server_spec()
+        mesh_spec = server_spec.get_mesh_spec("trainer")
+
+        self.assertEqual("trainer", mesh_spec.name)
+        self.assertEqual(4, mesh_spec.num_hosts)
+        self.assertEqual(2, mesh_spec.gpus)
+        self.assertEqual("gpu.medium", mesh_spec.host_type)
+
+    def test_get_mesh_spec_not_found(self) -> None:
+        server_spec = self.get_test_server_spec()
+        with self.assertRaisesRegex(
+            ValueError,
+            r"Mesh: 'worker' not found in job: monarch-foo-1a2b3c. Try one of: \['trainer', 'generator'\]",
+        ):
+            server_spec.get_mesh_spec("worker")

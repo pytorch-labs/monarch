@@ -12,7 +12,9 @@ from unittest import mock
 from monarch.tools import commands
 from monarch.tools.commands import component_args_from_cli
 
-from monarch.tools.config import defaults
+from monarch.tools.config import (  # @manual=//monarch/tools/config/meta:defaults
+    defaults,
+)
 from monarch.tools.mesh_spec import MeshSpec, ServerSpec
 from torchx.specs import AppDef, AppDryRunInfo, AppState, AppStatus, Role
 
@@ -68,7 +70,14 @@ class CommandsTest(unittest.TestCase):
 
         appdef = AppDef(
             name="monarch_test_123",
-            roles=[Role(name="trainer", image="__unused__", num_replicas=4)],
+            roles=[
+                Role(
+                    name="trainer",
+                    image="__unused__",
+                    num_replicas=4,
+                    port_map={"mesh": 26501},
+                )
+            ],
             metadata={
                 "monarch/meshes/trainer/host_type": "gpu.medium",
                 "monarch/meshes/trainer/gpus": "2",
@@ -86,6 +95,7 @@ class CommandsTest(unittest.TestCase):
                         num_hosts=4,
                         host_type="gpu.medium",
                         gpus=2,
+                        port=26501,
                     )
                 ],
             ),

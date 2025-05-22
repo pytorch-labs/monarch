@@ -28,6 +28,7 @@ class MeshSpec:
     num_hosts: int
     host_type: str
     gpus: int
+    port: int = DEFAULT_REMOTE_ALLOCATOR_PORT
 
 
 def _tag(mesh_name: str, tag_template: str) -> str:
@@ -47,6 +48,7 @@ def mesh_spec_from_metadata(appdef: specs.AppDef, mesh_name: str) -> Optional[Me
                 num_hosts=role.num_replicas,
                 host_type=appdef.metadata.get(_tag(mesh_name, _TAG_HOST_TYPE), ""),
                 gpus=int(appdef.metadata.get(_tag(mesh_name, _TAG_GPUS), "-1")),
+                port=role.port_map.get("mesh", DEFAULT_REMOTE_ALLOCATOR_PORT),
             )
 
     return None
@@ -81,6 +83,18 @@ class ServerSpec:
     name: str
     state: specs.AppState
     meshes: list[MeshSpec]
+
+    def get_mesh_spec(self, mesh_name: str) -> MeshSpec:
+        for mesh_spec in self.meshes:
+            if mesh_spec.name == mesh_name:
+                return mesh_spec
+
+        raise ValueError(
+            f"Mesh: '{mesh_name}' not found in job: {self.name}. Try one of: {self.get_mesh_names()}"
+        )
+
+    def get_mesh_names(self) -> list[str]:
+        return [m.name for m in self.meshes]
 
     def to_json(self) -> dict[str, Any]:
         """Returns the JSON form of this struct that can be printed to console by:
