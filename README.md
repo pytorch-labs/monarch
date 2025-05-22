@@ -124,3 +124,6 @@ Below is an example demonstrating how to use `monarch.memory`:
         ...
     monarch.memory.dump_memory_snapshot(dir_snapshots="./snapshots/")
 ```
+
+## License
+Monarch is BSD-3 licensed, as found in the [LICENSE](LICENSE) file.
