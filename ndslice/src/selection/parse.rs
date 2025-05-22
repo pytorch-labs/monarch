@@ -39,7 +39,8 @@
 /// - An index like `3` is shorthand for the range `3:4`.
 /// - Parentheses `()` allow grouping for precedence control and
 ///   nesting of chains.
-/// - Whitespace is not allowed.
+/// - Whitespace is not allowed (although the `parse` function will
+///   admit and strip it.)
 /// - Expressions like `(*,*,1:4|5:6)` are valid and parsed as:
 ///     - A union of two expressions:
 ///         1. The chain `*,*,1:4`
@@ -149,6 +150,28 @@ pub fn expression(input: &str) -> IResult<&str, Selection> {
     })(input)
 }
 
+/// Parses a selection expression from a string, ignoring all
+/// whitespace.
+///
+/// # Arguments
+///
+/// * `input` - A string slice containing the selection expression to
+///   parse.
+///
+/// # Returns
+///
+/// * `Ok(Selection)` if parsing succeeds
+/// * `Err(anyhow::Error)` with a detailed error message if parsing
+///   fails
+pub fn parse(input: &str) -> anyhow::Result<Selection> {
+    use nom::combinator::all_consuming;
+
+    let input: String = input.chars().filter(|c| !c.is_whitespace()).collect();
+    let (_, selection) = all_consuming(expression)(&input)
+        .map_err(|err| anyhow::anyhow!("Failed to parse selection: {err:?} (input: {input:?})"))?;
+    Ok(selection)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::selection::Selection;
@@ -156,12 +179,7 @@ mod tests {
 
     // Parse an input string to a selection.
     fn parse(input: &str) -> Selection {
-        use nom::combinator::all_consuming;
-
-        use super::expression;
-
-        let (_, selection) = all_consuming(expression)(input).unwrap();
-        selection
+        super::parse(input).unwrap()
     }
 
     #[macro_export]
