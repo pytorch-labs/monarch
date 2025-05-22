@@ -159,6 +159,9 @@ pub enum ProcStopReason {
     Killed(i32, bool),
     /// The proc failed to respond to a watchdog request within a timeout.
     Watchdog,
+    /// The host running the proc failed to respond to a watchdog request
+    /// within a timeout.
+    HostWatchdog,
     /// The proc failed for an unknown reason.
     Unknown,
 }
@@ -171,7 +174,8 @@ impl fmt::Display for ProcStopReason {
             Self::Killed(signal, dumped) => {
                 write!(f, "killed with signal {} (core dumped={})", signal, dumped)
             }
-            Self::Watchdog => write!(f, "watchdog failure"),
+            Self::Watchdog => write!(f, "proc watchdog failure"),
+            Self::HostWatchdog => write!(f, "host watchdog failure"),
             Self::Unknown => write!(f, "unknown"),
         }
     }
