@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use monarch_messages::worker::ResolvableFunction;
 use monarch_types::PyTree;
 use monarch_types::TryIntoPyObject;
+use monarch_types::TryIntoPyObjectUnsafe;
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 use torch_sys::RValue;
@@ -25,6 +26,7 @@ pub struct PyPipe {
     ranks: HashMap<String, usize>,
     #[pyo3(get)]
     sizes: HashMap<String, usize>,
+    allow_unsafe_obj_conversion: bool,
 }
 
 impl PyPipe {
@@ -32,8 +34,14 @@ impl PyPipe {
         pipe: Box<dyn Pipe<PyTree<RValue>> + Send>,
         ranks: HashMap<String, usize>,
         sizes: HashMap<String, usize>,
+        allow_unsafe_obj_conversion: bool,
     ) -> Self {
-        Self { pipe, ranks, sizes }
+        Self {
+            pipe,
+            ranks,
+            sizes,
+            allow_unsafe_obj_conversion,
+        }
     }
 }
 
@@ -46,8 +54,14 @@ impl PyPipe {
     }
 
     fn recv<'a>(&mut self, py: Python<'a>) -> PyResult<Bound<'a, PyAny>> {
-        py.allow_threads(move || self.pipe.recv())?
-            .try_to_object(py)
+        let val = py.allow_threads(|| self.pipe.recv())?;
+        if self.allow_unsafe_obj_conversion {
+            // SAFETY: A caller who initialized this PyPipe with allow_unsafe_obj_conversion=True
+            // asserts that it is safe to use this unsafe method.
+            unsafe { val.try_to_object_unsafe(py) }
+        } else {
+            val.try_to_object(py)
+        }
     }
 }
 
@@ -122,7 +136,12 @@ mod tests {
             async move {
                 tokio::task::spawn_blocking(move || {
                     run_py_pipe(
-                        PyPipe::new(Box::new(server), HashMap::new(), HashMap::new()),
+                        PyPipe::new(
+                            Box::new(server),
+                            HashMap::new(),
+                            HashMap::new(),
+                            false, // allow_unsafe_obj_conversion
+                        ),
                         "test_helpers.func".into(),
                         vec![],
                         HashMap::new(),
