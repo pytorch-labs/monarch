@@ -830,9 +830,6 @@ impl StreamActor {
             // Execute the borrow.
             let _borrow = multiborrow.borrow()?;
 
-            tracing::debug!(
-                "calling python function: {function:?} with args: {py_args:?} and kwargs: {py_kwargs:?}"
-            );
             // Call function.
             // Use custom subscriber to route Worker messages to stdout.
             let scoped_subscriber = Subscriber::builder().with_writer(std::io::stdout).finish();
@@ -858,7 +855,6 @@ impl StreamActor {
                         )
                         .map_err(SerializablePyErr::from_fn(py))
                 })?;
-            tracing::debug!("python function: {function:?} result: {result:?}");
 
             // Parse the python result as an `Object`, which should preserve the
             // original Python object structure, while providing access to the

@@ -92,6 +92,7 @@ rust::Vec<int32_t> sizes(const Tensor& tensor);
 
 FFIPyObject arbitrary_ivalue_to_py_object(IValue val);
 IValue ivalue_from_arbitrary_py_object(FFIPyObject obj);
+bool py_object_is_ivalue(FFIPyObject obj);
 
 inline IValue ivalue_from_py_object_with_type(
     FFIPyObject obj,
@@ -111,12 +112,15 @@ FFIPyObject device_to_py_object(c10::Device device);
 
 c10::ScalarType scalar_type_from_py_object(FFIPyObject obj);
 FFIPyObject scalar_type_to_py_object(c10::ScalarType scalar_type);
+bool py_object_is_scalar_type(FFIPyObject obj);
 
 c10::Layout layout_from_py_object(FFIPyObject obj);
 FFIPyObject layout_to_py_object(c10::Layout layout);
+bool py_object_is_layout(FFIPyObject obj);
 
 c10::MemoryFormat memory_format_from_py_object(FFIPyObject obj);
 FFIPyObject memory_format_to_py_object(c10::MemoryFormat memory_format);
+bool py_object_is_memory_format(FFIPyObject obj);
 
 FFIPyObject tensor_to_py_object(Tensor tensor);
 Tensor tensor_from_py_object(FFIPyObject obj);
