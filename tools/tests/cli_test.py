@@ -84,7 +84,7 @@ class MainTest(unittest.TestCase):
 
     @mock.patch("monarch.tools.cli.kill")
     def test_kill(self, mock_cmd_kill: mock.MagicMock) -> None:
-        handle = "mast_conda:///test-job-id"
+        handle = "slurm:///test-job-id"
         main(["kill", handle])
         mock_cmd_kill.assert_called_once_with(handle)
 
@@ -116,3 +116,11 @@ class MainTest(unittest.TestCase):
             ),
             config,
         )
+
+    def test_bounce(self) -> None:
+        with self.assertRaises(NotImplementedError):
+            main(["bounce", "slurm:///test-job-id"])
+
+    def test_stop(self) -> None:
+        with self.assertRaises(NotImplementedError):
+            main(["stop", "slurm:///test-job-id"])

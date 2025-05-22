@@ -177,3 +177,13 @@ def info(server_handle: str) -> Optional[ServerSpec]:
 def kill(server_handle: str) -> None:
     with torchx_runner() as runner:
         runner.cancel(server_handle)
+
+
+def bounce(server_handle: str) -> None:
+    """(re)starts the server's processes without tearing down the server's job."""
+    raise NotImplementedError("`bounce` is not yet implemented")
+
+
+def stop(server_handle: str) -> None:
+    """Stops the server's unix processes without tearing down the server's job."""
+    raise NotImplementedError("`stop` is not yet implemented")
