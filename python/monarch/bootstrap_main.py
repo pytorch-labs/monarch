@@ -14,11 +14,16 @@ import os
 import sys
 
 
-def invoke_main():
+async def main():
+    await bootstrap_main()
+
+
+def invoke_main() -> None:
     # if this is invoked with the stdout piped somewhere, then print
     # changes its buffering behavior. So we default to the standard
     # behavior of std out as if it were a terminal.
     sys.stdout.reconfigure(line_buffering=True)
+    global bootstrap_main
     # TODO: figure out what from worker_main.py we should reproduce here.
     from monarch._rust_bindings.monarch_hyperactor.bootstrap import bootstrap_main
 
@@ -30,8 +35,9 @@ def invoke_main():
         # fallback to using local py-spy
 
     # Start an event loop for PythonActors to use.
-    asyncio.run(bootstrap_main())
+    asyncio.run(main())
 
 
 if __name__ == "__main__":
+    # Do not add code here, it won't be run. Add them to the function called below.
     invoke_main()  # pragma: no cover
