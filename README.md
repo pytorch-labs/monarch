@@ -30,8 +30,10 @@ sudo dnf install cuda-toolkit-12-0 cuda-12-0 libnccl-devel clang-devel
 pip install setuptools-rust
 # install torch, can use conda or build it yourself or whatever
 pip install torch
-# install other deps, see pyproject.toml for latest
-pip install pyzmq requests numpy pyre-extensions pytest-timeout cloudpickle
+# install core deps, see pyproject.toml for latest
+pip install pyzmq requests numpy pyre-extensions cloudpickle
+# Install test dependencies
+pip install pytest pytest-timeout pytest-asyncio
 
 # install the package
 python setup.py install
