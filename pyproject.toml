@@ -10,7 +10,7 @@ authors = [
 version = "1.0"
 readme = "README.md"
 description = "Monarch: Single controller library"
-dependencies = ["torch", "pyzmq", "requests", "numpy", "pyre-extensions", "pytest-timeout", "cloudpickle"]
+dependencies = ["torch", "pyzmq", "requests", "numpy", "pyre-extensions", "pytest-timeout", "cloudpickle", "pytest-asyncio"]
 requires-python = ">= 3.10"
 
 [tool.pytest.ini_options]

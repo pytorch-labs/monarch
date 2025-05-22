@@ -56,7 +56,7 @@ jobs:
         pip install pyzmq requests numpy pyre-extensions
 
         # Test dependencies
-        pip install pytest cloudpickle
+        pip install pytest cloudpickle pytest-timeout pytest-asyncio
 
         # Build and install monarch
         python setup.py install
