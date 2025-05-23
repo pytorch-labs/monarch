@@ -18,6 +18,7 @@
 //! ```
 //!
 //! Thus, each socket connection is a sequence of such framed messages.
+use std::any::type_name;
 use std::collections::VecDeque;
 use std::fmt;
 use std::fmt::Debug;
@@ -960,7 +961,16 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                                         }
                                     }
                                 },
-                                Err(err) => break (next, Err(err.into())),
+                                Err(err) => break (
+                                    next,
+                                    Err::<(), anyhow::Error>(err.into()).context(
+                                        format!(
+                                            "error deserializing into Frame with M = {} for data from {:?}",
+                                            type_name::<M>(),
+                                            self.source,
+                                        )
+                                    )
+                                ),
                             }
                         }
 
