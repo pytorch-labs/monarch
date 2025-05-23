@@ -33,6 +33,7 @@ use std::marker::PhantomData;
 use std::num::ParseIntError;
 use std::str::FromStr;
 
+use derivative::Derivative;
 use rand::Rng;
 use serde::Deserialize;
 use serde::Serialize;
@@ -723,8 +724,8 @@ impl PortId {
 
     /// Split this port, returning a new port that relays messages to the port
     /// through a local proxy, which may coalesce messages.
-    pub fn split(&self, caps: &impl cap::CanSplitPort) -> PortId {
-        caps.split(self.clone())
+    pub fn split(&self, caps: &impl cap::CanSplitPort, reducer_typehash: Option<u64>) -> PortId {
+        caps.split(self.clone(), reducer_typehash)
     }
 }
 
@@ -748,9 +749,17 @@ impl fmt::Display for PortId {
 
 /// A reference to a remote port. All messages passed through
 /// PortRefs will be serialized.
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Hash, Ord)]
+#[derive(Debug, Serialize, Deserialize, Derivative)]
+#[derivative(PartialEq, Eq, PartialOrd, Hash, Ord)]
 pub struct PortRef<M: RemoteMessage> {
     port_id: PortId,
+    #[derivative(
+        PartialEq = "ignore",
+        PartialOrd = "ignore",
+        Ord = "ignore",
+        Hash = "ignore"
+    )]
+    reducer_typehash: Option<u64>,
     phantom: PhantomData<M>,
 }
 
@@ -760,8 +769,25 @@ impl<M: RemoteMessage> PortRef<M> {
     pub fn attest(port_id: PortId) -> Self {
         Self {
             port_id,
+            reducer_typehash: None,
             phantom: PhantomData,
         }
+    }
+
+    /// The caller attests that the provided PortId can be
+    /// converted to a reachable, typed port reference.
+    pub(crate) fn attest_reducible(port_id: PortId, reducer_typehash: Option<u64>) -> Self {
+        Self {
+            port_id,
+            reducer_typehash,
+            phantom: PhantomData,
+        }
+    }
+
+    /// The typehash of this port's reducer, if any. Reducers
+    /// may be used to coalesce messages sent to a port.
+    pub fn reducer_typehash(&self) -> &Option<u64> {
+        &self.reducer_typehash
     }
 
     /// This port's ID.
@@ -809,6 +835,7 @@ impl<M: RemoteMessage> Clone for PortRef<M> {
     fn clone(&self) -> Self {
         Self {
             port_id: self.port_id.clone(),
+            reducer_typehash: self.reducer_typehash.clone(),
             phantom: PhantomData,
         }
     }

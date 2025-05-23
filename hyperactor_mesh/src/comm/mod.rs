@@ -112,7 +112,7 @@ impl CommActor {
         if !reply_ports.is_empty() {
             let split_ports = reply_ports
                 .iter()
-                .map(|p| p.split(this))
+                .map(|p| p.split(this, message.reducer_typehash().clone()))
                 .collect::<Vec<_>>();
             message.data_mut().replace::<PortId>(split_ports.iter())?;
 
@@ -438,11 +438,20 @@ mod tests {
     use std::sync::Mutex;
     use std::sync::OnceLock;
 
+    use hyperactor::ActorHandle;
     use hyperactor::GangId;
+    use hyperactor::Mailbox;
     use hyperactor::PortId;
+    use hyperactor::PortRef;
     use hyperactor::WorldId;
+    use hyperactor::accum;
+    use hyperactor::accum::Accumulator;
+    use hyperactor::accum::CommReducer;
+    use hyperactor::clock::Clock;
+    use hyperactor::clock::RealClock;
     use hyperactor::id;
     use hyperactor::mailbox::MailboxRouter;
+    use hyperactor::mailbox::PortReceiver;
     use hyperactor::mailbox::open_port;
     use hyperactor::reference::Index;
     use hyperactor::test_utils::tracing::set_tracing_env_filter;
@@ -452,6 +461,7 @@ mod tests {
     use ndslice::selection::test_utils::collect_commactor_routing_tree;
     use test_utils::*;
     use timed_test::async_timed_test;
+    use tokio::time::Duration;
     use tracing::Level;
 
     use super::*;
@@ -627,9 +637,40 @@ mod tests {
         PathToLeaves(ranks)
     }
 
-    #[async_timed_test(timeout_secs = 30)]
-    async fn test_cast_and_reply() {
-        set_tracing_env_filter(Level::INFO);
+    struct MeshSetup {
+        dest_actors_and_caps: Vec<(ActorHandle<TestActor>, Mailbox)>,
+        reply1_rx: PortReceiver<u64>,
+        reply2_rx: PortReceiver<MyReply>,
+        reply_tos: Vec<(PortRef<u64>, PortRef<MyReply>)>,
+    }
+
+    // Placeholder to make compiler happy.
+    #[derive(Debug, Clone, Serialize, Deserialize, Named)]
+    struct NonReducer;
+    impl CommReducer for NonReducer {
+        type Update = u64;
+
+        fn reduce(&self, _left: Self::Update, _right: Self::Update) -> Self::Update {
+            unimplemented!()
+        }
+    }
+
+    struct NoneAccumulator;
+
+    impl Accumulator for NoneAccumulator {
+        type State = u64;
+        type Update = u64;
+        type Reducer = NonReducer;
+
+        fn accumulate(&self, _state: &mut Self::State, _update: &Self::Update) {
+            unimplemented!()
+        }
+    }
+
+    async fn setup_mesh<A>(dest_world: &WorldId, accum: Option<A>) -> MeshSetup
+    where
+        A: Accumulator<Update = u64, State = u64> + Send + Sync + 'static,
+    {
         tracing::info!("create a client proc and actor, which is used to send cast messages");
         let router = MailboxRouter::new();
         let (client_proc, client_actor) = spawn_comm_actors_with_router(id!(client), 1, &router)
@@ -639,8 +680,7 @@ mod tests {
             .expect("no monitor proc and actor is found");
 
         tracing::info!("create a mesh of destination mesh");
-        let dest_world = id!(dest);
-        let slice = Slice::new(0, vec![2, 2], vec![2, 1]).unwrap();
+        let slice = Slice::new(0, vec![4, 4, 4], vec![16, 4, 1]).unwrap();
 
         tracing::debug!("start to spawn procs, comm actors and dest actors",);
         let procs_and_comm_actors =
@@ -673,9 +713,12 @@ mod tests {
         let client = client_proc.attach("client_user").unwrap();
         let (reply_port_handle0, _) = open_port::<String>(&client);
         let reply_port_ref0 = reply_port_handle0.bind();
-        let (reply_port_handle1, mut reply1_rx) = open_port::<u64>(&client);
+        let (reply_port_handle1, reply1_rx) = match accum {
+            Some(a) => client.open_accum_port(a),
+            None => open_port(&client),
+        };
         let reply_port_ref1 = reply_port_handle1.bind();
-        let (reply_port_handle2, mut reply2_rx) = open_port::<MyReply>(&client);
+        let (reply_port_handle2, reply2_rx) = open_port::<MyReply>(&client);
         let reply_port_ref2 = reply_port_handle2.bind();
         // Destination is every node in the world.
         let uslice = Uslice {
@@ -684,6 +727,7 @@ mod tests {
         };
         client_actor
             .send(CastMessage {
+                // Destination is every node in the world.
                 dest: uslice.clone(),
                 message: CastMessageEnvelope::new(
                     client_actor.actor_id().clone(),
@@ -697,6 +741,7 @@ mod tests {
                         reply_to1: reply_port_ref1.clone(),
                         reply_to2: reply_port_ref2.clone(),
                     },
+                    None,
                 )
                 .unwrap(),
             })
@@ -707,8 +752,8 @@ mod tests {
         let mut reply_tos = vec![];
         // Verify dest actors received the message, and the reply ports were
         // split as expected.
-        for (rx, (_, comm_actor)) in queues.iter_mut().zip(procs_and_comm_actors.iter()) {
-            let msg = rx.recv().await.expect("missing");
+        for queue in queues.iter_mut() {
+            let msg = queue.recv().await.expect("missing");
             match msg {
                 TestMessage::CastAndReply {
                     arg,
@@ -724,15 +769,15 @@ mod tests {
                     assert_ne!(reply_to1, reply_port_ref1);
                     assert_eq!(
                         reply_to1.port_id().actor_id().proc_id().world_id(),
-                        &dest_world
+                        dest_world
                     );
-                    assert_eq!(reply_to1.port_id().actor_id(), comm_actor.actor_id());
+                    assert_eq!(reply_to1.port_id().actor_id().name(), "comm");
                     assert_ne!(reply_to2, reply_port_ref2);
                     assert_eq!(
                         reply_to2.port_id().actor_id().proc_id().world_id(),
-                        &dest_world
+                        dest_world
                     );
-                    assert_eq!(reply_to2.port_id().actor_id(), comm_actor.actor_id());
+                    assert_eq!(reply_to2.port_id().actor_id().name(), "comm");
                     reply_tos.push((reply_to1, reply_to2));
                 }
                 _ => {
@@ -770,6 +815,26 @@ mod tests {
             assert_eq!(sel_paths, reply1_paths);
             assert_eq!(sel_paths, reply2_paths);
         }
+
+        MeshSetup {
+            dest_actors_and_caps,
+            reply1_rx,
+            reply2_rx,
+            reply_tos,
+        }
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_cast_and_reply() {
+        set_tracing_env_filter(Level::INFO);
+        let dest_world = id!(dest);
+        let MeshSetup {
+            dest_actors_and_caps,
+            mut reply1_rx,
+            mut reply2_rx,
+            reply_tos,
+            ..
+        } = setup_mesh::<NoneAccumulator>(&dest_world, None).await;
 
         // Reply from each dest actor. The replies should be received by client.
         {
@@ -828,5 +893,61 @@ mod tests {
             }
             assert_eq!(received2, expected2);
         }
+    }
+
+    async fn wait_for_with_timeout(
+        receiver: &mut PortReceiver<u64>,
+        expected: u64,
+        dur: Duration,
+    ) -> anyhow::Result<()> {
+        // timeout wraps the entire async block
+        tokio::time::timeout(dur, async {
+            loop {
+                let msg = receiver.recv().await.unwrap();
+                if msg == expected {
+                    break;
+                }
+            }
+        })
+        .await?;
+        Ok(())
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_cast_and_accum() -> Result<()> {
+        set_tracing_env_filter(Level::INFO);
+        let dest_world = id!(dest);
+        let MeshSetup {
+            dest_actors_and_caps,
+            mut reply1_rx,
+            reply_tos,
+            ..
+        } = setup_mesh(&dest_world, Some(accum::sum::<u64>())).await;
+
+        // Now send multiple replies from the dest actors. They should all be
+        // received by client. Replies sent from the same dest actor should
+        // be received in the same order as they were sent out.
+        {
+            let mut sum = 0;
+            let n = 100;
+            for ((dest_actor, caps), (reply_to1, _reply_to2)) in
+                dest_actors_and_caps.iter().zip(reply_tos.iter())
+            {
+                let rank = dest_actor.actor_id().rank();
+                for i in 0..n {
+                    let value = (rank + i) as u64;
+                    reply_to1.send(caps, value).unwrap();
+                    sum += value;
+                }
+            }
+            wait_for_with_timeout(&mut reply1_rx, sum, Duration::from_secs(2))
+                .await
+                .unwrap();
+            // no more messages
+            RealClock.sleep(Duration::from_secs(2)).await;
+            let msg = reply1_rx.try_recv().unwrap();
+            assert_eq!(msg, None);
+        }
+        Ok(())
     }
 }

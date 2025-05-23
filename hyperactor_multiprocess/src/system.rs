@@ -962,6 +962,7 @@ mod tests {
                         "actor".into(),
                     )),
                     TestMessage::Forward("abc".to_string()),
+                    None,
                 )?,
             })?;
         }
@@ -1074,6 +1075,7 @@ mod tests {
                             "actor".into(),
                         )),
                         TestMessage::Forward("abc".to_string()),
+                        None,
                     )?,
                 },
             )?;

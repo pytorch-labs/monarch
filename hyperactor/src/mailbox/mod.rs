@@ -100,6 +100,7 @@ use crate as hyperactor; // for macros
 use crate::Named;
 use crate::OncePortRef;
 use crate::PortRef;
+use crate::accum;
 use crate::accum::Accumulator;
 use crate::actor::Signal;
 use crate::actor::remote::USER_PORT_OFFSET;
@@ -1071,6 +1072,7 @@ impl Mailbox {
         let (sender, receiver) = mpsc::unbounded_channel::<A::State>();
         let port_id = PortId(self.state.actor_id.clone(), port_index);
         let state = Mutex::new(A::State::default());
+        let reducer_typehash = accum.reducer_typehash();
         let enqueue = move |update: A::Update| {
             let mut state = state.lock().unwrap();
             accum.accumulate(&mut state, &update);
@@ -1078,11 +1080,13 @@ impl Mailbox {
             Ok(())
         };
         (
-            PortHandle::new(
-                self.clone(),
+            PortHandle {
+                mailbox: self.clone(),
                 port_index,
-                UnboundedPortSender::Func(Arc::new(enqueue)),
-            ),
+                sender: UnboundedPortSender::Func(Arc::new(enqueue)),
+                bound: Arc::new(OnceLock::new()),
+                reducer_typehash: Some(reducer_typehash),
+            },
             PortReceiver::new(
                 receiver,
                 port_id,
@@ -1104,6 +1108,7 @@ impl Mailbox {
             port_index: self.state.allocate_port(),
             sender: UnboundedPortSender::Func(Arc::new(enqueue)),
             bound: Arc::new(OnceLock::new()),
+            reducer_typehash: None,
         }
     }
 
@@ -1273,19 +1278,40 @@ impl cap::sealed::CanOpenPort for Mailbox {
 }
 
 impl cap::sealed::CanSplitPort for Mailbox {
-    fn split(&self, port_id: PortId) -> PortId {
+    fn split(&self, port_id: PortId, reducer_typehash: Option<u64>) -> PortId {
         let port_index = self.state.allocate_port();
         let split_port = self.actor_id().port_id(port_index);
         let mailbox = self.clone();
+        let buffer = Arc::new(Mutex::new(Vec::<Serialized>::new()));
+        let reducer = reducer_typehash.and_then(accum::resolve_reducer);
         let enqueue = move |serialized: Serialized| {
-            mailbox.post(
-                MessageEnvelope::new(mailbox.actor_id().clone(), port_id.clone(), serialized),
-                // TODO(pzhang) figure out how to use upstream's return handle,
-                // instead of getting a new one like this.
-                // This is okay for now because upstream is currently also using
-                // the same handle singleton, but that could change in the future.
-                monitored_return_handle(),
-            );
+            // Hold the lock until messages are sent. This is to avoid another
+            // invocation of this method trying to send message concurrently and
+            // cause messages delivered out of order.
+            let mut buf = buffer.lock().unwrap();
+            buf.push(serialized);
+            // TODO(pzhang) add policy and use this buffer
+            let buffered = std::mem::take(&mut *buf);
+            let reduced = match &reducer {
+                Some(r) => vec![r.reduce_updates(buffered).map_err(|(e, mut b)| {
+                    (
+                        b.pop()
+                            .expect("there should be at least one update from buffer"),
+                        e,
+                    )
+                })?],
+                None => buffered,
+            };
+            for msg in reduced {
+                mailbox.post(
+                    MessageEnvelope::new(mailbox.actor_id().clone(), port_id.clone(), msg),
+                    // TODO(pzhang) figure out how to use upstream's return handle,
+                    // instead of getting a new one like this.
+                    // This is okay for now because upstream is currently also using
+                    // the same handle singleton, but that could change in the future.
+                    monitored_return_handle(),
+                );
+            }
             Ok(())
         };
         self.bind_untyped(
@@ -1319,6 +1345,9 @@ pub struct PortHandle<M: Message> {
     // M: RemoteMessage, but the guarantees offered by the impossibilty of even
     // writing down the type are appealing.
     bound: Arc<OnceLock<PortId>>,
+    // Typehash of an optional reducer. When it's defined, we include it in port
+    /// references to optionally enable incremental accumulation.
+    reducer_typehash: Option<u64>,
 }
 
 impl<M: Message> PortHandle<M> {
@@ -1328,6 +1357,7 @@ impl<M: Message> PortHandle<M> {
             port_index,
             sender,
             bound: Arc::new(OnceLock::new()),
+            reducer_typehash: None,
         }
     }
 
@@ -1352,10 +1382,11 @@ impl<M: Message> PortHandle<M> {
 impl<M: RemoteMessage> PortHandle<M> {
     /// Bind this port, making it accessible to remote actors.
     pub fn bind(&self) -> PortRef<M> {
-        PortRef::attest(
+        PortRef::attest_reducible(
             self.bound
                 .get_or_init(|| self.mailbox.bind(self).port_id().clone())
                 .clone(),
+            self.reducer_typehash.clone(),
         )
     }
 
@@ -1373,6 +1404,7 @@ impl<M: Message> Clone for PortHandle<M> {
             port_index: self.port_index,
             sender: self.sender.clone(),
             bound: self.bound.clone(),
+            reducer_typehash: self.reducer_typehash.clone(),
         }
     }
 }
@@ -2164,6 +2196,9 @@ mod tests {
     use std::assert_matches::assert_matches;
     use std::mem::drop;
     use std::sync::atomic::AtomicUsize;
+    use std::time::Duration;
+
+    use timed_test::async_timed_test;
 
     use super::*;
     use crate::Actor;
@@ -2240,6 +2275,27 @@ mod tests {
         port.send(3).unwrap();
         port.send(2).unwrap();
         assert_eq!(receiver.recv().await.unwrap(), 7);
+    }
+
+    #[test]
+    fn test_port_and_reducer() {
+        let mbox = Mailbox::new_detached(id!(test[0].test));
+        // accum port could have reducer typehash
+        {
+            let accumulator = accum::max::<u64>();
+            let reducer_typehash = accumulator.reducer_typehash();
+            let (port, _) = mbox.open_accum_port(accum::max::<u64>());
+            assert_eq!(port.reducer_typehash, Some(reducer_typehash),);
+            let port_ref = port.bind();
+            assert_eq!(port_ref.reducer_typehash(), &Some(reducer_typehash));
+        }
+        // normal port should not have reducer typehash
+        {
+            let (port, _) = mbox.open_port::<u64>();
+            assert_eq!(port.reducer_typehash, None);
+            let port_ref = port.bind();
+            assert_eq!(port_ref.reducer_typehash(), &None);
+        }
     }
 
     #[tokio::test]
@@ -2777,15 +2833,17 @@ mod tests {
         verify_receiver(/*coalesce=*/ true, /*drop_sender=*/ true).await
     }
 
-    #[tokio::test]
-    async fn test_split_port_id() {
-        fn post(mailbox: &Mailbox, port_id: PortId, msg: u64) {
-            mailbox.post(
-                MessageEnvelope::new_unknown(port_id.clone(), Serialized::serialize(&msg).unwrap()),
-                monitored_return_handle(),
-            );
-        }
+    struct Setup {
+        receiver: PortReceiver<u64>,
+        actor0: Mailbox,
+        actor1: Mailbox,
+        port_id: PortId,
+        port_id1: PortId,
+        port_id2: PortId,
+        port_id2_1: PortId,
+    }
 
+    async fn setup_split_port_ids(reducer_typehash: Option<u64>) -> Setup {
         let muxer = MailboxMuxer::new();
         let actor0 = Mailbox::new(id!(test[0].actor), BoxedMailboxSender::new(muxer.clone()));
         let actor1 = Mailbox::new(id!(test[1].actor1), BoxedMailboxSender::new(muxer.clone()));
@@ -2793,16 +2851,45 @@ mod tests {
         muxer.bind_mailbox(actor1.clone());
 
         // Open a port on actor0
-        let (port_handle, mut receiver) = actor0.open_port::<u64>();
+        let (port_handle, receiver) = actor0.open_port::<u64>();
         let port_id = port_handle.bind().port_id().clone();
 
         // Split it twice on actor1
-        let port_id1 = port_id.split(&actor1);
-        let port_id2 = port_id.split(&actor1);
+        let port_id1 = port_id.split(&actor1, reducer_typehash.clone());
+        let port_id2 = port_id.split(&actor1, reducer_typehash.clone());
 
         // A split port id can also be split
-        let port_id2_1 = port_id2.split(&actor1);
+        let port_id2_1 = port_id2.split(&actor1, reducer_typehash);
 
+        Setup {
+            receiver,
+            actor0,
+            actor1,
+            port_id,
+            port_id1,
+            port_id2,
+            port_id2_1,
+        }
+    }
+
+    fn post(mailbox: &Mailbox, port_id: PortId, msg: u64) {
+        mailbox.post(
+            MessageEnvelope::new_unknown(port_id.clone(), Serialized::serialize(&msg).unwrap()),
+            monitored_return_handle(),
+        );
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_split_port_id_no_reducer() {
+        let Setup {
+            mut receiver,
+            actor0,
+            actor1,
+            port_id,
+            port_id1,
+            port_id2,
+            port_id2_1,
+        } = setup_split_port_ids(None).await;
         // Can send messages to receiver from all port handles
         post(&actor0, port_id.clone(), 1);
         assert_eq!(receiver.recv().await.unwrap(), 1);
@@ -2812,5 +2899,61 @@ mod tests {
         assert_eq!(receiver.recv().await.unwrap(), 3);
         post(&actor1, port_id2_1.clone(), 4);
         assert_eq!(receiver.recv().await.unwrap(), 4);
+
+        // no more messages
+        RealClock.sleep(Duration::from_secs(2)).await;
+        let msg = receiver.try_recv().unwrap();
+        assert_eq!(msg, None);
+    }
+
+    async fn wait_for(
+        receiver: &mut PortReceiver<u64>,
+        expected_size: usize,
+        timeout_duration: Duration,
+    ) -> anyhow::Result<Vec<u64>> {
+        let mut messeges = vec![];
+
+        tokio::time::timeout(timeout_duration, async {
+            loop {
+                let msg = receiver.recv().await.unwrap();
+                messeges.push(msg);
+                if messeges.len() == expected_size {
+                    break;
+                }
+            }
+        })
+        .await?;
+        Ok(messeges)
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_split_port_id_sum_reducer() {
+        let sum_accumulator = accum::sum::<u64>();
+        let reducer_typehash = sum_accumulator.reducer_typehash();
+        let Setup {
+            mut receiver,
+            actor0,
+            actor1,
+            port_id,
+            port_id1,
+            port_id2,
+            port_id2_1,
+        } = setup_split_port_ids(Some(reducer_typehash)).await;
+        post(&actor0, port_id.clone(), 4);
+        post(&actor1, port_id1.clone(), 2);
+        post(&actor1, port_id2.clone(), 3);
+        post(&actor1, port_id2_1.clone(), 1);
+        let mut messages = wait_for(&mut receiver, 4, Duration::from_secs(2))
+            .await
+            .unwrap();
+        // Message might be received out of their sending out. So we sort the
+        // messages here.
+        messages.sort();
+        assert_eq!(messages, vec![1, 2, 3, 4]);
+
+        // no more messages
+        RealClock.sleep(Duration::from_secs(2)).await;
+        let msg = receiver.try_recv().unwrap();
+        assert_eq!(msg, None);
     }
 }
