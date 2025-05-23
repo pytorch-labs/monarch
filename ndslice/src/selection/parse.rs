@@ -184,7 +184,7 @@ mod tests {
 
     #[macro_export]
     macro_rules! assert_parses_to {
-        ($input:expr, $expected:expr) => {{
+        ($input:expr_2021, $expected:expr_2021) => {{
             let actual = $crate::selection::parse::tests::parse($input);
             $crate::assert_structurally_eq!($expected, actual);
         }};

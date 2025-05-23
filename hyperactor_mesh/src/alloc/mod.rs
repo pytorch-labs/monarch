@@ -301,7 +301,7 @@ pub(crate) mod testing {
 
     #[macro_export]
     macro_rules! alloc_test_suite {
-        ($allocator:expr) => {
+        ($allocator:expr_2021) => {
             #[tokio::test]
             async fn test_allocator_basic() {
                 $crate::alloc::testing::test_allocator_basic($allocator).await;

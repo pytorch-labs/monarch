@@ -1365,7 +1365,8 @@ mod test {
 
     #[timed_test::async_timed_test(timeout_secs = 15)]
     async fn test_upstream_closed() {
-        std::env::set_var("MONARCH_MESSAGE_DELIVERY_TIMEOUT_SECS", "1");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("MONARCH_MESSAGE_DELIVERY_TIMEOUT_SECS", "1") };
 
         hyperactor_telemetry::initialize_logging();
         let serve_addr = ChannelAddr::any(ChannelTransport::Unix);

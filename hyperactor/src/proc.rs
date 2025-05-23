@@ -1107,7 +1107,7 @@ impl<A: Actor> Instance<A> {
     }
 
     /// A reference to the proc's clock
-    pub fn clock(&self) -> &impl Clock {
+    pub fn clock(&self) -> &(impl Clock + use<A>) {
         &self.proc.state().clock
     }
 

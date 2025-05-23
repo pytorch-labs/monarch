@@ -404,7 +404,7 @@ mod tests {
     // coordinate systems.
     #[macro_export]
     macro_rules! assert_layout_preserved {
-        ($original:expr, $reshaped:expr) => {{
+        ($original:expr_2021, $reshaped:expr_2021) => {{
             // Iterate over all coordinates in the original slice.
             for coord in $original.dim_iter($original.num_dim()) {
                 let forward = to_reshaped_coord($original, &$reshaped);

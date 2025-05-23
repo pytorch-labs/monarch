@@ -236,13 +236,13 @@ macro_rules! id {
     ($world:ident) => {
         $crate::reference::WorldId(stringify!($world).to_string())
     };
-    ($world:ident [$rank:expr]) => {
+    ($world:ident [$rank:expr_2021]) => {
         $crate::reference::ProcId(
             $crate::reference::WorldId(stringify!($world).to_string()),
             $rank,
         )
     };
-    ($world:ident [$rank:expr] . $actor:ident) => {
+    ($world:ident [$rank:expr_2021] . $actor:ident) => {
         $crate::reference::ActorId(
             $crate::reference::ProcId(
                 $crate::reference::WorldId(stringify!($world).to_string()),
@@ -252,7 +252,7 @@ macro_rules! id {
             0,
         )
     };
-    ($world:ident [$rank:expr] . $actor:ident [$pid:expr]) => {
+    ($world:ident [$rank:expr_2021] . $actor:ident [$pid:expr_2021]) => {
         $crate::reference::ActorId(
             $crate::reference::ProcId(
                 $crate::reference::WorldId(stringify!($world).to_string()),
@@ -268,7 +268,7 @@ macro_rules! id {
             stringify!($actor).to_string(),
         )
     };
-    ($world:ident [$rank:expr] . $actor:ident [$pid:expr] [$port:expr]) => {
+    ($world:ident [$rank:expr_2021] . $actor:ident [$pid:expr_2021] [$port:expr_2021]) => {
         $crate::reference::PortId(
             $crate::reference::ActorId(
                 $crate::reference::ProcId(

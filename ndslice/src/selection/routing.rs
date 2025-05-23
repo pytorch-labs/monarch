@@ -861,7 +861,7 @@ mod tests {
     /// assert_routing_eq_with!(slice, selection, collect_routed_nodes);
     /// ```
     macro_rules! assert_routing_eq_with {
-        ($slice:expr, $sel:expr, $collector:expr) => {{
+        ($slice:expr_2021, $sel:expr_2021, $collector:expr_2021) => {{
             let sel = $sel;
             let slice = $slice.clone();
             let mut expected: Vec<_> = sel.eval(&EvalOpts::lenient(), &slice).unwrap().collect();
@@ -875,7 +875,7 @@ mod tests {
     /// Asserts that `collect_routed_nodes` matches `Selection::eval`
     /// on the given slice.
     macro_rules! assert_collect_routed_nodes_eq {
-        ($slice:expr, $sel:expr) => {
+        ($slice:expr_2021, $sel:expr_2021) => {
             assert_routing_eq_with!($slice, $sel, collect_routed_nodes)
         };
     }
@@ -883,7 +883,7 @@ mod tests {
     /// Asserts that CommActor routing delivers to the same nodes as
     /// `Selection::eval`.
     macro_rules! assert_commactor_routing_eq {
-        ($slice:expr, $sel:expr) => {
+        ($slice:expr_2021, $sel:expr_2021) => {
             assert_routing_eq_with!($slice, $sel, |s, sl| {
                 collect_commactor_routing_tree(s, sl)
                     .delivered
@@ -901,7 +901,7 @@ mod tests {
     /// (`collect_commactor_routing_tree`) against the expected output
     /// from `Selection::eval`.
     macro_rules! assert_all_routing_strategies_eq {
-        ($slice:expr, $sel:expr) => {
+        ($slice:expr_2021, $sel:expr_2021) => {
             assert_collect_routed_nodes_eq!($slice, $sel);
             assert_commactor_routing_eq!($slice, $sel);
         };
@@ -1569,7 +1569,8 @@ mod tests {
         assert!(result.is_ok(), "Unexpected panic due to overdelivery");
 
         // Now explicitly disable deduplication.
-        std::env::set_var(var, "1");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var(var, "1") };
 
         // Expect overdelivery: the duplicated union arms will each
         // produce a delivery to the same coordinate.
@@ -1579,7 +1580,8 @@ mod tests {
 
         // Clean up: restore environment to avoid affecting other
         // tests.
-        std::env::remove_var(var);
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var(var) };
 
         assert!(
             result.is_err(),

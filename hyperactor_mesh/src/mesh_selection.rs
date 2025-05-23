@@ -156,7 +156,7 @@ mod tests {
     use crate::test_utils::EmptyActor;
 
     macro_rules! compare_selections {
-        ($a:expr, $b:expr) => {
+        ($a:expr_2021, $b:expr_2021) => {
             crate::selection::structurally_equal(&$a, &parse::expression($b).unwrap().1)
         };
     }

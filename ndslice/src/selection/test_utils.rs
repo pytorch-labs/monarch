@@ -30,7 +30,7 @@ pub fn parse(input: &str) -> Selection {
 
 #[macro_export]
 macro_rules! assert_structurally_eq {
-    ($expected:expr, $actual:expr) => {{
+    ($expected:expr_2021, $actual:expr_2021) => {{
         let expected = &$expected;
         let actual = &$actual;
         assert!(
@@ -44,7 +44,7 @@ macro_rules! assert_structurally_eq {
 
 #[macro_export]
 macro_rules! assert_round_trip {
-    ($selection:expr) => {{
+    ($selection:expr_2021) => {{
         let selection: Selection = $selection; // take ownership
         // Convert `Selection` to representation as compact
         // syntax.

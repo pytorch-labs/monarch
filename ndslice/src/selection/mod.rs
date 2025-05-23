@@ -925,7 +925,7 @@ impl Selection {
         opts: &EvalOpts,
         slice: &'a Slice,
         exclusions: &'a HashSet<usize>,
-    ) -> Result<impl Iterator<Item = usize> + 'a, ShapeError> {
+    ) -> Result<impl Iterator<Item = usize> + use<'a>, ShapeError> {
         Ok(self
             .eval(opts, slice)?
             .filter(move |idx| !exclusions.contains(idx)))
@@ -1080,18 +1080,18 @@ where
 /// # Example
 #[macro_export]
 macro_rules! select_from {
-    ($shape:expr, $label:ident = $range:expr) => {
+    ($shape:expr_2021, $label:ident = $range:expr_2021) => {
         $crate::selection::selection_from_one($shape, stringify!($label), $range).unwrap()
     };
 
-    ($shape:expr, $($label:ident = $val:literal),* $(,)?) => {
+    ($shape:expr_2021, $($label:ident = $val:literal),* $(,)?) => {
         $crate::selection::selection_from($shape,
                                           &[
                                               $((stringify!($label), $val..$val+1)),*
                                           ]).unwrap()
     };
 
-    ($shape:expr, $($label:ident = $range:expr),* $(,)?) => {
+    ($shape:expr_2021, $($label:ident = $range:expr_2021),* $(,)?) => {
         $crate::selection::selection_from($shape, &[
             $((stringify!($label), $range)),*
         ]).unwrap()
@@ -1517,18 +1517,18 @@ mod tests {
     // Prototype.
     #[macro_export] // ok since this is only enabled in tests
     macro_rules! select_ {
-        ($shape:expr, $label:ident = $range:expr) => {
+        ($shape:expr_2021, $label:ident = $range:expr_2021) => {
             $crate::selection::selection_from_one($shape, stringify!($label), $range).unwrap()
         };
 
-        ($shape:expr, $($label:ident = $val:literal),* $(,)?) => {
+        ($shape:expr_2021, $($label:ident = $val:literal),* $(,)?) => {
             $crate::selection::selection_from($shape,
                            &[
                                $((stringify!($label), $val..$val+1)),*
                            ]).unwrap()
         };
 
-        ($shape:expr, $($label:ident = $range:expr),* $(,)?) => {
+        ($shape:expr_2021, $($label:ident = $range:expr_2021),* $(,)?) => {
             $crate::selection::selection_from($shape, &[
                 $((stringify!($label), $range)),*
             ]).unwrap()

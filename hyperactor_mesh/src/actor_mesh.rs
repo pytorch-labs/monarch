@@ -322,18 +322,18 @@ mod tests {
     // Prototype. Replicated from hyperactor_mesh_core for the moment.
     #[macro_export] // ok since this is only enabled in tests
     macro_rules! select_ {
-        ($shape:expr, $label:ident = $range:expr) => {
+        ($shape:expr_2021, $label:ident = $range:expr_2021) => {
             ndslice::selection::selection_from_one($shape, stringify!($label), $range).unwrap()
         };
 
-        ($shape:expr, $($label:ident = $val:literal),* $(,)?) => {
+        ($shape:expr_2021, $($label:ident = $val:literal),* $(,)?) => {
             ndslice::selection::selection_from($shape,
                            &[
                                $((stringify!($label), $val..$val+1)),*
                            ]).unwrap()
         };
 
-        ($shape:expr, $($label:ident = $range:expr),* $(,)?) => {
+        ($shape:expr_2021, $($label:ident = $range:expr_2021),* $(,)?) => {
             ndslice::selection::selection_from($shape, &[
                 $((stringify!($label), $range)),*
 
@@ -344,7 +344,7 @@ mod tests {
     // These tests are parametric over allocators.
     #[macro_export]
     macro_rules! actor_mesh_test_suite {
-        ($allocator:expr) => {
+        ($allocator:expr_2021) => {
             use std::assert_matches::assert_matches;
 
             use ndslice::shape;

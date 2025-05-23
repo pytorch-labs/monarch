@@ -104,7 +104,7 @@ pub fn recorder() -> &'static Recorder {
 /// so MY_COUNTER.add(42, &[key_value!("key", "value")])  and MY_COUNTER.add(42, &[key_value!("key", "other_value")]) will actually bump two separete counters.
 #[macro_export]
 macro_rules! key_value {
-    ($key:expr, $val:expr) => {
+    ($key:expr_2021, $val:expr_2021) => {
         $crate::opentelemetry::KeyValue::new(
             $crate::opentelemetry::Key::new($key),
             $crate::opentelemetry::Value::from($val),
@@ -128,7 +128,7 @@ macro_rules! key_value {
 /// ```
 #[macro_export]
 macro_rules! kv_pairs {
-    ($($k:expr => $v:expr),* $(,)?) => {
+    ($($k:expr_2021 => $v:expr_2021),* $(,)?) => {
         &[$($crate::key_value!($k, $v),)*]
     };
 }
@@ -205,7 +205,7 @@ impl<'a> Drop for TimerGuard<'a> {
 /// ```
 #[macro_export]
 macro_rules! declare_static_timer {
-    ($name:ident, $key:expr, $unit:path) => {
+    ($name:ident, $key:expr_2021, $unit:path) => {
         #[doc = "a global histogram timer named: "]
         #[doc = $key]
         pub static $name: std::sync::LazyLock<$crate::Timer> = std::sync::LazyLock::new(|| {
@@ -243,7 +243,7 @@ macro_rules! declare_static_timer {
 /// ```
 #[macro_export]
 macro_rules! declare_static_counter {
-    ($name:ident, $key:expr) => {
+    ($name:ident, $key:expr_2021) => {
         #[doc = "a global counter named: "]
         #[doc = $key]
         pub static $name: std::sync::LazyLock<opentelemetry::metrics::Counter<u64>> =
@@ -278,7 +278,7 @@ macro_rules! declare_static_counter {
 /// ```
 #[macro_export]
 macro_rules! declare_static_up_down_counter {
-    ($name:ident, $key:expr) => {
+    ($name:ident, $key:expr_2021) => {
         #[doc = "a global up down counter named: "]
         #[doc = $key]
         pub static $name: std::sync::LazyLock<opentelemetry::metrics::UpDownCounter<i64>> =
@@ -313,7 +313,7 @@ macro_rules! declare_static_up_down_counter {
 /// ```
 #[macro_export]
 macro_rules! declare_static_gauge {
-    ($name:ident, $key:expr) => {
+    ($name:ident, $key:expr_2021) => {
         #[doc = "a global gauge named: "]
         #[doc = $key]
         pub static $name: std::sync::LazyLock<opentelemetry::metrics::Gauge<f64>> =
@@ -343,7 +343,7 @@ macro_rules! declare_static_gauge {
 /// ```
 #[macro_export]
 macro_rules! declare_observable_gauge {
-    ($name:ident, $key:expr, $cb:expr) => {
+    ($name:ident, $key:expr_2021, $cb:expr_2021) => {
         #[doc = "a global gauge named: "]
         #[doc = $key]
         pub static $name: std::sync::LazyLock<opentelemetry::metrics::ObservableGauge<f64>> =
@@ -378,7 +378,7 @@ macro_rules! declare_observable_gauge {
 /// ```
 #[macro_export]
 macro_rules! declare_static_histogram {
-    ($name:ident, $key:expr) => {
+    ($name:ident, $key:expr_2021) => {
         #[doc = "a global histogram named: "]
         #[doc = $key]
         pub static $name: std::sync::LazyLock<opentelemetry::metrics::Histogram<f64>> =

@@ -253,7 +253,7 @@ impl WorkerMessageHandler for WorkerActor {
     ) -> Result<()> {
         tracing::info!("worker received call_function: {:#?}", &params);
         match &params.function {
-            ResolvableFunction::FunctionPath(FunctionPath { ref path }) => {
+            ResolvableFunction::FunctionPath(FunctionPath { path }) => {
                 tracing::info!("function path: {:#?}", &path);
                 if path == PAFT_RECONFIG_FTAR_FCN {
                     let step = match params.kwargs.get("step").unwrap() {

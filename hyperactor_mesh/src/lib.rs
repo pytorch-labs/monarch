@@ -72,7 +72,7 @@ mod tests {
     use ndslice::selection::Selection;
 
     macro_rules! assert_round_trip_match {
-        ($left:expr, $right:expr) => {{
+        ($left:expr_2021, $right:expr_2021) => {{
             assert_structurally_eq!($left, $right);
             assert_round_trip!($left);
             assert_round_trip!($right);

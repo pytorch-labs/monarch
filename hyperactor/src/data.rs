@@ -96,7 +96,7 @@ impl_basic!(String);
 #[doc(hidden)] // not part of the public API
 #[macro_export]
 macro_rules! intern_typename {
-    ($key:ty, $format_string:expr, $($args:ty),+) => {
+    ($key:ty, $format_string:expr_2021, $($args:ty),+) => {
         {
             static CACHE: std::sync::LazyLock<$crate::dashmap::DashMap<std::any::TypeId, &'static str>> =
               std::sync::LazyLock::new($crate::dashmap::DashMap::new);

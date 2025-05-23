@@ -365,14 +365,10 @@ mod tests {
         );
         let t2 = results.outputs.pop().unwrap();
 
+        #[allow(clippy::undocumented_unsafe_blocks)]
+        let x = unsafe { &args[0].clone_unsafe().to_tensor().unwrap() };
         assert!(
-            is_alias(
-                #[allow(clippy::undocumented_unsafe_blocks)]
-                unsafe {
-                    &args[0].clone_unsafe().to_tensor().unwrap()
-                },
-                &t2.to_tensor().unwrap(),
-            ),
+            is_alias(x, &t2.to_tensor().unwrap()),
             "c++ tensors should alias"
         );
     }

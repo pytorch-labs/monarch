@@ -577,13 +577,13 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
                 let (arg_names, arg_types): (Vec<_>, Vec<_>) = message.args().into_iter().unzip();
                 let variant_name_snake = variant.snake_name();
                 let enum_name = variant.enum_name();
-                let variant_qualified_name = variant.qualified_name();
+                let _variant_qualified_name = variant.qualified_name();
                 let log_level = match (&global_log_level, log_level) {
                     (_, Some(local)) => local.clone(),
                     (Some(global), None) => global.clone(),
                     _ => Ident::new("DEBUG", Span::call_site()),
                 };
-                let log_level = if *reply_port_is_handle {
+                let _log_level = if *reply_port_is_handle {
                     quote! {
                         tracing::Level::#log_level
                     }
@@ -656,7 +656,7 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
                     (Some(global), None) => global.clone(),
                     _ => Ident::new("TRACE", Span::call_site()),
                 };
-                let log_level = quote! {
+                let _log_level = quote! {
                     tracing::Level::#log_level
                 };
                 let log_message = quote! {

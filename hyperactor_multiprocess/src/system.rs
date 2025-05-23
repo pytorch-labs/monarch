@@ -80,7 +80,7 @@ impl System {
     }
 
     /// A sender capable of routing all messages to actors in the system.
-    async fn sender(&self) -> Result<impl MailboxSender, anyhow::Error> {
+    async fn sender(&self) -> Result<impl MailboxSender + use<>, anyhow::Error> {
         let tx = channel::dial(self.addr.clone())?;
         Ok(MailboxClient::new(tx))
     }
