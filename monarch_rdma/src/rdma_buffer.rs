@@ -486,7 +486,7 @@ mod tests {
         let alloc1 = LocalAllocator
             .allocate(AllocSpec {
                 shape: shape! {replica=1, host=1, gpu=1},
-                constraints: AllocConstraints::none(),
+                constraints: Default::default(),
             })
             .await?;
         let proc_mesh_1 = ProcMesh::allocate(alloc1).await?;
@@ -496,7 +496,7 @@ mod tests {
         let alloc2 = LocalAllocator
             .allocate(AllocSpec {
                 shape: shape! {replica=1, host=1, gpu=1},
-                constraints: AllocConstraints::none(),
+                constraints: Default::default(),
             })
             .await?;
         let proc_mesh_2 = ProcMesh::allocate(alloc2).await?;
@@ -562,7 +562,7 @@ mod tests {
         let alloc1 = LocalAllocator
             .allocate(AllocSpec {
                 shape: shape! {replica=1, host=1, gpu=1},
-                constraints: AllocConstraints::none(),
+                constraints: Default::default(),
             })
             .await?;
         let proc_mesh_1 = ProcMesh::allocate(alloc1).await?;
@@ -572,7 +572,7 @@ mod tests {
         let alloc2 = LocalAllocator
             .allocate(AllocSpec {
                 shape: shape! {replica=1, host=1, gpu=1},
-                constraints: AllocConstraints::none(),
+                constraints: Default::default(),
             })
             .await?;
         let proc_mesh_2 = ProcMesh::allocate(alloc2).await?;

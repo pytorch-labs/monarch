@@ -585,7 +585,7 @@ mod tests {
             let alloc_1 = LocalAllocator
                 .allocate(AllocSpec {
                     shape: shape! { proc = 1 },
-                    constraints: AllocConstraints::none(),
+                    constraints: Default::default(),
                 })
                 .await
                 .unwrap();
@@ -597,7 +597,7 @@ mod tests {
             let alloc_2 = LocalAllocator
                 .allocate(AllocSpec {
                     shape: shape! { proc = 1 },
-                    constraints: AllocConstraints::none(),
+                    constraints: Default::default(),
                 })
                 .await
                 .unwrap();

@@ -53,19 +53,11 @@ pub enum AllocatorError {
 }
 
 /// Constraints on the allocation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AllocConstraints {
     /// Aribitrary name/value pairs that are interpreted by individual
     /// allocators to control allocation process.
     pub match_labels: HashMap<String, String>,
-}
-
-impl AllocConstraints {
-    pub fn none() -> Self {
-        Self {
-            match_labels: HashMap::new(),
-        }
-    }
 }
 
 /// A specification (desired state) of an alloc.
@@ -313,7 +305,7 @@ pub(crate) mod testing {
         let mut alloc = allocator
             .allocate(AllocSpec {
                 shape: shape! { replica = 4 },
-                constraints: AllocConstraints::none(),
+                constraints: Default::default(),
             })
             .await
             .unwrap();

@@ -363,7 +363,7 @@ mod tests {
                 let alloc = $allocator
                     .allocate(AllocSpec {
                         shape: shape! { replica = 4 },
-                        constraints: AllocConstraints::none(),
+                        constraints: Default::default(),
                     })
                     .await
                     .unwrap();
@@ -384,7 +384,7 @@ mod tests {
                 let alloc = $allocator
                     .allocate(AllocSpec {
                         shape: shape! { replica = 2, host = 2, gpu = 8 },
-                        constraints: AllocConstraints::none(),
+                        constraints: Default::default(),
                     })
                     .await
                     .unwrap();
@@ -423,7 +423,7 @@ mod tests {
                         // required for this test in the process case
                         // reasonable (< 60s).
                         shape: shape! { replica = 2, host = 2, gpu = 8 },
-                        constraints: AllocConstraints::none(),
+                        constraints: Default::default(),
                     })
                     .await
                     .unwrap();
@@ -454,7 +454,7 @@ mod tests {
                     let alloc = $allocator
                         .allocate(AllocSpec {
                             shape: shape! { replica = 1 },
-                            constraints: AllocConstraints::none(),
+                            constraints: Default::default(),
                         })
                         .await
                         .unwrap();

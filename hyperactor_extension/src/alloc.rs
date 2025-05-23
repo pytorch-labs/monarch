@@ -91,7 +91,7 @@ impl PyAllocConstraints {
     #[new]
     #[pyo3(signature = (match_labels=None))]
     fn new(match_labels: Option<HashMap<String, String>>) -> PyResult<Self> {
-        let mut constraints = AllocConstraints::none();
+        let mut constraints = AllocConstraints::default();
         if let Some(match_lables) = match_labels {
             constraints.match_labels = match_lables;
         }

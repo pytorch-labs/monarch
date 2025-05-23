@@ -394,7 +394,7 @@ mod tests {
         let alloc = LocalAllocator
             .allocate(AllocSpec {
                 shape: shape! { replica = 4 },
-                constraints: AllocConstraints::none(),
+                constraints: Default::default(),
             })
             .await
             .unwrap();

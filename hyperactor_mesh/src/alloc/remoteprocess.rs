@@ -1048,7 +1048,7 @@ mod test {
 
         let spec = AllocSpec {
             shape: shape!(host = 1, gpu = 2),
-            constraints: AllocConstraints::none(),
+            constraints: Default::default(),
         };
         let tx = channel::dial(serve_addr.clone()).unwrap();
 
@@ -1182,7 +1182,7 @@ mod test {
 
         let spec = AllocSpec {
             shape: shape!(host = 1, gpu = 2),
-            constraints: AllocConstraints::none(),
+            constraints: Default::default(),
         };
         let tx = channel::dial(serve_addr.clone()).unwrap();
 
@@ -1256,7 +1256,7 @@ mod test {
 
         let spec = AllocSpec {
             shape: shape!(host = 1, gpu = 2),
-            constraints: AllocConstraints::none(),
+            constraints: Default::default(),
         };
         let tx = channel::dial(serve_addr.clone()).unwrap();
 
@@ -1365,6 +1365,7 @@ mod test {
 
     #[timed_test::async_timed_test(timeout_secs = 15)]
     async fn test_upstream_closed() {
+        // SAFETY: This test is single-threaded.
         // TODO: Audit that the environment access only happens in single-threaded code.
         unsafe { std::env::set_var("MONARCH_MESSAGE_DELIVERY_TIMEOUT_SECS", "1") };
 
@@ -1375,7 +1376,7 @@ mod test {
 
         let spec = AllocSpec {
             shape: shape!(host = 1, gpu = 2),
-            constraints: AllocConstraints::none(),
+            constraints: Default::default(),
         };
         let tx = channel::dial(serve_addr.clone()).unwrap();
 
@@ -1464,7 +1465,7 @@ mod test_alloc {
 
         let spec = AllocSpec {
             shape: shape!(host = 2, gpu = 2),
-            constraints: AllocConstraints::none(),
+            constraints: Default::default(),
         };
         let world_id = WorldId("test_world_id".to_string());
         let transport = ChannelTransport::Unix;
@@ -1580,7 +1581,7 @@ mod test_alloc {
 
         let spec = AllocSpec {
             shape: shape!(host = 2, gpu = 2),
-            constraints: AllocConstraints::none(),
+            constraints: Default::default(),
         };
         let world_id = WorldId("test_world_id".to_string());
         let transport = ChannelTransport::Unix;

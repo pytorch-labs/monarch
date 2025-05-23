@@ -481,7 +481,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
         alloc
             .allocate(AllocSpec {
                 shape: shape! {replica=1, host=1, gpu=1},
-                constraints: AllocConstraints::none(),
+                constraints: Default::default(),
             })
             .await?,
     )
@@ -507,7 +507,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
         alloc
             .allocate(AllocSpec {
                 shape: shape! {replica=1, host=1, gpu=num_workers},
-                constraints: AllocConstraints::none(),
+                constraints: Default::default(),
             })
             .await?,
     )
