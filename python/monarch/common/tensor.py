@@ -349,7 +349,7 @@ class Tensor(Referenceable, BaseTensor):
         # because a device mesh also has caches for doing collectives.
         # but this is an easy way to create a MeshSliceTensor until we optimize
         # how we represent mesh slices.
-        slicing = self.mesh(**kwargs)
+        slicing = self.mesh.slice(**kwargs)
         return MeshSliceTensor(self, slicing)
 
     def delete_ref(self, ref: int):
@@ -432,7 +432,7 @@ class MeshSliceTensor:
                 for dim in broadcast_dims
             ]
             destinations = [
-                mesh(**dict(dim_settings)).processes
+                mesh.slice(**dict(dim_settings)).processes
                 for dim_settings in itertools.product(*dim_sequences)
             ]
         else:

@@ -98,6 +98,7 @@ class TestingContext:
         num_hosts,
         gpu_per_host,
         activate: bool = True,
+        controller_params=None,
     ) -> Generator[DeviceMesh, None, None]:
         # Create a new system and mesh for test.
         with local_mesh(
@@ -111,6 +112,7 @@ class TestingContext:
                 num_worker_procs=num_hosts * gpu_per_host,
                 gpus_per_host=gpu_per_host,
             ),
+            controller_params=controller_params,
         ) as dm:
             try:
                 if activate:
@@ -129,11 +131,13 @@ class TestingContext:
 
     @contextmanager
     def local_device_mesh(
-        self, num_hosts, gpu_per_host, activate=True, rust=False
+        self, num_hosts, gpu_per_host, activate=True, rust=False, controller_params=None
     ) -> Generator[DeviceMesh, None, None]:
         start = time.time()
         if rust:
-            generator = self.local_rust_device_mesh(num_hosts, gpu_per_host, activate)
+            generator = self.local_rust_device_mesh(
+                num_hosts, gpu_per_host, activate, controller_params=controller_params
+            )
         else:
             generator = self.local_py_device_mesh(num_hosts, gpu_per_host, activate)
         with generator as dm:
