@@ -426,8 +426,13 @@ class PortReceiver(Generic[R]):
             return payload
         else:
             assert msg.method == "exception"
-            # pyre-ignore do something more structured here
-            raise payload
+            if isinstance(payload, tuple):
+                # If we're receiving on a RankedPort, raise the exception and ignore the rank.
+                # pyre-ignore do something more structured here
+                raise payload[1]
+            else:
+                # pyre-ignore
+                raise payload
 
     def recv(self) -> "Future[R]":
         return Future(lambda: self._recv(), self._blocking_recv)
