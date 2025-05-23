@@ -646,11 +646,10 @@ def test_panicking_worker():
 
 def test_timeout_warning(caplog):
     timeout = 3
-    with local.local_device_mesh(
+    with local_rust_device_mesh(
         1,
         2,
         True,
-        rust=True,
         controller_params=ControllerParams(1, timeout, 100, False),
     ) as dm:
         for _ in range(3):
@@ -676,11 +675,10 @@ def test_timeout_warning(caplog):
 
 def test_timeout_failure():
     timeout = 3
-    with local.local_device_mesh(
+    with local_rust_device_mesh(
         1,
         1,
         True,
-        rust=True,
         controller_params=ControllerParams(1, timeout, 100, True),
     ) as dm:
         for _ in range(3):
