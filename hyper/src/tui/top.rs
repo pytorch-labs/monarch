@@ -16,8 +16,6 @@ use crossterm::event::KeyModifiers;
 use crossterm::event::poll;
 use crossterm::event::{self};
 use hyperactor::ActorId;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
 use ratatui::DefaultTerminal;
 use ratatui::Frame;
 use ratatui::layout::Constraint;
@@ -95,18 +93,25 @@ impl App {
         fetch_actors: F,
     ) -> Result<()>
     where
-        F: Fn() -> Fut,
-        Fut: Future<Output = Result<Vec<ActorInfo>>>,
+        F: FnOnce() -> Fut + Send + Clone + 'static,
+        Fut: Future<Output = Result<Vec<ActorInfo>>> + Send,
     {
-        let mut last_fetched_data = RealClock.now();
         let mut actors = vec![];
+        let (actors_tx, actors_rx) = tokio::sync::watch::channel::<Vec<ActorInfo>>(vec![]);
+
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(REFRESH_RATE);
+            loop {
+                interval.tick().await;
+                if let Ok(res) = fetch_actors.clone()().await {
+                    let _ = actors_tx.send(res);
+                }
+            }
+        });
 
         while !self.exit {
-            if last_fetched_data.elapsed() > REFRESH_RATE {
-                if let Ok(res) = fetch_actors().await {
-                    actors = res;
-                }
-                last_fetched_data = RealClock.now();
+            if actors_rx.has_changed().is_ok() {
+                actors = actors_rx.borrow().clone();
             }
 
             terminal.draw(|f| {

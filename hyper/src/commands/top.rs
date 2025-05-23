@@ -54,9 +54,8 @@ impl TopCommand {
             .0 as i64;
 
         let mut app = App::new(execution_id.clone());
-        let fetch_actors = async || {
-            fetch_actors_from_scuba(client.clone(), user.as_str(), execution_id.as_str(), fbid)
-                .await
+        let fetch_actors = async move || {
+            fetch_actors_from_scuba(client, user.as_str(), execution_id.as_str(), fbid).await
         };
         let result = app.run(&mut terminal, fetch_actors).await;
 
