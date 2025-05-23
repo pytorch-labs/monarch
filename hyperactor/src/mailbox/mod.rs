@@ -1279,45 +1279,54 @@ impl cap::sealed::CanOpenPort for Mailbox {
 
 impl cap::sealed::CanSplitPort for Mailbox {
     fn split(&self, port_id: PortId, reducer_typehash: Option<u64>) -> PortId {
+        fn post(mailbox: &Mailbox, port_id: PortId, msg: Serialized) {
+            mailbox.post(
+                MessageEnvelope::new(mailbox.actor_id().clone(), port_id, msg),
+                // TODO(pzhang) figure out how to use upstream's return handle,
+                // instead of getting a new one like this.
+                // This is okay for now because upstream is currently also using
+                // the same handle singleton, but that could change in the future.
+                monitored_return_handle(),
+            );
+        }
+
         let port_index = self.state.allocate_port();
         let split_port = self.actor_id().port_id(port_index);
         let mailbox = self.clone();
-        let buffer = Arc::new(Mutex::new(Vec::<Serialized>::new()));
         let reducer = reducer_typehash.and_then(accum::resolve_reducer);
-        let enqueue = move |serialized: Serialized| {
-            // Hold the lock until messages are sent. This is to avoid another
-            // invocation of this method trying to send message concurrently and
-            // cause messages delivered out of order.
-            let mut buf = buffer.lock().unwrap();
-            buf.push(serialized);
-            // TODO(pzhang) add policy and use this buffer
-            let buffered = std::mem::take(&mut *buf);
-            let reduced = match &reducer {
-                Some(r) => vec![r.reduce_updates(buffered).map_err(|(e, mut b)| {
-                    (
-                        b.pop()
-                            .expect("there should be at least one update from buffer"),
-                        e,
-                    )
-                })?],
-                None => buffered,
-            };
-            for msg in reduced {
-                mailbox.post(
-                    MessageEnvelope::new(mailbox.actor_id().clone(), port_id.clone(), msg),
-                    // TODO(pzhang) figure out how to use upstream's return handle,
-                    // instead of getting a new one like this.
-                    // This is okay for now because upstream is currently also using
-                    // the same handle singleton, but that could change in the future.
-                    monitored_return_handle(),
-                );
+        let enqueue: Box<
+            dyn Fn(Serialized) -> Result<(), (Serialized, anyhow::Error)> + Send + Sync,
+        > = match reducer {
+            None => Box::new(move |serialized: Serialized| {
+                post(&mailbox, port_id.clone(), serialized);
+                Ok(())
+            }),
+            Some(r) => {
+                let buffer = Arc::new(Mutex::new(Vec::<Serialized>::new()));
+                Box::new(move |serialized: Serialized| {
+                    // Hold the lock until messages are sent. This is to avoid another
+                    // invocation of this method trying to send message concurrently and
+                    // cause messages delivered out of order.
+                    let mut buf = buffer.lock().unwrap();
+                    buf.push(serialized);
+                    // TODO(pzhang) add policy and use this buffer
+                    let buffered = std::mem::take(&mut *buf);
+                    let reduced = r.reduce_updates(buffered).map_err(|(e, mut b)| {
+                        (
+                            b.pop()
+                                .expect("there should be at least one update from buffer"),
+                            e,
+                        )
+                    })?;
+                    post(&mailbox, port_id.clone(), reduced);
+                    Ok(())
+                })
             }
-            Ok(())
         };
         self.bind_untyped(
             &split_port,
             UntypedUnboundedSender {
-                sender: Box::new(enqueue),
+                sender: enqueue,
                 port_id: split_port.clone(),
             },
         );
