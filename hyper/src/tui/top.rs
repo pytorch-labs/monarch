@@ -35,7 +35,7 @@ use ratatui::widgets::Wrap;
 use regex::Regex;
 
 /// Frequency of data fetch
-const REFRESH_RATE: tokio::time::Duration = tokio::time::Duration::from_millis(5000);
+const REFRESH_RATE: tokio::time::Duration = tokio::time::Duration::from_millis(2000);
 /// Text displayed in the filter area when the filter is empty
 const EMPTY_FILTER_TEXT: &str = "enter a pattern to filter | :q to quit";
 
@@ -349,8 +349,8 @@ impl Component for AppTable {
 
     fn render(&mut self, f: &mut Frame, area: Rect, props: AppTableProps) {
         let titles_and_widths = vec![
-            ("Actor", Constraint::Length(30)),
-            ("World", Constraint::Length(15)),
+            ("Actor", Constraint::Length(45)),
+            ("World", Constraint::Length(30)),
             ("Message Count", Constraint::Length(20)),
         ];
 
@@ -359,7 +359,11 @@ impl Component for AppTable {
                 .iter()
                 .map(|(title, _)| Cell::from(*title)),
         )
-        .style(Style::default().add_modifier(Modifier::BOLD));
+        .style(
+            Style::default()
+                .bg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        );
 
         // Calculate the maximum number of rows that can be displayed
         let max_rows = area.height.saturating_sub(1) as usize; // Subtract 1 for the header row

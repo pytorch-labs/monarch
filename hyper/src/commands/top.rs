@@ -106,7 +106,11 @@ async fn fetch_actors_from_scuba(
         })
         .collect::<Vec<_>>();
 
-    actors.sort_by(|a, b| b.message_count.cmp(&a.message_count));
+    actors.sort_by(|a, b| {
+        b.message_count
+            .cmp(&a.message_count)
+            .then_with(|| a.actor_id.cmp(&b.actor_id))
+    });
 
     Ok(actors)
 }
