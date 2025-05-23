@@ -13,6 +13,7 @@ use crossterm::event::Event;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
+use crossterm::event::poll;
 use crossterm::event::{self};
 use hyperactor::ActorId;
 use hyperactor::clock::Clock;
@@ -118,8 +119,10 @@ impl App {
                 )
             })?;
 
-            if let Event::Key(key_event) = event::read()? {
-                self.handle(&key_event);
+            if poll(tokio::time::Duration::from_millis(0))? {
+                if let Event::Key(key_event) = event::read()? {
+                    self.handle(&key_event);
+                }
             }
         }
         Ok(())
