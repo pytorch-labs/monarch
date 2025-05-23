@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::env;
+use std::num::ParseIntError;
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -75,13 +76,16 @@ async fn fetch_actors_from_scuba(
     let query = format!(
         "
         SELECT
-            dest_actor_id, SUM(sum)
+            actor_id, key, SUM(sum)
         FROM monarch_metrics
         WHERE
             execution_id = '{}'
-            AND dest_actor_id is not NULL
             AND time={}
-        GROUP BY dest_actor_id
+            AND (
+                key = 'messages_sent' OR
+                key = 'messages_received' 
+            )
+        GROUP BY actor_id, key
         ",
         execution_id, ts,
     );
@@ -100,15 +104,16 @@ async fn fetch_actors_from_scuba(
 
     let mut actors = new_actors
         .into_iter()
-        .map(|(actor_id, message_count)| ActorInfo {
+        .map(|(actor_id, (messages_received, messages_sent))| ActorInfo {
             actor_id,
-            message_count,
+            messages_received,
+            messages_sent,
         })
         .collect::<Vec<_>>();
 
     actors.sort_by(|a, b| {
-        b.message_count
-            .cmp(&a.message_count)
+        b.messages_received
+            .cmp(&a.messages_received)
             .then_with(|| a.actor_id.cmp(&b.actor_id))
     });
 
@@ -152,26 +157,42 @@ async fn max_ts_sec(
     Ok(ts_sec)
 }
 
-fn scuba_result_to_message_count(result: SQLQueryResult) -> Result<HashMap<String, usize>> {
+fn scuba_result_to_message_count(
+    result: SQLQueryResult,
+) -> Result<HashMap<String, (/*received:*/ usize, /*sent:*/ usize)>> {
     let mut message_count = HashMap::new();
-    for entry in result.value.iter() {
+    for entry in result.value {
+        let mut entry = entry.into_iter();
         let actor_id;
-        let count;
-        if let Some(actor_id_str) = entry.first() {
+        let count: Result<usize, ParseIntError>;
+        let key;
+        if let Some(actor_id_str) = entry.next() {
             // TODO: There are actor IDs like "world[0].world[0].ping[0][0]" which cannot be parsed
             actor_id = actor_id_str;
         } else {
             tracing::error!("failed to get actor_id from scuba result entry {:?}", entry);
             continue;
         }
-        if let Some(count_str) = entry.last() {
+        if let Some(key_str) = entry.next() {
+            // TODO: There are actor IDs like "world[0].world[0].ping[0][0]" which cannot be parsed
+            key = key_str;
+        } else {
+            tracing::error!("failed to get key from scuba result entry {:?}", entry);
+            continue;
+        }
+        if let Some(count_str) = entry.next() {
             count = count_str.parse();
         } else {
             tracing::error!("failed to get counter from scuba result entry {:?}", entry);
             continue;
         }
         if let Ok(count) = count {
-            message_count.insert(actor_id.to_string(), count);
+            let counts = message_count.entry(actor_id.to_string()).or_insert((0, 0));
+            if key == "messages_received" {
+                counts.0 += count;
+            } else {
+                counts.1 += count;
+            }
         } else {
             tracing::error!(
                 "failed to parse counter and actor_id from scuba result entry {:?}",

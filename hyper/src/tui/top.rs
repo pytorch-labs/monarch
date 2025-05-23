@@ -49,7 +49,8 @@ trait Component {
 #[derive(Clone)]
 pub struct ActorInfo {
     pub actor_id: String,
-    pub message_count: usize,
+    pub messages_received: usize,
+    pub messages_sent: usize,
 }
 
 struct AppProps {
@@ -351,7 +352,8 @@ impl Component for AppTable {
         let titles_and_widths = vec![
             ("Actor", Constraint::Length(45)),
             ("World", Constraint::Length(30)),
-            ("Message Count", Constraint::Length(20)),
+            ("Received", Constraint::Length(10)),
+            ("Sent", Constraint::Length(10)),
         ];
 
         let header = Row::new(
@@ -391,7 +393,8 @@ impl Component for AppTable {
             Row::new(vec![
                 actor.actor_id.to_string(),
                 world_name,
-                actor.message_count.to_string(),
+                actor.messages_received.to_string(),
+                actor.messages_sent.to_string(),
             ])
         });
 
@@ -473,7 +476,8 @@ mod tests {
         // Verify the table headers are rendered
         assert!(buffer_content.contains("Actor"));
         assert!(buffer_content.contains("World"));
-        assert!(buffer_content.contains("Message Count"));
+        assert!(buffer_content.contains("Received"));
+        assert!(buffer_content.contains("Sent"));
     }
 
     #[test]
@@ -490,11 +494,13 @@ mod tests {
             actors: vec![
                 ActorInfo {
                     actor_id: "test.actor1".to_string(),
-                    message_count: 10,
+                    messages_received: 10,
+                    messages_sent: 15,
                 },
                 ActorInfo {
                     actor_id: "test.actor2".to_string(),
-                    message_count: 20,
+                    messages_received: 20,
+                    messages_sent: 25,
                 },
             ],
         };
@@ -517,13 +523,16 @@ mod tests {
         // Verify the table headers are rendered
         assert!(buffer_content.contains("Actor"));
         assert!(buffer_content.contains("World"));
-        assert!(buffer_content.contains("Message Count"));
+        assert!(buffer_content.contains("Received"));
+        assert!(buffer_content.contains("Sent"));
 
         // Verify the actor data is rendered
         assert!(buffer_content.contains("test.actor1"));
         assert!(buffer_content.contains("test.actor2"));
         assert!(buffer_content.contains("10"));
+        assert!(buffer_content.contains("15"));
         assert!(buffer_content.contains("20"));
+        assert!(buffer_content.contains("25"));
     }
 
     #[test]
@@ -540,15 +549,18 @@ mod tests {
             actors: vec![
                 ActorInfo {
                     actor_id: "test.actor1".to_string(),
-                    message_count: 10,
+                    messages_received: 10,
+                    messages_sent: 0,
                 },
                 ActorInfo {
                     actor_id: "test.actor2".to_string(),
-                    message_count: 20,
+                    messages_received: 20,
+                    messages_sent: 0,
                 },
                 ActorInfo {
                     actor_id: "other.actor3".to_string(),
-                    message_count: 30,
+                    messages_received: 30,
+                    messages_sent: 0,
                 },
             ],
         };
@@ -574,7 +586,8 @@ mod tests {
         // Verify the table headers are rendered
         assert!(buffer_content.contains("Actor"));
         assert!(buffer_content.contains("World"));
-        assert!(buffer_content.contains("Message Count"));
+        assert!(buffer_content.contains("Received"));
+        assert!(buffer_content.contains("Sent"));
 
         // Verify the filtered actor data is rendered
         assert!(buffer_content.contains("test.actor1"));
@@ -601,15 +614,18 @@ mod tests {
             actors: vec![
                 ActorInfo {
                     actor_id: "test.actor1".to_string(),
-                    message_count: 10,
+                    messages_received: 10,
+                    messages_sent: 0,
                 },
                 ActorInfo {
                     actor_id: "test.actor2".to_string(),
-                    message_count: 20,
+                    messages_received: 20,
+                    messages_sent: 0,
                 },
                 ActorInfo {
                     actor_id: "other.actor3".to_string(),
-                    message_count: 30,
+                    messages_received: 30,
+                    messages_sent: 0,
                 },
             ],
         };
@@ -636,7 +652,8 @@ mod tests {
         // Verify the table headers are rendered
         assert!(buffer_content.contains("Actor"));
         assert!(buffer_content.contains("World"));
-        assert!(buffer_content.contains("Message Count"));
+        assert!(buffer_content.contains("Sent"));
+        assert!(buffer_content.contains("Received"));
 
         // Verify the filtered actor data is rendered
         assert!(buffer_content.contains("test.actor1"));
@@ -787,7 +804,8 @@ mod tests {
         // Create actors vector for props
         let actors = vec![ActorInfo {
             actor_id: "test.actor1".to_string(),
-            message_count: 10,
+            messages_received: 10,
+            messages_sent: 0,
         }];
 
         // Render the app to capture initial state
@@ -843,7 +861,8 @@ mod tests {
         // Create actors vector for props
         let actors = vec![ActorInfo {
             actor_id: "test.actor1".to_string(),
-            message_count: 10,
+            messages_received: 10,
+            messages_sent: 0,
         }];
 
         // Render the app to capture initial state
@@ -910,7 +929,8 @@ mod tests {
         // Create actors vector for props
         let actors = vec![ActorInfo {
             actor_id: "test.actor1".to_string(),
-            message_count: 10,
+            messages_received: 10,
+            messages_sent: 0,
         }];
 
         // Render the app to capture initial state
@@ -977,7 +997,8 @@ mod tests {
         // Create actors vector for props
         let actors = vec![ActorInfo {
             actor_id: "test.actor1".to_string(),
-            message_count: 10,
+            messages_received: 10,
+            messages_sent: 0,
         }];
 
         // Render the app to capture initial state
@@ -1042,7 +1063,8 @@ mod tests {
         // Create actors vector for props
         let actors = vec![ActorInfo {
             actor_id: "test.actor1".to_string(),
-            message_count: 10,
+            messages_received: 10,
+            messages_sent: 0,
         }];
 
         // Render the app to capture initial state
@@ -1107,7 +1129,8 @@ mod tests {
         // Create actors vector for props
         let actors = vec![ActorInfo {
             actor_id: "test.actor1".to_string(),
-            message_count: 10,
+            messages_received: 10,
+            messages_sent: 0,
         }];
 
         // Render the app to capture initial state
@@ -1201,7 +1224,8 @@ mod tests {
         // Create actors vector for props
         let actors = vec![ActorInfo {
             actor_id: "test.actor1".to_string(),
-            message_count: 10,
+            messages_received: 10,
+            messages_sent: 0,
         }];
 
         // Render the app to capture initial state
@@ -1291,7 +1315,8 @@ mod tests {
         // Create actors vector for props
         let actors = vec![ActorInfo {
             actor_id: "test.actor1".to_string(),
-            message_count: 10,
+            messages_received: 10,
+            messages_sent: 0,
         }];
 
         // Render the app to capture initial state
@@ -1391,7 +1416,8 @@ mod tests {
         for i in 1..50 {
             actors.push(ActorInfo {
                 actor_id: format!("test.actor{}", i),
-                message_count: i,
+                messages_received: i,
+                messages_sent: 0,
             });
         }
 
@@ -1437,7 +1463,8 @@ mod tests {
         for i in 1..=30 {
             actors.push(ActorInfo {
                 actor_id: format!("test.actor{}", i),
-                message_count: i * 10,
+                messages_received: i * 10,
+                messages_sent: 0,
             });
         }
 
