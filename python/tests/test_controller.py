@@ -11,7 +11,6 @@ import re
 import sys
 import traceback
 from contextlib import contextmanager
-from typing import Generator
 
 import monarch
 import monarch.random
@@ -68,7 +67,7 @@ def local_rust_device_mesh(
     gpu_per_host,
     activate: bool = True,
     controller_params: ControllerParams | None = None,
-) -> Generator[DeviceMesh, None, None]:
+):
     with local_mesh(
         hosts=hosts,
         gpus_per_host=gpu_per_host,
@@ -111,10 +110,11 @@ class TestController:
         backend_type,
         activate=True,
     ):
-        return (
-            local.local_device_mesh(N, gpu_per_host, activate)
-            if backend_type == BackendType.PY
-            else local_rust_device_mesh(N, gpu_per_host, activate)
+        return local.local_device_mesh(
+            N,
+            gpu_per_host,
+            activate,
+            rust=backend_type == BackendType.RS,
         )
 
     def test_errors(self, backend_type):
@@ -124,7 +124,7 @@ class TestController:
             with pytest.raises(TypeError, match="LOCAL_TENSOR"):
                 t.add(y)
             with pytest.raises(TypeError, match="WRONG_MESH"):
-                sm = device_mesh(host=0)
+                sm = device_mesh.slice(host=0)
                 with sm.activate():
                     x = torch.rand(3, 4)
                     x.add(y)
@@ -137,8 +137,8 @@ class TestController:
 
     def test_sub_mesh(self, backend_type):
         with self.local_device_mesh(2, 2, backend_type) as device_mesh:
-            h0 = device_mesh(host=0)
-            h1 = device_mesh(host=1)
+            h0 = device_mesh.slice(host=0)
+            h1 = device_mesh.slice(host=1)
             with h0.activate():
                 _ = torch.rand(3, 4)
             with h1.activate():
@@ -167,7 +167,7 @@ class TestController:
 
     def test_sub_mesh_use_only_one(self, backend_type):
         with self.local_device_mesh(2, 2, backend_type, activate=False) as device_mesh:
-            h0 = device_mesh(host=0)
+            h0 = device_mesh.slice(host=0)
 
             with h0.activate():
                 x = torch.ones(3, 4)
@@ -178,7 +178,7 @@ class TestController:
 
     def test_sub_mesh_process_grop(self, backend_type):
         with self.local_device_mesh(2, 2, backend_type, activate=False) as device_mesh:
-            h0 = device_mesh(host=0)
+            h0 = device_mesh.slice(host=0)
             pg0 = h0.process_group(("gpu",))
             pg1 = h0.process_group(("gpu",))
             # Is there a way to functionally test that these two PG's aren't
@@ -309,8 +309,8 @@ class TestController:
 
     def test_movement(self, backend_type):
         with self.local_device_mesh(2, 2, backend_type) as device_mesh:
-            sm0 = device_mesh(host=0)
-            sm1 = device_mesh(host=1)
+            sm0 = device_mesh.slice(host=0)
+            sm1 = device_mesh.slice(host=1)
 
             with sm0.activate():
                 x = torch.rand(3, 4, device="cuda")
@@ -325,7 +325,7 @@ class TestController:
     def test_broadcast_one(self, backend_type):
         with self.local_device_mesh(2, 2, backend_type) as device_mesh:
             for dim in ("host", "gpu"):
-                subset = device_mesh(**{dim: 1})
+                subset = device_mesh.slice(**{dim: 1})
                 with subset.activate():
                     x = torch.rand(3, device="cuda")
                     y = x.to_mesh(device_mesh)
@@ -339,7 +339,7 @@ class TestController:
 
     def test_broadcast_two(self, backend_type):
         with self.local_device_mesh(2, 2, backend_type) as device_mesh:
-            subset = device_mesh(host=1, gpu=1)
+            subset = device_mesh.slice(host=1, gpu=1)
             with subset.activate():
                 x = torch.rand(3, device="cuda")
                 y = x.to_mesh(device_mesh)
@@ -368,8 +368,8 @@ class TestController:
 
     def test_mesh_semantics(self, backend_type):
         with self.local_device_mesh(2, 2, backend_type) as device_mesh:
-            host0 = device_mesh(host=0)
-            host1 = device_mesh(host=1)
+            host0 = device_mesh.slice(host=0)
+            host1 = device_mesh.slice(host=1)
             with host0.activate():
                 x = torch.randn(5)
             y = x * 5
@@ -392,8 +392,8 @@ class TestController:
             return x.to_mesh(mesh), backward
 
         with self.local_device_mesh(2, 2, backend_type) as device_mesh:
-            host0 = device_mesh(host=0)
-            host1 = device_mesh(host=1)
+            host0 = device_mesh.slice(host=0)
+            host1 = device_mesh.slice(host=1)
             with host0.activate():
                 x = torch.rand(3, 4, requires_grad=True, device="cuda")
                 y = torch.rand(4, 3, requires_grad=True, device="cuda")
@@ -440,7 +440,7 @@ class TestController:
                 ),
                 pp=2,
             )
-            pp_meshes = [ppmesh(pp=i) for i in range(2)]
+            pp_meshes = [ppmesh.slice(pp=i) for i in range(2)]
 
             with ppmesh.activate():
                 with pp_meshes[0].activate():
@@ -469,8 +469,8 @@ class TestController:
     def test_to_mesh_stream(self, backend_type):
         other = monarch.Stream("other")
         with self.local_device_mesh(2, 2, backend_type) as mesh:
-            m0 = mesh(host=0)
-            m1 = mesh(host=1)
+            m0 = mesh.slice(host=0)
+            m1 = mesh.slice(host=1)
             with m0.activate():
                 t2 = torch.rand(3, 4, device="cuda").to_mesh(m1, stream=other)
             with m1.activate(), other.activate():
@@ -492,7 +492,7 @@ class TestController:
 
     def test_sub_mesh_reduce(self, backend_type):
         with self.local_device_mesh(2, 2, backend_type) as device_mesh:
-            host1 = device_mesh(host=1)
+            host1 = device_mesh.slice(host=1)
             with host1.activate():
                 myrank = (
                     (device_mesh.rank("host") + 1) * 2 + device_mesh.rank("gpu") + 1
@@ -579,8 +579,8 @@ class TestController:
 
     def test_to_mesh_pytree(self, backend_type):
         with self.local_device_mesh(2, 2, backend_type) as device_mesh:
-            host0 = device_mesh(host=0)
-            host1 = device_mesh(host=1)
+            host0 = device_mesh.slice(host=0)
+            host1 = device_mesh.slice(host=1)
 
             with host0.activate():
                 a = torch.zeros((1,), device="cuda")
@@ -610,8 +610,8 @@ class TestController:
             host0_slices = monarch.slice_mesh(tensor_dict, host=0)
             host1_slices = monarch.slice_mesh(tensor_dict, host=1)
 
-            host0 = device_mesh(host=0)
-            host1 = device_mesh(host=1)
+            host0 = device_mesh.slice(host=0)
+            host1 = device_mesh.slice(host=1)
 
             host0_tensors = monarch.to_mesh(host0_slices, host0)
             host1_tensors = monarch.to_mesh(host1_slices, host1)
@@ -646,8 +646,12 @@ def test_panicking_worker():
 
 def test_timeout_warning(caplog):
     timeout = 3
-    with local_rust_device_mesh(
-        1, 2, True, ControllerParams(1, timeout, 100, False)
+    with local.local_device_mesh(
+        1,
+        2,
+        True,
+        rust=True,
+        controller_params=ControllerParams(1, timeout, 100, False),
     ) as dm:
         for _ in range(3):
             dm.client.new_node([], [])
@@ -672,8 +676,12 @@ def test_timeout_warning(caplog):
 
 def test_timeout_failure():
     timeout = 3
-    with local_rust_device_mesh(
-        1, 1, True, ControllerParams(1, timeout, 100, True)
+    with local.local_device_mesh(
+        1,
+        1,
+        True,
+        rust=True,
+        controller_params=ControllerParams(1, timeout, 100, True),
     ) as dm:
         for _ in range(3):
             dm.client.new_node([], [])
