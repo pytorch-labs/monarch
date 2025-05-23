@@ -41,7 +41,7 @@ def proc_mesh(
         mesh_role = specs.Role(
             name=mesh.name,
             image=image,
-            entrypoint="hyperactor",  # TODO install hyperactor cargo and add ~/.cargo/bin to PATH in Dockerfile
+            entrypoint="process_allocator",  # 'cargo install monarch_hyperactor' to get this binary
             args=[
                 "mesh-worker",
                 f"--port={port}",
