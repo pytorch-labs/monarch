@@ -30,6 +30,7 @@ from monarch import (
 )
 from monarch._testing import BackendType, TestingContext
 from monarch.builtins.log import log_remote
+from monarch.builtins.random import set_manual_seed_remote
 from monarch.cached_remote_function import remote_autograd_function
 from monarch.common import remote as remote_module
 from monarch.common.device_mesh import DeviceMesh
@@ -742,12 +743,8 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
                 something_else()
 
     def test_setting_random_seed(self, backend_type):
-        set_worker_random_seed = remote(
-            "monarch.worker.worker.set_random_seed_impl", propagate="inspect"
-        )
-
         with self.local_device_mesh(2, 2, backend_type):
-            set_worker_random_seed(12345, 0)
+            set_manual_seed_remote(12345)
             t = torch.randn(3, 4)
             t_d = torch.randn(3, 4, device="cuda")
             ref = fetch_shard(t).result()

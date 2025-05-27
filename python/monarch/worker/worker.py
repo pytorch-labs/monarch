@@ -60,10 +60,6 @@ except KeyError:
     CONTROLLER_COMPILED_REPEAT = True
 
 
-def set_random_seed_impl(seed, process_idx):
-    torch.manual_seed(seed ^ process_idx)
-
-
 def set_default_dtype(dtype: torch.dtype):
     torch.set_default_dtype(dtype)
 
