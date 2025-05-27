@@ -59,11 +59,15 @@ use monarch_messages::worker::WorkerActor;
 use monarch_messages::worker::WorkerMessage;
 use ndslice::Selection;
 use ndslice::Slice;
+use ndslice::reshape::Limit;
+use ndslice::reshape::ReshapeSliceExt;
 use ndslice::selection::dsl;
 use ndslice::shape::Range;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::OnceCell;
+
+const CASTING_FANOUT_SIZE: usize = 8;
 
 /// A controller for the workers that will be leveraged by the client to do the actual
 /// compute tasks. This acts a proxy managing comms with the workers and handling things like history,
@@ -387,7 +391,14 @@ impl ControllerMessageHandler for ControllerActor {
         message: Serialized,
     ) -> Result<(), anyhow::Error> {
         let selection = match ranks {
-            Ranks::Slice(slice) => slice_to_selection(slice),
+            Ranks::Slice(slice) => {
+                if slice.len() == self.world_size {
+                    // All ranks are selected.
+                    Selection::True
+                } else {
+                    slice_to_selection(slice)
+                }
+            }
             Ranks::SliceList(slices) => slices.into_iter().fold(dsl::false_(), |sel, slice| {
                 dsl::union(sel, slice_to_selection(slice))
             }),
@@ -399,12 +410,17 @@ impl ControllerMessageHandler for ControllerActor {
             ),
             message,
         );
+
+        let slice = Slice::new(0usize, vec![self.world_size], vec![1])
+            .unwrap()
+            .view_limit(Limit::from(CASTING_FANOUT_SIZE));
+
         self.comm_actor_ref.port::<CastMessage>().send(
             this,
             CastMessage {
                 dest: Uslice {
                     // TODO: pass both slice and selection from client side
-                    slice: Slice::new(0usize, vec![self.world_size], vec![1]).unwrap(),
+                    slice,
                     selection,
                 },
                 message,
