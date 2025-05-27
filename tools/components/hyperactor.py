@@ -45,7 +45,7 @@ def proc_mesh(
             args=[
                 "mesh-worker",
                 f"--port={port}",
-                "--program=monarch_bootstrap",  # TODO add monarch_boostrap as console_script and install it in Dockerfile
+                "--program=monarch_bootstrap",  # installed with monarch wheel (as console script)
             ],
             num_replicas=mesh.num_hosts,
             resource=specs.resource(h=mesh.host_type),
