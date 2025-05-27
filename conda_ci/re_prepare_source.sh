@@ -7,7 +7,7 @@
 
 # Pepares tmp dir to be uploaded to RE
 # Creates ./conda_env dir with conda environment
-# Creates ./oss_ci dir with necessary runner scripts
+# Creates ./conda_ci dir with necessary runner scripts
 # Creates ./source dir with main script
 
 if [ -z "${TMP_DIR}" ]; then
@@ -16,7 +16,7 @@ if [ -z "${TMP_DIR}" ]; then
 fi
 
 TMP_CONDA_ENV_DIR="$TMP_DIR/conda_env"
-TMP_OSS_CI_DIR="$TMP_DIR/oss_ci"
+TMP_OSS_CI_DIR="$TMP_DIR/conda_ci"
 TMP_SOURCE_DIR="$TMP_DIR/source"
 
 

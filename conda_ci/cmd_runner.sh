@@ -21,5 +21,5 @@ NCCL_IGNORE_TOPO_LOAD_FAILURE=true
 echo "$NCCL_IGNORE_TOPO_LOAD_FAILURE"
 echo "$MCP_AUTO"
 
-CONDA_ENV_PATH="$BUCK_DEFAULT_RUNTIME_RESOURCES/monarch/oss_ci/monarch_conda_env"
+CONDA_ENV_PATH="$BUCK_DEFAULT_RUNTIME_RESOURCES/monarch/conda_ci/monarch_conda_env"
 conda run -p "$CONDA_ENV_PATH" "$@"
