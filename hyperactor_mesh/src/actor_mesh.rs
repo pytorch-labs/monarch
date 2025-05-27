@@ -349,7 +349,6 @@ mod tests {
 
             use ndslice::shape;
             use $crate::alloc::AllocSpec;
-            use $crate::alloc::AllocConstraints;
             use $crate::alloc::Allocator;
             use $crate::assign::Ranks;
             use ndslice::selection::dsl::*;

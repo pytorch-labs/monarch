@@ -806,8 +806,8 @@ mod tests {
                     .into_iter()
                     .partition(|(_dst, path)| &path[0] == reply_port_ref1.port_id());
                 (
-                    get_ranks(PathToLeaves(reply1), reply_port_ref1.port_id(), &dest_world),
-                    get_ranks(PathToLeaves(reply2), reply_port_ref2.port_id(), &dest_world),
+                    get_ranks(PathToLeaves(reply1), reply_port_ref1.port_id(), dest_world),
+                    get_ranks(PathToLeaves(reply2), reply_port_ref2.port_id(), dest_world),
                 )
             };
 

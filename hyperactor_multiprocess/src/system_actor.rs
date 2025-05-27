@@ -2595,7 +2595,8 @@ mod tests {
         use crate::proc_actor::ProcActor;
         use crate::supervision::ProcSupervisor;
 
-        // TODO: Audit that the environment access only happens in single-threaded code.
+        // SAFETY: TODO: Audit that the environment access only
+        // happens in single-threaded code.
         unsafe { std::env::set_var("MONARCH_MESSAGE_DELIVERY_TIMEOUT_SECS", "1") };
 
         // Serve a system. Undeliverable messages encountered by the

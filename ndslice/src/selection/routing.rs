@@ -1569,7 +1569,8 @@ mod tests {
         assert!(result.is_ok(), "Unexpected panic due to overdelivery");
 
         // Now explicitly disable deduplication.
-        // TODO: Audit that the environment access only happens in single-threaded code.
+        // SAFETY: TODO: Audit that the environment access only
+        // happens in single-threaded code.
         unsafe { std::env::set_var(var, "1") };
 
         // Expect overdelivery: the duplicated union arms will each
@@ -1580,7 +1581,8 @@ mod tests {
 
         // Clean up: restore environment to avoid affecting other
         // tests.
-        // TODO: Audit that the environment access only happens in single-threaded code.
+        // SAFETY: TODO: Audit that the environment access only
+        // happens in single-threaded code.
         unsafe { std::env::remove_var(var) };
 
         assert!(

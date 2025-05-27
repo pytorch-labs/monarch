@@ -1343,7 +1343,8 @@ mod tests {
         use hyperactor::test_utils::pingpong::PingPongActor;
         use hyperactor::test_utils::pingpong::PingPongMessage;
 
-        // TODO: Audit that the environment access only happens in single-threaded code.
+        // SAFETY: TODO: Audit that the environment access only
+        // happens in single-threaded code.
         unsafe { std::env::set_var("MONARCH_MESSAGE_DELIVERY_TIMEOUT_SECS", "1") };
 
         // Serve a system.

@@ -384,7 +384,6 @@ mod tests {
     use ndslice::shape;
 
     use super::*;
-    use crate::alloc::AllocConstraints;
     use crate::alloc::AllocSpec;
     use crate::alloc::Allocator;
     use crate::alloc::local::LocalAllocator;

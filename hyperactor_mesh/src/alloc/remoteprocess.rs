@@ -960,7 +960,6 @@ mod test {
     use tokio::sync::oneshot;
 
     use super::*;
-    use crate::alloc::AllocConstraints;
     use crate::alloc::ChannelTransport;
     use crate::alloc::MockAlloc;
     use crate::alloc::MockAllocWrapper;
@@ -1456,7 +1455,6 @@ mod test_alloc {
     use timed_test::async_timed_test;
 
     use super::*;
-    use crate::alloc::AllocConstraints;
 
     #[async_timed_test(timeout_secs = 15)]
     async fn test_alloc_simple() {
