@@ -302,6 +302,7 @@ class Client:
         self.last_processed_seq = max(self.last_processed_seq, seq)
 
         if error is not None:
+            logging.error("Received error for seq %s: %s", seq, error)
             # We should not have set result if we have an error.
             assert result is None
             if not isinstance(error, RemoteException):

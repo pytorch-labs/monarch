@@ -519,10 +519,12 @@ impl ControllerMessageHandler for ControllerActor {
                     address: failed_state.proc_addr.to_string(),
                     backtrace: failure_reason,
                 });
+                tracing::error!("Sending failure to client: {exc:?}");
                 // Seq does not matter as the client will raise device error immediately before setting the results.
                 self.client()?
                     .result(this, Seq::default(), Some(Err(exc)))
                     .await?;
+                tracing::error!("Failure successfully sent to client");
 
                 // No need to set history failures as we are directly sending back failure results.
             }
