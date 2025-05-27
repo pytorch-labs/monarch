@@ -106,7 +106,7 @@ mod tests {
         let spec = alloc::AllocSpec {
             // NOTE: x cannot be more than 1 since we created a single process-allocator server instance!
             shape: shape! { x=1, y=4 },
-            constraints: alloc::AllocConstraints::none(),
+            constraints: Default::default(),
         };
 
         let mut initializer = remoteprocess::MockRemoteProcessAllocInitializer::new();
