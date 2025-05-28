@@ -2,10 +2,18 @@
 
 **Monarch** is a distributed execution engine for PyTorch.
 
-> ⚠️ **Early Development Warning**
-> Monarch is currently in an experimental stage. You should expect bugs, incomplete features, and APIs that may change in future versions. The project welcomes bugfixes, but to make sure things are well coordinated you should discuss any significant change before starting the work. It's recommended that you signal your intention to contribute in the issue tracker, either by filing a new issue or by claiming an existing one.
+> ⚠️ **Early Development Warning** Monarch is currently in an experimental
+> stage. You should expect bugs, incomplete features, and APIs that may change
+> in future versions. The project welcomes bugfixes, but to make sure things are
+> well coordinated you should discuss any significant change before starting the
+> work. It's recommended that you signal your intention to contribute in the
+> issue tracker, either by filing a new issue or by claiming an existing one.
 
 ## Installation
+
+pip install torchmonarch
+
+or manually
 
 ```sh
 
@@ -46,7 +54,8 @@ pytest python/tests/ -v -m "not oss_skip"
 
 ## Running examples
 
-TODO
+grpo_actor.py showcases using Monarch's asynchronous actor model for PPO
+`python examples/grpo_actor.py`
 
 ## Debugging
 
@@ -128,4 +137,5 @@ Below is an example demonstrating how to use `monarch.memory`:
 ```
 
 ## License
+
 Monarch is BSD-3 licensed, as found in the [LICENSE](LICENSE) file.
