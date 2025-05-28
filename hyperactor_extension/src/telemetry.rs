@@ -11,10 +11,7 @@
 use pyo3::prelude::*;
 
 /// Log a message with the given metadata
-#[pyfunction(
-    name = "forward_o_tracing",
-    module = "monarch._rust_bindings.hyperactor_extension.alloc"
-)]
+#[pyfunction]
 pub fn forward_to_tracing(message: &str, file: &str, lineno: i64, level: i32) {
     // Map level number to level name
     match level {
