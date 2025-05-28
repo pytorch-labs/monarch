@@ -132,10 +132,6 @@ impl PyProcMesh {
             inner: self.inner.client().clone(),
         }
     }
-    #[getter]
-    fn proc_id(&self) -> String {
-        self.inner.proc_id().to_string()
-    }
 
     fn __repr__(&self) -> PyResult<String> {
         Ok(format!("<ProcMesh {}>", self.inner))
