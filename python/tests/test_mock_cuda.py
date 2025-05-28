@@ -25,6 +25,7 @@ def simple_forward_backward(device: str) -> None:
     # to disable multithreading for backward.
     with torch.autograd.set_multithreading_enabled(False):
         loss.backward()
+    # pyre-ignore: Incompatible return type [7]: Expected `None` but got `Tuple[typing.Any, Union[None, Tensor, Module], Union[None, Tensor, Module]]`.
     return y, m[0].weight.grad, m[0].bias.grad
 
 
