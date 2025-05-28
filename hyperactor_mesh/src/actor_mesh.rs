@@ -8,20 +8,15 @@
 
 #![allow(dead_code)] // until used publically
 
-use std::collections::VecDeque;
 use std::ops::Deref;
 use std::sync::Arc;
 
-use anyhow::ensure;
 use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorRef;
-use hyperactor::Handler;
-use hyperactor::Instance;
 use hyperactor::Message;
 use hyperactor::Named;
 use hyperactor::PortHandle;
-use hyperactor::PortRef;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
 use hyperactor::actor::RemoteActor;
@@ -245,7 +240,16 @@ pub enum CastError {
     ShapeError(#[from] ShapeError),
 }
 
-mod test_util {
+// This has to be compiled outside of test mode because the bootstrap binary
+// is not built in test mode, and requires access to TestActor.
+pub(crate) mod test_util {
+    use std::collections::VecDeque;
+
+    use anyhow::ensure;
+    use hyperactor::Handler;
+    use hyperactor::Instance;
+    use hyperactor::PortRef;
+
     use super::*;
 
     // This can't be defined under a `#[cfg(test)]` because there needs to
@@ -253,7 +257,7 @@ mod test_util {
     // 'hyperactor_mesh_test_bootstrap' for the `tests::process` actor
     // mesh test suite.
     #[derive(Debug)]
-    #[hyperactor::export_spawn(Cast<(String, PortRef<String>)>, Cast<GetRank>, Relay)]
+    #[hyperactor::export_spawn(Cast<(String, PortRef<String>)>, Cast<GetRank>, Cast<Error>, Relay)]
     pub struct TestActor;
 
     #[async_trait]
@@ -294,6 +298,23 @@ mod test_util {
             let (message, reply_port) = message;
             reply_port.send(this, message)?;
             Ok(())
+        }
+    }
+
+    #[derive(Debug, Serialize, Deserialize, Named, Clone)]
+    pub struct Error(pub String);
+
+    #[async_trait]
+    impl Handler<Cast<Error>> for TestActor {
+        async fn handle(
+            &mut self,
+            _this: &Instance<Self>,
+            Cast {
+                message: Error(error),
+                ..
+            }: Cast<Error>,
+        ) -> Result<(), anyhow::Error> {
+            Err(anyhow::anyhow!("{}", error))
         }
     }
 
@@ -353,6 +374,7 @@ mod tests {
             use $crate::assign::Ranks;
             use ndslice::selection::dsl::*;
             use $crate::proc_mesh::SharedSpawnable;
+            use std::collections::VecDeque;
 
             use super::*;
             use super::test_util::*;
