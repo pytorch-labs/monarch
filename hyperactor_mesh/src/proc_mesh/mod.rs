@@ -19,6 +19,7 @@ use hyperactor::RemoteMessage;
 use hyperactor::WorldId;
 use hyperactor::actor::RemoteActor;
 use hyperactor::actor::remote::Remote;
+use hyperactor::cap;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::mailbox;
@@ -36,6 +37,7 @@ use ndslice::Range;
 use ndslice::Shape;
 use ndslice::ShapeError;
 
+use crate::CommActor;
 use crate::Mesh;
 use crate::actor_mesh::ActorMesh;
 use crate::alloc::Alloc;
@@ -43,6 +45,7 @@ use crate::alloc::AllocatorError;
 use crate::alloc::ProcState;
 use crate::alloc::ProcStopReason;
 use crate::assign::Ranks;
+use crate::comm::CommActorParams;
 use crate::proc_mesh::mesh_agent::MeshAgent;
 use crate::proc_mesh::mesh_agent::MeshAgentMessageClient;
 
@@ -219,6 +222,33 @@ impl ProcMesh {
             }
         }
 
+        // For reasons I fail to fully understand, the below call fails
+        // when invoked from `pyo3_async_runtimes::tokio::future_into_py`
+        // when using a closure. It appears to be some subtle failure of
+        // the compiler to unify lifetimes. If we use a function instead,
+        // it does better.
+        //
+        // Interestingly, this only appears to fail in *specific* caller
+        // contexts (e.g., https://fburl.com/code/evfgtfx1), and the error
+        // is reported there as "implementation of `std::ops::FnOnce` is not general enough",
+        // suggesting some failure of modularity in the compiler's lifetime
+        // unification!
+        //
+        // Baffling and unsettling.
+        fn project_actor_ref(pair: &(ChannelAddr, ActorRef<MeshAgent>)) -> ActorRef<MeshAgent> {
+            pair.1.clone()
+        }
+
+        // Spawn a comm actor on each proc, so that they can be used
+        // to perform tree distribution and accumulation.
+        Self::spawn_on_procs::<CommActor>(
+            &client,
+            running.iter().map(project_actor_ref),
+            "comm",
+            &CommActorParams {},
+        )
+        .await?;
+
         let shape = alloc.shape().clone();
 
         Ok(Self {
@@ -237,22 +267,9 @@ impl ProcMesh {
         })
     }
 
-    pub async fn spawn<A: Actor + RemoteActor>(
-        &self,
-        actor_name: &str,
-        params: &A::Params,
-    ) -> Result<ActorMesh<'_, A>, anyhow::Error>
-    where
-        A::Params: RemoteMessage,
-    {
-        Ok(ActorMesh::new(
-            self,
-            self.spawn_to_ranks(actor_name, params).await?,
-        ))
-    }
-
-    async fn spawn_to_ranks<A: Actor + RemoteActor>(
-        &self,
+    async fn spawn_on_procs<A: Actor + RemoteActor>(
+        this: &(impl cap::CanSend + cap::CanOpenPort),
+        agents: impl IntoIterator<Item = ActorRef<MeshAgent>> + '_,
         actor_name: &str,
         params: &A::Params,
     ) -> Result<Vec<ActorRef<A>>, anyhow::Error>
@@ -265,19 +282,21 @@ impl ProcMesh {
             .ok_or(anyhow::anyhow!("actor not registered"))?
             .to_string();
 
-        let (completed_handle, mut completed_receiver) = self.client.open_port();
-        for (_proc_id, (_addr, agent)) in self.ranks.iter() {
+        let (completed_handle, mut completed_receiver) = mailbox::open_port(this);
+        let mut n = 0;
+        for agent in agents {
             agent
                 .gspawn(
-                    &self.client,
+                    this,
                     actor_type.clone(),
                     actor_name.to_string(),
                     bincode::serialize(params)?,
                     completed_handle.bind(),
                 )
                 .await?;
+            n += 1;
         }
-        let mut completed = Ranks::new(self.ranks.len());
+        let mut completed = Ranks::new(n);
         while !completed.is_full() {
             let (rank, actor_id) = completed_receiver.recv().await?;
             if completed.insert(rank, actor_id).is_some() {
@@ -292,6 +311,24 @@ impl ProcMesh {
             .map(Option::unwrap)
             .map(ActorRef::attest)
             .collect())
+    }
+
+    fn agents(&self) -> impl Iterator<Item = ActorRef<MeshAgent>> + '_ {
+        self.ranks.iter().map(|(_, (_, agent))| agent.clone())
+    }
+
+    pub async fn spawn<A: Actor + RemoteActor>(
+        &self,
+        actor_name: &str,
+        params: &A::Params,
+    ) -> Result<ActorMesh<'_, A>, anyhow::Error>
+    where
+        A::Params: RemoteMessage,
+    {
+        Ok(ActorMesh::new(
+            self,
+            Self::spawn_on_procs::<A>(&self.client, self.agents(), actor_name, params).await?,
+        ))
     }
 
     /// A client used to communicate with any member of this mesh.
@@ -393,7 +430,7 @@ impl SharedSpawnable for Arc<ProcMesh> {
     {
         Ok(ActorMesh::new_shared(
             Arc::clone(self),
-            self.spawn_to_ranks(actor_name, params).await?,
+            ProcMesh::spawn_on_procs::<A>(&self.client, self.agents(), actor_name, params).await?,
         ))
     }
 }
