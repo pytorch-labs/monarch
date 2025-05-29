@@ -33,6 +33,7 @@ use hyperactor::channel::ChannelAddr;
 use hyperactor::clock::Clock;
 use hyperactor::data::Serialized;
 use hyperactor_mesh::comm::CommActor;
+use hyperactor_mesh::comm::CommActorMode;
 use hyperactor_mesh::comm::multicast::CastMessage;
 use hyperactor_mesh::comm::multicast::CastMessageEnvelope;
 use hyperactor_mesh::comm::multicast::DestinationPort;
@@ -95,7 +96,10 @@ pub(crate) struct ControllerParams {
     /// The world size to track the size of all the workers.
     pub(crate) world_size: usize,
 
-    /// Reference to the comm actor.
+    /// Reference to the comm actor. It must be configured to target
+    /// the worker gang. The controller takes "ownership" of this actor:
+    /// it is immediately configured to target the worker gang.
+    /// This is a temporary workaround until we are fully on meshes.
     pub(crate) comm_actor_ref: ActorRef<CommActor>,
 
     /// Reference to the workers to send commands to.
@@ -136,6 +140,14 @@ impl Actor for ControllerActor {
             fail_on_worker_timeout: params.fail_on_worker_timeout,
             world_size: params.world_size,
         })
+    }
+
+    async fn init(&mut self, this: &hyperactor::Instance<Self>) -> Result<(), anyhow::Error> {
+        self.comm_actor_ref.send(
+            this,
+            CommActorMode::ImplicitWithWorldId(self.worker_gang_ref.gang_id().world_id().clone()),
+        )?;
+        Ok(())
     }
 }
 
@@ -406,7 +418,12 @@ impl ControllerMessageHandler for ControllerActor {
         let message = CastMessageEnvelope::from_serialized(
             this.self_id().clone(),
             DestinationPort::new::<WorkerActor, WorkerMessage>(
-                self.worker_gang_ref.gang_id().clone(),
+                // This is awkward, but goes away entirely with meshes.
+                self.worker_gang_ref
+                    .gang_id()
+                    .actor_id(0)
+                    .name()
+                    .to_string(),
             ),
             message,
         );
@@ -415,7 +432,7 @@ impl ControllerMessageHandler for ControllerActor {
             .unwrap()
             .view_limit(Limit::from(CASTING_FANOUT_SIZE));
 
-        self.comm_actor_ref.port::<CastMessage>().send(
+        self.comm_actor_ref.send(
             this,
             CastMessage {
                 dest: Uslice {
