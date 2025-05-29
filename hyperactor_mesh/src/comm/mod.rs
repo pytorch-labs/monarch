@@ -539,7 +539,6 @@ mod tests {
     use std::sync::OnceLock;
 
     use hyperactor::ActorHandle;
-    use hyperactor::GangId;
     use hyperactor::Mailbox;
     use hyperactor::PortId;
     use hyperactor::PortRef;

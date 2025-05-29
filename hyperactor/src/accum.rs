@@ -206,22 +206,38 @@ impl<T: Named> Named for MaxReducer<T> {
     }
 }
 
+/// The state of a [`Max`] accumulator.
+#[derive(Debug, Clone, Default)]
+pub struct Max<T>(Option<T>);
+
+impl<T> Max<T> {
+    /// Get the accumulated value.
+    pub fn get(&self) -> &T {
+        self.0
+            .as_ref()
+            .expect("accumulator state should have been intialized.")
+    }
+}
+
 /// Accumulate the max of received updates.
 struct MaxAccumulator<T>(PhantomData<T>);
 
 impl<T: Ord + Copy + Named + 'static> Accumulator for MaxAccumulator<T> {
-    type State = T;
+    type State = Max<T>;
     type Update = T;
     type Reducer = MaxReducer<T>;
 
-    fn accumulate(&self, state: &mut T, update: T) {
-        *state = std::cmp::max(*state, update);
+    fn accumulate(&self, state: &mut Self::State, update: T) {
+        match state.0.as_mut() {
+            Some(s) => *s = std::cmp::max(*s, update),
+            None => *state = Max(Some(update)),
+        }
     }
 }
 
 /// Accumulate the max of received updates (i.e. the largest value of all
 /// received updates).
-pub fn max<T: Ord + Copy + Named + 'static>() -> impl Accumulator<State = T, Update = T> {
+pub fn max<T: Ord + Copy + Named + 'static>() -> impl Accumulator<State = Max<T>, Update = T> {
     MaxAccumulator(PhantomData::<T>)
 }
 
@@ -241,22 +257,38 @@ impl<T: Named> Named for MinReducer<T> {
     }
 }
 
+/// The state of a [`Min`] accumulator.
+#[derive(Debug, Clone, Default)]
+pub struct Min<T>(Option<T>);
+
+impl<T> Min<T> {
+    /// Get the accumulated value.
+    pub fn get(&self) -> &T {
+        self.0
+            .as_ref()
+            .expect("accumulator state should have been intialized.")
+    }
+}
+
 /// Accumulate the min of received updates.
 struct MinAccumulator<T>(PhantomData<T>);
 
 impl<T: Ord + Copy + Named + 'static> Accumulator for MinAccumulator<T> {
-    type State = T;
+    type State = Min<T>;
     type Update = T;
     type Reducer = MinReducer<T>;
 
-    fn accumulate(&self, state: &mut T, update: T) {
-        *state = std::cmp::min(*state, update);
+    fn accumulate(&self, state: &mut Min<T>, update: T) {
+        match state.0.as_mut() {
+            Some(s) => *s = std::cmp::min(*s, update),
+            None => *state = Min(Some(update)),
+        }
     }
 }
 
 /// Accumulate the min of received updates (i.e. the smallest value of all
 /// received updates).
-pub fn min<T: Ord + Copy + Named + 'static>() -> impl Accumulator<State = T, Update = T> {
+pub fn min<T: Ord + Copy + Named + 'static>() -> impl Accumulator<State = Min<T>, Update = T> {
     MinAccumulator(PhantomData)
 }
 

@@ -2283,32 +2283,32 @@ mod tests {
     #[tokio::test]
     async fn test_mailbox_accum() {
         let mbox = Mailbox::new_detached(id!(test[0].test));
-        let (port, mut receiver) = mbox.open_accum_port(accum::max::<u64>());
+        let (port, mut receiver) = mbox.open_accum_port(accum::max::<i64>());
 
-        port.send(1).unwrap();
-        assert_eq!(receiver.recv().await.unwrap(), 1);
-        port.send(2).unwrap();
-        assert_eq!(receiver.recv().await.unwrap(), 2);
-        port.send(3).unwrap();
-        assert_eq!(receiver.recv().await.unwrap(), 3);
-        // Send a smaller value. Should still receive the previous max.
-        port.send(1).unwrap();
-        assert_eq!(receiver.recv().await.unwrap(), 3);
-        port.send(2).unwrap();
-        assert_eq!(receiver.recv().await.unwrap(), 3);
-        port.send(3).unwrap();
-        assert_eq!(receiver.recv().await.unwrap(), 3);
+        for i in -3..4 {
+            port.send(i).unwrap();
+            let received: accum::Max<i64> = receiver.recv().await.unwrap();
+            let msg = received.get();
+            assert_eq!(msg, &i);
+        }
+        // Send a smaller or same value. Should still receive the previous max.
+        for i in -3..4 {
+            port.send(i).unwrap();
+            assert_eq!(receiver.recv().await.unwrap().get(), &3);
+        }
+        // send a larger value. Should receive the new max.
         port.send(4).unwrap();
-        assert_eq!(receiver.recv().await.unwrap(), 4);
+        assert_eq!(receiver.recv().await.unwrap().get(), &4);
+
         // Send multiple updates. Should only receive the final change.
-        port.send(5).unwrap();
-        port.send(6).unwrap();
-        port.send(7).unwrap();
-        assert_eq!(receiver.recv().await.unwrap(), 7);
+        for i in 5..10 {
+            port.send(i).unwrap();
+        }
+        assert_eq!(receiver.recv().await.unwrap().get(), &9);
         port.send(1).unwrap();
         port.send(3).unwrap();
         port.send(2).unwrap();
-        assert_eq!(receiver.recv().await.unwrap(), 7);
+        assert_eq!(receiver.recv().await.unwrap().get(), &9);
     }
 
     #[test]
