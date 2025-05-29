@@ -53,7 +53,6 @@ use hyperactor::reference::Index;
 use hyperactor::reference::ProcId;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_mesh::comm::CommActor;
-use hyperactor_mesh::comm::CommActorParams;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::process::Command;
@@ -448,7 +447,7 @@ impl ProcActor {
 
         let comm_actor = match proc
             .clone()
-            .spawn::<CommActor>("comm", CommActorParams {})
+            .spawn::<CommActor>("comm", Default::default())
             .await
         {
             Ok(handle) => handle,

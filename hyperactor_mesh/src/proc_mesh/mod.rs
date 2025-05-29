@@ -45,7 +45,7 @@ use crate::alloc::AllocatorError;
 use crate::alloc::ProcState;
 use crate::alloc::ProcStopReason;
 use crate::assign::Ranks;
-use crate::comm::CommActorParams;
+use crate::comm::CommActorMode;
 use crate::proc_mesh::mesh_agent::MeshAgent;
 use crate::proc_mesh::mesh_agent::MeshAgentMessageClient;
 
@@ -241,13 +241,21 @@ impl ProcMesh {
 
         // Spawn a comm actor on each proc, so that they can be used
         // to perform tree distribution and accumulation.
-        Self::spawn_on_procs::<CommActor>(
+        let comm_actors = Self::spawn_on_procs::<CommActor>(
             &client,
             running.iter().map(project_actor_ref),
             "comm",
-            &CommActorParams {},
+            &Default::default(),
         )
         .await?;
+        let address_book: HashMap<_, _> = comm_actors.iter().cloned().enumerate().collect();
+        // Now that we have all of the spawned comm actors, kick them all into
+        // mesh mode.
+        for (rank, comm_actor) in comm_actors.into_iter().enumerate() {
+            comm_actor
+                .send(&client, CommActorMode::Mesh(rank, address_book.clone()))
+                .map_err(anyhow::Error::from)?;
+        }
 
         let shape = alloc.shape().clone();
 
