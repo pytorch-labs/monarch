@@ -101,6 +101,8 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         "monarch_hyperactor.proc_mesh",
     )?)?;
 
+    monarch_rdma_extension::register_python_bindings(&get_or_add_new_module(module, "rdma")?)?;
+
     monarch_hyperactor::runtime::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_hyperactor.runtime",

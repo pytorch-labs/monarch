@@ -22,10 +22,12 @@ hyperactor_extension = { version = "0.0.0", path = "../hyperactor_extension" }
 hyperactor_multiprocess = { version = "0.0.0", path = "../hyperactor_multiprocess" }
 monarch_hyperactor = { version = "0.0.0", path = "../monarch_hyperactor" }
 monarch_messages = { version = "0.0.0", path = "../monarch_messages" }
+monarch_rdma_extension = { version = "0.0.0", path = "../monarch_rdma/extension" }
 monarch_simulator_lib = { version = "0.0.0", path = "../monarch_simulator" }
 monarch_types = { version = "0.0.0", path = "../monarch_types" }
 monarch_worker = { version = "0.0.0", path = "../monarch_worker" }
 nccl-sys = { path = "../nccl-sys" }
+ndslice = { version = "0.0.0", path = "../ndslice" }
 pyo3 = { version = "0.22.6", features = ["anyhow"] }
 tokio = { version = "1.45.0", features = ["full", "test-util", "tracing"] }
 torch-sys = { version = "0.0.0", path = "../torch-sys" }

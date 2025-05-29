@@ -91,12 +91,12 @@ class ParameterClient(Actor):
     @endpoint
     async def upload(self, tensor):
         gh = await self.server.grad_handle.call_one()
-        await gh.write(tensor)
+        await gh.write_from(tensor, timeout=5)
 
     @endpoint
     async def download(self):
         gh = await self.server.grad_handle.call_one()
-        await gh.read_into(self.buffer)
+        await gh.read_into(self.buffer, timeout=5)
 
     @endpoint
     async def get_buffer(self):
@@ -227,7 +227,7 @@ async def test_rank_size():
 class TrainerActor(Actor):
     def __init__(self):
         super().__init__()
-        self.trainer = torch.nn.Linear(10, 10).to("cuda")
+        self.trainer = torch.nn.Linear(10, 10).to("cpu")
         self.trainer.weight.data.zero_()
 
     @endpoint
@@ -265,7 +265,7 @@ class GeneratorActor(Actor):
     async def update_weights(self):
         self.step += 1
         byte_tensor = self.generator.weight.data.view(torch.uint8).flatten()
-        await self.handle.read_into(byte_tensor)
+        await self.handle.read_into(byte_tensor, timeout=5)
         assert (
             torch.sum(self.generator.weight.data) == self.step * 100
         ), f"{torch.sum(self.generator.weight.data)=}, {self.step=}"
