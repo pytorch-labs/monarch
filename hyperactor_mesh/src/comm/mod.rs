@@ -21,6 +21,7 @@ use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::PortId;
+use hyperactor::WorldId;
 use hyperactor::data::Serialized;
 use ndslice::Slice;
 use ndslice::selection::routing::RoutingFrame;
@@ -29,7 +30,6 @@ use serde::Serialize;
 
 use crate::comm::multicast::CastMessage;
 use crate::comm::multicast::CastMessageEnvelope;
-use crate::comm::multicast::DestinationPort;
 use crate::comm::multicast::ForwardMessage;
 
 /// Parameters to initialize the CommActor
@@ -89,6 +89,13 @@ pub enum CommActorMode {
     /// In an implicit mode, the comm actor derives its rank and
     /// peers from its own ID.
     Implicit,
+
+    /// Like `Implicit`, but override the destination world id.
+    /// This is useful for setups where comm actors may not reside
+    /// in the destination world. It is meant as a temporary bridge
+    /// until we are fully onto ActorMeshes.
+    // TODO: T224926642 Remove this once we are fully onto ActorMeshes.
+    ImplicitWithWorldId(WorldId),
 }
 
 impl Default for CommActorMode {
@@ -100,19 +107,19 @@ impl Default for CommActorMode {
 impl CommActorMode {
     /// Return the peer comm actor for the given rank, given a self id,
     /// destination port, and rank.
-    fn peer_for_rank(
-        &self,
-        self_id: &ActorId,
-        dest_port: &DestinationPort,
-        rank: usize,
-    ) -> Result<ActorRef<CommActor>> {
+    fn peer_for_rank(&self, self_id: &ActorId, rank: usize) -> Result<ActorRef<CommActor>> {
         match self {
             Self::Mesh(_self_rank, peers) => peers
                 .get(&rank)
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("no peer for rank {}", rank)),
             Self::Implicit => {
-                let world_id = dest_port.gang_id().world_id();
+                let world_id = self_id.proc_id().world_id();
+                let proc_id = world_id.proc_id(rank);
+                let actor_id = ActorId::root(proc_id, self_id.name().to_string());
+                Ok(ActorRef::<CommActor>::attest(actor_id))
+            }
+            Self::ImplicitWithWorldId(world_id) => {
                 let proc_id = world_id.proc_id(rank);
                 let actor_id = ActorId::root(proc_id, self_id.name().to_string());
                 Ok(ActorRef::<CommActor>::attest(actor_id))
@@ -124,7 +131,7 @@ impl CommActorMode {
     fn self_rank(&self, self_id: &ActorId) -> usize {
         match self {
             Self::Mesh(rank, _) => *rank,
-            Self::Implicit => self_id.proc_id().rank(),
+            Self::Implicit | Self::ImplicitWithWorldId(_) => self_id.proc_id().rank(),
         }
     }
 }
@@ -150,7 +157,7 @@ impl CommActor {
         rank: usize,
         message: ForwardMessage,
     ) -> Result<()> {
-        let child = mode.peer_for_rank(this.self_id(), message.message.dest_port(), rank)?;
+        let child = mode.peer_for_rank(this.self_id(), rank)?;
         child.send(this, message)?;
         Ok(())
     }
@@ -180,10 +187,13 @@ impl CommActor {
             tests::collect_split_ports(&reply_ports, &split_ports, deliver_here);
         }
 
-        // Deliever message here, if necessary.
+        // Deliver message here, if necessary.
         if deliver_here {
             this.post(
-                message.dest_port().port_id(mode.self_rank(this.self_id())),
+                this.self_id()
+                    .proc_id()
+                    .actor_id(message.dest_port().actor_name(), 0)
+                    .port_id(message.dest_port().port()),
                 Serialized::serialize(message.data())?,
             );
         }
@@ -216,7 +226,7 @@ impl CommActor {
 
 #[async_trait]
 impl Handler<CommActorMode> for CommActor {
-    async fn handle(&mut self, this: &Instance<Self>, mode: CommActorMode) -> Result<()> {
+    async fn handle(&mut self, _this: &Instance<Self>, mode: CommActorMode) -> Result<()> {
         self.mode = mode;
         Ok(())
     }
@@ -780,7 +790,13 @@ mod tests {
             test.bind::<TestActor>();
             dest_actors_and_caps.push((test, caps));
         }
-        tracing::info!("done with spawning procs, comm actors and dest actos.");
+        tracing::info!("done with spawning procs, comm actors and dest actors.");
+
+        // We should be able to correctly send the message to any of the comm actors
+        // in the group.
+        use rand::seq::SliceRandom;
+        let mut rng = rand::thread_rng();
+        let comm_actor = procs_and_comm_actors.choose(&mut rng).unwrap().1.clone();
 
         let client = client_proc.attach("client_user").unwrap();
         let (reply_port_handle0, _) = open_port::<String>(&client);
@@ -797,16 +813,13 @@ mod tests {
             slice,
             selection: selection::dsl::true_(),
         };
-        client_actor
+        comm_actor
             .send(CastMessage {
                 // Destination is every node in the world.
                 dest: uslice.clone(),
                 message: CastMessageEnvelope::new(
                     client_actor.actor_id().clone(),
-                    DestinationPort::new::<TestActor, TestMessage>(GangId(
-                        dest_world.clone(),
-                        dest_actor_name.into(),
-                    )),
+                    DestinationPort::new::<TestActor, TestMessage>(dest_actor_name.to_string()),
                     TestMessage::CastAndReply {
                         arg: "abc".to_string(),
                         reply_to0: reply_port_ref0.clone(),

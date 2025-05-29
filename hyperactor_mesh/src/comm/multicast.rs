@@ -17,9 +17,6 @@ use hyperactor::message::Castable;
 use hyperactor::message::ErasedUnbound;
 use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::reference::ActorId;
-use hyperactor::reference::GangId;
-use hyperactor::reference::PortId;
-use hyperactor::reference::ProcId;
 use ndslice::Slice;
 use ndslice::selection::Selection;
 use ndslice::selection::routing::RoutingFrame;
@@ -105,42 +102,34 @@ impl CastMessageEnvelope {
 /// `PortId` of the message.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Named)]
 pub struct DestinationPort {
-    /// Destination gang id, consisting of world id and actor name.
-    gang_id: GangId,
+    /// The actor name to which the message should be delivered.
+    actor_name: String,
     /// The port index of the destination actors, it is derived from the
     /// message type and cached here.
     port: u64,
 }
 
 impl DestinationPort {
-    /// Create a new DestinationPort for Actor type A and message type M.
-    pub fn new<A, M>(gang_id: GangId) -> Self
+    /// Create a new DestinationPort for a global actor name and message type.
+    pub fn new<A, M>(actor_name: String) -> Self
     where
         A: RemoteActor + RemoteHandles<IndexedErasedUnbound<M>>,
         M: Castable + RemoteMessage,
     {
         Self {
-            gang_id,
+            actor_name,
             port: IndexedErasedUnbound::<M>::port(),
         }
     }
 
-    /// Get the actual port id of an actor for a rank.
-    pub fn port_id(&self, rank: usize) -> PortId {
-        PortId(
-            ActorId(
-                ProcId(self.gang_id.world_id().clone(), rank),
-                self.gang_id.name().to_string(),
-                // Only root actor can be accessed externally.
-                0,
-            ),
-            self.port,
-        )
+    /// The port id of the destination.
+    pub fn port(&self) -> u64 {
+        self.port
     }
 
-    /// Get the gang id of the destination actors.
-    pub fn gang_id(&self) -> &GangId {
-        &self.gang_id
+    /// Get the actor name of the destination.
+    pub fn actor_name(&self) -> &str {
+        &self.actor_name
     }
 }
 
