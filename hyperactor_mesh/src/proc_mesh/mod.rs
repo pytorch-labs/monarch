@@ -276,10 +276,6 @@ impl ProcMesh {
     pub fn client(&self) -> &Mailbox {
         &self.client
     }
-
-    pub fn proc_id(&self) -> &ProcId {
-        self.client_proc.proc_id()
-    }
 }
 
 /// Spawns from shared ([`Arc`]) proc meshes, providing [`ActorMesh`]es with
