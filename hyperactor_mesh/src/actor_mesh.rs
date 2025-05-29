@@ -10,7 +10,6 @@
 
 use std::ops::Deref;
 use std::sync::Arc;
-use std::usize;
 
 use async_trait::async_trait;
 use hyperactor::Actor;
@@ -532,6 +531,39 @@ mod tests {
                         if count == num_hops
                         && hops.is_empty());
             }
+
+            #[timed_test::async_timed_test(timeout_secs = 30)]
+            async fn test_actor_mesh_cast() {
+                // Verify a full broadcast in the mesh. Send a message
+                // to every actor and check each actor receives it.
+
+                use $crate::sel;
+                use $crate::comm::test_utils::TestActor as CastTestActor;
+                use $crate::comm::test_utils::TestActorParams as CastTestActorParams;
+                use $crate::comm::test_utils::TestMessage as CastTestMessage;
+
+                let shape = shape! {replica = 4, host = 4, gpu = 4 };
+                let num_actors = shape.slice().len();
+                let alloc = $allocator
+                    .allocate(AllocSpec {
+                        shape,
+                        constraints: Default::default(),
+                    })
+                    .await
+                    .unwrap();
+
+                let proc_mesh = ProcMesh::allocate(alloc).await.unwrap();
+
+                let (tx, mut rx) = hyperactor::mailbox::open_port(proc_mesh.client());
+                let params = CastTestActorParams{ forward_port: tx.bind() };
+                let actor_mesh: ActorMesh<CastTestActor> = proc_mesh.spawn("actor", &params).await.unwrap();
+
+                actor_mesh.cast(sel!(*), CastTestMessage::Forward("abc".to_string())).unwrap();
+
+                for _ in 0..num_actors {
+                    assert_eq!(rx.recv().await.unwrap(), CastTestMessage::Forward("abc".to_string()));
+                }
+            }
         }
     }
 
@@ -539,7 +571,7 @@ mod tests {
         use crate::alloc::local::LocalAllocator;
 
         actor_mesh_test_suite!(LocalAllocator);
-    }
+    } // mod local
 
     mod process {
         // TODO: Fix T221991302.

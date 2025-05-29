@@ -339,6 +339,13 @@ impl ProcMesh {
         &self.comm_actors[0]
     }
 
+    /// Spawn an `ActorMesh` by launching the same actor type on all
+    /// agents, using the **same** parameters instance for every
+    /// actor.
+    ///
+    /// - `actor_name`: Name for all spawned actors.
+    /// - `params`: Reference to the parameter struct, reused for all
+    ///   actors.
     pub async fn spawn<A: Actor + RemoteActor>(
         &self,
         actor_name: &str,
@@ -535,7 +542,6 @@ mod tests {
     use super::*;
     use crate::actor_mesh::test_util::Error;
     use crate::actor_mesh::test_util::TestActor;
-    use crate::alloc::AllocConstraints;
     use crate::alloc::AllocSpec;
     use crate::alloc::Allocator;
     use crate::alloc::local::LocalAllocator;

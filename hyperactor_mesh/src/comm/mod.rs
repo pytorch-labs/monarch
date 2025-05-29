@@ -28,6 +28,7 @@ use ndslice::selection::routing::RoutingFrame;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::actor_mesh::Cast;
 use crate::comm::multicast::CastMessage;
 use crate::comm::multicast::CastMessageEnvelope;
 use crate::comm::multicast::CastRank;
@@ -399,7 +400,7 @@ pub mod test_utils {
         pub value: u64,
     }
 
-    #[derive(Debug, Named, Serialize, Deserialize, PartialEq)]
+    #[derive(Debug, Named, Serialize, Deserialize, PartialEq, Clone)]
     #[named(dump = false)]
     pub enum TestMessage {
         Forward(String),
@@ -460,7 +461,7 @@ pub mod test_utils {
     }
 
     #[derive(Debug)]
-    #[hyperactor::export_spawn(TestMessage, IndexedErasedUnbound<TestMessage>)]
+    #[hyperactor::export_spawn(TestMessage, Cast<TestMessage>, IndexedErasedUnbound<TestMessage>, IndexedErasedUnbound<Cast<TestMessage>>)]
     pub struct TestActor {
         // Forward the received message to this port, so it can be inspected by
         // the unit test.
@@ -487,6 +488,17 @@ pub mod test_utils {
         async fn handle(&mut self, this: &Instance<Self>, msg: TestMessage) -> anyhow::Result<()> {
             self.forward_port.send(this, msg)?;
             Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl Handler<Cast<TestMessage>> for TestActor {
+        async fn handle(
+            &mut self,
+            this: &Instance<Self>,
+            msg: Cast<TestMessage>,
+        ) -> anyhow::Result<()> {
+            self.handle(this, msg.message).await
         }
     }
 
