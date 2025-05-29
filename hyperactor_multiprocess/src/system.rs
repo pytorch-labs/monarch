@@ -192,7 +192,6 @@ mod tests {
     use anyhow::Result;
     use hyperactor::ActorId;
     use hyperactor::ActorRef;
-    use hyperactor::GangId;
     use hyperactor::Named;
     use hyperactor::ProcId;
     use hyperactor::WorldId;
@@ -957,10 +956,7 @@ mod tests {
                 },
                 message: CastMessageEnvelope::new(
                     ActorId(world.random_user_proc(), "user".into(), 0),
-                    DestinationPort::new::<TestActor, TestMessage>(GangId(
-                        comm.actor_id().proc_id().world_id().clone(),
-                        "actor".into(),
-                    )),
+                    DestinationPort::new::<TestActor, TestMessage>("actor".to_string()),
                     TestMessage::Forward("abc".to_string()),
                     None,
                 )?,
@@ -1070,10 +1066,7 @@ mod tests {
                     },
                     message: CastMessageEnvelope::new(
                         ActorId(world_id.random_user_proc(), "user".into(), 0),
-                        DestinationPort::new::<TestActor, TestMessage>(GangId(
-                            comm.actor_id().proc_id().world_id().clone(),
-                            "actor".into(),
-                        )),
+                        DestinationPort::new::<TestActor, TestMessage>("actor".to_string()),
                         TestMessage::Forward("abc".to_string()),
                         None,
                     )?,
