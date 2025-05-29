@@ -2,7 +2,6 @@
 
 members = [
     "controller",
-    "hyper",
     "hyperactor",
     "hyperactor_macros",
     "hyperactor_multiprocess",
