@@ -8,7 +8,9 @@
 
 //! The mesh agent actor manages procs in ProcMeshes.
 
+use std::collections::HashMap;
 use std::mem::replace;
+use std::ops::Add;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::RwLock;
@@ -31,6 +33,8 @@ use hyperactor::actor::remote::Remote;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::mailbox::BoxedMailboxSender;
+use hyperactor::mailbox::DialMailboxRouter;
+use hyperactor::mailbox::IntoBoxedMailboxSender;
 use hyperactor::mailbox::MailboxClient;
 use hyperactor::mailbox::MailboxSender;
 use hyperactor::mailbox::MessageEnvelope;
@@ -61,6 +65,8 @@ pub(crate) enum MeshAgentMessage {
         forwarder: ChannelAddr,
         /// The supervisor port to which the agent should report supervision events.
         supervisor: PortRef<ActorSupervisionEvent>,
+        /// An address book to use for direct dialing.
+        address_book: HashMap<ProcId, ChannelAddr>,
         /// The agent should write its rank to this port when it successfully
         /// configured.
         configured: PortRef<usize>,
@@ -133,6 +139,7 @@ impl MeshAgentMessageHandler for MeshAgent {
         rank: usize,
         forwarder: ChannelAddr,
         supervisor: PortRef<ActorSupervisionEvent>,
+        address_book: HashMap<ProcId, ChannelAddr>,
         configured: PortRef<usize>,
     ) -> Result<(), anyhow::Error> {
         // Set the supervisor first so that we can handle supervison events that might
@@ -140,7 +147,16 @@ impl MeshAgentMessageHandler for MeshAgent {
         // for better ergonomics in the allocator.
         self.supervisor = Some(supervisor);
         let client = MailboxClient::new(channel::dial(forwarder)?);
-        if self.sender.configure(BoxedMailboxSender::new(client)) {
+        let self_address = address_book
+            .get(this.self_id().proc_id())
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("self rank {} missing in address book", rank))?;
+        let router = DialMailboxRouter::new_with_default(self_address, client.into_boxed());
+        for (proc_id, addr) in address_book {
+            router.bind(proc_id.into(), addr);
+        }
+
+        if self.sender.configure(router.into_boxed()) {
             self.rank = Some(rank);
             configured.send(this, rank)?;
         } else {

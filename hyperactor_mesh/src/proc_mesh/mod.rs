@@ -200,6 +200,12 @@ impl ProcMesh {
         // our router.
         let client = client_proc.attach("client")?;
 
+        // Map of procs -> channel addresses
+        let address_book: HashMap<_, _> = running
+            .iter()
+            .map(|(addr, agent)| (agent.actor_id().proc_id().clone(), addr.clone()))
+            .collect();
+
         let (config_handle, mut config_receiver) = client.open_port();
         for (rank, (_, agent)) in running.iter().enumerate() {
             agent
@@ -208,6 +214,7 @@ impl ProcMesh {
                     rank,
                     router_channel_addr.clone(),
                     supervison_port.bind(),
+                    address_book.clone(),
                     config_handle.bind(),
                 )
                 .await?;

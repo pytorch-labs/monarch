@@ -171,6 +171,7 @@ pub struct PythonMessage {
 impl std::fmt::Debug for PythonMessage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PythonMessage")
+            .field("method", &self.method)
             .field(
                 "message",
                 &hyperactor::data::HexFmt(self.message.as_slice()).to_string(),

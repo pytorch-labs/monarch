@@ -190,26 +190,32 @@ class ActorMeshRef:
         message: PythonMessage,
         selection: Selection,
     ) -> None:
+        # TODO: use the actual actor mesh when available. We cannot currently use it
+        # directly because we risk bifurcating the message delivery paths from the same
+        # client, since slicing the mesh will produce a reference, which calls actors
+        # directly. The reason these paths are bifurcated is that actor meshes will
+        # use multicasting, while direct actor comms do not. Separately we need to decide
+        # whether actor meshes are ordered with actor references.
+        #
+        # The fix is to provide a first-class reference into Python, and always call "cast"
+        # on it, including for load balanced requests.
         if selection == "choose":
             idx = _load_balancing_seed.randrange(len(self._shape.ndslice))
             actor_rank = self._shape.ndslice[idx]
             self._mailbox.post(self._please_replace_me_actor_ids[actor_rank], message)
             return
         elif selection == "all":
-            if self._actor_mesh is None:
-                # replace me with actual remote actor mesh
-                call_shape = Shape(
-                    self._shape.labels, NDSlice.new_row_major(self._shape.ndslice.sizes)
+            # replace me with actual remote actor mesh
+            call_shape = Shape(
+                self._shape.labels, NDSlice.new_row_major(self._shape.ndslice.sizes)
+            )
+            for i, rank in enumerate(self._shape.ranks()):
+                self._mailbox.post_cast(
+                    self._please_replace_me_actor_ids[rank],
+                    i,
+                    call_shape,
+                    message,
                 )
-                for i, rank in enumerate(self._shape.ranks()):
-                    self._mailbox.post_cast(
-                        self._please_replace_me_actor_ids[rank],
-                        i,
-                        call_shape,
-                        message,
-                    )
-            else:
-                self._actor_mesh.cast(message)
         else:
             raise ValueError(f"invalid selection: {selection}")
 
