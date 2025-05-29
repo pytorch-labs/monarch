@@ -23,6 +23,7 @@ use hyperactor::mailbox::OncePortReceiver;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::mailbox::monitored_return_handle;
 use hyperactor_mesh::actor_mesh::Cast;
+use hyperactor_mesh::comm::multicast::CastRank;
 use pyo3::exceptions::PyEOFError;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
@@ -116,7 +117,7 @@ impl PyMailbox {
     ) -> PyResult<()> {
         let port_id = dest.inner.port_id(Cast::<PythonMessage>::port());
         let message = Cast {
-            rank,
+            rank: CastRank(rank),
             shape: shape.inner.clone(),
             message: message.clone(),
         };

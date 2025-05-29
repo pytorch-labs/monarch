@@ -115,6 +115,7 @@ macro_rules! intern_typename {
 use std::any::TypeId;
 use std::collections::HashMap;
 use std::fmt;
+use std::io::Cursor;
 use std::sync::LazyLock;
 
 pub use intern_typename;
@@ -370,6 +371,43 @@ impl Serialized {
         self.typehash
             .and_then(|typehash| TYPE_INFO.get(&typehash).map(|typeinfo| typeinfo.typename()))
     }
+
+    /// Deserialize a prefix of the value. This is currently only supported
+    /// for bincode-serialized values.
+    // TODO: we should support this by formalizing the notion of a 'prefix'
+    // serialization, and generalize it to other codecs as well.
+    pub fn prefix<T: DeserializeOwned>(&self) -> Result<T, anyhow::Error> {
+        anyhow::ensure!(
+            self.encoding == SerializedEncoding::Bincode,
+            "only bincode supports prefix emplacement"
+        );
+        bincode::deserialize(&self.data).map_err(anyhow::Error::from)
+    }
+
+    /// Emplace a new prefix to this value. This is currently only supported
+    /// for bincode-serialized values.
+    pub fn emplace_prefix<T: Serialize + DeserializeOwned>(
+        &mut self,
+        prefix: T,
+    ) -> Result<(), anyhow::Error> {
+        anyhow::ensure!(
+            self.encoding == SerializedEncoding::Bincode,
+            "only bincode supports prefix emplacement"
+        );
+
+        // This is a bit ugly, but: we first deserialize out the old prefix,
+        // then serialize the new prefix, then splice the two together.
+        // This is safe because we know that the prefix is the first thing
+        // in the serialized value, and that the serialization format is stable.
+        let mut cursor = Cursor::new(self.data.clone());
+        let _prefix: T = bincode::deserialize_from(&mut cursor).unwrap();
+        let position = cursor.position() as usize;
+        let suffix = &cursor.into_inner()[position..];
+        self.data = bincode::serialize(&prefix)?;
+        self.data.extend_from_slice(suffix);
+
+        Ok(())
+    }
 }
 
 const MAX_BYTE_PREVIEW_LENGTH: usize = 8;
@@ -497,7 +535,7 @@ mod tests {
         );
     }
 
-    #[derive(Named, Serialize, Deserialize)]
+    #[derive(Named, Serialize, Deserialize, PartialEq, Eq, Debug)]
     struct TestDumpStruct {
         a: String,
         b: u64,
@@ -544,6 +582,30 @@ mod tests {
                 "TestDumpStruct{\"a\":\"hello\",\"b\":1234,\"c\":5678}",
             );
         }
+    }
+
+    #[test]
+    fn test_emplace_prefix() {
+        let data = TestDumpStruct {
+            a: "hello".to_string(),
+            b: 1234,
+            c: Some(5678),
+        };
+
+        let mut ser = Serialized::serialize(&data).unwrap();
+        assert_eq!(ser.prefix::<String>().unwrap(), "hello".to_string());
+
+        ser.emplace_prefix("hello, world, 123!".to_string())
+            .unwrap();
+
+        assert_eq!(
+            ser.deserialized::<TestDumpStruct>().unwrap(),
+            TestDumpStruct {
+                a: "hello, world, 123!".to_string(),
+                b: 1234,
+                c: Some(5678),
+            }
+        );
     }
 
     #[test]

@@ -63,6 +63,7 @@ use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::OncePortRef;
 use hyperactor::PortRef;
+use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::Mesh;
@@ -235,7 +236,12 @@ impl Handler<Log> for ParameterServerActor {
 
 // Worker Actor
 #[derive(Debug)]
-#[hyperactor::export_spawn(Cast<WorkerInit>, Cast<WorkerStep>, Cast<WorkerUpdate>, Cast<Log>)]
+#[hyperactor::export_spawn(
+    Cast<WorkerInit>, IndexedErasedUnbound<Cast<WorkerInit>>,
+    Cast<WorkerStep>, IndexedErasedUnbound<Cast<WorkerStep>>,
+    Cast<WorkerUpdate>, IndexedErasedUnbound<Cast<WorkerUpdate>>,
+    Cast<Log>, IndexedErasedUnbound<Cast<Log>>,
+)]
 pub struct WorkerActor {
     ps_weights_handle: Option<RdmaBuffer>,
     ps_grad_handle: Option<RdmaBuffer>,
@@ -311,20 +317,20 @@ impl Handler<Cast<WorkerInit>> for WorkerActor {
             ..
         }: Cast<WorkerInit>,
     ) -> Result<(), anyhow::Error> {
-        println!("[worker_actor_{}] initializing", rank);
+        println!("[worker_actor_{}] initializing", *rank);
 
         let client = this.mailbox_for_py();
         let (handle, receiver) = client.open_once_port::<(RdmaBuffer, RdmaBuffer)>();
-        ps_ref.send(client, PsGetBuffers(rank, handle.bind()))?;
+        ps_ref.send(client, PsGetBuffers(*rank, handle.bind()))?;
         let (ps_weights_handle, ps_grad_handle) = receiver.recv().await?;
         self.ps_weights_handle = Some(ps_weights_handle);
         self.ps_grad_handle = Some(ps_grad_handle);
-        if let Some(rdma_manager) = rdma_managers.get(rank) {
+        if let Some(rdma_manager) = rdma_managers.get(*rank) {
             self.rdma_manager = Some(rdma_manager.clone());
         } else {
             return Err(anyhow::anyhow!(
                 "Invalid rank: {}. No RDMA manager found.",
-                rank
+                *rank
             ));
         }
         Ok(())
@@ -355,7 +361,7 @@ impl Handler<Cast<WorkerStep>> for WorkerActor {
         }
         println!(
             "[worker_actor_{}] pushing gradients {:?}",
-            rank, self.local_gradients
+            *rank, self.local_gradients
         );
 
         let mr = RdmaMemoryRegionView::from_boxed_slice(&self.local_gradients);
@@ -394,7 +400,7 @@ impl Handler<Cast<WorkerUpdate>> for WorkerActor {
     ) -> Result<(), anyhow::Error> {
         println!(
             "[worker_actor_{}] pulling new weights from parameter server (before: {:?})",
-            rank, self.weights_data,
+            *rank, self.weights_data,
         );
         let mr = RdmaMemoryRegionView::from_boxed_slice(&self.weights_data);
         let client = this.mailbox_for_py();
@@ -425,7 +431,7 @@ impl Handler<Cast<Log>> for WorkerActor {
             rank, message: Log, ..
         }: Cast<Log>,
     ) -> Result<(), anyhow::Error> {
-        println!("[worker_actor_{}] weights: {:?}", rank, self.weights_data);
+        println!("[worker_actor_{}] weights: {:?}", *rank, self.weights_data);
         Ok(())
     }
 }

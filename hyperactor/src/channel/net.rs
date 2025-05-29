@@ -2497,7 +2497,7 @@ mod tests {
         unsafe {
             std::env::set_var("MONARCH_MESSAGE_ACK_EVERY_N_MESSAGES", "1");
         }
-        set_tracing_env_filter(Level::DEBUG);
+        hyperactor::test_utils::tracing::set_tracing_env_filter(tracing::Level::DEBUG);
         let manager = SessionManager::new();
         let session_id = 123;
 

@@ -96,6 +96,7 @@ impl Bindings {
 
     /// Get this type's values from the binding.
     /// If the binding did not have this type present, empty Vec is returned.
+    #[allow(dead_code)]
     pub fn get<T: DeserializeOwned + Named>(&self) -> anyhow::Result<Vec<T>> {
         match self.0.get(&T::typehash()) {
             None => Ok(vec![]),
@@ -109,8 +110,10 @@ impl Bindings {
         }
     }
 
-    /// todo
-    pub fn bind_to<T: DeserializeOwned + Named>(
+    /// Rebind all values of type `T`. The input iterator must exactly match the
+    /// number of `T`-typed values in the binding.
+    #[allow(dead_code)]
+    pub fn rebind<T: DeserializeOwned + Named>(
         &self,
         mut_refs: impl ExactSizeIterator<Item = &mut T>,
     ) -> anyhow::Result<()> {
@@ -130,8 +133,14 @@ impl Bindings {
         Ok(())
     }
 
-    fn len<T: Named>(&self) -> usize {
-        self.0.get(&T::typehash()).map_or(0, |v| v.len())
+    /// Returns true if the binding contains no values of type `T`.
+    pub fn is_empty<T: Named>(&self) -> bool {
+        self.0.get(&T::typehash()).is_none_or(Vec::is_empty)
+    }
+
+    /// Returns the number of values of type `T` in the binding.
+    pub fn len<T: Named>(&self) -> usize {
+        self.0.get(&T::typehash()).map_or(0, Vec::len)
     }
 }
 
@@ -197,6 +206,17 @@ impl ErasedUnbound {
         anyhow::ensure!(self.bindings.len::<T>() == new_values.len());
         self.bindings.insert(new_values)?;
         Ok(())
+    }
+
+    /// Replace all `T`-typed values in the binding with `new_value`.
+    pub fn maybe_replace<T: Serialize + Named>(&mut self, new_value: &T) -> anyhow::Result<bool> {
+        let n = self.bindings.len::<T>();
+        if n == 0 {
+            return Ok(false);
+        }
+
+        self.bindings.insert(vec![new_value; n])?;
+        Ok(true)
     }
 
     fn downcast<M: DeserializeOwned>(self) -> anyhow::Result<Unbound<M>> {
@@ -290,7 +310,7 @@ mod tests {
     impl Bind for MyMessage {
         fn bind(mut self, bindings: &Bindings) -> anyhow::Result<Self> {
             let mut_ports = [self.reply0.port_id_mut(), self.reply1.port_id_mut()];
-            bindings.bind_to::<PortId>(mut_ports.into_iter())?;
+            bindings.rebind::<PortId>(mut_ports.into_iter())?;
             Ok(self)
         }
     }
