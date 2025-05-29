@@ -1075,7 +1075,7 @@ impl Mailbox {
         let reducer_typehash = accum.reducer_typehash();
         let enqueue = move |update: A::Update| {
             let mut state = state.lock().unwrap();
-            accum.accumulate(&mut state, &update);
+            accum.accumulate(&mut state, update);
             let _ = sender.send(state.clone());
             Ok(())
         };
