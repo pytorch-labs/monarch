@@ -8,6 +8,8 @@
 
 //! The comm actor that provides message casting and result accumulation.
 
+use std::ops::Deref;
+
 use hyperactor::Named;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
@@ -56,7 +58,7 @@ impl CastMessageEnvelope {
         dest_port: DestinationPort,
         message: T,
         reducer_typehash: Option<u64>,
-    ) -> anyhow::Result<Self> {
+    ) -> Result<Self, anyhow::Error> {
         let data = ErasedUnbound::try_from_message(message)?;
         Ok(Self {
             sender,
@@ -157,4 +159,16 @@ pub(crate) struct ForwardMessage {
     pub(crate) last_seq: usize,
     /// The message to distribute.
     pub(crate) message: CastMessageEnvelope,
+}
+
+/// This type is re-bound by the comm actor to contain the message destination rank.
+#[derive(Debug, Named, Serialize, Deserialize)]
+pub struct CastRank(pub usize);
+
+impl Deref for CastRank {
+    type Target = usize;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }

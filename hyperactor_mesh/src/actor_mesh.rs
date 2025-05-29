@@ -10,6 +10,7 @@
 
 use std::ops::Deref;
 use std::sync::Arc;
+use std::usize;
 
 use async_trait::async_trait;
 use hyperactor::Actor;
@@ -20,18 +21,26 @@ use hyperactor::PortHandle;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
 use hyperactor::actor::RemoteActor;
-use hyperactor::cap;
 use hyperactor::mailbox::MailboxSenderError;
 use hyperactor::mailbox::PortReceiver;
+use hyperactor::message::Bind;
+use hyperactor::message::Bindings;
+use hyperactor::message::IndexedErasedUnbound;
+use hyperactor::message::Unbind;
+use hyperactor::message::Unbound;
 use ndslice::Range;
 use ndslice::Selection;
 use ndslice::Shape;
 use ndslice::ShapeError;
-use ndslice::selection::EvalOpts;
 use serde::Deserialize;
 use serde::Serialize;
 
 use crate::Mesh;
+use crate::comm::multicast::CastMessage;
+use crate::comm::multicast::CastMessageEnvelope;
+use crate::comm::multicast::CastRank;
+use crate::comm::multicast::DestinationPort;
+use crate::comm::multicast::Uslice;
 use crate::metrics;
 use crate::proc_mesh::ProcMesh;
 
@@ -61,20 +70,27 @@ impl Deref for ProcMeshRef<'_> {
 /// actor on a [`ProcMesh`].
 pub struct ActorMesh<'a, A: RemoteActor> {
     proc_mesh: ProcMeshRef<'a>,
+    name: String,
     pub(crate) ranks: Vec<ActorRef<A>>, // temporary until we remove `ArcActorMesh`.
 }
 
 impl<'a, A: RemoteActor> ActorMesh<'a, A> {
-    pub(crate) fn new(proc_mesh: &'a ProcMesh, ranks: Vec<ActorRef<A>>) -> Self {
+    pub(crate) fn new(proc_mesh: &'a ProcMesh, name: String, ranks: Vec<ActorRef<A>>) -> Self {
         Self {
             proc_mesh: ProcMeshRef::Borrowed(proc_mesh),
+            name,
             ranks,
         }
     }
 
-    pub(crate) fn new_shared(proc_mesh: Arc<ProcMesh>, ranks: Vec<ActorRef<A>>) -> Self {
+    pub(crate) fn new_shared(
+        proc_mesh: Arc<ProcMesh>,
+        name: String,
+        ranks: Vec<ActorRef<A>>,
+    ) -> Self {
         Self {
             proc_mesh: ProcMeshRef::Shared(proc_mesh),
+            name,
             ranks,
         }
     }
@@ -88,61 +104,40 @@ impl<'a, A: RemoteActor> ActorMesh<'a, A> {
     /// in this ActorMesh.
     pub fn cast<M: RemoteMessage + Clone>(
         &self,
-        sel: Selection,
+        selection: Selection,
         message: M,
     ) -> Result<(), CastError>
     where
-        A: RemoteHandles<Cast<M>>,
+        A: RemoteHandles<Cast<M>> + RemoteHandles<IndexedErasedUnbound<Cast<M>>>,
     {
         let _ = metrics::ACTOR_MESH_CAST_DURATION.start(hyperactor::kv_pairs!(
             "message_type" => M::typename(),
             "message_variant" => message.arm().unwrap_or_default(),
         ));
-        let ranks = sel
-            .eval(&EvalOpts::strict(), self.shape().slice())
-            .map_err(|err| CastError::InvalidSelection(sel, err))?;
-        for rank in ranks {
-            let cast = Cast {
-                rank,
-                shape: self.shape().clone(),
-                message: message.clone(),
-            };
-            self.ranks[rank]
-                .send(self.proc_mesh.client(), cast)
-                .map_err(|err| CastError::MailboxSenderError(rank, err))?;
-        }
-        Ok(())
-    }
 
-    /// Cast an [`M`]-typed message to the ranks selected by `sel`
-    pub fn cast_with_sender<M>(
-        cap: &impl cap::CanSend,
-        shape: &Shape,
-        ranks: Vec<ActorRef<A>>,
-        sel: Selection,
-        message: M,
-    ) -> Result<(), CastError>
-    where
-        M: RemoteMessage + Clone,
-        A: RemoteHandles<Cast<M>>,
-    {
-        let _ = metrics::ACTOR_MESH_CAST_DURATION.start(hyperactor::kv_pairs!(
-            "message_type" => M::typename(),
-            "message_variant" => message.arm().unwrap_or_default(),
-        ));
-        let sel_iter = sel
-            .eval(&EvalOpts::strict(), shape.slice())
-            .map_err(|err| CastError::InvalidSelection(sel, err))?;
-        for rank in sel_iter {
-            let cast = Cast {
-                rank,
-                shape: shape.clone(),
-                message: message.clone(),
-            };
-            ranks[rank]
-                .send(cap, cast)
-                .map_err(|err| CastError::MailboxSenderError(rank, err))?;
-        }
+        let message = Cast {
+            rank: CastRank(usize::MAX),
+            shape: self.shape().clone(),
+            message,
+        };
+        let message = CastMessageEnvelope::new(
+            self.proc_mesh.client().actor_id().clone(),
+            DestinationPort::new::<A, Cast<M>>(self.name.clone()),
+            message,
+            None, // TODO: reducer typehash
+        )?;
+
+        self.proc_mesh.comm_actor().send(
+            self.proc_mesh.client(),
+            CastMessage {
+                dest: Uslice {
+                    slice: self.shape().slice().clone(),
+                    selection,
+                },
+                message,
+            },
+        )?;
+
         Ok(())
     }
 }
@@ -214,14 +209,29 @@ impl<A: RemoteActor> Mesh for SlicedActorMesh<'_, A> {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Cast<M> {
     /// The rank of the receiving actor.
-    pub rank: usize,
+    pub rank: CastRank,
     /// The coordinates of the receiving actor in the actor mesh.
     pub shape: Shape,
     /// The message itself.
     pub message: M,
 }
 
-impl<M: RemoteMessage> Named for Cast<M> {
+impl<M> Unbind for Cast<M> {
+    fn unbind(self) -> anyhow::Result<Unbound<Self>> {
+        let mut bindings = Bindings::default();
+        bindings.insert([&self.rank])?;
+        Ok(Unbound::new(self, bindings))
+    }
+}
+
+impl<M> Bind for Cast<M> {
+    fn bind(mut self, bindings: &Bindings) -> anyhow::Result<Self> {
+        bindings.rebind([&mut self.rank].into_iter())?;
+        Ok(self)
+    }
+}
+
+impl<M: Named> Named for Cast<M> {
     fn typename() -> &'static str {
         hyperactor::intern_typename!(Self, "hyperactor_mesh::actor_mesh::Cast<{}>", M)
     }
@@ -237,7 +247,16 @@ pub enum CastError {
     MailboxSenderError(usize, MailboxSenderError),
 
     #[error(transparent)]
+    RootMailboxSenderError(#[from] MailboxSenderError),
+
+    #[error(transparent)]
     ShapeError(#[from] ShapeError),
+
+    #[error(transparent)]
+    SerializationError(#[from] bincode::Error),
+
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
 }
 
 // This has to be compiled outside of test mode because the bootstrap binary
@@ -257,7 +276,12 @@ pub(crate) mod test_util {
     // 'hyperactor_mesh_test_bootstrap' for the `tests::process` actor
     // mesh test suite.
     #[derive(Debug)]
-    #[hyperactor::export_spawn(Cast<(String, PortRef<String>)>, Cast<GetRank>, Cast<Error>, Relay)]
+    #[hyperactor::export_spawn(
+        Cast<(String, PortRef<String>)>, Cast<GetRank>, Cast<Error>, Relay,
+        IndexedErasedUnbound<Cast<(String, PortRef<String>)>>,
+        IndexedErasedUnbound<Cast<GetRank>>,
+        IndexedErasedUnbound<Cast<Error>>,
+    )]
     pub struct TestActor;
 
     #[async_trait]
@@ -283,7 +307,7 @@ pub(crate) mod test_util {
                 ..
             }: Cast<GetRank>,
         ) -> Result<(), anyhow::Error> {
-            reply.send(this, rank)?;
+            reply.send(this, *rank)?;
             Ok(())
         }
     }
@@ -338,6 +362,7 @@ pub(crate) mod test_util {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     // Prototype. Replicated from hyperactor_mesh_core for the moment.
@@ -381,6 +406,7 @@ mod tests {
 
             #[tokio::test]
             async fn test_basic() {
+                hyperactor::test_utils::tracing::set_tracing_env_filter(tracing::Level::DEBUG);
                 let alloc = $allocator
                     .allocate(AllocSpec {
                         shape: shape! { replica = 4 },

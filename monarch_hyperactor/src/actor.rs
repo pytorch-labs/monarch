@@ -16,6 +16,11 @@ use hyperactor::ActorId;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Named;
+use hyperactor::message::Bind;
+use hyperactor::message::Bindings;
+use hyperactor::message::IndexedErasedUnbound;
+use hyperactor::message::Unbind;
+use hyperactor::message::Unbound;
 use hyperactor_mesh::actor_mesh::Cast;
 use monarch_types::PickledPyObject;
 use pyo3::exceptions::PyRuntimeError;
@@ -174,6 +179,18 @@ impl std::fmt::Debug for PythonMessage {
     }
 }
 
+impl Unbind for PythonMessage {
+    fn unbind(self) -> anyhow::Result<Unbound<Self>> {
+        Ok(Unbound::new(self, Bindings::default()))
+    }
+}
+
+impl Bind for PythonMessage {
+    fn bind(self, _bindings: &Bindings) -> anyhow::Result<Self> {
+        Ok(self)
+    }
+}
+
 #[pymethods]
 impl PythonMessage {
     #[new]
@@ -217,7 +234,7 @@ impl PythonActorHandle {
 }
 
 #[derive(Debug)]
-#[hyperactor::export_spawn(PythonMessage, Cast<PythonMessage>)]
+#[hyperactor::export_spawn(PythonMessage, Cast<PythonMessage>, IndexedErasedUnbound<Cast<PythonMessage>>)]
 pub(super) struct PythonActor {
     pub(super) actor: PyObject,
 }
@@ -319,7 +336,7 @@ impl Handler<Cast<PythonMessage>> for PythonActor {
                 self.actor.call_method_bound(
                     py,
                     "handle_cast",
-                    (mailbox, rank, PyShape::from(shape), message),
+                    (mailbox, rank.0, PyShape::from(shape), message),
                     None,
                 )
             })?;

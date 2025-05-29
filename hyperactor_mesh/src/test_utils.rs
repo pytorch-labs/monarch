@@ -11,6 +11,7 @@ use hyperactor::Actor;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Named;
+use hyperactor::message::IndexedErasedUnbound;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -22,7 +23,10 @@ pub struct EmptyMessage();
 
 /// No-op actor.
 #[derive(Debug, PartialEq)]
-#[hyperactor::export(EmptyMessage, Cast<EmptyMessage>)]
+#[hyperactor::export(
+    EmptyMessage,
+    Cast<EmptyMessage>, IndexedErasedUnbound<Cast<EmptyMessage>>
+)]
 pub struct EmptyActor();
 
 #[async_trait]

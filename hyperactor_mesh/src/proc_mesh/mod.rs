@@ -75,6 +75,7 @@ pub struct ProcMesh {
     #[allow(dead_code)] // will be used in subsequent diff
     client_proc: Proc,
     client: Mailbox,
+    comm_actors: Vec<ActorRef<CommActor>>,
 }
 
 struct EventState {
@@ -251,7 +252,7 @@ impl ProcMesh {
         let address_book: HashMap<_, _> = comm_actors.iter().cloned().enumerate().collect();
         // Now that we have all of the spawned comm actors, kick them all into
         // mesh mode.
-        for (rank, comm_actor) in comm_actors.into_iter().enumerate() {
+        for (rank, comm_actor) in comm_actors.iter().enumerate() {
             comm_actor
                 .send(&client, CommActorMode::Mesh(rank, address_book.clone()))
                 .map_err(anyhow::Error::from)?;
@@ -272,6 +273,7 @@ impl ProcMesh {
                 .collect(),
             client_proc,
             client,
+            comm_actors,
         })
     }
 
@@ -325,6 +327,11 @@ impl ProcMesh {
         self.ranks.iter().map(|(_, (_, agent))| agent.clone())
     }
 
+    /// Return the comm actor to which casts should be forwarded.
+    pub(crate) fn comm_actor(&self) -> &ActorRef<CommActor> {
+        &self.comm_actors[0]
+    }
+
     pub async fn spawn<A: Actor + RemoteActor>(
         &self,
         actor_name: &str,
@@ -335,6 +342,7 @@ impl ProcMesh {
     {
         Ok(ActorMesh::new(
             self,
+            actor_name.to_string(),
             Self::spawn_on_procs::<A>(&self.client, self.agents(), actor_name, params).await?,
         ))
     }
@@ -438,6 +446,7 @@ impl SharedSpawnable for Arc<ProcMesh> {
     {
         Ok(ActorMesh::new_shared(
             Arc::clone(self),
+            actor_name.to_string(),
             ProcMesh::spawn_on_procs::<A>(&self.client, self.agents(), actor_name, params).await?,
         ))
     }

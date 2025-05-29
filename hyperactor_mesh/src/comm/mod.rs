@@ -30,6 +30,7 @@ use serde::Serialize;
 
 use crate::comm::multicast::CastMessage;
 use crate::comm::multicast::CastMessageEnvelope;
+use crate::comm::multicast::CastRank;
 use crate::comm::multicast::ForwardMessage;
 
 /// Parameters to initialize the CommActor
@@ -189,6 +190,11 @@ impl CommActor {
 
         // Deliver message here, if necessary.
         if deliver_here {
+            message
+                .data_mut()
+                .maybe_replace(&CastRank(mode.self_rank(this.self_id())))?;
+            // TODO(pzhang) split reply ports so children can reply to this comm
+            // actor instead of parent.
             this.post(
                 this.self_id()
                     .proc_id()
@@ -446,7 +452,7 @@ pub mod test_utils {
                         reply_to1.port_id_mut(),
                         reply_to2.port_id_mut(),
                     ];
-                    bindings.bind_to(mut_ports.into_iter())?;
+                    bindings.rebind(mut_ports.into_iter())?;
                     Ok(self)
                 }
             }

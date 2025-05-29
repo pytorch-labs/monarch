@@ -19,6 +19,7 @@ use hyperactor::Instance;
 use hyperactor::Mailbox;
 use hyperactor::Named;
 use hyperactor::PortRef;
+use hyperactor::message::IndexedErasedUnbound;
 use hyperactor_mesh::Mesh;
 use hyperactor_mesh::ProcMesh;
 use hyperactor_mesh::actor_mesh::Cast;
@@ -43,7 +44,11 @@ enum ChopstickStatus {
 }
 
 #[derive(Debug)]
-#[hyperactor::export_spawn(Cast<PhilosopherMessage>, PhilosopherMessage)]
+#[hyperactor::export_spawn(
+    Cast<PhilosopherMessage>,
+    IndexedErasedUnbound<Cast<PhilosopherMessage>>,
+    PhilosopherMessage
+)]
 struct PhilosopherActor {
     /// Status of left and right chopsticks
     chopsticks: (ChopstickStatus, ChopstickStatus),
@@ -135,7 +140,7 @@ impl Handler<Cast<PhilosopherMessage>> for PhilosopherActor {
         this: &Instance<Self>,
         Cast { rank, message, .. }: Cast<PhilosopherMessage>,
     ) -> Result<(), anyhow::Error> {
-        self.rank = rank;
+        self.rank = *rank;
         match message {
             PhilosopherMessage::Start(waiter) => {
                 self.waiter.set(waiter)?;
