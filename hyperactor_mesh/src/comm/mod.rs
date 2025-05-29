@@ -64,11 +64,11 @@ struct ReceiveState {
 /// This is the comm actor used for efficient and scalable message multicasting
 /// and result accumulation.
 #[derive(Debug)]
-#[hyperactor::export(CastMessage, ForwardMessage)]
+#[hyperactor::export_spawn(CastMessage, ForwardMessage)]
 pub struct CommActor {
-    /// Each world will use it's own seq num from this caster.
+    /// Each world will use its own seq num from this caster.
     send_seq: HashMap<Slice, usize>,
-    /// Each world/castor uses it's own stream.
+    /// Each world/caster uses its own stream.
     recv_state: HashMap<(Slice, ActorId), ReceiveState>,
 }
 
