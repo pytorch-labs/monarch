@@ -12,12 +12,14 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::OnceLock;
 
+use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::Named;
 use crate::data::Serialized;
 use crate::intern_typename;
+use crate::reference::Index;
 
 /// An accumulator is a object that accumulates updates into a state.
 pub trait Accumulator {
@@ -30,7 +32,7 @@ pub trait Accumulator {
     type Reducer: CommReducer<Update = Self::Update> + Named;
 
     /// Accumulate an update into the current state.
-    fn accumulate(&self, state: &mut Self::State, update: &Self::Update);
+    fn accumulate(&self, state: &mut Self::State, update: Self::Update);
 
     /// The typehash of the underlying [Self::Reducer] type.
     fn reducer_typehash(&self) -> u64 {
@@ -128,6 +130,12 @@ inventory::submit! {
 inventory::submit! {
     ReducerFactory(|| Box::new(MinReducer::<u64>(PhantomData)))
 }
+inventory::submit! {
+    ReducerFactory(|| Box::new(WatermarkUpdateReducer::<i64>(PhantomData)))
+}
+inventory::submit! {
+    ReducerFactory(|| Box::new(WatermarkUpdateReducer::<u64>(PhantomData)))
+}
 
 /// Build a reducer object with the given typehash's [CommReducer] type, and
 /// return the type-erased version of it.
@@ -171,8 +179,8 @@ impl<T: std::ops::Add<Output = T> + Copy + Named + 'static> Accumulator for SumA
     type Update = T;
     type Reducer = SumReducer<T>;
 
-    fn accumulate(&self, state: &mut T, update: &T) {
-        *state = *state + *update;
+    fn accumulate(&self, state: &mut T, update: T) {
+        *state = *state + update;
     }
 }
 
@@ -206,8 +214,8 @@ impl<T: Ord + Copy + Named + 'static> Accumulator for MaxAccumulator<T> {
     type Update = T;
     type Reducer = MaxReducer<T>;
 
-    fn accumulate(&self, state: &mut T, update: &T) {
-        *state = std::cmp::max(*state, *update);
+    fn accumulate(&self, state: &mut T, update: T) {
+        *state = std::cmp::max(*state, update);
     }
 }
 
@@ -241,8 +249,8 @@ impl<T: Ord + Copy + Named + 'static> Accumulator for MinAccumulator<T> {
     type Update = T;
     type Reducer = MinReducer<T>;
 
-    fn accumulate(&self, state: &mut T, update: &T) {
-        *state = std::cmp::min(*state, *update);
+    fn accumulate(&self, state: &mut T, update: T) {
+        *state = std::cmp::min(*state, update);
     }
 }
 
@@ -252,20 +260,110 @@ pub fn min<T: Ord + Copy + Named + 'static>() -> impl Accumulator<State = T, Upd
     MinAccumulator(PhantomData)
 }
 
+/// Update from ranks for watermark accumulator, where map' key is the rank, and
+/// map's value is the update from that rank.
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
+pub struct WatermarkUpdate<T>(HashMap<Index, T>);
+
+impl<T: Named> Named for WatermarkUpdate<T> {
+    fn typename() -> &'static str {
+        intern_typename!(Self, "hyperactor::accum::WatermarkUpdate<{}>", T)
+    }
+}
+
+impl<T: Ord> WatermarkUpdate<T> {
+    /// Get the watermark value. WatermarkUpdate is guarranteed to be initialized by
+    /// accumulator before it is sent to the user.
+    // TODO(pzhang) optimize this and only iterate when there is a new min.
+    pub fn get(&self) -> &T {
+        self.0
+            .values()
+            .min()
+            .expect("watermark should have been intialized.")
+    }
+}
+
+impl<T: PartialEq> WatermarkUpdate<T> {
+    /// See [`WatermarkUpdateReducer`]'s documentation for the merge semantics.
+    fn merge(old: Self, new: Self) -> Self {
+        let mut map = old.0;
+        for (k, v) in new.0 {
+            map.insert(k, v);
+        }
+        Self(map)
+    }
+}
+
+impl<T> From<(Index, T)> for WatermarkUpdate<T> {
+    fn from((rank, value): (Index, T)) -> Self {
+        let mut map = HashMap::with_capacity(1);
+        map.insert(rank, value);
+        Self(map)
+    }
+}
+
+/// Merge an old update and a new update. If a rank exists in boths updates,
+/// only keep its value from the new update.
+struct WatermarkUpdateReducer<T>(PhantomData<T>);
+
+impl<T: PartialEq> CommReducer for WatermarkUpdateReducer<T> {
+    type Update = WatermarkUpdate<T>;
+
+    fn reduce(&self, left: Self::Update, right: Self::Update) -> Self::Update {
+        WatermarkUpdate::merge(left, right)
+    }
+}
+
+impl<T: Named> Named for WatermarkUpdateReducer<T> {
+    fn typename() -> &'static str {
+        intern_typename!(Self, "hyperactor::accum::WatermarkUpdateReducer<{}>", T)
+    }
+}
+
+struct LowWatermarkUpdateAccumulator<T>(PhantomData<T>);
+
+impl<T: Ord + Copy + Named + 'static> Accumulator for LowWatermarkUpdateAccumulator<T> {
+    type State = WatermarkUpdate<T>;
+    type Update = WatermarkUpdate<T>;
+    type Reducer = WatermarkUpdateReducer<T>;
+
+    fn accumulate(&self, state: &mut Self::State, update: Self::Update) {
+        let current = std::mem::replace(&mut *state, WatermarkUpdate(HashMap::new()));
+        // TODO(pzhang) optimize this and only iterate when there is a new state.
+        *state = WatermarkUpdate::merge(current, update);
+    }
+}
+
+/// Accumulate the min value among the ranks, aka. low watermark, based on the
+/// ranks' latest updates. Ranks' previous updates are discarded, and not used
+/// in the min value calculation.
+///
+/// The main difference bwtween low wartermark accumulator and [`MinAccumulator`]
+/// is, `MinAccumulator` takes previous updates into consideration too, and thus
+/// returns the min of the whole history.
+pub fn low_watermark<T: Ord + Copy + Named + 'static>()
+-> impl Accumulator<State = WatermarkUpdate<T>, Update = WatermarkUpdate<T>> {
+    LowWatermarkUpdateAccumulator(PhantomData)
+}
+
 #[cfg(test)]
 mod tests {
+    use std::fmt::Debug;
+
+    use maplit::hashmap;
+
     use super::*;
     use crate::Named;
 
-    #[test]
-    fn test_comm_reducer() {
-        fn serialize<T: Serialize + Named>(values: Vec<T>) -> Vec<Serialized> {
-            values
-                .into_iter()
-                .map(|n| Serialized::serialize(&n).unwrap())
-                .collect()
-        }
+    fn serialize<T: Serialize + Named>(values: Vec<T>) -> Vec<Serialized> {
+        values
+            .into_iter()
+            .map(|n| Serialized::serialize(&n).unwrap())
+            .collect()
+    }
 
+    #[test]
+    fn test_comm_reducer_numeric() {
         let u64_numbers: Vec<_> = serialize(vec![1u64, 3u64, 1100u64]);
         let i64_numbers: Vec<_> = serialize(vec![-123i64, 33i64, 110i64]);
         {
@@ -340,7 +438,78 @@ mod tests {
     }
 
     #[test]
-    fn test_accum_reducer() {
+    fn test_comm_reducer_watermark() {
+        let u64_updates = serialize::<WatermarkUpdate<u64>>(
+            vec![
+                (1, 1),
+                (0, 2),
+                (0, 1),
+                (3, 35),
+                (0, 9),
+                (1, 10),
+                (3, 32),
+                (3, 0),
+                (3, 321),
+            ]
+            .into_iter()
+            .map(|(k, v)| WatermarkUpdate::from((k, v)))
+            .collect(),
+        );
+        let i64_updates: Vec<_> = serialize::<WatermarkUpdate<i64>>(
+            vec![
+                (0, 2),
+                (1, 1),
+                (3, 35),
+                (0, 1),
+                (1, -10),
+                (3, 32),
+                (3, 0),
+                (3, -99),
+                (0, -9),
+            ]
+            .into_iter()
+            .map(WatermarkUpdate::from)
+            .collect(),
+        );
+
+        fn verify<T: PartialEq + DeserializeOwned + Debug>(
+            updates: Vec<Serialized>,
+            expected: HashMap<Index, T>,
+        ) {
+            let typehash = <WatermarkUpdateReducer<i64> as Named>::typehash();
+            assert_eq!(
+                resolve_reducer(typehash)
+                    .unwrap()
+                    .reduce_updates(updates)
+                    .unwrap()
+                    .deserialized::<WatermarkUpdate<T>>()
+                    .unwrap()
+                    .0,
+                expected,
+            );
+        }
+
+        verify::<i64>(
+            i64_updates,
+            hashmap! {
+                0 => -9,
+                1 => -10,
+                3 => -99,
+            },
+        );
+
+        verify::<u64>(
+            u64_updates,
+            hashmap! {
+                0 => 9,
+                1 => 10,
+                3 => 321,
+            },
+        );
+    }
+
+    #[test]
+    fn test_accum_reducer_numeric() {
         assert_eq!(
             sum::<u64>().reducer_typehash(),
             <SumReducer::<u64> as Named>::typehash(),
@@ -367,5 +536,55 @@ mod tests {
             max::<i64>().reducer_typehash(),
             <MaxReducer::<i64> as Named>::typehash(),
         );
+    }
+
+    #[test]
+    fn test_accum_reducer_watermark() {
+        fn verify<T: Ord + Copy + Named>() {
+            assert_eq!(
+                low_watermark::<T>().reducer_typehash(),
+                <WatermarkUpdateReducer::<T> as Named>::typehash(),
+            );
+        }
+        verify::<u64>();
+        verify::<i64>();
+    }
+
+    #[test]
+    fn test_watermark_accumulator() {
+        let accumulator = low_watermark::<u64>();
+        let ranks_values_expectations = [
+            // send in descending order
+            (0, 1003, 1003),
+            (1, 1002, 1002),
+            (2, 1001, 1001),
+            // send in asscending order
+            (0, 100, 100),
+            (1, 101, 100),
+            (2, 102, 100),
+            // send same as accumulator's cache
+            (0, 100, 100),
+            (1, 101, 100),
+            (2, 102, 100),
+            // shuffle rank 0 to be largest, and make rank 1 smallest
+            (0, 1000, 101),
+            // shuffle rank 1 to be largest, and make rank 2 smallest
+            (1, 1100, 102),
+            // shuffle rank 2 to be largest, and make rank 0 smallest
+            (2, 1200, 1000),
+            // Increase their value, but do not change their order
+            (0, 1001, 1001),
+            (1, 1101, 1001),
+            (2, 1201, 1001),
+            // decrease their values
+            (2, 102, 102),
+            (1, 101, 101),
+            (0, 100, 100),
+        ];
+        let mut state = WatermarkUpdate(HashMap::new());
+        for (rank, value, expected) in ranks_values_expectations {
+            accumulator.accumulate(&mut state, WatermarkUpdate::from((rank, value)));
+            assert_eq!(state.get(), &expected, "rank is {rank}; value is {value}");
+        }
     }
 }

@@ -762,7 +762,7 @@ mod tests {
         type Update = u64;
         type Reducer = NonReducer;
 
-        fn accumulate(&self, _state: &mut Self::State, _update: &Self::Update) {
+        fn accumulate(&self, _state: &mut Self::State, _update: Self::Update) {
             unimplemented!()
         }
     }
