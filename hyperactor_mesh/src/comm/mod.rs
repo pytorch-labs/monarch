@@ -29,10 +29,11 @@ use serde::Serialize;
 
 use crate::comm::multicast::CastMessage;
 use crate::comm::multicast::CastMessageEnvelope;
+use crate::comm::multicast::DestinationPort;
 use crate::comm::multicast::ForwardMessage;
 
 /// Parameters to initialize the CommActor
-#[derive(Debug, Clone, Serialize, Deserialize, Named)]
+#[derive(Debug, Clone, Serialize, Deserialize, Named, Default)]
 pub struct CommActorParams {}
 
 /// A message buffered due to out-of-order delivery.
@@ -64,12 +65,68 @@ struct ReceiveState {
 /// This is the comm actor used for efficient and scalable message multicasting
 /// and result accumulation.
 #[derive(Debug)]
-#[hyperactor::export_spawn(CastMessage, ForwardMessage)]
+#[hyperactor::export_spawn(CommActorMode, CastMessage, ForwardMessage)]
 pub struct CommActor {
     /// Each world will use its own seq num from this caster.
     send_seq: HashMap<Slice, usize>,
     /// Each world/caster uses its own stream.
     recv_state: HashMap<(Slice, ActorId), ReceiveState>,
+
+    /// The comm actor's mode.
+    mode: CommActorMode,
+}
+
+/// Configuration for how a `CommActor` determines its own rank and locates peers.
+///
+/// - In `Mesh` mode, the comm actor is assigned an explicit rank and a mapping to each peer by rank.
+/// - In `Implicit` mode, the comm actor infers its rank and peers from its own actor ID.
+#[derive(Debug, Clone, Serialize, Deserialize, Named)]
+pub enum CommActorMode {
+    /// When configured as a mesh, the comm actor is assigned a rank
+    /// and a set of references for each peer rank.
+    Mesh(usize, HashMap<usize, ActorRef<CommActor>>),
+
+    /// In an implicit mode, the comm actor derives its rank and
+    /// peers from its own ID.
+    Implicit,
+}
+
+impl Default for CommActorMode {
+    fn default() -> Self {
+        Self::Implicit
+    }
+}
+
+impl CommActorMode {
+    /// Return the peer comm actor for the given rank, given a self id,
+    /// destination port, and rank.
+    fn peer_for_rank(
+        &self,
+        self_id: &ActorId,
+        dest_port: &DestinationPort,
+        rank: usize,
+    ) -> Result<ActorRef<CommActor>> {
+        match self {
+            Self::Mesh(_self_rank, peers) => peers
+                .get(&rank)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("no peer for rank {}", rank)),
+            Self::Implicit => {
+                let world_id = dest_port.gang_id().world_id();
+                let proc_id = world_id.proc_id(rank);
+                let actor_id = ActorId::root(proc_id, self_id.name().to_string());
+                Ok(ActorRef::<CommActor>::attest(actor_id))
+            }
+        }
+    }
+
+    /// Return the rank of the comm actor, given a self id.
+    fn self_rank(&self, self_id: &ActorId) -> usize {
+        match self {
+            Self::Mesh(rank, _) => *rank,
+            Self::Implicit => self_id.proc_id().rank(),
+        }
+    }
 }
 
 #[async_trait]
@@ -80,24 +137,27 @@ impl Actor for CommActor {
         Ok(Self {
             send_seq: HashMap::new(),
             recv_state: HashMap::new(),
+            mode: Default::default(),
         })
     }
 }
 
 impl CommActor {
     /// Forward the message to the comm actor on the given peer rank.
-    fn forward(this: &Instance<Self>, rank: usize, message: ForwardMessage) -> Result<()> {
-        let world_id = message.message.dest_port().gang_id().world_id();
-        let proc_id = world_id.proc_id(rank);
-        let actor_id = ActorId::root(proc_id, this.self_id().name().to_string());
-        let comm_actor = ActorRef::<CommActor>::attest(actor_id);
-        let port = comm_actor.port::<ForwardMessage>();
-        port.send(this, message)?;
+    fn forward(
+        this: &Instance<Self>,
+        mode: &CommActorMode,
+        rank: usize,
+        message: ForwardMessage,
+    ) -> Result<()> {
+        let child = mode.peer_for_rank(this.self_id(), message.message.dest_port(), rank)?;
+        child.send(this, message)?;
         Ok(())
     }
 
     fn handle_message(
         this: &Instance<Self>,
+        mode: &CommActorMode,
         deliver_here: bool,
         next_steps: HashMap<usize, Vec<RoutingFrame>>,
         sender: ActorId,
@@ -123,7 +183,7 @@ impl CommActor {
         // Deliever message here, if necessary.
         if deliver_here {
             this.post(
-                message.dest_port().port_id(this.self_id().proc_id().rank()),
+                message.dest_port().port_id(mode.self_rank(this.self_id())),
                 Serialized::serialize(message.data())?,
             );
         }
@@ -135,6 +195,7 @@ impl CommActor {
                 let last_seq = last_seqs.entry(peer).or_default();
                 Self::forward(
                     this,
+                    mode,
                     peer,
                     ForwardMessage {
                         dests,
@@ -149,6 +210,14 @@ impl CommActor {
             })
             .collect::<Result<Vec<_>>>()?;
 
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<CommActorMode> for CommActor {
+    async fn handle(&mut self, this: &Instance<Self>, mode: CommActorMode) -> Result<()> {
+        self.mode = mode;
         Ok(())
     }
 }
@@ -170,6 +239,7 @@ impl Handler<CastMessage> for CommActor {
         *seq += 1;
         Self::forward(
             this,
+            &self.mode,
             rank,
             ForwardMessage {
                 dests: vec![frame],
@@ -195,7 +265,7 @@ impl Handler<ForwardMessage> for CommActor {
         } = fwd_message;
 
         // Resolve/dedup routing frames.
-        let rank = this.self_id().proc_id().rank();
+        let rank = self.mode.self_rank(this.self_id());
         let slice = dests[0].slice.as_ref().clone();
         let (deliver_here, next_steps) =
             ndslice::selection::routing::resolve_routing(rank, dests, &mut |_| {
@@ -209,6 +279,7 @@ impl Handler<ForwardMessage> for CommActor {
                 // We got an in-order operation, so handle it now.
                 Self::handle_message(
                     this,
+                    &self.mode,
                     deliver_here,
                     next_steps,
                     sender.clone(),
@@ -229,6 +300,7 @@ impl Handler<ForwardMessage> for CommActor {
                 {
                     Self::handle_message(
                         this,
+                        &self.mode,
                         deliver_here,
                         next_steps,
                         sender.clone(),
