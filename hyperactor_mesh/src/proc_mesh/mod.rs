@@ -27,9 +27,11 @@ use hyperactor::mailbox::BoxedMailboxSender;
 use hyperactor::mailbox::DialMailboxRouter;
 use hyperactor::mailbox::MailboxRouter;
 use hyperactor::mailbox::MailboxServer;
+use hyperactor::mailbox::PortReceiver;
 use hyperactor::proc::Proc;
 use hyperactor::reference::ProcId;
 use hyperactor::reference::Reference;
+use hyperactor::supervision::ActorSupervisionEvent;
 use ndslice::Range;
 use ndslice::Shape;
 use ndslice::ShapeError;
@@ -62,14 +64,19 @@ fn global_router() -> &'static MailboxRouter {
 /// A ProcMesh maintains a mesh of procs whose lifecycles are managed by
 /// an allocator.
 pub struct ProcMesh {
-    // The underlying alloc. It is None if it has been transferred to
+    // The underlying set of events. It is None if it has been transferred to
     // a proc event observer.
-    alloc: Option<Box<dyn Alloc + Send + Sync>>,
+    event_state: Option<EventState>,
     shape: Shape,
     ranks: Vec<(ProcId, (ChannelAddr, ActorRef<MeshAgent>))>,
     #[allow(dead_code)] // will be used in subsequent diff
     client_proc: Proc,
     client: Mailbox,
+}
+
+struct EventState {
+    alloc: Box<dyn Alloc + Send + Sync>,
+    supervision_events: PortReceiver<ActorSupervisionEvent>,
 }
 
 impl ProcMesh {
@@ -182,6 +189,9 @@ impl ProcMesh {
         global_router().bind(alloc.world_id().clone().into(), router.clone());
         global_router().bind(client_proc_id.into(), router.clone());
 
+        let supervisor = client_proc.attach("supervisor")?;
+        let (supervison_port, supervision_events) = supervisor.open_port();
+
         // Now, configure the full mesh, so that the local agents are wired up to
         // our router.
         let client = client_proc.attach("client")?;
@@ -193,6 +203,7 @@ impl ProcMesh {
                     &client,
                     rank,
                     router_channel_addr.clone(),
+                    supervison_port.bind(),
                     config_handle.bind(),
                 )
                 .await?;
@@ -211,7 +222,10 @@ impl ProcMesh {
         let shape = alloc.shape().clone();
 
         Ok(Self {
-            alloc: Some(Box::new(alloc)),
+            event_state: Some(EventState {
+                alloc: Box::new(alloc),
+                supervision_events,
+            }),
             shape,
             ranks: proc_ids
                 .into_iter()
@@ -288,8 +302,8 @@ impl ProcMesh {
     /// An event stream of proc events. Each ProcMesh can produce only one such
     /// stream, returning None after the first call.
     pub fn events(&mut self) -> Option<ProcEvents> {
-        self.alloc.take().map(|alloc| ProcEvents {
-            alloc,
+        self.event_state.take().map(|event_state| ProcEvents {
+            event_state,
             ranks: self
                 .ranks
                 .iter()
@@ -305,12 +319,15 @@ impl ProcMesh {
 pub enum ProcEvent {
     /// The proc of the given rank was stopped with the provided reason.
     Stopped(usize, ProcStopReason),
+    /// The proc crashed, with the provided "reason". This is reserved for
+    /// unhandled supervision events.
+    Crashed(usize, String),
 }
 
 /// An event stream of [`ProcEvent`]
 // TODO: consider using streams for this.
 pub struct ProcEvents {
-    alloc: Box<dyn Alloc + Send + Sync>,
+    event_state: EventState,
     ranks: HashMap<ProcId, usize>,
 }
 
@@ -319,21 +336,34 @@ impl ProcEvents {
     /// returns `None`.
     pub async fn next(&mut self) -> Option<ProcEvent> {
         loop {
-            let Some(alloc_event) = self.alloc.next().await else {
-                break None;
-            };
+            tokio::select! {
+                result = self.event_state.alloc.next() => {
+                    // Don't disable the outer branch on None: this is always terminal.
+                    let Some(alloc_event) = result else {
+                        break None;
+                    };
 
-            let ProcState::Stopped { proc_id, reason } = alloc_event else {
-                // Ignore non-stopped events for now.
-                continue;
-            };
+                    let ProcState::Stopped { proc_id, reason } = alloc_event else {
+                        // Ignore non-stopped events for now.
+                        continue;
+                    };
 
-            let Some(rank) = self.ranks.get(&proc_id) else {
-                tracing::warn!("received stop event for unmapped proc {}", proc_id);
-                continue;
-            };
+                    let Some(rank) = self.ranks.get(&proc_id) else {
+                        tracing::warn!("received stop event for unmapped proc {}", proc_id);
+                        continue;
+                    };
 
-            break Some(ProcEvent::Stopped(*rank, reason));
+                    break Some(ProcEvent::Stopped(*rank, reason));
+                }
+                Ok(event) = self.event_state.supervision_events.recv() => {
+                    let (actor_id, actor_status) = event.into_inner();
+                    let Some(rank) = self.ranks.get(actor_id.proc_id()) else {
+                        tracing::warn!("received supervision event for unmapped actor {}", actor_id);
+                        continue;
+                    };
+                    break Some(ProcEvent::Crashed(*rank, actor_status.to_string()))
+                }
+            }
         }
     }
 }
@@ -442,9 +472,13 @@ mod tests {
     use ndslice::shape;
 
     use super::*;
+    use crate::actor_mesh::test_util::Error;
+    use crate::actor_mesh::test_util::TestActor;
+    use crate::alloc::AllocConstraints;
     use crate::alloc::AllocSpec;
     use crate::alloc::Allocator;
     use crate::alloc::local::LocalAllocator;
+    use crate::select_;
 
     #[tokio::test]
     async fn test_basic() {
@@ -490,5 +524,47 @@ mod tests {
         // );
 
         // assert!(events.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_supervision_failure() {
+        // For now, we propagate all actor failures to the proc.
+
+        let alloc = LocalAllocator
+            .allocate(AllocSpec {
+                shape: shape! { replica = 2  },
+                constraints: Default::default(),
+            })
+            .await
+            .unwrap();
+        let stop = alloc.stopper();
+        let mut mesh = ProcMesh::allocate(alloc).await.unwrap();
+        let mut events = mesh.events().unwrap();
+
+        let actors = mesh.spawn::<TestActor>("failing", &()).await.unwrap();
+
+        actors
+            .cast(
+                select_!(actors.shape(), replica = 0),
+                Error("failmonkey".to_string()),
+            )
+            .unwrap();
+
+        assert_matches!(
+            events.next().await.unwrap(),
+            ProcEvent::Crashed(0, reason) if reason.contains("failmonkey")
+        );
+
+        stop();
+        assert_matches!(
+            events.next().await.unwrap(),
+            ProcEvent::Stopped(0, ProcStopReason::Stopped),
+        );
+        assert_matches!(
+            events.next().await.unwrap(),
+            ProcEvent::Stopped(1, ProcStopReason::Stopped),
+        );
+
+        assert!(events.next().await.is_none());
     }
 }

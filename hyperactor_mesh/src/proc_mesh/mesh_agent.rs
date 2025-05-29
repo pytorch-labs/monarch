@@ -36,6 +36,7 @@ use hyperactor::mailbox::MailboxSender;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::proc::Proc;
+use hyperactor::supervision::ActorSupervisionEvent;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -58,6 +59,8 @@ pub(crate) enum MeshAgentMessage {
         rank: usize,
         /// The forwarder to send messages to unknown destinations.
         forwarder: ChannelAddr,
+        /// The supervisor port to which the agent should report supervision events.
+        supervisor: PortRef<ActorSupervisionEvent>,
         /// The agent should write its rank to this port when it successfully
         /// configured.
         configured: PortRef<usize>,
@@ -84,6 +87,7 @@ pub struct MeshAgent {
     remote: Remote,
     sender: ReconfigurableMailboxSender,
     rank: Option<usize>,
+    supervisor: Option<PortRef<ActorSupervisionEvent>>,
 }
 
 impl MeshAgent {
@@ -98,7 +102,8 @@ impl MeshAgent {
             proc: proc.clone(),
             remote: Remote::collect(),
             sender,
-            rank: None, // not yet assigned
+            rank: None,       // not yet assigned
+            supervisor: None, // not yet assigned
         };
         let handle = proc.spawn::<Self>("mesh", agent).await?;
         Ok((proc, handle))
@@ -112,6 +117,11 @@ impl Actor for MeshAgent {
     async fn new(params: Self::Params) -> Result<Self, anyhow::Error> {
         Ok(params)
     }
+
+    async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        self.proc.set_supervision_coordinator(this.port())?;
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -122,8 +132,13 @@ impl MeshAgentMessageHandler for MeshAgent {
         this: &Instance<Self>,
         rank: usize,
         forwarder: ChannelAddr,
+        supervisor: PortRef<ActorSupervisionEvent>,
         configured: PortRef<usize>,
     ) -> Result<(), anyhow::Error> {
+        // Set the supervisor first so that we can handle supervison events that might
+        // occur from configuration failures. Though we should instead report these directly
+        // for better ergonomics in the allocator.
+        self.supervisor = Some(supervisor);
         let client = MailboxClient::new(channel::dial(forwarder)?);
         if self.sender.configure(BoxedMailboxSender::new(client)) {
             self.rank = Some(rank);
@@ -150,6 +165,30 @@ impl MeshAgentMessageHandler for MeshAgent {
             .rank
             .ok_or_else(|| anyhow::anyhow!("tried to spawn on unconfigured proc"))?;
         status_port.send(this, (rank, actor_id))?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<ActorSupervisionEvent> for MeshAgent {
+    async fn handle(
+        &mut self,
+        this: &hyperactor::Instance<Self>,
+        event: ActorSupervisionEvent,
+    ) -> anyhow::Result<()> {
+        if let Some(supervisor) = &self.supervisor {
+            supervisor.send(this, event)?;
+        } else {
+            tracing::error!(
+                "proc {}: could not propagate supervision event {:?}: crashing",
+                this.self_id().proc_id(),
+                event
+            );
+
+            // We should have a custom "crash" function here, so that this works
+            // in testing of the LocalAllocator, etc.
+            std::process::exit(1);
+        }
         Ok(())
     }
 }

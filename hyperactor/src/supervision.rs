@@ -19,7 +19,7 @@ use crate::actor::ActorStatus;
 use crate::reference::ActorId;
 
 /// This is the local actor supervision event. Child actor will propagate this event to its parent.
-#[derive(Clone, Debug, Serialize, Deserialize, Named)]
+#[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Eq)]
 pub struct ActorSupervisionEvent {
     /// The actor id of the child actor where the event is triggered.
     actor_id: ActorId,

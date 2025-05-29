@@ -10,6 +10,7 @@
 
 #![allow(dead_code)] // until it is used outside of testing
 
+use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::time::Duration;
 
@@ -59,7 +60,6 @@ impl Allocator for LocalAllocator {
 }
 
 struct LocalProc {
-    rank: usize,
     proc: Proc,
     addr: ChannelAddr,
     handle: MailboxServerHandle,
@@ -70,7 +70,7 @@ pub struct LocalAlloc {
     spec: AllocSpec,
     name: ShortUuid,
     world_id: WorldId, // to provide storage
-    procs: Vec<LocalProc>,
+    procs: HashMap<usize, LocalProc>,
     queue: VecDeque<ProcState>,
     todo_tx: mpsc::UnboundedSender<Action>,
     todo_rx: mpsc::UnboundedReceiver<Action>,
@@ -88,7 +88,7 @@ impl LocalAlloc {
             spec,
             name: name.clone(),
             world_id: WorldId(name.to_string()),
-            procs: Vec::new(),
+            procs: HashMap::new(),
             queue: VecDeque::new(),
             todo_tx,
             todo_rx,
@@ -101,6 +101,20 @@ impl LocalAlloc {
         let todo_tx = self.todo_tx.clone();
         move |rank, reason| {
             todo_tx.send(Action::Stop(rank, reason)).unwrap();
+        }
+    }
+
+    /// A function to shut down the alloc for testing purposes.
+    pub(crate) fn stopper(&self) -> impl Fn() {
+        let todo_tx = self.todo_tx.clone();
+        let size = self.size();
+        move || {
+            for rank in 0..size {
+                todo_tx
+                    .send(Action::Stop(rank, ProcStopReason::Stopped))
+                    .unwrap();
+            }
+            todo_tx.send(Action::Stopped).unwrap();
         }
     }
 
@@ -157,12 +171,14 @@ impl Alloc for LocalAlloc {
                         .clone()
                         .serve(proc_rx, mailbox::monitored_return_handle());
 
-                    self.procs.push(LocalProc {
+                    self.procs.insert(
                         rank,
-                        proc,
-                        addr: addr.clone(),
-                        handle,
-                    });
+                        LocalProc {
+                            proc,
+                            addr: addr.clone(),
+                            handle,
+                        },
+                    );
 
                     // Adjust for shape slice offset for non-zero shapes (sub-shapes).
                     let rank = rank + self.spec.shape.slice().offset();
@@ -185,7 +201,7 @@ impl Alloc for LocalAlloc {
                     break Some(created);
                 }
                 Action::Stop(rank, reason) => {
-                    let Some(proc_to_stop) = self.procs.get_mut(rank) else {
+                    let Some(mut proc_to_stop) = self.procs.remove(&rank) else {
                         continue;
                     };
                     if let Err(err) = proc_to_stop
@@ -193,7 +209,7 @@ impl Alloc for LocalAlloc {
                         .destroy_and_wait(Duration::from_millis(10), None)
                         .await
                     {
-                        tracing::error!("error while stopping proc {}: {}", proc_to_stop.rank, err);
+                        tracing::error!("error while stopping proc {}: {}", rank, err);
                     }
                     break Some(ProcState::Stopped {
                         reason,
