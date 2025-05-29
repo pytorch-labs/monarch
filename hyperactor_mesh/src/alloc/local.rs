@@ -11,7 +11,6 @@
 #![allow(dead_code)] // until it is used outside of testing
 
 use std::collections::VecDeque;
-use std::future;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -25,6 +24,7 @@ use hyperactor::mailbox::MailboxServer;
 use hyperactor::mailbox::MailboxServerHandle;
 use hyperactor::proc::Proc;
 use ndslice::Shape;
+use tokio::sync::mpsc;
 use tokio::time::sleep;
 
 use super::ProcStopReason;
@@ -35,6 +35,12 @@ use crate::alloc::AllocatorError;
 use crate::alloc::ProcState;
 use crate::proc_mesh::mesh_agent::MeshAgent;
 use crate::shortuuid::ShortUuid;
+
+enum Action {
+    Start(usize),
+    Stop(usize, ProcStopReason),
+    Stopped,
+}
 
 /// An allocator that runs procs in the local process. It is primarily useful for testing,
 /// or small meshes that can run entirely locally.
@@ -66,19 +72,35 @@ pub struct LocalAlloc {
     world_id: WorldId, // to provide storage
     procs: Vec<LocalProc>,
     queue: VecDeque<ProcState>,
-    running: bool,
+    todo_tx: mpsc::UnboundedSender<Action>,
+    todo_rx: mpsc::UnboundedReceiver<Action>,
+    stopped: bool,
 }
 
 impl LocalAlloc {
     fn new(spec: AllocSpec) -> Self {
         let name = ShortUuid::generate();
+        let (todo_tx, todo_rx) = mpsc::unbounded_channel();
+        for rank in 0..spec.shape.slice().len() {
+            todo_tx.send(Action::Start(rank)).unwrap();
+        }
         Self {
             spec,
             name: name.clone(),
             world_id: WorldId(name.to_string()),
             procs: Vec::new(),
             queue: VecDeque::new(),
-            running: true,
+            todo_tx,
+            todo_rx,
+            stopped: false,
+        }
+    }
+
+    /// A chaos monkey that can be used to stop procs at random.
+    pub(crate) fn chaos_monkey(&self) -> impl Fn(usize, ProcStopReason) {
+        let todo_tx = self.todo_tx.clone();
+        move |rank, reason| {
+            todo_tx.send(Action::Stop(rank, reason)).unwrap();
         }
     }
 
@@ -94,86 +116,95 @@ impl LocalAlloc {
 #[async_trait]
 impl Alloc for LocalAlloc {
     async fn next(&mut self) -> Option<ProcState> {
-        if let state @ Some(_) = self.queue.pop_front() {
-            return state;
+        if self.stopped {
+            return None;
         }
-
-        if self.running {
-            if self.procs.len() == self.size() {
-                future::pending::<()>().await;
-                unreachable!("future::pending completed");
+        let event = loop {
+            if let state @ Some(_) = self.queue.pop_front() {
+                break state;
             }
 
-            // Perform an allocation:
-            let rank = self.procs.len();
+            match self.todo_rx.recv().await? {
+                Action::Start(rank) => {
+                    let proc_id = ProcId(self.world_id.clone(), rank);
+                    let (proc, mesh_agent) = match MeshAgent::bootstrap(proc_id.clone()).await {
+                        Ok(proc_and_agent) => proc_and_agent,
+                        Err(err) => {
+                            tracing::error!("failed spawn mesh agent for {}: {}", rank, err);
+                            // It's unclear if this is actually recoverable in a practical sense,
+                            // so we give up.
+                            break None;
+                        }
+                    };
 
-            let proc_id = ProcId(self.world_id.clone(), rank);
-            let (proc, mesh_agent) = match MeshAgent::bootstrap(proc_id.clone()).await {
-                Ok(proc_and_agent) => proc_and_agent,
-                Err(err) => {
-                    tracing::error!("failed spawn mesh agent for {}: {}", rank, err);
-                    // It's unclear if this is actually recoverable in a practical sense,
-                    // so we give up.
-                    return None;
+                    let (addr, proc_rx) = loop {
+                        match channel::serve(ChannelAddr::any(self.transport())).await {
+                            Ok(addr_and_proc_rx) => break addr_and_proc_rx,
+                            Err(err) => {
+                                tracing::error!(
+                                    "failed to create channel for rank {}: {}",
+                                    rank,
+                                    err
+                                );
+                                #[allow(clippy::disallowed_methods)]
+                                sleep(Duration::from_secs(1)).await;
+                                continue;
+                            }
+                        }
+                    };
+
+                    let handle = proc
+                        .clone()
+                        .serve(proc_rx, mailbox::monitored_return_handle());
+
+                    self.procs.push(LocalProc {
+                        rank,
+                        proc,
+                        addr: addr.clone(),
+                        handle,
+                    });
+
+                    // Adjust for shape slice offset for non-zero shapes (sub-shapes).
+                    let rank = rank + self.spec.shape.slice().offset();
+                    let coords = match self.spec.shape.slice().coordinates(rank) {
+                        Ok(coords) => coords,
+                        Err(err) => {
+                            tracing::error!("failed to get coords for rank {}: {}", rank, err);
+                            return None;
+                        }
+                    };
+                    let created = ProcState::Created {
+                        proc_id: proc_id.clone(),
+                        coords,
+                    };
+                    self.queue.push_back(ProcState::Running {
+                        proc_id,
+                        mesh_agent: mesh_agent.bind(),
+                        addr,
+                    });
+                    break Some(created);
                 }
-            };
-
-            let (addr, proc_rx) = loop {
-                match channel::serve(ChannelAddr::any(self.transport())).await {
-                    Ok(addr_and_proc_rx) => break addr_and_proc_rx,
-                    Err(err) => {
-                        tracing::error!("failed to create channel for rank {}: {}", rank, err);
-                        #[allow(clippy::disallowed_methods)]
-                        sleep(Duration::from_secs(1)).await;
+                Action::Stop(rank, reason) => {
+                    let Some(proc_to_stop) = self.procs.get_mut(rank) else {
                         continue;
+                    };
+                    if let Err(err) = proc_to_stop
+                        .proc
+                        .destroy_and_wait(Duration::from_millis(10), None)
+                        .await
+                    {
+                        tracing::error!("error while stopping proc {}: {}", proc_to_stop.rank, err);
                     }
+                    break Some(ProcState::Stopped {
+                        reason,
+                        proc_id: proc_to_stop.proc.proc_id().clone(),
+                    });
                 }
-            };
-
-            let handle = proc
-                .clone()
-                .serve(proc_rx, mailbox::monitored_return_handle());
-
-            self.procs.push(LocalProc {
-                rank,
-                proc,
-                addr: addr.clone(),
-                handle,
-            });
-
-            // Adjust for shape slice offset for non-zero shapes (sub-shapes).
-            let rank = rank + self.spec.shape.slice().offset();
-            let coords = match self.spec.shape.slice().coordinates(rank) {
-                Ok(coords) => coords,
-                Err(err) => {
-                    tracing::error!("failed to get coords for rank {}: {}", rank, err);
-                    return None;
-                }
-            };
-            let created = ProcState::Created {
-                proc_id: proc_id.clone(),
-                coords,
-            };
-            self.queue.push_back(ProcState::Running {
-                proc_id,
-                mesh_agent: mesh_agent.bind(),
-                addr,
-            });
-            Some(created)
-        } else {
-            let mut proc_to_stop = self.procs.pop()?;
-            if let Err(err) = proc_to_stop
-                .proc
-                .destroy_and_wait(Duration::from_millis(10), None)
-                .await
-            {
-                tracing::error!("error while stopping proc {}: {}", proc_to_stop.rank, err);
+                Action::Stopped => break None,
             }
-            Some(ProcState::Stopped {
-                reason: ProcStopReason::Stopped,
-                proc_id: proc_to_stop.proc.proc_id().clone(),
-            })
-        }
+        };
+        self.stopped = event.is_none();
+        event
     }
 
     fn shape(&self) -> &Shape {
@@ -189,7 +220,12 @@ impl Alloc for LocalAlloc {
     }
 
     async fn stop(&mut self) -> Result<(), AllocatorError> {
-        self.running = false;
+        for rank in 0..self.size() {
+            self.todo_tx
+                .send(Action::Stop(rank, ProcStopReason::Stopped))
+                .unwrap();
+        }
+        self.todo_tx.send(Action::Stopped).unwrap();
         Ok(())
     }
 }

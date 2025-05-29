@@ -6,6 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt;
 use std::sync::Arc;
@@ -38,6 +39,7 @@ use crate::actor_mesh::ActorMesh;
 use crate::alloc::Alloc;
 use crate::alloc::AllocatorError;
 use crate::alloc::ProcState;
+use crate::alloc::ProcStopReason;
 use crate::assign::Ranks;
 use crate::proc_mesh::mesh_agent::MeshAgent;
 use crate::proc_mesh::mesh_agent::MeshAgentMessageClient;
@@ -60,7 +62,10 @@ fn global_router() -> &'static MailboxRouter {
 /// A ProcMesh maintains a mesh of procs whose lifecycles are managed by
 /// an allocator.
 pub struct ProcMesh {
-    alloc: Box<dyn Alloc + Send + Sync>,
+    // The underlying alloc. It is None if it has been transferred to
+    // a proc event observer.
+    alloc: Option<Box<dyn Alloc + Send + Sync>>,
+    shape: Shape,
     ranks: Vec<(ProcId, (ChannelAddr, ActorRef<MeshAgent>))>,
     #[allow(dead_code)] // will be used in subsequent diff
     client_proc: Proc,
@@ -203,8 +208,11 @@ impl ProcMesh {
             }
         }
 
+        let shape = alloc.shape().clone();
+
         Ok(Self {
-            alloc: Box::new(alloc),
+            alloc: Some(Box::new(alloc)),
+            shape,
             ranks: proc_ids
                 .into_iter()
                 .map(Option::unwrap)
@@ -255,7 +263,7 @@ impl ProcMesh {
                 )
                 .await?;
         }
-        let mut completed = Ranks::new(self.alloc.shape().slice().len());
+        let mut completed = Ranks::new(self.ranks.len());
         while !completed.is_full() {
             let (rank, actor_id) = completed_receiver.recv().await?;
             if completed.insert(rank, actor_id).is_some() {
@@ -275,6 +283,58 @@ impl ProcMesh {
     /// A client used to communicate with any member of this mesh.
     pub fn client(&self) -> &Mailbox {
         &self.client
+    }
+
+    /// An event stream of proc events. Each ProcMesh can produce only one such
+    /// stream, returning None after the first call.
+    pub fn events(&mut self) -> Option<ProcEvents> {
+        self.alloc.take().map(|alloc| ProcEvents {
+            alloc,
+            ranks: self
+                .ranks
+                .iter()
+                .enumerate()
+                .map(|(rank, (proc_id, _))| (proc_id.clone(), rank))
+                .collect(),
+        })
+    }
+}
+
+/// Proc lifecycle events.
+#[derive(Debug)]
+pub enum ProcEvent {
+    /// The proc of the given rank was stopped with the provided reason.
+    Stopped(usize, ProcStopReason),
+}
+
+/// An event stream of [`ProcEvent`]
+// TODO: consider using streams for this.
+pub struct ProcEvents {
+    alloc: Box<dyn Alloc + Send + Sync>,
+    ranks: HashMap<ProcId, usize>,
+}
+
+impl ProcEvents {
+    /// Get the next lifecycle event. The stream is closed when this method
+    /// returns `None`.
+    pub async fn next(&mut self) -> Option<ProcEvent> {
+        loop {
+            let Some(alloc_event) = self.alloc.next().await else {
+                break None;
+            };
+
+            let ProcState::Stopped { proc_id, reason } = alloc_event else {
+                // Ignore non-stopped events for now.
+                continue;
+            };
+
+            let Some(rank) = self.ranks.get(&proc_id) else {
+                tracing::warn!("received stop event for unmapped proc {}", proc_id);
+                continue;
+            };
+
+            break Some(ProcEvent::Stopped(*rank, reason));
+        }
     }
 }
 
@@ -314,7 +374,7 @@ impl Mesh for ProcMesh {
     type Sliced<'a> = SlicedProcMesh<'a>;
 
     fn shape(&self) -> &Shape {
-        self.alloc.shape()
+        &self.shape
     }
 
     fn select<R: Into<Range>>(
@@ -377,6 +437,8 @@ impl Mesh for SlicedProcMesh<'_> {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches::assert_matches;
+
     use ndslice::shape;
 
     use super::*;
@@ -398,5 +460,35 @@ mod tests {
         let mesh = ProcMesh::allocate(alloc).await.unwrap();
 
         assert_eq!(mesh.get(0).unwrap().world_name(), &name);
+    }
+
+    #[tokio::test]
+    async fn test_propagate_lifecycle_events() {
+        let alloc = LocalAllocator
+            .allocate(AllocSpec {
+                shape: shape! { replica = 4 },
+                constraints: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        let monkey = alloc.chaos_monkey();
+        let mut mesh = ProcMesh::allocate(alloc).await.unwrap();
+        let mut events = mesh.events().unwrap();
+
+        monkey(1, ProcStopReason::Killed(1, false));
+        assert_matches!(
+            events.next().await.unwrap(),
+            ProcEvent::Stopped(1, ProcStopReason::Killed(1, false))
+        );
+
+        // todo: allow meshes to be stopped
+
+        // assert_matches!(
+        //     events.next().await.unwrap(),
+        //     ProcEvent::Stopped(0, ProcStopReason::Stopped)
+        // );
+
+        // assert!(events.next().await.is_none());
     }
 }
