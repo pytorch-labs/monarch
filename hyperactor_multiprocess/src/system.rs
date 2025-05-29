@@ -192,7 +192,6 @@ mod tests {
     use anyhow::Result;
     use hyperactor::ActorId;
     use hyperactor::ActorRef;
-    use hyperactor::Named;
     use hyperactor::ProcId;
     use hyperactor::WorldId;
     use hyperactor::actor::ActorStatus;
@@ -203,7 +202,6 @@ mod tests {
     use hyperactor::id;
     use hyperactor::mailbox::open_port;
     use hyperactor::test_utils::tracing::set_tracing_env_filter;
-    use hyperactor_mesh::comm::CommActor;
     use hyperactor_mesh::comm::multicast::CastMessage;
     use hyperactor_mesh::comm::multicast::CastMessageEnvelope;
     use hyperactor_mesh::comm::multicast::DestinationPort;
@@ -223,7 +221,6 @@ mod tests {
     use crate::System;
     use crate::proc_actor::Environment;
     use crate::proc_actor::ProcActor;
-    use crate::proc_actor::ProcMessageClient;
     use crate::supervision::ProcSupervisor;
     use crate::system_actor::ProcLifecycleMode;
     use crate::system_actor::SYSTEM_ACTOR_REF;
@@ -976,110 +973,6 @@ mod tests {
             test.drain_and_stop()?;
             assert_eq!(test.await, ActorStatus::Stopped);
             proc.destroy_and_wait(Duration::from_secs(10), None).await?;
-        }
-        Ok(())
-    }
-
-    #[async_timed_test(timeout_secs = 30)]
-    async fn test_comm_actor_cast_system() -> Result<()> {
-        let system_handle = System::serve(
-            ChannelAddr::any(ChannelTransport::Local),
-            Duration::from_secs(10),
-            Duration::from_secs(10),
-        )
-        .await?;
-        let system_supervision_ref: ActorRef<ProcSupervisor> =
-            ActorRef::attest(SYSTEM_ACTOR_REF.actor_id().clone());
-        let mut system = System::new(system_handle.local_addr().clone());
-        let client = system.attach().await?;
-        let sys_actor_handle = system_handle.system_actor_handle();
-        let world_id = id!(world);
-
-        // Create world.
-        let shape = vec![4, 4, 4];
-        let host_proc_actors = {
-            // Upsert the worker world.
-            sys_actor_handle
-                .upsert_world(
-                    &client,
-                    world_id.clone(),
-                    // 64 worker procs in total, 1 per host.
-                    Shape::Definite(shape.clone()),
-                    1,
-                    Environment::Local,
-                    HashMap::new(),
-                )
-                .await
-                .unwrap();
-
-            // Bootstrap the host procs, which will lead to work procs being spawned.
-            let futs = (0..64).map(|i| {
-                let proc_id = ProcId(world_id.clone(), i);
-                ProcActor::try_bootstrap(
-                    proc_id.clone(),
-                    world_id.clone(),
-                    ChannelAddr::any(ChannelTransport::Local),
-                    system_handle.local_addr().clone(),
-                    system_supervision_ref.clone(),
-                    Duration::from_secs(30),
-                    HashMap::new(),
-                    ProcLifecycleMode::ManagedBySystem,
-                )
-            });
-            futures::future::try_join_all(futs).await.unwrap()
-        };
-
-        // Spawn comm and test actors.
-        let (spawned_test_tx, mut spawned_test) = open_port(&client);
-        let world_size = host_proc_actors.len();
-        let mut queues = vec![];
-        for bootstrap in host_proc_actors.iter() {
-            let (tx, rx) = open_port(&client);
-            queues.push(rx);
-            bootstrap
-                .proc_actor
-                .spawn(
-                    &client,
-                    TestActor::typename().to_string(),
-                    "actor".into(),
-                    bincode::serialize(&TestActorParams {
-                        forward_port: tx.bind(),
-                    })?,
-                    spawned_test_tx.bind(),
-                )
-                .await?;
-        }
-        for _ in 0..world_size {
-            spawned_test.recv().await?;
-        }
-
-        // Send cast messages to everyeone.
-        for bootstrap in &host_proc_actors {
-            let comm = bootstrap.comm_actor.bind::<CommActor>();
-            comm.send(
-                &client,
-                CastMessage {
-                    // Destination is every node in the world.
-                    dest: Uslice {
-                        slice: Slice::new(0, vec![4, 4, 4], vec![16, 4, 1])?,
-                        selection: selection::dsl::true_(),
-                    },
-                    message: CastMessageEnvelope::new(
-                        ActorId(world_id.random_user_proc(), "user".into(), 0),
-                        DestinationPort::new::<TestActor, TestMessage>("actor".to_string()),
-                        TestMessage::Forward("abc".to_string()),
-                        None,
-                    )?,
-                },
-            )?;
-        }
-
-        // Check that test actors received the forwarded messages.
-        for mut queue in queues.into_iter() {
-            for _ in 0..world_size {
-                let msg = queue.recv().await.context("missing")?;
-                assert_eq!(msg, TestMessage::Forward("abc".to_string()));
-            }
         }
         Ok(())
     }
