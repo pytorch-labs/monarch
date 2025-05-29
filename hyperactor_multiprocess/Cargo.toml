@@ -27,7 +27,6 @@ tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 
 [dev-dependencies]
 maplit = "1.0"
-ndslice = { version = "0.0.0", path = "../ndslice" }
 rand = { version = "0.8", features = ["small_rng"] }
 regex = "1.11.1"
 serde_json = { version = "1.0.140", features = ["float_roundtrip", "unbounded_depth"] }

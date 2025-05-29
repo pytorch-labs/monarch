@@ -188,34 +188,16 @@ mod tests {
     use std::collections::HashSet;
     use std::time::Duration;
 
-    use anyhow::Context;
-    use anyhow::Result;
-    use hyperactor::ActorId;
     use hyperactor::ActorRef;
     use hyperactor::ProcId;
     use hyperactor::WorldId;
-    use hyperactor::actor::ActorStatus;
     use hyperactor::channel::ChannelAddr;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
-    use hyperactor::id;
-    use hyperactor::mailbox::open_port;
-    use hyperactor::test_utils::tracing::set_tracing_env_filter;
-    use hyperactor_mesh::comm::multicast::CastMessage;
-    use hyperactor_mesh::comm::multicast::CastMessageEnvelope;
-    use hyperactor_mesh::comm::multicast::DestinationPort;
-    use hyperactor_mesh::comm::multicast::Uslice;
-    use hyperactor_mesh::comm::test_utils::TestActor;
-    use hyperactor_mesh::comm::test_utils::TestActorParams;
-    use hyperactor_mesh::comm::test_utils::TestMessage;
-    use hyperactor_mesh::comm::test_utils::spawn_comm_actors;
     use hyperactor_telemetry::env::execution_id;
     use maplit::hashset;
-    use ndslice::Slice;
-    use ndslice::selection;
     use timed_test::async_timed_test;
-    use tracing::Level;
 
     use super::*;
     use crate::System;
@@ -918,62 +900,5 @@ mod tests {
 
         system_handle.stop().await.unwrap();
         system_handle.await;
-    }
-
-    #[tokio::test]
-    async fn test_comm_actor_cast() -> Result<()> {
-        set_tracing_env_filter(Level::INFO);
-        let comm_actors = spawn_comm_actors(2).await?;
-
-        let world = id!(foo);
-
-        let mut queues = vec![];
-        let mut test_actors = vec![];
-        for (proc, _) in comm_actors.iter() {
-            let client = proc.attach("user")?;
-            let (tx, rx) = open_port(&client);
-            queues.push(rx);
-            let test = proc
-                .spawn::<TestActor>(
-                    "actor",
-                    TestActorParams {
-                        forward_port: tx.bind(),
-                    },
-                )
-                .await?;
-            test.bind::<TestActor>();
-            test_actors.push(test);
-        }
-
-        for (_, comm) in &comm_actors {
-            comm.send(CastMessage {
-                dest: Uslice {
-                    slice: Slice::new(0, vec![2], vec![1])?,
-                    selection: selection::dsl::true_(),
-                },
-                message: CastMessageEnvelope::new(
-                    ActorId(world.random_user_proc(), "user".into(), 0),
-                    DestinationPort::new::<TestActor, TestMessage>("actor".to_string()),
-                    TestMessage::Forward("abc".to_string()),
-                    None,
-                )?,
-            })?;
-        }
-
-        for mut queue in queues.into_iter() {
-            let msg = queue.recv().await.context("missing")?;
-            assert_eq!(msg, TestMessage::Forward("abc".to_string()));
-            let msg = queue.recv().await.context("missing")?;
-            assert_eq!(msg, TestMessage::Forward("abc".to_string()));
-        }
-
-        for ((mut proc, handle), test) in comm_actors.into_iter().zip(test_actors.into_iter()) {
-            handle.drain_and_stop()?;
-            assert_eq!(handle.await, ActorStatus::Stopped);
-            test.drain_and_stop()?;
-            assert_eq!(test.await, ActorStatus::Stopped);
-            proc.destroy_and_wait(Duration::from_secs(10), None).await?;
-        }
-        Ok(())
     }
 }

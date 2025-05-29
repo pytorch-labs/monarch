@@ -574,8 +574,6 @@ mod tests {
     } // mod local
 
     mod process {
-        // TODO: Fix T221991302.
-
         use tokio::process::Command;
 
         use crate::alloc::process::ProcessAllocator;
