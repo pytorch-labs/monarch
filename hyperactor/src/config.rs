@@ -230,10 +230,12 @@ mod tests {
     #[test]
     fn test_merge() {
         let mut config1 = Config::default();
-        let mut config2 = Config::default();
+        let config2 = Config {
+            codec_max_frame_length: 1024,
+            message_delivery_timeout: Duration::from_secs(60),
+            ..Config::default()
+        };
 
-        config2.codec_max_frame_length = 1024;
-        config2.message_delivery_timeout = Duration::from_secs(60);
         config1.merge(&config2);
 
         assert_eq!(config1.codec_max_frame_length, 1024);
@@ -245,9 +247,10 @@ mod tests {
         assert_eq!(global::codec_max_frame_length(), 8 * 1024 * 1024);
 
         // Temporarily modify the configuration using the legacy function
-        let mut temp_config = Config::default();
-        temp_config.codec_max_frame_length = 1024;
-
+        let temp_config = Config {
+            codec_max_frame_length: 1024,
+            ..Config::default()
+        };
         {
             let _guard = global::set_temp_config(temp_config.clone());
             assert_eq!(global::codec_max_frame_length(), 1024);
