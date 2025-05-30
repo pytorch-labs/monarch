@@ -14,6 +14,9 @@ import logging
 import os
 import sys
 
+# Import torch to avoid import-time races if a spawned actor tries to import torch.
+import torch  # noqa[F401]
+
 
 async def main():
     from monarch._rust_bindings.monarch_hyperactor.bootstrap import bootstrap_main
