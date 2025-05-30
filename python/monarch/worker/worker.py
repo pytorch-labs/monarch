@@ -60,10 +60,6 @@ except KeyError:
     CONTROLLER_COMPILED_REPEAT = True
 
 
-def set_default_dtype(dtype: torch.dtype):
-    torch.set_default_dtype(dtype)
-
-
 class Dim(NamedTuple):
     name: str
     rank: int
