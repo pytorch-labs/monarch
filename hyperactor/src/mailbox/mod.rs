@@ -627,6 +627,7 @@ pub trait MailboxSender: Send + Sync + Debug + Any {
 /// for sending messages over ports.
 pub trait PortSender: MailboxSender {
     /// Deliver a message to the provided port.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     fn serialize_and_send<M: RemoteMessage>(
         &self,
         port: &PortRef<M>,
@@ -649,6 +650,7 @@ pub trait PortSender: MailboxSender {
 
     /// Deliver a message to a one-shot port, consuming the provided port,
     /// which is not reusable.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     fn serialize_and_send_once<M: RemoteMessage>(
         &self,
         once_port: OncePortRef<M>,
@@ -1401,6 +1403,7 @@ impl<M: Message> PortHandle<M> {
     }
 
     /// Send a message to this port.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     pub fn send(&self, message: M) -> Result<(), MailboxSenderError> {
         self.sender.send(message).map_err(|err| {
             MailboxSenderError::new_unbound::<M>(
@@ -1465,6 +1468,7 @@ impl<M: Message> OncePortHandle<M> {
 
     /// Send a message to this port. The send operation will consume the
     /// port handle, as the port accepts at most one message.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     pub fn send(self, message: M) -> Result<(), MailboxSenderError> {
         let actor_id = self.mailbox.actor_id().clone();
         self.sender.send(message).map_err(|_| {
@@ -1528,6 +1532,7 @@ impl<M> PortReceiver<M> {
     /// Tries to receive the next value for this receiver.
     /// This function returns `Ok(None)` if the receiver is empty
     /// and returns a MailboxError if the receiver is disconnected.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxError`.
     pub fn try_recv(&mut self) -> Result<Option<M>, MailboxError> {
         let mut next = self.receiver.try_recv();
         // To coalesce, drain the mpsc queue and only keep the last one.
@@ -1657,6 +1662,7 @@ trait SerializedSender: Send + Sync {
     ///
     /// Send_serialized returns true whenever the port remains valid
     /// after the send operation.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SerializedSender`.
     fn send_serialized(&self, serialized: Serialized) -> Result<bool, SerializedSenderError>;
 }
 
@@ -1712,6 +1718,7 @@ impl<M: Message> UnboundedSender<M> {
         Self { sender, port_id }
     }
 
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     fn send(&self, message: M) -> Result<(), MailboxSenderError> {
         self.sender.send(message).map_err(|err| {
             MailboxSenderError::new_bound(self.port_id.clone(), MailboxSenderErrorKind::Other(err))
@@ -1776,6 +1783,7 @@ impl<M: Message> OnceSender<M> {
         }
     }
 
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     fn send_once(&self, message: M) -> Result<bool, MailboxSenderError> {
         // TODO: we should replace the sender on error
         match self.sender.lock().unwrap().take() {
@@ -2157,6 +2165,7 @@ impl DialMailboxRouter {
             })
     }
 
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     fn dial(
         &self,
         addr: &ChannelAddr,
