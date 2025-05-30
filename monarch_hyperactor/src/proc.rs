@@ -188,10 +188,8 @@ impl PyProc {
         };
         let chan = channel::dial_from_address(bootstrap_addr.clone(), listen_addr.clone())?;
         let system_sender = BoxedMailboxSender::new(MailboxClient::new(chan));
-        let proc_forwarder = BoxedMailboxSender::new(DialMailboxRouter::new_with_default(
-            listen_addr.clone(),
-            system_sender,
-        ));
+        let proc_forwarder =
+            BoxedMailboxSender::new(DialMailboxRouter::new_with_default(system_sender));
         let proc = Proc::new_with_clock(
             proc_id.clone(),
             proc_forwarder,

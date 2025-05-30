@@ -155,10 +155,7 @@ impl ProcMesh {
         let (router_channel_addr, router_rx) = channel::serve(ChannelAddr::any(alloc.transport()))
             .await
             .map_err(|err| AllocatorError::Other(err.into()))?;
-        let router = DialMailboxRouter::new_with_default(
-            router_channel_addr.clone(),
-            global_router().boxed(),
-        );
+        let router = DialMailboxRouter::new_with_default(global_router().boxed());
         for (rank, (addr, _agent)) in running.iter().enumerate() {
             let proc_id = proc_ids.get(rank).unwrap().clone();
             router.bind(Reference::Proc(proc_id.clone()), addr.clone());

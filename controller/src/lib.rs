@@ -1094,10 +1094,8 @@ mod tests {
 
         // Construct a proc forwarder in terms of the system sender.
         let listen_addr = ChannelAddr::any(ChannelTransport::Local);
-        let proc_forwarder = BoxedMailboxSender::new(DialMailboxRouter::new_with_default(
-            listen_addr.clone(),
-            system_sender,
-        ));
+        let proc_forwarder =
+            BoxedMailboxSender::new(DialMailboxRouter::new_with_default(system_sender));
 
         // Bootstrap proc 'local[0]', join the system.
         let world_id = id!(local);
@@ -1319,10 +1317,8 @@ mod tests {
 
         // Construct a proc forwarder in terms of the system sender.
         let listen_addr = ChannelAddr::any(ChannelTransport::Local);
-        let proc_forwarder = BoxedMailboxSender::new(DialMailboxRouter::new_with_default(
-            listen_addr.clone(),
-            system_sender,
-        ));
+        let proc_forwarder =
+            BoxedMailboxSender::new(DialMailboxRouter::new_with_default(system_sender));
 
         // Bootstrap proc 'local[0]', join the system.
         let world_id = id!(local);
