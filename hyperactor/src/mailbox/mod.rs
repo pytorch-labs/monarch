@@ -1285,12 +1285,15 @@ impl SplitPortBuffer {
     /// be flushed.
     fn push(&mut self, serialized: Serialized) -> Option<Vec<Serialized>> {
         static HYPERACTOR_SPLIT_MAX_BUFFER_SIZE: OnceLock<usize> = OnceLock::new();
-        let limit = HYPERACTOR_SPLIT_MAX_BUFFER_SIZE.get_or_init(|| {
-            std::env::var("HYPERACTOR_SPLIT_MAX_BUFFER_SIZE")
-                .ok()
-                .and_then(|val| val.parse::<usize>().ok())
-                .unwrap_or(5)
-        });
+        #[allow(clippy::undocumented_unsafe_blocks)]
+        let limit = HYPERACTOR_SPLIT_MAX_BUFFER_SIZE.get_or_init(||
+            // TODO: Audit that the environment access only happens in single-threaded code.
+            unsafe {
+                std::env::var("HYPERACTOR_SPLIT_MAX_BUFFER_SIZE")
+                    .ok()
+                    .and_then(|val| val.parse::<usize>().ok())
+                    .unwrap_or(5)
+            });
 
         self.0.push(serialized);
         if &self.0.len() >= limit {
