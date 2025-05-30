@@ -493,9 +493,13 @@ class _Actor:
         except Exception as e:
             traceback.print_exc()
             s = ServiceCallFailedException(e)
+
+            # The exception is delivered to exactly one of:
+            # (1) our caller, (2) our supervisor
             if port is not None:
                 port.send("exception", s)
-            raise s from None
+            else:
+                raise s from None
 
     async def run_async(self, ctx, coroutine):
         _context.set(ctx)
