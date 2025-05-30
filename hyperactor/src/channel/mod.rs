@@ -773,12 +773,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_send() {
-        // Safety: Can be unsound if there are multiple threads
-        // reading and writing the environment.
-        unsafe {
-            std::env::set_var("MONARCH_MESSAGE_DELIVERY_TIMEOUT_SECS", "1");
-            std::env::set_var("MONARCH_MESSAGE_ACK_EVERY_N_MESSAGES", "1");
-        };
+        // Use temporary config for this test
+        let _guard = crate::config::global::set_temp_config(crate::config::Config {
+            message_delivery_timeout: Duration::from_secs(1),
+            message_ack_every_n_messages: 1,
+            ..Default::default()
+        });
         for addr in addrs() {
             let (listen_addr, mut rx) = crate::channel::serve::<i32>(addr).await.unwrap();
             let tx = crate::channel::dial(listen_addr).unwrap();

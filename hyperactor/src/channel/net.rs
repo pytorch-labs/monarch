@@ -67,6 +67,8 @@ use crate::Message;
 use crate::RemoteMessage;
 use crate::clock::Clock;
 use crate::clock::RealClock;
+use crate::config;
+use crate::config::global::message_delivery_timeout;
 
 /// Use to prevent [futures::Stream] objects using the wrong next() method by
 /// accident. Bascially, we want to use [tokio_stream::StreamExt::next] since it
@@ -166,18 +168,8 @@ fn deserialize_ack(data: BytesMut) -> Result<u64, usize> {
 }
 
 fn build_codec() -> LengthDelimitedCodec {
-    static CODEC_MAX_FRAME_LENGTH: OnceLock<usize> = OnceLock::new();
-    fn codec_max_frame_length() -> &'static usize {
-        CODEC_MAX_FRAME_LENGTH.get_or_init(|| {
-            std::env::var("CODEC_MAX_FRAME_LENGTH")
-                .ok()
-                .and_then(|val| val.parse::<usize>().ok())
-                .unwrap_or(8 * 1024 * 1024)
-        })
-    }
-
     LengthDelimitedCodec::builder()
-        .max_frame_length(*codec_max_frame_length())
+        .max_frame_length(config::global::codec_max_frame_length())
         .new_codec()
 }
 
@@ -219,16 +211,6 @@ impl<M: RemoteMessage> NetTx<M> {
 
         // If we can't deliver a message within this limit consider
         // `link` broken and return.
-        static MESSAGE_DELIVERY_TIMEOUT: OnceLock<Duration> = OnceLock::new();
-        fn message_delivery_timeout() -> &'static Duration {
-            MESSAGE_DELIVERY_TIMEOUT.get_or_init(|| {
-                let timeout = std::env::var("MONARCH_MESSAGE_DELIVERY_TIMEOUT_SECS")
-                    .ok()
-                    .and_then(|val| val.parse::<u64>().ok())
-                    .unwrap_or(30);
-                Duration::from_secs(timeout)
-            })
-        }
 
         #[derive(Debug)]
         struct Outbox<M: RemoteMessage> {
@@ -250,7 +232,7 @@ impl<M: RemoteMessage> NetTx<M> {
             fn is_expired(&self) -> bool {
                 match self.deque.front() {
                     None => false,
-                    Some((_, _, since, _)) => since.elapsed() > *message_delivery_timeout(),
+                    Some((_, _, since, _)) => since.elapsed() > message_delivery_timeout(),
                 }
             }
 
@@ -361,7 +343,7 @@ impl<M: RemoteMessage> NetTx<M> {
             fn is_expired(&self) -> bool {
                 matches!(
                     self.0.front(),
-                    Some((_, _, received_at, _)) if received_at.elapsed() > *message_delivery_timeout()
+                    Some((_, _, received_at, _)) if received_at.elapsed() > message_delivery_timeout()
                 )
             }
 
@@ -372,7 +354,7 @@ impl<M: RemoteMessage> NetTx<M> {
                 match self.0.front() {
                     Some((_, _, received_at, _)) => {
                         RealClock
-                            .sleep_until(received_at.clone() + *message_delivery_timeout())
+                            .sleep_until(received_at.clone() + message_delivery_timeout())
                             .await
                     }
                     None => std::future::pending::<()>().await,
@@ -911,16 +893,8 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
         use anyhow::Context;
         let mut last_ack_time = RealClock.now();
 
-        let ack_time_interval = Duration::from_millis(
-            std::env::var("MONARCH_MESSAGE_ACK_TIME_INTERVAL_MS")
-                .ok()
-                .and_then(|val| val.parse::<u64>().ok())
-                .unwrap_or(500),
-        );
-        let ack_msg_interval = std::env::var("MONARCH_MESSAGE_ACK_EVERY_N_MESSAGES")
-            .ok()
-            .and_then(|val| val.parse::<u64>().ok())
-            .unwrap_or(1000);
+        let ack_time_interval = config::global::message_ack_time_interval();
+        let ack_msg_interval = config::global::message_ack_every_n_messages();
 
         loop {
             tokio::select! {
@@ -1809,6 +1783,7 @@ mod tests {
     use tracing::Level;
 
     use super::*;
+    use crate::Config;
     use crate::test_utils::tracing::set_tracing_env_filter;
 
     fn unused_return_channel<M>() -> oneshot::Sender<M> {
@@ -1917,15 +1892,12 @@ mod tests {
     #[async_timed_test(timeout_secs = 5)]
     async fn test_tcp_message_size() {
         let default_size_in_bytes = 100 * 1024 * 1024;
-        // Safety: Can be unsound if there are multiple threads
-        // reading and writing the environment.
-        unsafe {
-            std::env::set_var("MONARCH_MESSAGE_DELIVERY_TIMEOUT_SECS", "1");
-            std::env::set_var(
-                "CODEC_MAX_FRAME_LENGTH",
-                format!("{}", default_size_in_bytes),
-            );
-        };
+        // Use temporary config for this test
+        let _guard = config::global::set_temp_config(crate::Config {
+            message_delivery_timeout: Duration::from_secs(1),
+            codec_max_frame_length: default_size_in_bytes,
+            ..Default::default()
+        });
 
         set_tracing_env_filter(Level::DEBUG);
         let (addr, mut rx) = tcp::serve::<String>("[::1]:0".parse().unwrap())
@@ -1954,11 +1926,11 @@ mod tests {
     #[tracing_test::traced_test]
     #[async_timed_test(timeout_secs = 30)]
     async fn test_tcp_reconnect() {
-        // Safety: Can be unsound if there are multiple threads
-        // reading and writing the environment.
-        unsafe {
-            std::env::set_var("MONARCH_MESSAGE_ACK_EVERY_N_MESSAGES", "1");
-        }
+        // Use temporary config for this test
+        let _guard = config::global::set_temp_config(Config {
+            message_ack_every_n_messages: 1,
+            ..Default::default()
+        });
         let socket_addr: SocketAddr = "[::1]:0".parse().unwrap();
         let (local_addr, mut rx1) = tcp::serve::<u64>(socket_addr).await.unwrap();
         let local_socket = match local_addr {
@@ -2395,11 +2367,11 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_persistent_server_session() {
-        // Safety: Can be unsound if there are multiple threads
-        // reading and writing the environment.
-        unsafe {
-            std::env::set_var("MONARCH_MESSAGE_ACK_EVERY_N_MESSAGES", "1");
-        }
+        // Use temporary config for this test
+        let _guard = config::global::set_temp_config(Config {
+            message_ack_every_n_messages: 1,
+            ..Default::default()
+        });
         async fn verify_ack(
             framed: &mut Framed<DuplexStream, LengthDelimitedCodec>,
             expected_last: u64,
@@ -2492,11 +2464,11 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 60)]
     async fn test_ack_from_server_sesssion() {
-        // Safety: Can be unsound if there are multiple threads
-        // reading and writing the environment.
-        unsafe {
-            std::env::set_var("MONARCH_MESSAGE_ACK_EVERY_N_MESSAGES", "1");
-        }
+        // Use temporary config for this test
+        let _guard = config::global::set_temp_config(Config {
+            message_ack_every_n_messages: 1,
+            ..Default::default()
+        });
         hyperactor::test_utils::tracing::set_tracing_env_filter(tracing::Level::DEBUG);
         let manager = SessionManager::new();
         let session_id = 123;
@@ -2558,10 +2530,10 @@ mod tests {
         let link = MockLink::<u64>::fail_connects();
         let tx = NetTx::<u64>::new(link);
         // Override the default (1m) for the purposes of this test.
-        //
-        // Safety: Can be unsound if there are multiple threads
-        // reading and writing the environment.
-        unsafe { std::env::set_var("MONARCH_MESSAGE_DELIVERY_TIMEOUT_SECS", "1") };
+        let _guard = config::global::set_temp_config(Config {
+            message_delivery_timeout: Duration::from_secs(1),
+            ..Default::default()
+        });
         let mut tx_receiver = tx.status().clone();
         let (return_channel, _return_receiver) = oneshot::channel();
         tx.try_post(123, return_channel).unwrap();
@@ -2812,9 +2784,11 @@ mod tests {
     }
 
     async fn verify_ack_exceeded_limit(disconnect_before_ack: bool) {
-        // Safety: Can be unsound if there are multiple threads
-        // reading and writing the environment.
-        unsafe { std::env::set_var("MONARCH_MESSAGE_DELIVERY_TIMEOUT_SECS", "2") };
+        // Use temporary config for this test
+        let _guard = config::global::set_temp_config(Config {
+            message_delivery_timeout: Duration::from_secs(2),
+            ..Default::default()
+        });
 
         let link: MockLink<u64> = MockLink::<u64>::new();
         let disconnect_signal = link.disconnect_signal().clone();
@@ -2936,23 +2910,23 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_ack_every_n_messages() {
-        // Safety: Can be unsound if there are multiple threads
-        // reading and writing the environment.
-        unsafe {
-            std::env::set_var("MONARCH_MESSAGE_ACK_EVERY_N_MESSAGES", "600");
-            std::env::set_var("MONARCH_MESSAGE_ACK_TIME_INTERVAL_MS", "1000000");
-        }
+        // Use temporary config for this test
+        let _guard = config::global::set_temp_config(Config {
+            message_ack_every_n_messages: 600,
+            message_ack_time_interval: Duration::from_millis(1000000),
+            ..Default::default()
+        });
         sparse_ack().await;
     }
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_ack_every_time_interval() {
-        // Safety: Can be unsound if there are multiple threads
-        // reading and writing the environment.
-        unsafe {
-            std::env::set_var("MONARCH_MESSAGE_ACK_EVERY_N_MESSAGES", "100000000");
-            std::env::set_var("MONARCH_MESSAGE_ACK_TIME_INTERVAL_MS", "500");
-        }
+        // Use temporary config for this test
+        let _guard = config::global::set_temp_config(Config {
+            message_ack_every_n_messages: 100000000,
+            message_ack_time_interval: Duration::from_millis(500),
+            ..Default::default()
+        });
         sparse_ack().await;
     }
 
@@ -3018,9 +2992,11 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 300)]
     async fn test_tcp_throughput() {
-        // Safety: Can be unsound if there are multiple threads
-        // reading and writing the environment.
-        unsafe { std::env::set_var("MONARCH_MESSAGE_DELIVERY_TIMEOUT_SECS", "300") };
+        // Use temporary config for this test
+        let _guard = config::global::set_temp_config(Config {
+            message_delivery_timeout: Duration::from_secs(300),
+            ..Default::default()
+        });
         set_tracing_env_filter(Level::DEBUG);
         let socket_addr: SocketAddr = "[::1]:0".parse().unwrap();
         let (local_addr, mut rx) = tcp::serve::<String>(socket_addr).await.unwrap();

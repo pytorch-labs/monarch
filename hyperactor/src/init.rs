@@ -37,7 +37,6 @@ pub fn initialize() {
 #[cfg(target_os = "linux")]
 mod linux {
     use std::backtrace::Backtrace;
-    use std::env;
     use std::process;
 
     use libc::PR_SET_PDEATHSIG;
@@ -69,7 +68,11 @@ mod linux {
             .expect("unable to register signal handler");
         }
 
-        if env::var("HYPERACTOR_MANAGED_SUBPROCESS").is_err() {
+        if !crate::config::global::get()
+            .read()
+            .unwrap()
+            .is_managed_subprocess
+        {
             return;
         }
         super::RUNTIME.spawn(async {

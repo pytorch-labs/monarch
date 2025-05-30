@@ -306,6 +306,7 @@ impl ProcessAlloc {
         // Opt-in to signal handling (`PR_SET_PDEATHSIG`) so that the
         // spawned subprocess will automatically exit when the parent
         // process dies.
+        // TODO: Use hyperactor::config::global::MANAGED_SUBPROCESS_ENV once it's defined
         cmd.env("HYPERACTOR_MANAGED_SUBPROCESS", "1");
 
         let proc_id = ProcId(WorldId(self.name.to_string()), index);

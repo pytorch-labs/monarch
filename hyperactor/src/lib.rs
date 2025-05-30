@@ -73,6 +73,7 @@ pub mod cap;
 pub mod channel;
 pub mod checkpoint;
 pub mod clock;
+pub mod config;
 pub mod data;
 mod init;
 pub mod mailbox;
@@ -100,6 +101,7 @@ pub use async_trait;
 // Re-exported to use in Named derive macro.
 #[doc(hidden)]
 pub use cityhasher;
+pub use config::Config;
 #[doc(hidden)]
 pub use dashmap; // For intern_typename!
 pub use data::Named;

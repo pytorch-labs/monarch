@@ -2595,9 +2595,11 @@ mod tests {
         use crate::proc_actor::ProcActor;
         use crate::supervision::ProcSupervisor;
 
-        // SAFETY: TODO: Audit that the environment access only
-        // happens in single-threaded code.
-        unsafe { std::env::set_var("MONARCH_MESSAGE_DELIVERY_TIMEOUT_SECS", "1") };
+        // Use temporary config for this test
+        let _guard = hyperactor::config::global::set_temp_config(hyperactor::config::Config {
+            message_delivery_timeout: Duration::from_secs(1),
+            ..Default::default()
+        });
 
         // Serve a system. Undeliverable messages encountered by the
         // mailbox server are returned to the system actor.

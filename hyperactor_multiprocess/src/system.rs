@@ -122,12 +122,7 @@ impl System {
             )
             .await
             .unwrap();
-        let timeout = tokio::time::Duration::from_secs(
-            std::env::var("MONARCH_MESSAGE_DELIVERY_TIMEOUT_SECS")
-                .ok()
-                .and_then(|val| val.parse::<u64>().ok())
-                .unwrap_or(10),
-        );
+        let timeout = hyperactor::config::global::message_delivery_timeout();
         loop {
             let result = tokio::time::timeout(timeout, proc_rx.recv()).await?;
             match result? {

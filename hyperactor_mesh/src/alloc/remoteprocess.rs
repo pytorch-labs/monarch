@@ -1364,9 +1364,11 @@ mod test {
 
     #[timed_test::async_timed_test(timeout_secs = 15)]
     async fn test_upstream_closed() {
-        // SAFETY: This test is single-threaded.
-        // TODO: Audit that the environment access only happens in single-threaded code.
-        unsafe { std::env::set_var("MONARCH_MESSAGE_DELIVERY_TIMEOUT_SECS", "1") };
+        // Use temporary config for this test
+        let _guard = hyperactor::config::global::set_temp_config(hyperactor::config::Config {
+            message_delivery_timeout: Duration::from_secs(1),
+            ..Default::default()
+        });
 
         hyperactor_telemetry::initialize_logging();
         let serve_addr = ChannelAddr::any(ChannelTransport::Unix);
@@ -1458,8 +1460,11 @@ mod test_alloc {
 
     #[async_timed_test(timeout_secs = 15)]
     async fn test_alloc_simple() {
-        // TODO: Audit that the environment access only happens in single-threaded code.
-        unsafe { std::env::set_var("MONARCH_MESSAGE_DELIVERY_TIMEOUT_SECS", "1") };
+        // Use temporary config for this test
+        let _guard = hyperactor::config::global::set_temp_config(hyperactor::config::Config {
+            message_delivery_timeout: Duration::from_secs(1),
+            ..Default::default()
+        });
         hyperactor_telemetry::initialize_logging();
 
         let spec = AllocSpec {
@@ -1575,8 +1580,11 @@ mod test_alloc {
 
     #[async_timed_test(timeout_secs = 15)]
     async fn test_alloc_host_failure() {
-        // TODO: Audit that the environment access only happens in single-threaded code.
-        unsafe { std::env::set_var("MONARCH_MESSAGE_DELIVERY_TIMEOUT_SECS", "1") };
+        // Use temporary config for this test
+        let _guard = hyperactor::config::global::set_temp_config(hyperactor::config::Config {
+            message_delivery_timeout: Duration::from_secs(1),
+            ..Default::default()
+        });
         hyperactor_telemetry::initialize_logging();
 
         let spec = AllocSpec {
