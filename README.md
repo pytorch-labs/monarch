@@ -31,26 +31,22 @@ rustup toolchain install nightly
 rustup default nightly
 
 # Install non-python dependencies
-conda install python=3.10
 conda install libunwind
 
-# needs cuda-toolkit-12-0 as that is the version that matches the /usr/local/cuda/ on devservers
+# Install the correct cuda and cuda-toolkit versions for your machine
 sudo dnf install cuda-toolkit-12-0 cuda-12-0 libnccl-devel clang-devel
-# install build dependencies
-pip install setuptools-rust
-# install torch, can use conda or build it yourself or whatever
-pip install torch
-# install core deps, see pyproject.toml for latest
-pip install pyzmq requests numpy pyre-extensions cloudpickle
+
+# Install build dependencies
+pip install -r build-requirements.txt
 # Install test dependencies
-pip install pytest pytest-timeout pytest-asyncio
+pip install -r python/tests/requirements.txt
 
-# install the package
-python setup.py install
+# Build and install Monarch
+pip install --no-build-isolation .
 # or setup for development
-python setup.py develop
+pip install --no-build-isolation -e .
 
-# run unit tests. consider -s for more verbose output
+# Run unit tests. consider -s for more verbose output
 pytest python/tests/ -v -m "not oss_skip"
 ```
 
