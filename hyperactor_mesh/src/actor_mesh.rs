@@ -101,6 +101,7 @@ impl<'a, A: RemoteActor> ActorMesh<'a, A> {
 
     /// Cast an [`M`]-typed message to the ranks selected by `sel`
     /// in this ActorMesh.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `CastError`.
     pub fn cast<M: RemoteMessage + Clone>(
         &self,
         selection: Selection,

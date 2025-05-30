@@ -10,7 +10,6 @@
 
 use std::collections::HashMap;
 use std::mem::replace;
-use std::ops::Add;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::RwLock;

@@ -12,7 +12,6 @@
 
 use std::cmp::min;
 use std::collections::HashMap;
-use std::mem::replace;
 use std::rc::Rc;
 
 use bitmaps::Bitmap;
@@ -88,7 +87,7 @@ where
     /// that previously occupied the rank, if any.
     pub(crate) fn insert(&mut self, rank: usize, value: T) -> Option<T> {
         let value = Rc::new(value);
-        let prev = replace(&mut self.forward[rank], Some(Rc::clone(&value))).map(|prev| {
+        let prev = self.forward[rank].replace(Rc::clone(&value)).map(|prev| {
             // There was a previous value at this rank.
             // Clean up the reverse, and take unwrap the
             // value.
@@ -99,7 +98,7 @@ where
         if let Some(prev_rank) = self.reverse.insert(value, rank) {
             // The value was assigned to another rank, which must
             // now be unassigned.
-            self.forward[prev_rank].take().unwrap(); // must exist in forward            
+            self.forward[prev_rank].take().unwrap(); // must exist in forward
             self.set(prev_rank, false);
         }
         self.set(rank, true);
