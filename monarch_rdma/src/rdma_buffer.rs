@@ -115,6 +115,10 @@ impl RdmaBuffer {
             client
         );
         let (lkey, rkey) = owner_ref.get_keys(client).await.unwrap();
+        owner_ref
+            .register_local_memory(client, memory_region.clone())
+            .await
+            .unwrap();
         tracing::debug!(
             "[buffer_{}] on rdma_buffer creation, lkey {}, rkey {}",
             id,
@@ -147,7 +151,7 @@ impl RdmaBuffer {
     /// `Ok(())` if the connection is established or already exists,
     /// or an error if the connection fails
     async fn maybe_connect(
-        &mut self,
+        &self,
         caller_ref: &ActorRef<RdmaManagerActor>,
         client: &Mailbox,
     ) -> Result<(), anyhow::Error> {
@@ -193,6 +197,21 @@ impl RdmaBuffer {
                     caller_ref.actor_id(),
                 ));
             }
+        }
+
+        // If the caller is itself, then only call connect once.
+        if *caller_ref.actor_id() == self.owner_id {
+            tracing::info!(
+                "[buffer_{}] the caller is the same as the owner, only calling connect once.",
+                self.id
+            );
+            let endpoint = caller_ref
+                .connection_info(client, self.owner_ref.clone())
+                .await?;
+            caller_ref
+                .connect(client, self.owner_ref.clone(), endpoint)
+                .await?;
+            return Ok(());
         }
 
         // Start the connection process
@@ -295,7 +314,7 @@ impl RdmaBuffer {
     /// `Ok(Some(work_id))` if the operation is initiated successfully (and completed if `timeout_in_s` is set),
     /// or an error if the operation fails
     pub async fn read_into(
-        &mut self,
+        &self,
         caller_mr: RdmaMemoryRegionView,
         client: &Mailbox,
         caller_ref: &ActorRef<RdmaManagerActor>,
@@ -343,7 +362,7 @@ impl RdmaBuffer {
     /// `Ok(Some(work_id))` if the operation is initiated successfully (and completed if `timeout_in_s` is set),
     /// or an error if the operation fails
     pub async fn write_from(
-        &mut self,
+        &self,
         caller_mr: RdmaMemoryRegionView,
         client: &Mailbox,
         caller_ref: &ActorRef<RdmaManagerActor>,
@@ -385,7 +404,7 @@ impl RdmaBuffer {
     /// # Returns
     /// `Ok(())` if the resources are successfully released, or an error if the operation fails
     pub async fn release(
-        &mut self,
+        &self,
         client: &Mailbox,
         caller_mr: RdmaMemoryRegionView,
         caller_ref: &ActorRef<RdmaManagerActor>,
@@ -393,6 +412,17 @@ impl RdmaBuffer {
         tracing::debug!("[buffer_{}] releasing buffer {:?}", self.id, caller_mr);
         self.owner_ref
             .release(client, caller_ref.clone(), caller_mr)
+            .await?;
+        Ok(())
+    }
+
+    /// Drops the buffer, notifying the owner to release its registered memory regions.
+    ///
+    /// Note that this does NOT drop underlying queue pairs.
+    pub async fn drop_buffer(&self, client: &Mailbox) -> Result<(), anyhow::Error> {
+        tracing::debug!("[buffer_{}] dropping buffer", self.id);
+        self.owner_ref
+            .drop_memory_region(client, self.memory_region.clone())
             .await?;
         Ok(())
     }
@@ -599,6 +629,96 @@ mod tests {
             .unwrap();
 
         assert!(check_buffers_equal(&buffer1_data, &buffer2_data));
+        Ok(())
+    }
+
+    // TODO - this currently fails, as handling Actor level errors hasn't been implemented
+    // #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_buffer_drop() -> Result<(), anyhow::Error> {
+        const BUFFER_SIZE: usize = 64;
+        let devices = get_all_devices();
+
+        let config1: IbverbsConfig;
+        let config2: IbverbsConfig;
+
+        if devices.len() == 12 {
+            // On H100 machines with 12 devices, use specific devices
+            config1 = IbverbsConfig {
+                device: devices.clone().into_iter().next().unwrap(),
+                ..Default::default()
+            };
+            // The second device used is the 3rd. Main reason is because 0 and 3 are both backend
+            // devices on gtn H100 devices.
+            config2 = IbverbsConfig {
+                device: devices.clone().into_iter().nth(3).unwrap(),
+                ..Default::default()
+            };
+        } else {
+            // For other configurations, use default settings (read/writes will occur on the same ibverbs device)
+            println!(
+                "using default IbverbsConfig as {} devices were found (expected 12 for H100)",
+                devices.len()
+            );
+            config1 = IbverbsConfig::default();
+            config2 = IbverbsConfig::default();
+        }
+
+        let buffer1_data = create_test_data(BUFFER_SIZE);
+        let alloc1 = LocalAllocator
+            .allocate(AllocSpec {
+                shape: shape! {replica=1, host=1, gpu=1},
+                constraints: Default::default(),
+            })
+            .await?;
+        let proc_mesh_1 = ProcMesh::allocate(alloc1).await?;
+        let actor_mesh_1: ActorMesh<'_, RdmaManagerActor> =
+            proc_mesh_1.spawn("rdma_manager_1", &config1).await.unwrap();
+        let buffer2_data = vec![0u8; BUFFER_SIZE].into_boxed_slice();
+        let alloc2 = LocalAllocator
+            .allocate(AllocSpec {
+                shape: shape! {replica=1, host=1, gpu=1},
+                constraints: Default::default(),
+            })
+            .await?;
+        let proc_mesh_2 = ProcMesh::allocate(alloc2).await?;
+        let actor_mesh_2: ActorMesh<'_, RdmaManagerActor> =
+            proc_mesh_2.spawn("rdma_manager_2", &config2).await.unwrap();
+
+        let actor_ref = actor_mesh_1.get(0).unwrap();
+
+        let mut rdma_buffer = RdmaBuffer::new(
+            "buffer".to_string(),
+            actor_ref.clone(),
+            proc_mesh_1.client(),
+            RdmaMemoryRegionView::from_boxed_slice(&buffer1_data),
+        )
+        .await?;
+
+        let caller_ref = actor_mesh_2.get(0).unwrap();
+        let client = proc_mesh_2.client();
+        let caller_mr = RdmaMemoryRegionView::from_boxed_slice(&buffer2_data);
+
+        rdma_buffer
+            .read_into(caller_mr.clone(), client, &caller_ref, Some(3))
+            .await
+            .unwrap();
+
+        assert!(check_buffers_equal(&buffer1_data, &buffer2_data));
+        tracing::info!("buffers are equal. dropping");
+
+        // Drop the buffer
+        rdma_buffer.drop_buffer(client).await?;
+
+        // Try to use the buffer after dropping - should fail
+        let result = rdma_buffer
+            .read_into(caller_mr, client, &caller_ref, Some(3))
+            .await;
+
+        assert!(
+            result.is_err(),
+            "Operation should fail after buffer is dropped"
+        );
+
         Ok(())
     }
 }
