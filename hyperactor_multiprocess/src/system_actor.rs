@@ -561,6 +561,7 @@ impl World {
         world_id.name().starts_with(SHADOW_PREFIX)
     }
 
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `CastError`.
     fn get_port_ref_from_host(
         &self,
         host_id: &HostId,
@@ -574,6 +575,7 @@ impl World {
     }
 
     /// Adds procs to the world.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SystemActorError`.
     fn add_proc(
         &mut self,
         proc_id: ProcId,
@@ -639,6 +641,7 @@ impl World {
         Ok(())
     }
 
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SystemActorError`.
     fn get_hosts_to_procs(&mut self) -> Result<HashMap<HostId, Vec<ProcId>>, SystemActorError> {
         // A map from host ID to scheduled proc IDs on this host.
         let mut host_proc_map: HashMap<HostId, Vec<ProcId>> = HashMap::new();
