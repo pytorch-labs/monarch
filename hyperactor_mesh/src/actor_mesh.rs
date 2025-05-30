@@ -139,6 +139,11 @@ impl<'a, A: RemoteActor> ActorMesh<'a, A> {
 
         Ok(())
     }
+
+    #[cfg(test)]
+    pub(crate) fn proc_mesh(&self) -> &ProcMesh {
+        &self.proc_mesh
+    }
 }
 
 #[async_trait]
