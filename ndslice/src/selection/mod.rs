@@ -1041,14 +1041,14 @@ mod iterutils {
 /// # Example
 ///
 /// ```
-///  use ndslice::shape;
-///  use ndslice::selection::selection_from_one;
-//
+/// use ndslice::shape;
+/// use ndslice::selection::selection_from_one;
+///
 /// let shape = shape!(zone = 2, host = 4, gpu = 8);
 /// let sel = selection_from_one(&shape, "host", 1..3).unwrap();
 /// assert_eq!(format!("{sel:?}"), "All(Range(Range(1, Some(3), 1), True))"); // corresponds to (*, 1..3, *)
 /// ```
-/// --
+///
 /// [`all`]: crate::selection::dsl::all
 /// [`Shape`]: crate::shape::Shape
 /// [`Selection`]: crate::selection::Selection
@@ -1098,14 +1098,17 @@ where
 /// # Example
 ///
 /// ```
-///  use ndslice::shape;
-///  use ndslice::selection::selection_from;
-//
+/// use ndslice::selection::selection_from;
+/// use ndslice::shape;
+///
 /// let shape = shape!(zone = 2, host = 4, gpu = 8);
 /// let sel = selection_from(&shape, &[("host", 1..3), ("gpu", 0..4)]).unwrap();
-/// assert_eq!(format!("{sel:?}"), "All(Range(Range(1, Some(3), 1), Range(Range(0, Some(4), 1), True)))");
+/// assert_eq!(
+///     format!("{sel:?}"),
+///     "All(Range(Range(1, Some(3), 1), Range(Range(0, Some(4), 1), True)))"
+/// );
 /// ```
-/// --
+///
 /// [`Shape`]: crate::shape::Shape
 /// [`Selection`]: crate::selection::Selection
 /// [`all`]: crate::selection::dsl::all
