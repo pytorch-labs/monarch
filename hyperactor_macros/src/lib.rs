@@ -1464,11 +1464,11 @@ where
 /// }
 ///
 /// impl Unbind for MyNamedStruct {
-///     fn unbind(self) -> anyhow::Result<Unbound<Self>> {
+///     fn bindings(&self) -> anyhow::Result<Bindings> {
 ///         let mut bindings = Bindings::default();
 ///         bindings.push(self.field2.port_id())?;
 ///         bindings.push(self.field4.port_id())?;
-///         Ok(Unbound::new(self, bindings))
+///         Ok(bindings)
 ///     }
 /// }
 /// ```
@@ -1537,10 +1537,10 @@ pub fn derive_unbind(input: TokenStream) -> TokenStream {
     };
     let expand = quote! {
         impl hyperactor::message::Unbind for #name {
-            fn unbind(self) -> anyhow::Result<hyperactor::message::Unbound<Self>> {
+            fn bindings(&self) -> anyhow::Result<hyperactor::message::Bindings> {
                 let mut bindings = hyperactor::message::Bindings::default();
                 #inner
-                Ok(hyperactor::message::Unbound::new(self, bindings))
+                Ok(bindings)
             }
         }
     };
