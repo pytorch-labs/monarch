@@ -154,7 +154,13 @@ impl ShowCommand {
                         .collect();
                     let dt: DateTime<Local> = event.time.into();
 
-                    write!(tw, "{}\t{}\n", dt, serde_json::to_string(&map)?)?;
+                    write!(
+                        tw,
+                        "{}\t{:8}\t{}\n",
+                        dt,
+                        event.seq,
+                        serde_json::to_string(&map)?
+                    )?;
                 }
                 write!(tw, "spans:\n")?;
                 for spans in tree.spans.iter() {

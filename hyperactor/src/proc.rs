@@ -143,6 +143,8 @@ pub struct Event {
     pub time: SystemTime,
     /// The payload of the event.
     pub fields: Vec<(String, recorder::Value)>,
+    /// The sequence number of the event.
+    pub seq: usize,
 }
 
 impl From<recorder::Event> for Event {
@@ -150,6 +152,7 @@ impl From<recorder::Event> for Event {
         Event {
             time: event.time,
             fields: event.fields(),
+            seq: event.seq,
         }
     }
 }

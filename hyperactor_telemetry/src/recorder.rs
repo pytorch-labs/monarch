@@ -13,6 +13,8 @@ use std::fmt::Display;
 use std::mem::take;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::time::SystemTime;
 
 use dashmap::DashMap;
@@ -220,13 +222,17 @@ pub struct Event {
 
     /// The number of fields defined.
     num_fields: usize,
+
+    /// A monotonically increasing sequence number.
+    pub seq: usize,
 }
 
 impl Event {
-    fn reset(&mut self, time: SystemTime, metadata: &'static Metadata<'static>) {
+    fn reset(&mut self, time: SystemTime, metadata: &'static Metadata<'static>, seq: usize) {
         self.time = time;
         self.metadata = metadata;
         self.num_fields = 0;
+        self.seq = seq;
     }
 
     fn next_field(&mut self) -> &mut Entry {
@@ -283,6 +289,7 @@ impl Default for Event {
             metadata: &DEFAULT_METADATA,
             fields: Vec::new(),
             num_fields: 0,
+            seq: 0,
         }
     }
 }
@@ -337,6 +344,7 @@ impl Recording {
             key: Key::new(),
             active: Mutex::new(HashMap::new()),
             spool: Spool::new(cap),
+            seq: AtomicUsize::new(0),
         });
         assert!(
             recorder_state
@@ -429,9 +437,10 @@ impl Drop for Recording {
 
 #[derive(Debug)]
 struct RecordingState {
-    key: Key,
-    spool: Spool<Event>,
     active: Mutex<HashMap<Id, (&'static Metadata<'static>, Option<Id>)>>,
+    key: Key,
+    seq: AtomicUsize,
+    spool: Spool<Event>,
 }
 
 /// A recorder captures events from a [`tracing::span`] and records them
@@ -531,7 +540,8 @@ where
         };
         for state in self.iter_recordings(scope) {
             let mut recorded = self.state.pool.get();
-            recorded.reset(SystemTime::now(), event.metadata());
+            let seq = state.seq.fetch_add(1, Ordering::Relaxed);
+            recorded.reset(SystemTime::now(), event.metadata(), seq);
             event.record(&mut recorded);
             state.spool.push(recorded);
         }
@@ -657,6 +667,7 @@ mod tests {
                     "message": format!("event {}", i + 5)
                 })
             );
+            assert_eq!(event.seq, i + 5);
         }
     }
 
