@@ -573,6 +573,7 @@ mod tests {
             .await
             .unwrap();
 
+        let stop = alloc.stopper();
         let monkey = alloc.chaos_monkey();
         let mut mesh = ProcMesh::allocate(alloc).await.unwrap();
         let mut events = mesh.events().unwrap();
@@ -583,14 +584,14 @@ mod tests {
             ProcEvent::Stopped(1, ProcStopReason::Killed(1, false))
         );
 
-        // todo: allow meshes to be stopped
-
-        // assert_matches!(
-        //     events.next().await.unwrap(),
-        //     ProcEvent::Stopped(0, ProcStopReason::Stopped)
-        // );
-
-        // assert!(events.next().await.is_none());
+        stop();
+        for _ in 0..3 {
+            assert_matches!(
+                events.next().await.unwrap(),
+                ProcEvent::Stopped(_, ProcStopReason::Stopped)
+            );
+        }
+        assert!(events.next().await.is_none());
     }
 
     #[tokio::test]
