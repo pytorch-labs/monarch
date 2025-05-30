@@ -186,7 +186,7 @@ impl PyProc {
         } else {
             ChannelAddr::any(bootstrap_addr.transport())
         };
-        let chan = channel::dial_from_address(bootstrap_addr.clone(), listen_addr.clone())?;
+        let chan = channel::dial(bootstrap_addr.clone())?;
         let system_sender = BoxedMailboxSender::new(MailboxClient::new(chan));
         let proc_forwarder =
             BoxedMailboxSender::new(DialMailboxRouter::new_with_default(system_sender));
