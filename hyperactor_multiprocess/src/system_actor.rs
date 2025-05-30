@@ -1255,7 +1255,7 @@ impl SystemMessageHandler for SystemActor {
                     proc_id: proc_id.clone(),
                     proc_addr: channel_addr.clone(),
                     proc_health: ProcStatus::Alive,
-                    failed_actors: HashMap::new(),
+                    failed_actors: Vec::new(),
                 },
                 lifecycle_mode.clone(),
                 this.clock(),
@@ -1931,7 +1931,7 @@ mod tests {
                 proc_addr: ChannelAddr::any(ChannelTransport::Local),
                 proc_id: proc_id_0.clone(),
                 proc_health: ProcStatus::Alive,
-                failed_actors: HashMap::new(),
+                failed_actors: Vec::new(),
             },
             ProcLifecycleMode::ManagedBySystem,
             &clock,
@@ -1944,7 +1944,7 @@ mod tests {
                 proc_addr: ChannelAddr::any(ChannelTransport::Local),
                 proc_id: proc_id_1.clone(),
                 proc_health: ProcStatus::Alive,
-                failed_actors: HashMap::new(),
+                failed_actors: Vec::new(),
             },
             ProcLifecycleMode::ManagedBySystem,
             &clock,
@@ -1968,7 +1968,7 @@ mod tests {
                 proc_addr: ChannelAddr::any(ChannelTransport::Local),
                 proc_id: proc_id_1.clone(),
                 proc_health: ProcStatus::Alive,
-                failed_actors: HashMap::new(),
+                failed_actors: Vec::new(),
             },
             &clock,
         );
@@ -2117,7 +2117,7 @@ mod tests {
                         proc_addr: local_proc_addr.clone(),
                         proc_id: local_proc_id.clone(),
                         proc_health: ProcStatus::Expired,
-                        failed_actors: HashMap::new(),
+                        failed_actors: Vec::new(),
                     }
                 )])
             })
