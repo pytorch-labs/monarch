@@ -1018,7 +1018,40 @@ mod iterutils {
     }
 }
 
-/// Construct a selection from the given shape and constraint.
+/// Construct a [`Selection`] from a [`Shape`] and a single labeled
+/// constraint.
+///
+/// This function produces a multidimensional selection expression
+/// that is structurally aligned with the shape. It applies the given
+/// range to the named dimension, and fills all preceding dimensions
+/// with [`all`] to maintain alignment. Trailing dimensions are left
+/// unconstrained.
+///
+/// # Arguments
+///
+/// - `shape`: The labeled shape describing the coordinate space.
+/// - `label`: The name of the dimension to constrain.
+/// - `rng`: The range to apply in the selected dimension.
+///
+/// # Errors
+///
+/// Returns [`ShapeError::InvalidLabels`] if the label is not present
+/// in the shape.
+///
+/// # Example
+///
+/// ```
+///  use ndslice::shape;
+///  use ndslice::selection::selection_from_one;
+//
+/// let shape = shape!(zone = 2, host = 4, gpu = 8);
+/// let sel = selection_from_one(&shape, "host", 1..3).unwrap();
+/// assert_eq!(format!("{sel:?}"), "All(Range(Range(1, Some(3), 1), True))"); // corresponds to (*, 1..3, *)
+/// ```
+/// --
+/// [`all`]: crate::selection::dsl::all
+/// [`Shape`]: crate::shape::Shape
+/// [`Selection`]: crate::selection::Selection
 pub fn selection_from_one<'a, R>(
     shape: &shape::Shape,
     label: &'a str,
@@ -1043,8 +1076,39 @@ where
     Ok(selection)
 }
 
-/// Constructs a `Selection` expression from a set of labeled range
-/// constraints.
+/// Construct a [`Selection`] from a [`Shape`] and multiple labeled
+/// range constraints.
+///
+/// This function produces a multidimensional selection aligned with
+/// the shape, applying the specified constraints to their
+/// corresponding dimensions. All unconstrained dimensions are filled
+/// with [`all`] to preserve structural alignment.
+///
+/// # Arguments
+///
+/// - `shape`: The labeled shape defining the full coordinate space.
+/// - `constraints`: A slice of `(label, range)` pairs specifying
+///   dimension constraints.
+///
+/// # Errors
+///
+/// Returns [`ShapeError::InvalidLabels`] if any label in
+/// `constraints` is not present in the shape.
+///
+/// # Example
+///
+/// ```
+///  use ndslice::shape;
+///  use ndslice::selection::selection_from;
+//
+/// let shape = shape!(zone = 2, host = 4, gpu = 8);
+/// let sel = selection_from(&shape, &[("host", 1..3), ("gpu", 0..4)]).unwrap();
+/// assert_eq!(format!("{sel:?}"), "All(Range(Range(1, Some(3), 1), Range(Range(0, Some(4), 1), True)))");
+/// ```
+/// --
+/// [`Shape`]: crate::shape::Shape
+/// [`Selection`]: crate::selection::Selection
+/// [`all`]: crate::selection::dsl::all
 pub fn selection_from<'a, R>(
     shape: &shape::Shape,
     constraints: &[(&'a str, R)],
@@ -1075,11 +1139,53 @@ where
     Ok(selection)
 }
 
-/// Construct a [`Selection`] from a [`shape::Shape`] and one or more
-/// labelled constraints.
-/// # Example
+/// Construct a [`Selection`] from a [`Shape`] using labeled dimension
+/// constraints.
+///
+/// This macro provides a convenient syntax for specifying
+/// sub-selections on a shape by labeling dimensions and applying
+/// either exact indices or ranges. Internally, it wraps
+/// [`selection_from_one`] and [`selection_from`] to produce a
+/// fully-aligned [`Selection`] expression.
+///
+/// # Forms
+///
+/// - Single labeled range:
+///   ```
+///   let shape = ndslice::shape!(zone = 2, host = 4, gpu = 8);
+///   let sel = ndslice::sel_from_shape!(&shape, host = 1..3);
+///   ```
+///
+/// - Multiple exact indices (converted to `n..n+1`):
+///   ```
+///   let shape = ndslice::shape!(zone = 2, host = 4, gpu = 8);
+///   let sel = ndslice::sel_from_shape!(&shape, zone = 1, gpu = 4);
+///   ```
+///
+/// - Multiple labeled ranges:
+///   ```
+///   let shape = ndslice::shape!(zone = 2, host = 4, gpu = 8);
+///   let sel = ndslice::sel_from_shape!(&shape, zone = 0..1, host = 1..3, gpu = 4..8);
+///   ```
+///
+/// # Panics
+///
+/// This macro calls `.unwrap()` on the result of the underlying
+/// functions. It will panic if any label is not found in the shape.
+///
+/// # See Also
+///
+/// - [`selection_from_one`]
+/// - [`selection_from`]
+/// - [`Selection`]
+/// - [`Shape`]
+///
+/// [`Selection`]: crate::selection::Selection
+/// [`Shape`]: crate::shape::Shape
+/// [`selection_from_one`]: crate::selection::selection_from_one
+/// [`selection_from`]: crate::selection::selection_from
 #[macro_export]
-macro_rules! select_from {
+macro_rules! sel_from_shape {
     ($shape:expr_2021, $label:ident = $range:expr_2021) => {
         $crate::selection::selection_from_one($shape, stringify!($label), $range).unwrap()
     };
@@ -1514,56 +1620,35 @@ mod tests {
         assert!(eval(all(range(8..8, true_())), s.slice()).is_empty());
     }
 
-    // Prototype.
-    #[macro_export] // ok since this is only enabled in tests
-    macro_rules! select_ {
-        ($shape:expr_2021, $label:ident = $range:expr_2021) => {
-            $crate::selection::selection_from_one($shape, stringify!($label), $range).unwrap()
-        };
-
-        ($shape:expr_2021, $($label:ident = $val:literal),* $(,)?) => {
-            $crate::selection::selection_from($shape,
-                           &[
-                               $((stringify!($label), $val..$val+1)),*
-                           ]).unwrap()
-        };
-
-        ($shape:expr_2021, $($label:ident = $range:expr_2021),* $(,)?) => {
-            $crate::selection::selection_from($shape, &[
-                $((stringify!($label), $range)),*
-            ]).unwrap()
-        };
-    }
-
     #[test]
     fn test_selection_08() {
         let s = &shape!(host = 2, gpu = 8);
 
         assert_eq!(
             eval(range(1..2, true_()), s.slice()),
-            eval(select_from!(s, host = 1), s.slice())
+            eval(sel_from_shape!(s, host = 1), s.slice())
         );
 
         assert_eq!(
             eval(all(range(2.., true_())), s.slice()),
-            eval(select_from!(s, gpu = 2..), s.slice())
+            eval(sel_from_shape!(s, gpu = 2..), s.slice())
         );
 
         assert_eq!(
             eval(all(range(3..5, true_())), s.slice()),
-            eval(select_from!(s, gpu = 3..5), s.slice())
+            eval(sel_from_shape!(s, gpu = 3..5), s.slice())
         );
 
         assert_eq!(
             eval(range(1..2, range(3..5, true_())), s.slice()),
-            eval(select_from!(s, host = 1..2, gpu = 3..5), s.slice())
+            eval(sel_from_shape!(s, host = 1..2, gpu = 3..5), s.slice())
         );
 
         assert_eq!(
             eval(
                 union(
-                    select_from!(s, host = 0..1, gpu = 0..4),
-                    select_from!(s, host = 1..2, gpu = 4..5)
+                    sel_from_shape!(s, host = 0..1, gpu = 0..4),
+                    sel_from_shape!(s, host = 1..2, gpu = 4..5)
                 ),
                 s.slice()
             ),

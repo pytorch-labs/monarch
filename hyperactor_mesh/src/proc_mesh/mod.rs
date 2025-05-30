@@ -545,7 +545,7 @@ mod tests {
     use crate::alloc::AllocSpec;
     use crate::alloc::Allocator;
     use crate::alloc::local::LocalAllocator;
-    use crate::select_;
+    use crate::sel_from_shape;
 
     #[tokio::test]
     async fn test_basic() {
@@ -613,7 +613,7 @@ mod tests {
 
         actors
             .cast(
-                select_!(actors.shape(), replica = 0),
+                sel_from_shape!(actors.shape(), replica = 0),
                 Error("failmonkey".to_string()),
             )
             .unwrap();

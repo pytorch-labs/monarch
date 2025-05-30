@@ -335,7 +335,10 @@ macro_rules! shape {
     };
 }
 
-/// Perform a sub-selection on the provided shaped object (a `[Shape]`, or a [`crate::Mesh`].
+/// Perform a sub-selection on the provided [`Shape`] object.
+///
+/// This macro chains `.select()` calls to apply multiple labeled
+/// dimension restrictions in a fluent way.
 ///
 /// ```
 /// let s = ndslice::shape!(host = 2, gpu = 8);

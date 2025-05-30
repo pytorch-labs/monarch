@@ -365,28 +365,6 @@ mod tests {
 
     use super::*;
 
-    // Prototype. Replicated from hyperactor_mesh_core for the moment.
-    #[macro_export] // ok since this is only enabled in tests
-    macro_rules! select_ {
-        ($shape:expr_2021, $label:ident = $range:expr_2021) => {
-            ndslice::selection::selection_from_one($shape, stringify!($label), $range).unwrap()
-        };
-
-        ($shape:expr_2021, $($label:ident = $val:literal),* $(,)?) => {
-            ndslice::selection::selection_from($shape,
-                           &[
-                               $((stringify!($label), $val..$val+1)),*
-                           ]).unwrap()
-        };
-
-        ($shape:expr_2021, $($label:ident = $range:expr_2021),* $(,)?) => {
-            ndslice::selection::selection_from($shape, &[
-                $((stringify!($label), $range)),*
-
-            ]).unwrap()
-        };
-    }
-
     // These tests are parametric over allocators.
     #[macro_export]
     macro_rules! actor_mesh_test_suite {
@@ -397,6 +375,7 @@ mod tests {
             use $crate::alloc::AllocSpec;
             use $crate::alloc::Allocator;
             use $crate::assign::Ranks;
+            use $crate::sel_from_shape;
             use ndslice::selection::dsl::*;
             use $crate::proc_mesh::SharedSpawnable;
             use std::collections::VecDeque;
@@ -451,7 +430,7 @@ mod tests {
                 let (reply_handle, mut reply_receiver) = actor_mesh.open_port();
                 actor_mesh
                     .cast(
-                        select_!(actor_mesh.shape(), replica = 0, host = 0),
+                        sel_from_shape!(actor_mesh.shape(), replica = 0, host = 0),
                         GetRank(reply_handle.bind()),
                     )
                     .unwrap();

@@ -31,6 +31,7 @@ pub use bootstrap::bootstrap_or_die;
 pub use comm::CommActor;
 pub use hyperactor_mesh_macros::sel;
 pub use mesh::Mesh;
+pub use ndslice::sel_from_shape;
 pub use ndslice::selection;
 pub use ndslice::shape;
 pub use proc_mesh::ProcMesh;
