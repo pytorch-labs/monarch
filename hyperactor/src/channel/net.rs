@@ -28,7 +28,6 @@ use std::mem::take;
 use std::net::ToSocketAddrs;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::OnceLock;
 use std::task::Poll;
 
 use backoff::ExponentialBackoffBuilder;
@@ -2134,7 +2133,7 @@ mod tests {
             if self.fail_connects.load(Ordering::Acquire) {
                 return Err(ClientError::Connect(
                     self.dest(),
-                    std::io::Error::new(io::ErrorKind::Other, "intentional error"),
+                    std::io::Error::other("intentional error"),
                     "expected failure injected by the mock".to_string(),
                 ));
             }
