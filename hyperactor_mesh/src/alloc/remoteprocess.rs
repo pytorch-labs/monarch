@@ -240,7 +240,7 @@ impl RemoteProcessAllocator {
                     return;
                 }
             };
-        let router = DialMailboxRouter::new(forwarder_addr.clone());
+        let router = DialMailboxRouter::new();
         let mailbox_handle = router
             .clone()
             .serve(forwarder_rx, monitored_return_handle());

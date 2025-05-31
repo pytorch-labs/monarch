@@ -514,30 +514,12 @@ impl<M: RemoteMessage> Rx<M> for ChannelRx<M> {
 /// if the channel cannot be established. The underlying connection is
 /// dropped whenever the returned Tx is dropped.
 pub fn dial<M: RemoteMessage>(addr: ChannelAddr) -> Result<ChannelTx<M>, ChannelError> {
-    dial_impl(addr, None)
-}
-
-/// Dial the provided address, providing the address of the dialer, returning
-/// the corresponding Tx, or error if the channel cannot be established.
-/// The underlying connection is dropped whenever the returned Tx is dropped.
-pub fn dial_from_address<M: RemoteMessage>(
-    addr: ChannelAddr,
-    dialer: ChannelAddr,
-) -> Result<ChannelTx<M>, ChannelError> {
-    dial_impl(addr, Some(dialer))
-}
-
-#[crate::instrument]
-fn dial_impl<M: RemoteMessage>(
-    addr: ChannelAddr,
-    dialer: Option<ChannelAddr>,
-) -> Result<ChannelTx<M>, ChannelError> {
     tracing::debug!(name = "dial", "dialing channel {}", addr);
     let inner = match addr {
         ChannelAddr::Local(port) => ChannelTxKind::Local(local::dial(port)?),
         ChannelAddr::Tcp(addr) => ChannelTxKind::Tcp(net::tcp::dial(addr)),
         ChannelAddr::MetaTls(host, port) => ChannelTxKind::MetaTls(net::meta::dial(host, port)),
-        ChannelAddr::Sim(sim_addr) => ChannelTxKind::Sim(sim::dial::<M>(sim_addr, dialer)?),
+        ChannelAddr::Sim(sim_addr) => ChannelTxKind::Sim(sim::dial::<M>(sim_addr)?),
         ChannelAddr::Unix(path) => ChannelTxKind::Unix(net::unix::dial(path)),
     };
     Ok(ChannelTx { inner })
