@@ -26,6 +26,9 @@ pub use slice::Slice;
 pub use slice::SliceError;
 pub use slice::SliceIterator;
 
+/// Affine indexing abstractions for multidimensional slices.
+pub mod affine;
+
 /// Selection algebra for describing multidimensional mesh regions.
 pub mod selection;
 
