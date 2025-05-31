@@ -347,6 +347,7 @@ pub struct SimNetHandle {
 
 impl SimNetHandle {
     /// Sends an event to be scheduled onto the simnet's event loop
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SimNetError`.
     pub fn send_event(&self, event: Box<dyn Event>) -> Result<(), SimNetError> {
         self.pending_event_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -356,6 +357,7 @@ impl SimNetHandle {
     }
 
     /// Sends an event that already has a scheduled time onto the simnet's event loop
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SimNetError`.
     pub(crate) fn send_scheduled_event(
         &self,
         scheduled_event: ScheduledEvent,
@@ -374,6 +376,7 @@ impl SimNetHandle {
     }
 
     /// Bind the given address to this simulator instance.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SimNetError`.
     pub fn bind(&self, address: ChannelAddr) -> Result<(), SimNetError> {
         self.pending_event_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -986,6 +989,7 @@ pub struct EdgeConfig {
 
 impl NetworkConfig {
     /// Create a new configuration from a YAML string.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SimNetError`.
     pub fn from_yaml(yaml: &str) -> Result<Self, SimNetError> {
         let config: NetworkConfig = serde_yaml::from_str(yaml)
             .map_err(|err| SimNetError::InvalidArg(format!("failed to parse config: {}", err)))?;
