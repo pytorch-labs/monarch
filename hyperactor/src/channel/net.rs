@@ -1549,6 +1549,7 @@ pub(crate) mod meta {
     const THRIFT_TLS_CL_KEY_PATH_ENV: &str = "THRIFT_TLS_CL_KEY_PATH";
     const DEFAULT_SERVER_PEM_PATH: &str = "/var/facebook/x509_identities/server.pem";
 
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ChannelError`.
     pub(crate) fn parse(addr_string: &str) -> Result<ChannelAddr, ChannelError> {
         // use right split to allow for ipv6 addresses where ":" is expected.
         let parts = addr_string.rsplit_once(":");
@@ -1711,7 +1712,7 @@ pub(crate) mod meta {
             let (connector, domain_name) = tls_connector_config(&self.hostname).map_err(|err| {
                 ClientError::Connect(
                     self.dest(),
-                    io::Error::new(io::ErrorKind::Other, err.to_string()),
+                    io::Error::other(err.to_string()),
                     format!("cannot config tls connector for addr {}", addr),
                 )
             })?;
@@ -1743,7 +1744,7 @@ pub(crate) mod meta {
         })?;
         let addr = addrs.next().ok_or(ServerError::Resolve(
             ChannelAddr::MetaTls(hostname.clone(), port),
-            io::Error::new(io::ErrorKind::Other, "no available socket addr"),
+            io::Error::other("no available socket addr"),
         ))?;
         let channel_addr = ChannelAddr::MetaTls(hostname.clone(), port);
         let listener = TcpListener::bind(addr)
