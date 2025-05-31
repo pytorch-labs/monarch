@@ -9,6 +9,9 @@
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::affine::AffineMap;
+use crate::affine::AffineMapInverse;
+
 /// The type of error for slice operations.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -169,49 +172,14 @@ impl Slice {
 
     /// Return the location of the provided coordinates.
     pub fn location(&self, coord: &[usize]) -> Result<usize, SliceError> {
-        if coord.len() != self.sizes.len() {
-            return Err(SliceError::InvalidDims {
-                expected: self.sizes.len(),
-                got: coord.len(),
-            });
-        }
-        Ok(self.offset
-            + coord
-                .iter()
-                .zip(&self.strides)
-                .map(|(pos, stride)| pos * stride)
-                .sum::<usize>())
+        self.offset_of(coord)
     }
 
     /// Return the coordinates of the provided value in the n-d space of this
     /// Slice.
     pub fn coordinates(&self, value: usize) -> Result<Vec<usize>, SliceError> {
-        let mut pos = value
-            .checked_sub(self.offset)
-            .ok_or(SliceError::ValueNotInSlice { value })?;
-        let mut result = vec![0; self.sizes.len()];
-        let mut sorted_info: Vec<_> = self
-            .strides
-            .iter()
-            .zip(self.sizes.iter().enumerate())
-            .collect();
-        sorted_info.sort_by_key(|&(stride, _)| *stride);
-        for &(stride, (i, &size)) in sorted_info.iter().rev() {
-            let (index, new_pos) = if size > 1 {
-                (pos / stride, pos % stride)
-            } else {
-                (0, pos)
-            };
-            if index >= size {
-                return Err(SliceError::ValueNotInSlice { value });
-            }
-            result[i] = index;
-            pos = new_pos;
-        }
-        if pos != 0 {
-            return Err(SliceError::ValueNotInSlice { value });
-        }
-        Ok(result)
+        self.coord_of(value)
+            .ok_or(SliceError::ValueNotInSlice { value })
     }
 
     /// Retrieve the underlying location of the provided slice index.
