@@ -98,6 +98,7 @@ pub trait Tx<M: RemoteMessage>: std::fmt::Debug {
     /// the channel has failed and it will be sent back on `return_handle`.
     // TODO: the return channel should be SendError<M> directly, and we should drop
     // the returned result.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SendError`.
     fn try_post(&self, message: M, return_channel: oneshot::Sender<M>) -> Result<(), SendError<M>>;
 
     /// Enqueue a message to be sent on the channel. The caller is expected to monitor
@@ -513,6 +514,7 @@ impl<M: RemoteMessage> Rx<M> for ChannelRx<M> {
 /// Dial the provided address, returning the corresponding Tx, or error
 /// if the channel cannot be established. The underlying connection is
 /// dropped whenever the returned Tx is dropped.
+#[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ChannelError`.
 pub fn dial<M: RemoteMessage>(addr: ChannelAddr) -> Result<ChannelTx<M>, ChannelError> {
     dial_impl(addr, None)
 }
@@ -520,6 +522,7 @@ pub fn dial<M: RemoteMessage>(addr: ChannelAddr) -> Result<ChannelTx<M>, Channel
 /// Dial the provided address, providing the address of the dialer, returning
 /// the corresponding Tx, or error if the channel cannot be established.
 /// The underlying connection is dropped whenever the returned Tx is dropped.
+#[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ChannelError`.
 pub fn dial_from_address<M: RemoteMessage>(
     addr: ChannelAddr,
     dialer: ChannelAddr,

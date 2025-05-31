@@ -599,6 +599,7 @@ impl<A: RemoteActor> ActorRef<A> {
     }
 
     /// Send an [`M`]-typed message to the referenced actor.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     pub fn send<M: RemoteMessage>(
         &self,
         cap: &impl cap::CanSend,
@@ -813,6 +814,7 @@ impl<M: RemoteMessage> PortRef<M> {
 
     /// Send a message to this port, provided a sending capability, such as
     /// [`crate::actor::Instance`].
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     pub fn send(&self, caps: &impl cap::CanSend, message: M) -> Result<(), MailboxSenderError> {
         let serialized = Serialized::serialize(&message).map_err(|err| {
             MailboxSenderError::new_bound(
@@ -882,6 +884,7 @@ impl<M: RemoteMessage> OncePortRef<M> {
 
     /// Send a message to this port, provided a sending capability, such as
     /// [`crate::actor::Instance`].
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     pub fn send(self, caps: &impl cap::CanSend, message: M) -> Result<(), MailboxSenderError> {
         let serialized = Serialized::serialize(&message).map_err(|err| {
             MailboxSenderError::new_bound(
