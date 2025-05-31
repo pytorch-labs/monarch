@@ -16,6 +16,7 @@ mod tests {
     use hyperactor::channel::ChannelAddr;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::channel::sim;
+    use hyperactor::channel::sim::AddressProxyPair;
     use hyperactor::channel::sim::SimAddr;
     use hyperactor::id;
     use hyperactor::reference::Index;
@@ -36,10 +37,9 @@ mod tests {
         let system_addr = "local!1".parse::<ChannelAddr>().unwrap();
         let proxy_addr = ChannelAddr::any(ChannelTransport::Unix);
 
-        let system_sim_addr =
-            ChannelAddr::Sim(SimAddr::new(system_addr.clone(), proxy_addr.clone()).unwrap());
+        let system_sim_addr = SimAddr::new(system_addr.clone(), proxy_addr.clone()).unwrap();
         let server_handle = System::serve(
-            system_sim_addr.clone(),
+            ChannelAddr::Sim(system_sim_addr.clone()),
             Duration::from_secs(10),
             Duration::from_secs(10),
         )
@@ -117,7 +117,7 @@ edges:
     async fn spawn_proc_actor(
         actor_index: Index,
         proxy_addr: ChannelAddr,
-        system_addr: ChannelAddr,
+        system_addr: SimAddr,
         sys_mailbox: Mailbox,
         world_id: WorldId,
     ) -> ActorRef<PingPongActor> {
@@ -128,11 +128,22 @@ edges:
         let proc_sim_addr = SimAddr::new(proc_addr.clone(), proxy_addr.clone()).unwrap();
         let proc_listen_addr = ChannelAddr::Sim(proc_sim_addr);
         let proc_id = world_id.proc_id(actor_index);
+        let proc_to_system = ChannelAddr::Sim(
+            SimAddr::new_with_src(
+                AddressProxyPair {
+                    address: proc_addr.clone(),
+                    proxy: proxy_addr.clone(),
+                },
+                system_addr.addr().clone(),
+                system_addr.proxy().clone(),
+            )
+            .unwrap(),
+        );
         let bootstrap = ProcActor::bootstrap(
             proc_id,
             world_id.clone(),
             proc_listen_addr,
-            system_addr,
+            proc_to_system,
             Duration::from_secs(3),
             HashMap::new(),
             ProcLifecycleMode::ManagedBySystem,

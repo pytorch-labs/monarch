@@ -714,9 +714,9 @@ impl MailboxSender for ReportingRouter {
 }
 
 impl ReportingRouter {
-    fn new(mailbox_address: ChannelAddr) -> Self {
+    fn new() -> Self {
         Self {
-            router: DialMailboxRouter::new(mailbox_address),
+            router: DialMailboxRouter::new(),
             address_cache: Arc::new(DashMap::new()),
         }
     }
@@ -830,13 +830,9 @@ pub struct SystemActorParams {
 
 impl SystemActorParams {
     /// Create a new system actor params.
-    pub fn new(
-        bootstrap_addr: ChannelAddr,
-        supervision_update_timeout: Duration,
-        world_eviction_timeout: Duration,
-    ) -> Self {
+    pub fn new(supervision_update_timeout: Duration, world_eviction_timeout: Duration) -> Self {
         Self {
-            mailbox_router: ReportingRouter::new(bootstrap_addr),
+            mailbox_router: ReportingRouter::new(),
             supervision_update_timeout,
             world_eviction_timeout,
         }
@@ -1875,11 +1871,7 @@ mod tests {
     #[tracing_test::traced_test]
     #[tokio::test]
     async fn test_join() {
-        let params = SystemActorParams::new(
-            ChannelAddr::any(ChannelTransport::Local),
-            Duration::from_secs(10),
-            Duration::from_secs(10),
-        );
+        let params = SystemActorParams::new(Duration::from_secs(10), Duration::from_secs(10));
         let (system_actor_handle, system_proc) = SystemActor::bootstrap(params).await.unwrap();
 
         // Use a local proc actor to join the system.
@@ -2007,8 +1999,7 @@ mod tests {
         // Use small durations to fail fast.
         let timeout: Duration = Duration::from_secs(1);
 
-        let params =
-            SystemActorParams::new(ChannelAddr::any(ChannelTransport::Local), timeout, timeout);
+        let params = SystemActorParams::new(timeout, timeout);
         let (system_actor_handle, _system_proc) = SystemActor::bootstrap(params).await.unwrap();
 
         // Register supervision subscriber, use a new proc
@@ -2132,8 +2123,7 @@ mod tests {
         // Use small durations to fail fast.
         let timeout: Duration = Duration::from_secs(2);
 
-        let params =
-            SystemActorParams::new(ChannelAddr::any(ChannelTransport::Local), timeout, timeout);
+        let params = SystemActorParams::new(timeout, timeout);
         let (system_actor_handle, _system_proc) = SystemActor::bootstrap(params).await.unwrap();
 
         // Register a client, use a new proc
@@ -2270,8 +2260,7 @@ mod tests {
         // Use small durations to fail fast.
         let timeout: Duration = Duration::from_secs(2);
 
-        let params =
-            SystemActorParams::new(ChannelAddr::any(ChannelTransport::Local), timeout, timeout);
+        let params = SystemActorParams::new(timeout, timeout);
         let (system_actor_handle, _system_proc) = SystemActor::bootstrap(params).await.unwrap();
         let mut sys_status_rx = system_actor_handle.status();
 
@@ -2395,11 +2384,7 @@ mod tests {
     #[tokio::test]
     async fn test_host_join_before_world() {
         // Spins up a new world with 2 hosts, with 3 procs each.
-        let params = SystemActorParams::new(
-            ChannelAddr::any(ChannelTransport::Local),
-            Duration::from_secs(10),
-            Duration::from_secs(10),
-        );
+        let params = SystemActorParams::new(Duration::from_secs(10), Duration::from_secs(10));
         let (system_actor_handle, _system_proc) = SystemActor::bootstrap(params).await.unwrap();
 
         // Use a local proc actor to join the system.
@@ -2473,11 +2458,7 @@ mod tests {
     #[tokio::test]
     async fn test_host_join_after_world() {
         // Spins up a new world with 2 hosts, with 3 procs each.
-        let params = SystemActorParams::new(
-            ChannelAddr::any(ChannelTransport::Local),
-            Duration::from_secs(10),
-            Duration::from_secs(10),
-        );
+        let params = SystemActorParams::new(Duration::from_secs(10), Duration::from_secs(10));
         let (system_actor_handle, _system_proc) = SystemActor::bootstrap(params).await.unwrap();
 
         // Create a new world message and send to system actor
@@ -2661,10 +2642,8 @@ mod tests {
             channel::dial(server_handle.local_addr().clone()).unwrap(),
         ));
         // Construct a proc forwarder in terms of the system sender.
-        let proc_forwarder = BoxedMailboxSender::new(DialMailboxRouter::new_with_default(
-            ChannelAddr::any(ChannelTransport::Local),
-            system_sender,
-        ));
+        let proc_forwarder =
+            BoxedMailboxSender::new(DialMailboxRouter::new_with_default(system_sender));
 
         // Bootstrap proc 'world[0]', join the system.
         let proc_0 = Proc::new(world_id.proc_id(0), proc_forwarder.clone());

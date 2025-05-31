@@ -383,10 +383,8 @@ impl ProcActor {
         ));
         let clock = ClockKind::for_channel_addr(&listen_addr);
 
-        let proc_forwarder = BoxedMailboxSender::new(DialMailboxRouter::new_with_default(
-            listen_addr.clone(),
-            system_sender,
-        ));
+        let proc_forwarder =
+            BoxedMailboxSender::new(DialMailboxRouter::new_with_default(system_sender));
         let proc = Proc::new_with_clock(proc_id.clone(), proc_forwarder, clock);
         Self::bootstrap_for_proc(
             proc,
@@ -1371,10 +1369,8 @@ mod tests {
 
         // Construct a proc forwarder in terms of the system sender.
         let listen_addr = ChannelAddr::any(ChannelTransport::Tcp);
-        let proc_forwarder = BoxedMailboxSender::new(DialMailboxRouter::new_with_default(
-            listen_addr.clone(),
-            system_sender,
-        ));
+        let proc_forwarder =
+            BoxedMailboxSender::new(DialMailboxRouter::new_with_default(system_sender));
 
         // Bootstrap proc 'world[0]', join the system.
         let world_id = id!(world);
@@ -1497,10 +1493,8 @@ mod tests {
 
         // Construct a proc forwarder in terms of the system sender.
         let listen_addr = ChannelAddr::any(ChannelTransport::Tcp);
-        let proc_forwarder = BoxedMailboxSender::new(DialMailboxRouter::new_with_default(
-            listen_addr.clone(),
-            system_sender,
-        ));
+        let proc_forwarder =
+            BoxedMailboxSender::new(DialMailboxRouter::new_with_default(system_sender));
 
         // Bootstrap proc 'world[0]', join the system.
         let world_id = id!(world);
