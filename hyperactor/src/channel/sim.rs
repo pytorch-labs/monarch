@@ -71,6 +71,7 @@ pub struct SimAddr {
 
 impl SimAddr {
     /// Creates a new SimAddr.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SimNetError`.
     pub fn new(addr: ChannelAddr, proxy: ChannelAddr) -> Result<Self, SimNetError> {
         if let ChannelAddr::Sim(_) = &addr {
             return Err(SimNetError::InvalidArg(format!(
@@ -209,6 +210,7 @@ pub(crate) fn any(proxy: ChannelAddr) -> ChannelAddr {
 }
 
 /// Parse the sim channel address. It should have two non-sim channel addresses separated by a comma.
+#[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ChannelError`.
 pub fn parse(addr_string: &str) -> Result<ChannelAddr, ChannelError> {
     let re = Regex::new(r"^([^,]+),([^,]+)$").map_err(|err| {
         ChannelError::InvalidAddress(format!("invalid sim address regex: {}", err))
@@ -370,6 +372,7 @@ impl<M: RemoteMessage> Tx<M> for SimTx<M> {
 
 /// Dial a peer and return a transmitter. The transmitter can retrieve from the
 /// network the link latency.
+#[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ChannelError`.
 pub(crate) fn dial<M: RemoteMessage>(
     addr: SimAddr,
     dialer: Option<ChannelAddr>,

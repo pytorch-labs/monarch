@@ -800,6 +800,7 @@ impl<A: Actor> Instance<A> {
     }
 
     /// Signal the actor to stop.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ActorError`.
     pub fn stop(&self) -> Result<(), ActorError> {
         self.cell.signal(Signal::DrainAndStop)
     }
@@ -825,6 +826,7 @@ impl<A: Actor> Instance<A> {
     }
 
     /// Send a message to the actor itself with a delay usually to trigger some event.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ActorError`.
     pub fn self_message_with_delay<M>(&self, message: M, delay: Duration) -> Result<(), ActorError>
     where
         M: Message,
@@ -1268,6 +1270,7 @@ impl InstanceCell {
     }
 
     /// Send a signal to the actor.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ActorError`.
     pub fn signal(&self, signal: Signal) -> Result<(), ActorError> {
         self.state.signal.send(signal).map_err(ActorError::from)
     }
