@@ -357,7 +357,10 @@ pub fn structurally_equal(a: &Selection, b: &Selection) -> bool {
 /// structure. It is designed to improve over time as additional
 /// rewrites (e.g., flattening, simplification) are introduced.
 pub fn normalize(sel: &Selection) -> Selection {
-    sel.fold::<normal::NormalizedSelection>().into()
+    let rule = normal::IdentityRules;
+    sel.fold::<normal::NormalizedSelection>()
+        .rewrite_bottom_up(&rule)
+        .into()
 }
 
 /// Wrapper around a normalized `Selection` that provides `Hash` and

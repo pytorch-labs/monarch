@@ -78,6 +78,50 @@ impl SelectionSYM for NormalizedSelection {
     }
 }
 
+impl NormalizedSelection {
+    /// Applies a transformation to each child node of the selection.
+    ///
+    /// This performs a single-layer traversal, applying `f` to each
+    /// immediate child and reconstructing the outer node with the
+    /// transformed children.
+    pub fn trav<F>(self, mut f: F) -> Self
+    where
+        F: FnMut(Self) -> Self,
+    {
+        use NormalizedSelection::*;
+
+        match self {
+            All(inner) => All(Box::new(f(*inner))),
+            First(inner) => First(Box::new(f(*inner))),
+            Any(inner) => Any(Box::new(f(*inner))),
+            Range(r, inner) => Range(r, Box::new(f(*inner))),
+            Label(labels, inner) => Label(labels, Box::new(f(*inner))),
+            Union(set) => Union(set.into_iter().map(f).collect()),
+            Intersection(set) => Intersection(set.into_iter().map(f).collect()),
+            leaf @ (True | False) => leaf,
+        }
+    }
+}
+
+/// A trait representing a single bottom-up rewrite rule on normalized
+/// selections.
+///
+/// Implementors define a single transformation step, applied after
+/// children have already been normalized. These rewrite rules are
+/// composed during normalization to simplify or canonicalize
+/// selection expressions.
+///
+/// This trait serves as the building block for constructing
+/// normalization passes. Future variants may include top-down rules
+/// or contextual rewrites.
+///
+/// See [`normalize_with`] for integration.
+pub trait RewriteRule {
+    /// Applies a rewrite step to a node whose children have already
+    /// been recursively rewritten.
+    fn rewrite(&self, node: NormalizedSelection) -> NormalizedSelection;
+}
+
 impl From<NormalizedSelection> for Selection {
     /// Converts the normalized form back into a standard `Selection`.
     ///
@@ -107,6 +151,49 @@ impl From<NormalizedSelection> for Selection {
             Range(r, inner) => Selection::range(r, (*inner).into()),
             Label(labels, inner) => Selection::label(labels, (*inner).into()),
         }
+    }
+}
+
+/// A normalization rule that applies simple algebraic identities.
+#[derive(Default)]
+pub struct IdentityRules;
+
+impl RewriteRule for IdentityRules {
+    fn rewrite(&self, node: NormalizedSelection) -> NormalizedSelection {
+        use NormalizedSelection::*;
+
+        match node {
+            // All(All(x)) → All(x)
+            All(inner) => match *inner {
+                All(grandchild) => All(grandchild),
+                True => True,
+                False => False,
+                _ => All(inner),
+            },
+
+            // Intersection(True, x) → x
+            Intersection(set) => {
+                if set.contains(&True) && set.len() > 1 {
+                    let mut s = set;
+                    s.remove(&True);
+                    s.into_iter().next().unwrap()
+                } else {
+                    Intersection(set)
+                }
+            }
+
+            // Union(x) → x
+            Union(set) if set.len() == 1 => set.into_iter().next().unwrap(),
+
+            _ => node,
+        }
+    }
+}
+
+impl NormalizedSelection {
+    pub fn rewrite_bottom_up(self, rule: &impl RewriteRule) -> Self {
+        let mapped = self.trav(|child| child.rewrite_bottom_up(rule));
+        rule.rewrite(mapped)
     }
 }
 
@@ -142,5 +229,22 @@ mod tests {
         let expected = all(true_());
 
         assert_structurally_eq!(&reified, &expected);
+    }
+
+    #[test]
+    fn normalize_smoke_test() {
+        use crate::assert_structurally_eq;
+        use crate::selection::dsl::*;
+        use crate::selection::normalize;
+        use crate::selection::parse::parse;
+
+        // The expression (*,*) | (*,*) parses as
+        // Union(All(All(True)), All(All(True))) and normalizes all
+        // the way down to True.
+        let sel = parse("(*,*) | (*,*)").unwrap();
+        let normed = normalize(&sel);
+        let expected = true_();
+
+        assert_structurally_eq!(&normed, &expected);
     }
 }
