@@ -8,8 +8,10 @@
 
 use std::collections::BTreeSet;
 
+use crate::Selection;
 use crate::selection::LabelKey;
 use crate::selection::SelectionSYM;
+use crate::selection::dsl;
 use crate::shape;
 
 /// A normalized form of `Selection`, used during canonicalization.
@@ -73,5 +75,72 @@ impl SelectionSYM for NormalizedSelection {
         set.insert(lhs);
         set.insert(rhs);
         Self::Union(set)
+    }
+}
+
+impl From<NormalizedSelection> for Selection {
+    /// Converts the normalized form back into a standard `Selection`.
+    ///
+    /// Logical semantics are preserved, but normalized shape (e.g.,
+    /// set-based unions and intersections) is reconstructed as
+    /// left-associated binary trees.
+    fn from(norm: NormalizedSelection) -> Self {
+        use NormalizedSelection::*;
+        use dsl::*;
+
+        match norm {
+            True => true_(),
+            False => false_(),
+            All(inner) => all((*inner).into()),
+            First(inner) => first((*inner).into()),
+            Any(inner) => any((*inner).into()),
+            Union(set) => set
+                .into_iter()
+                .map(Into::into)
+                .reduce(Selection::union)
+                .unwrap_or_else(false_),
+            Intersection(set) => set
+                .into_iter()
+                .map(Into::into)
+                .reduce(Selection::intersection)
+                .unwrap_or_else(true_),
+            Range(r, inner) => Selection::range(r, (*inner).into()),
+            Label(labels, inner) => Selection::label(labels, (*inner).into()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::assert_structurally_eq;
+    use crate::selection;
+    use crate::selection::parse::parse;
+
+    /// Verifies that:
+    /// - Duplicate subtrees are structurally deduplicated by
+    ///   normalization
+    /// - The normalized form reifies to the expected `Selection` in
+    ///   this case
+    #[test]
+    fn normalization_deduplicates_and_reifies() {
+        let sel = parse("(* & *) | (* & *)").unwrap();
+        let norm = sel.fold::<NormalizedSelection>();
+
+        // Expected: Union { Intersection { All(True) } }
+        use NormalizedSelection::*;
+        let mut inner = BTreeSet::new();
+        inner.insert(All(Box::new(True)));
+
+        let mut outer = BTreeSet::new();
+        outer.insert(Intersection(inner));
+
+        assert_eq!(norm, Union(outer));
+
+        use selection::dsl::*;
+        let reified = norm.into();
+        let expected = all(true_());
+
+        assert_structurally_eq!(&reified, &expected);
     }
 }
