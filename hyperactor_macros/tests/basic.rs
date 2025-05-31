@@ -7,6 +7,7 @@
  */
 
 #![allow(dead_code)]
+pub mod castable;
 
 use std::fmt::Debug;
 
