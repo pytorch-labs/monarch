@@ -117,7 +117,7 @@ pub struct ProcSupervisionState {
     /// The proc health.
     pub proc_health: ProcStatus,
     /// Contains the supervision state of (failed) actors in the proc.
-    pub failed_actors: HashMap<ActorId, hyperactor::actor::ActorStatus>,
+    pub failed_actors: Vec<(ActorId, hyperactor::actor::ActorStatus)>,
 }
 
 impl ProcSupervisionState {
