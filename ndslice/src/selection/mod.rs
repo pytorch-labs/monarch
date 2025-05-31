@@ -345,24 +345,19 @@ pub fn structurally_equal(a: &Selection, b: &Selection) -> bool {
     }
 }
 
-/// Normalizes a [`Selection`] into a canonical form for structural
-/// comparison and hashing.
+/// Normalizes a [`Selection`] toward a canonical form for structural
+/// comparison.
 ///
-/// Normalization rewrites the selection into a canonical form
-/// suitable for structural comparison and hashing. For example, it
-/// may flatten nested unions, sort branches, or eliminate redundant
-/// constructs while preserving the selection's semantics.
+/// This rewrites the selection to eliminate redundant subtrees and
+/// bring structurally similar selections into a common
+/// representation. The result is suitable for comparison, hashing,
+/// and deduplication (e.g., in [`RoutingFrameKey`]).
 ///
-/// This function is designed to preserve the meaning of a selection
-/// (i.e., what it selects), but not necessarily the exact shape or
-/// format of the syntax tree used to express it.
-///
-/// # Note
-/// The current implementation is a placeholder and returns the
-/// input selection unchanged.
-pub fn normalize(selection: &Selection) -> Selection {
-    // TODO: Implement
-    selection.clone()
+/// Normalization preserves semantics but may alter syntactic
+/// structure. It is designed to improve over time as additional
+/// rewrites (e.g., flattening, simplification) are introduced.
+pub fn normalize(sel: &Selection) -> Selection {
+    sel.fold::<normal::NormalizedSelection>().into()
 }
 
 /// Wrapper around a normalized `Selection` that provides `Hash` and
