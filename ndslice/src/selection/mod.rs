@@ -93,6 +93,9 @@ pub mod token_parser;
 /// Shape navigation guided by [`Selection`] expressions.
 pub mod routing;
 
+/// Normalization logic for `Selection`.
+pub mod normal;
+
 pub mod test_utils;
 
 use std::collections::BTreeSet;
@@ -236,7 +239,20 @@ impl fmt::Display for Selection {
 /// For example, a selection like `sel!(["A100"]*)` matches only
 /// indices at the current dimension whose associated label value is
 /// `"A100"`.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+///
+/// `Ord` is derived to allow deterministic sorting and set membership,
+/// based on lexicographic ordering of label strings.
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    PartialOrd,
+    Ord
+)]
 pub enum LabelKey {
     /// A plain string label value.
     Value(String),
