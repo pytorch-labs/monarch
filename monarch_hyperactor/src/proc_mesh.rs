@@ -6,11 +6,16 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::future::Future;
 use std::sync::Arc;
 
 use hyperactor_extension::alloc::PyAlloc;
+use hyperactor_extension::alloc::PyAllocWrapper;
+use hyperactor_mesh::actor_mesh::ActorMesh;
 use hyperactor_mesh::proc_mesh::ProcMesh;
 use hyperactor_mesh::proc_mesh::SharedSpawnable;
+use monarch_rdma::IbverbsConfig;
+use monarch_rdma::RdmaManagerActor;
 use monarch_types::PickledPyObject;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
@@ -20,12 +25,58 @@ use crate::actor_mesh::PythonActorMesh;
 use crate::mailbox::PyMailbox;
 use crate::runtime::signal_safe_block_on;
 
+/// `PyProcMesh` is a Python wrapper for `ProcMesh`.
+/// If the system supports RDMA (Remote Direct Memory Access), an RDMA manager
+/// actor is spawned to enable the use of RDMABuffers (see monarch_rdma).
 #[pyclass(
     name = "ProcMesh",
     module = "monarch._rust_bindings.monarch_hyperactor.proc_mesh"
 )]
 pub struct PyProcMesh {
     pub(super) inner: Arc<ProcMesh>,
+    pub(super) rdma_manager: Option<Arc<ActorMesh<'static, RdmaManagerActor>>>,
+}
+
+/// Creates a new `PyProcMesh` instance asynchronously.
+///
+/// This function initializes a new process mesh with the provided allocator and
+/// sets up RDMA (Remote Direct Memory Access) if supported by the system.
+///
+/// # Arguments
+/// * `alloc` - A wrapper around the Python allocator to be used for the process mesh
+///
+/// # Returns
+/// * A future that resolves to a `PyResult<PyProcMesh>` - the new process mesh or an error
+///
+/// # Errors
+/// * Returns a `PyException` if allocation fails or if RDMA initialization fails
+fn create_py_proc_mesh(alloc: PyAllocWrapper) -> impl Future<Output = PyResult<PyProcMesh>> {
+    async move {
+        let mesh = ProcMesh::allocate(alloc)
+            .await
+            .map_err(|err| PyException::new_err(err.to_string()))?;
+
+        let inner = Arc::new(mesh);
+
+        let rdma_manager = if monarch_rdma::ibverbs_supported() {
+            // TODO - make this configurable
+            let config = IbverbsConfig::default();
+            tracing::debug!("rdma is enabled, using device {}", config.device);
+            let actor_mesh = inner
+                .spawn("rdma_manager", &config)
+                .await
+                .map_err(|err| PyException::new_err(err.to_string()))?;
+            Some(Arc::new(actor_mesh))
+        } else {
+            tracing::info!("rdma is not enabled on this hardware");
+            None
+        };
+
+        Ok(PyProcMesh {
+            inner,
+            rdma_manager,
+        })
+    }
 }
 
 fn allocate_proc_mesh<'py>(py: Python<'py>, alloc: &PyAlloc) -> PyResult<Bound<'py, PyAny>> {
@@ -37,14 +88,8 @@ fn allocate_proc_mesh<'py>(py: Python<'py>, alloc: &PyAlloc) -> PyResult<Bound<'
             ));
         }
     };
-    pyo3_async_runtimes::tokio::future_into_py(py, async move {
-        let mesh = ProcMesh::allocate(alloc)
-            .await
-            .map_err(|err| PyException::new_err(err.to_string()))?;
-        Ok(PyProcMesh {
-            inner: Arc::new(mesh),
-        })
-    })
+
+    pyo3_async_runtimes::tokio::future_into_py(py, create_py_proc_mesh(alloc))
 }
 
 fn allocate_proc_mesh_blocking<'py>(py: Python<'py>, alloc: &PyAlloc) -> PyResult<PyProcMesh> {
@@ -56,14 +101,7 @@ fn allocate_proc_mesh_blocking<'py>(py: Python<'py>, alloc: &PyAlloc) -> PyResul
             ));
         }
     };
-    signal_safe_block_on(py, async move {
-        let mesh = ProcMesh::allocate(alloc)
-            .await
-            .map_err(|err| PyException::new_err(err.to_string()))?;
-        Ok(PyProcMesh {
-            inner: Arc::new(mesh),
-        })
-    })?
+    signal_safe_block_on(py, create_py_proc_mesh(alloc))?
 }
 
 #[pymethods]

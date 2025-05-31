@@ -28,6 +28,7 @@
 //!
 //! See test examples: `test_rdma_write_loopback` and `test_rdma_read_loopback`.
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use async_trait::async_trait;
 use hyperactor::Actor;
@@ -87,6 +88,11 @@ impl RemoteBufferRef {
 
 #[derive(Handler, HandleClient, RefClient, Debug, Serialize, Deserialize, Named)]
 pub enum RdmaManagerMessage {
+    RegisterLocalMemory {
+        /// `local_memory_region` - The local memory region to register
+        local_memory_region: RdmaMemoryRegionView,
+    },
+
     IsConnected {
         /// `other` - The ActorId of the actor to check connection with
         other: ActorRef<RdmaManagerActor>,
@@ -149,6 +155,11 @@ pub enum RdmaManagerMessage {
         /// and rkey is the remote memory key
         reply: OncePortRef<(u32, u32)>,
     },
+    /// Drops the memory regions with all other actors
+    DropMemoryRegion {
+        /// `region` - The memory region
+        region: RdmaMemoryRegionView,
+    },
 }
 
 #[derive(Debug)]
@@ -159,6 +170,9 @@ pub struct RdmaManagerActor {
 
     // Map between a RemoteBufferRef and its latest work completion ID.
     work_id_map: HashMap<RemoteBufferRef, u64>,
+
+    // Map between a memory region and its corresponding RemoteBufferRefs
+    registered_memory_map: HashMap<RdmaMemoryRegionView, HashSet<RemoteBufferRef>>,
 
     // The RDMA domain associated with this actor.
     //
@@ -205,6 +219,33 @@ impl RdmaManagerActor {
                 .map_err(|e| anyhow::anyhow!("could not create RdmaQueuePair: {}", e))?;
             e.insert(qp);
             tracing::debug!("successfully created a connection with {:?}", other);
+        }
+        Ok(())
+    }
+
+    async fn maybe_register_remote_memory_region(
+        &mut self,
+        local_region: RdmaMemoryRegionView,
+        remote_buffer: &RemoteBufferRef,
+    ) -> Result<(), anyhow::Error> {
+        // Check if the local memory region is already registered
+        if !self.registered_memory_map.contains_key(&local_region) {
+            tracing::error!(
+                "local memory region {:?} not registered, implying the RdmaBuffer is invalid.",
+                local_region,
+            );
+            return Err(anyhow::anyhow!(
+                "local memory region {:?} is not registered, implying the RdmaBuffer is invalid.",
+                local_region
+            ));
+        }
+
+        // Register the remote buffer with the local memory region
+        let entry = self.registered_memory_map.get_mut(&local_region).unwrap();
+
+        // Add the remote buffer to the set if it doesn't exist
+        if !entry.contains(remote_buffer) {
+            entry.insert(remote_buffer.clone());
         }
         Ok(())
     }
@@ -278,6 +319,7 @@ impl Actor for RdmaManagerActor {
         Ok(Self {
             qp_map: HashMap::new(),
             work_id_map: HashMap::new(),
+            registered_memory_map: HashMap::new(),
             domain,
         })
     }
@@ -296,6 +338,35 @@ impl Actor for RdmaManagerActor {
 #[async_trait]
 #[hyperactor::forward(RdmaManagerMessage)]
 impl RdmaManagerMessageHandler for RdmaManagerActor {
+    async fn register_local_memory(
+        &mut self,
+        _this: &Instance<Self>,
+        local_memory_region: RdmaMemoryRegionView,
+    ) -> Result<(), anyhow::Error> {
+        tracing::debug!("registering local memory region {:?}", local_memory_region);
+
+        if self
+            .registered_memory_map
+            .contains_key(&local_memory_region)
+        {
+            // TODO - what is the right behavior here? If the user tries to register the same memory region twice,
+            // it could be that they're just creating an RdmaBuffer multiple times, which we should allow.
+            // But dropping one of the RdmaBuffers drops all of them from the manager's perspective.
+            tracing::info!(
+                "note - memory region {:?} is has already been registered as an RdmaBuffer",
+                local_memory_region
+            );
+        }
+
+        // Initialize an empty HashSet in registered_memory_map for this region
+        self.registered_memory_map
+            .entry(local_memory_region.clone())
+            .or_insert_with(HashSet::new);
+
+        tracing::debug!("done registering local memory region");
+        Ok(())
+    }
+
     /// Checks if a connection exists with another actor
     ///
     /// # Arguments
@@ -324,7 +395,7 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         other: ActorRef<RdmaManagerActor>,
         endpoint: RdmaQpInfo,
     ) -> Result<(), anyhow::Error> {
-        tracing::debug!("connecting with {:?}", other);
+        tracing::info!("connecting with {:?}", other);
         if !self.qp_map.contains_key(&other.actor_id().clone()) {
             self.initialize_qp(other.clone()).await?;
         }
@@ -353,6 +424,8 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         local_memory_region: RdmaMemoryRegionView,
         remote_buffer: RemoteBufferRef,
     ) -> Result<u64, anyhow::Error> {
+        self.maybe_register_remote_memory_region(local_memory_region.clone(), &remote_buffer)
+            .await?;
         let work_id = self.next_work_id(&remote_buffer).await;
 
         let qp = self
@@ -399,6 +472,8 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         local_memory_region: RdmaMemoryRegionView,
         remote_buffer: RemoteBufferRef,
     ) -> Result<u64, anyhow::Error> {
+        self.maybe_register_remote_memory_region(local_memory_region.clone(), &remote_buffer)
+            .await?;
         let work_id = self.next_work_id(&remote_buffer).await;
 
         let qp = self
@@ -474,6 +549,22 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         Ok(())
     }
 
+    /// Drops all registered memory regions associated with this manager actor.
+    async fn drop_memory_region(
+        &mut self,
+        _this: &Instance<Self>,
+        local_memory_region: RdmaMemoryRegionView,
+    ) -> Result<(), anyhow::Error> {
+        tracing::debug!("dropping memory region {:?}", local_memory_region);
+
+        if let Some(buffers) = self.registered_memory_map.remove(&local_memory_region) {
+            for buffer in buffers {
+                self.work_id_map.remove(&buffer);
+            }
+        }
+        tracing::debug!("memory region dropped");
+        Ok(())
+    }
     /// Gets connection information for establishing an RDMA connection
     ///
     /// # Arguments
@@ -520,7 +611,6 @@ mod tests {
     use hyperactor_mesh::ActorMesh;
     use hyperactor_mesh::Mesh;
     use hyperactor_mesh::ProcMesh;
-    use hyperactor_mesh::alloc::AllocConstraints;
     use hyperactor_mesh::alloc::AllocSpec;
     use hyperactor_mesh::alloc::Allocator;
     use hyperactor_mesh::alloc::LocalAllocator;
@@ -713,6 +803,134 @@ mod tests {
         }
     }
 
+    // Test that memory region registration works correctly
+    // TODO - this currently fails, as handling Actor level errors hasn't been implemented
+    // #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_register_local_memory() -> Result<(), anyhow::Error> {
+        let mut env = RdmaManagerTestEnv::setup(32, None).await?;
+
+        let client = env.proc_mesh_1.client();
+        let region = RdmaMemoryRegionView::from_boxed_slice(&env.buffer1);
+
+        // Register the memory region
+        env.actor_1
+            .register_local_memory(client, region.clone())
+            .await?;
+
+        tracing::debug!("trying to register again");
+        // Try to register the same region again - should fail
+        let result = env
+            .actor_1
+            .register_local_memory(client, region.clone())
+            .await;
+
+        // for some reason, the above await doesn't actually wait for the result to be ready.
+        tracing::debug!("result is error?: {:?}", result.is_err());
+        RealClock.sleep(Duration::from_millis(5)).await;
+        tracing::debug!("result is: {:?}", result);
+        assert!(
+            result.is_err(),
+            "registering the same memory region twice should fail"
+        );
+
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_drop() -> Result<(), anyhow::Error> {
+        let mut env = RdmaManagerTestEnv::setup(32, None).await?;
+
+        let client = env.proc_mesh_1.client();
+        let region = RdmaMemoryRegionView::from_boxed_slice(&env.buffer1);
+
+        // Register the memory region
+        env.actor_1
+            .register_local_memory(client, region.clone())
+            .await?;
+
+        // Drop the memory region
+        env.actor_1
+            .drop_memory_region(client, region.clone())
+            .await?;
+
+        // Try to register it again - should work since it was dropped
+        env.actor_1.register_local_memory(client, region).await?;
+
+        Ok(())
+    }
+
+    // Test that memory registration and remote buffer tracking works
+    // TODO - this currently fails, as handling Actor level errors hasn't been implemented
+    // #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_remote_buffer_tracking() -> Result<(), anyhow::Error> {
+        let mut env = RdmaManagerTestEnv::setup(32, None).await?;
+        env.initialize().await?;
+
+        let client = env.proc_mesh_1.client();
+
+        // Register the memory region
+        let local_region = RdmaMemoryRegionView::from_boxed_slice(&env.buffer1);
+        env.actor_1
+            .register_local_memory(client, local_region.clone())
+            .await?;
+
+        // Create a remote buffer reference
+        let remote_buffer = RemoteBufferRef {
+            manager: env.actor_2.clone(),
+            mr: RdmaMemoryRegionView::from_boxed_slice(&env.buffer2),
+            rkey: env.rkey2,
+        };
+
+        // Use the remote buffer with put (which should track it)
+        let work_id = env
+            .actor_1
+            .put(client, local_region.clone(), remote_buffer.clone())
+            .await?;
+
+        // Wait for completion
+        let completed = env
+            .wait_for_completion(client, env.actor_1.clone(), env.actor_2.clone(), work_id, 5)
+            .await?;
+        assert!(completed, "rdma write operation did not complete");
+
+        // Drop the memory region (which should clean up the remote buffer tracking)
+        env.actor_1.drop_memory_region(client, local_region).await?;
+
+        Ok(())
+    }
+
+    // Test that invalid memory regions are handled correctly
+    // TODO - this currently fails, as handling Actor level errors hasn't been implemented
+    // #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_invalid_memory_region() -> Result<(), anyhow::Error> {
+        let mut env = RdmaManagerTestEnv::setup(32, None).await?;
+        env.initialize().await?;
+
+        let client = env.proc_mesh_1.client();
+
+        // Create an unregistered memory region
+        let unregistered_region = RdmaMemoryRegionView::new(0x1000, 32);
+
+        // Create a remote buffer reference
+        let remote_buffer = RemoteBufferRef {
+            manager: env.actor_2.clone(),
+            mr: RdmaMemoryRegionView::from_boxed_slice(&env.buffer2),
+            rkey: env.rkey2,
+        };
+
+        // Try to use the unregistered region - should fail
+        let result = env
+            .actor_1
+            .put(client, unregistered_region, remote_buffer)
+            .await;
+        assert!(
+            result.is_err(),
+            "using an unregistered memory region should fail"
+        );
+
+        Ok(())
+    }
+
     // Test that RDMA write can be performed between two actors on the same device.
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_rdma_write_loopback() -> Result<(), anyhow::Error> {
@@ -722,6 +940,13 @@ mod tests {
         env.initialize().await?;
 
         let client = env.proc_mesh_1.client();
+
+        // Register the local memory regions
+        let local_region = RdmaMemoryRegionView::from_boxed_slice(&env.buffer1);
+        env.actor_1
+            .register_local_memory(client, local_region.clone())
+            .await?;
+
         // Get work ID for the operation
         let remote_buffer = RemoteBufferRef {
             manager: env.actor_2.clone(),
@@ -746,7 +971,7 @@ mod tests {
     }
 
     // Test that RDMA read can be performed between two actors on the same device.
-    #[timed_test::async_timed_test(timeout_secs = 60)]
+    #[timed_test::async_timed_test(timeout_secs = 15)]
     async fn test_rdma_read_loopback() -> Result<(), anyhow::Error> {
         const BSIZE: usize = 32;
 
@@ -754,12 +979,20 @@ mod tests {
         env.initialize().await?;
 
         let client = env.proc_mesh_2.client();
-        // Get work ID for the operation
+
+        // Register the local memory regions
+        let local_region = RdmaMemoryRegionView::from_boxed_slice(&env.buffer2);
+        env.actor_2
+            .register_local_memory(client, local_region.clone())
+            .await?;
+
         let remote_buffer = RemoteBufferRef {
             manager: env.actor_1.clone(),
             mr: RdmaMemoryRegionView::from_boxed_slice(&env.buffer1),
             rkey: env.rkey1,
         };
+
+        // Get work ID for the operation
         let work_id = env
             .actor_2
             .fetch(
@@ -793,6 +1026,13 @@ mod tests {
         env.initialize().await?;
 
         let client = env.proc_mesh_2.client();
+
+        // Register the memory region
+        let local_region = RdmaMemoryRegionView::from_boxed_slice(&env.buffer2);
+        env.actor_2
+            .register_local_memory(client, local_region.clone())
+            .await?;
+
         // Get work ID for the operation
         let remote_buffer = RemoteBufferRef {
             manager: env.actor_1.clone(),
@@ -831,6 +1071,12 @@ mod tests {
         env.initialize().await?;
 
         let client = env.proc_mesh_1.client();
+        // Register the memory region
+        let local_region = RdmaMemoryRegionView::from_boxed_slice(&env.buffer1);
+        env.actor_1
+            .register_local_memory(client, local_region.clone())
+            .await?;
+
         // Get work ID for the operation
         let remote_buffer = RemoteBufferRef {
             manager: env.actor_2.clone(),
