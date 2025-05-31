@@ -359,7 +359,10 @@ macro_rules! select {
 
 /// A range of indices, with a stride. Ranges are convertible from
 /// native Rust ranges.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Deriving `Eq` and `Ord` is sound because all fields are `Ord` and
+/// comparison is purely structural over `(start, end, step)`.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, PartialOrd, Ord)]
 pub struct Range(pub usize, pub Option<usize>, pub usize);
 
 impl Range {
