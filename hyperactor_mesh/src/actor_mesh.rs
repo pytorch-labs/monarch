@@ -18,15 +18,14 @@ use hyperactor::Message;
 use hyperactor::Named;
 use hyperactor::PortHandle;
 use hyperactor::RemoteHandles;
-use hyperactor::RemoteMessage;
 use hyperactor::actor::RemoteActor;
 use hyperactor::mailbox::MailboxSenderError;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
+use hyperactor::message::Castable;
 use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::message::Unbind;
-use hyperactor::message::Unbound;
 use ndslice::Range;
 use ndslice::Selection;
 use ndslice::Shape;
@@ -102,7 +101,7 @@ impl<'a, A: RemoteActor> ActorMesh<'a, A> {
     /// Cast an [`M`]-typed message to the ranks selected by `sel`
     /// in this ActorMesh.
     #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `CastError`.
-    pub fn cast<M: RemoteMessage + Clone>(
+    pub fn cast<M: Castable + Clone>(
         &self,
         selection: Selection,
         message: M,
@@ -139,6 +138,11 @@ impl<'a, A: RemoteActor> ActorMesh<'a, A> {
         )?;
 
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn proc_mesh(&self) -> &ProcMesh {
+        &self.proc_mesh
     }
 }
 
@@ -216,16 +220,17 @@ pub struct Cast<M> {
     pub message: M,
 }
 
-impl<M> Unbind for Cast<M> {
-    fn unbind(self) -> anyhow::Result<Unbound<Self>> {
-        let mut bindings = Bindings::default();
-        bindings.insert([&self.rank])?;
-        Ok(Unbound::new(self, bindings))
+impl<M: Unbind> Unbind for Cast<M> {
+    fn bindings(&self) -> anyhow::Result<Bindings> {
+        let mut bindings = self.message.bindings()?;
+        bindings.push(&self.rank)?;
+        Ok(bindings)
     }
 }
 
-impl<M> Bind for Cast<M> {
+impl<M: Bind> Bind for Cast<M> {
     fn bind(mut self, bindings: &Bindings) -> anyhow::Result<Self> {
+        self.message = self.message.bind(bindings)?;
         bindings.rebind([&mut self.rank].into_iter())?;
         Ok(self)
     }
@@ -265,9 +270,11 @@ pub(crate) mod test_util {
     use std::collections::VecDeque;
 
     use anyhow::ensure;
+    use hyperactor::Bind;
     use hyperactor::Handler;
     use hyperactor::Instance;
     use hyperactor::PortRef;
+    use hyperactor::Unbind;
 
     use super::*;
 
@@ -277,8 +284,8 @@ pub(crate) mod test_util {
     // mesh test suite.
     #[derive(Debug)]
     #[hyperactor::export_spawn(
-        Cast<(String, PortRef<String>)>, Cast<GetRank>, Cast<Error>, Relay,
-        IndexedErasedUnbound<Cast<(String, PortRef<String>)>>,
+        Cast<Echo>, Cast<GetRank>, Cast<Error>, Relay,
+        IndexedErasedUnbound<Cast<Echo>>,
         IndexedErasedUnbound<Cast<GetRank>>,
         IndexedErasedUnbound<Cast<Error>>,
     )]
@@ -293,7 +300,7 @@ pub(crate) mod test_util {
         }
     }
 
-    #[derive(Debug, Serialize, Deserialize, Named, Clone)]
+    #[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
     pub struct GetRank(pub PortRef<usize>);
 
     #[async_trait]
@@ -312,20 +319,23 @@ pub(crate) mod test_util {
         }
     }
 
+    #[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
+    pub struct Echo(pub String, pub PortRef<String>);
+
     #[async_trait]
-    impl Handler<Cast<(String, PortRef<String>)>> for TestActor {
+    impl Handler<Cast<Echo>> for TestActor {
         async fn handle(
             &mut self,
             this: &Instance<Self>,
-            Cast { message, .. }: Cast<(String, PortRef<String>)>,
+            Cast { message, .. }: Cast<Echo>,
         ) -> Result<(), anyhow::Error> {
-            let (message, reply_port) = message;
+            let Echo(message, reply_port) = message;
             reply_port.send(this, message)?;
             Ok(())
         }
     }
 
-    #[derive(Debug, Serialize, Deserialize, Named, Clone)]
+    #[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
     pub struct Error(pub String);
 
     #[async_trait]
@@ -342,7 +352,7 @@ pub(crate) mod test_util {
         }
     }
 
-    #[derive(Debug, Serialize, Deserialize, Named, Clone)]
+    #[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
     pub struct Relay(pub usize, pub VecDeque<PortRef<Relay>>);
 
     #[async_trait]
@@ -362,6 +372,14 @@ pub(crate) mod test_util {
 
 #[cfg(test)]
 mod tests {
+
+    use hyperactor::Bind;
+    use hyperactor::PortRef;
+    use hyperactor::Unbind;
+    use hyperactor::id;
+    use hyperactor::message::ErasedUnbound;
+    use hyperactor::message::Unbound;
+    use ndslice::shape;
 
     use super::*;
 
@@ -398,7 +416,7 @@ mod tests {
                 let actor_mesh: ActorMesh<TestActor> = proc_mesh.spawn("echo", &()).await.unwrap();
                 let (reply_handle, mut reply_receiver) = actor_mesh.open_port();
                 actor_mesh
-                    .cast(all(true_()), ("Hello".to_string(), reply_handle.bind()))
+                    .cast(all(true_()), Echo("Hello".to_string(), reply_handle.bind()))
                     .unwrap();
                 for _ in 0..4 {
                     assert_eq!(&reply_receiver.recv().await.unwrap(), "Hello");
@@ -562,5 +580,69 @@ mod tests {
         actor_mesh_test_suite!(ProcessAllocator::new(Command::new(
             buck_resources::get("monarch/hyperactor_mesh/bootstrap").unwrap()
         )));
+    }
+
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
+    struct MyNamedStruct {
+        field0: u64,
+        field1: String,
+        field2: PortRef<String>,
+        field3: bool,
+        field4: hyperactor::PortRef<u64>,
+    }
+
+    #[test]
+    fn test_cast_bind_unbind() {
+        let port_id2 = id!(world[0].client[0][2]);
+        let port_id4 = id!(world[1].client[0][4]);
+        let message = MyNamedStruct {
+            field0: 0,
+            field1: "hello".to_string(),
+            field2: PortRef::attest(port_id2.clone()),
+            field3: true,
+            field4: PortRef::attest(port_id4.clone()),
+        };
+
+        let rank = CastRank(3);
+        let cast = Cast {
+            rank: rank.clone(),
+            shape: shape! { replica = 2, host = 4, gpu = 8 },
+            message: message.clone(),
+        };
+
+        // Verify Unbind is implemented correctly.
+        let bindings = cast.bindings().unwrap();
+        let mut expected = Bindings::default();
+        expected
+            .insert(&[port_id2.clone(), port_id4.clone()])
+            .unwrap();
+        expected.push(&cast.rank).unwrap();
+        assert_eq!(bindings, expected);
+
+        // Verify Bind is implemented correctly.
+        let new_rank = CastRank(11);
+        assert_ne!(rank.0, new_rank.0);
+        let new_port_id2 = id!(world[0].comm[0][213]);
+        assert_ne!(port_id2, new_port_id2);
+        let new_port_id4 = id!(world[1].comm[0][423]);
+        assert_ne!(port_id4, new_port_id4);
+        assert_ne!(new_port_id2, new_port_id4);
+        let mut new_bindings = Bindings::default();
+        new_bindings
+            .insert(&[new_port_id2.clone(), new_port_id4.clone()])
+            .unwrap();
+        new_bindings.push(&new_rank).unwrap();
+        let new_cast = cast.bind(&new_bindings).unwrap();
+        assert_eq!(
+            new_cast.message,
+            MyNamedStruct {
+                field0: 0,
+                field1: "hello".to_string(),
+                field2: PortRef::attest(new_port_id2.clone()),
+                field3: true,
+                field4: PortRef::attest(new_port_id4.clone()),
+            },
+        );
+        assert_eq!(new_cast.rank.0, new_rank.0);
     }
 }
