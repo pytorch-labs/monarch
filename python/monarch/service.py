@@ -256,7 +256,7 @@ class Endpoint(Generic[P, R]):
     def call_one(self, *args: P.args, **kwargs: P.kwargs) -> Future[R]:
         if self._actor_mesh.len != 1:
             raise ValueError(
-                f"Can only use 'call' on a single Actor but this actor has shape {self._actor_mesh._shape}"
+                f"Can only use 'call_one' on a single Actor but this actor has shape {self._actor_mesh._shape}"
             )
         return self.choose(*args, **kwargs)
 
@@ -493,9 +493,13 @@ class _Actor:
         except Exception as e:
             traceback.print_exc()
             s = ServiceCallFailedException(e)
+
+            # The exception is delivered to exactly one of:
+            # (1) our caller, (2) our supervisor
             if port is not None:
                 port.send("exception", s)
-            raise s from None
+            else:
+                raise s from None
 
     async def run_async(self, ctx, coroutine):
         _context.set(ctx)
