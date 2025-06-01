@@ -8,7 +8,11 @@
 
 use std::sync::Arc;
 
+use hyperactor::WorldId;
 use hyperactor_extension::alloc::PyAlloc;
+use hyperactor_mesh::alloc::Alloc;
+use hyperactor_mesh::proc_mesh::ProcEvent;
+use hyperactor_mesh::proc_mesh::ProcEvents;
 use hyperactor_mesh::proc_mesh::ProcMesh;
 use hyperactor_mesh::proc_mesh::SharedSpawnable;
 use monarch_types::PickledPyObject;
@@ -26,6 +30,7 @@ use crate::runtime::signal_safe_block_on;
 )]
 pub struct PyProcMesh {
     pub(super) inner: Arc<ProcMesh>,
+    monitor: tokio::task::JoinHandle<()>,
 }
 
 fn allocate_proc_mesh<'py>(py: Python<'py>, alloc: &PyAlloc) -> PyResult<Bound<'py, PyAny>> {
@@ -38,12 +43,11 @@ fn allocate_proc_mesh<'py>(py: Python<'py>, alloc: &PyAlloc) -> PyResult<Bound<'
         }
     };
     pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        let world_id = alloc.world_id().clone();
         let mesh = ProcMesh::allocate(alloc)
             .await
             .map_err(|err| PyException::new_err(err.to_string()))?;
-        Ok(PyProcMesh {
-            inner: Arc::new(mesh),
-        })
+        Ok(PyProcMesh::monitored(mesh, world_id))
     })
 }
 
@@ -57,13 +61,44 @@ fn allocate_proc_mesh_blocking<'py>(py: Python<'py>, alloc: &PyAlloc) -> PyResul
         }
     };
     signal_safe_block_on(py, async move {
+        let world_id = alloc.world_id().clone();
         let mesh = ProcMesh::allocate(alloc)
             .await
             .map_err(|err| PyException::new_err(err.to_string()))?;
-        Ok(PyProcMesh {
-            inner: Arc::new(mesh),
-        })
+        Ok(PyProcMesh::monitored(mesh, world_id))
     })?
+}
+
+impl PyProcMesh {
+    /// Create a new [`PyProcMesh`] with a monitor that crashes the
+    /// process on any proc failure.
+    fn monitored(mut proc_mesh: ProcMesh, world_id: WorldId) -> Self {
+        let monitor = tokio::spawn(Self::monitor_proc_mesh(
+            proc_mesh.events().unwrap(),
+            world_id,
+        ));
+        Self {
+            inner: Arc::new(proc_mesh),
+            monitor,
+        }
+    }
+
+    /// Monitor the proc mesh for crashes. If a proc crashes, we print the reason
+    /// to stderr and exit with code 1.
+    async fn monitor_proc_mesh(mut events: ProcEvents, world_id: WorldId) {
+        while let Some(event) = events.next().await {
+            if let ProcEvent::Crashed(rank, reason) = event {
+                eprintln!("ProcMesh {} rank {} crashed: {}", world_id, rank, reason);
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
+impl Drop for PyProcMesh {
+    fn drop(&mut self) {
+        self.monitor.abort();
+    }
 }
 
 #[pymethods]

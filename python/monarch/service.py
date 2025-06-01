@@ -256,7 +256,7 @@ class Endpoint(Generic[P, R]):
     def call_one(self, *args: P.args, **kwargs: P.kwargs) -> Future[R]:
         if self._actor_mesh.len != 1:
             raise ValueError(
-                f"Can only use 'call' on a single Actor but this actor has shape {self._actor_mesh._shape}"
+                f"Can only use 'call_one' on a single Actor but this actor has shape {self._actor_mesh._shape}"
             )
         return self.choose(*args, **kwargs)
 
