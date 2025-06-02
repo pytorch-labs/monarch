@@ -50,6 +50,7 @@ use crate::WorldId;
 use crate::channel;
 use crate::channel::ChannelAddr;
 use crate::channel::Rx;
+use crate::channel::sim::AddressProxyPair;
 use crate::channel::sim::MessageDeliveryEvent;
 use crate::channel::sim::SimAddr;
 use crate::clock::Clock;
@@ -589,14 +590,18 @@ impl Event for SimOperation {
 /// this is a self-handlable message.
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
 pub struct ProxyMessage {
-    sender_addr: Option<SimAddr>,
-    dest_addr: Option<SimAddr>,
+    sender_addr: Option<AddressProxyPair>,
+    dest_addr: Option<AddressProxyPair>,
     data: Serialized,
 }
 
 impl ProxyMessage {
     /// Creates a new ForwardMessage.
-    pub fn new(sender_addr: Option<SimAddr>, dest_addr: Option<SimAddr>, data: Serialized) -> Self {
+    pub fn new(
+        sender_addr: Option<AddressProxyPair>,
+        dest_addr: Option<AddressProxyPair>,
+        data: Serialized,
+    ) -> Self {
         Self {
             sender_addr,
             dest_addr,
@@ -1349,9 +1354,15 @@ edges:
         let src_to_dst_msg = Serialized::serialize(&"hola".to_string()).unwrap();
         let src = random_abstract_addr();
         let dst = random_abstract_addr();
-        let src_sim = SimAddr::new(src.clone(), proxy_addr.clone()).unwrap();
-        let dst_sim = SimAddr::new(dst.clone(), proxy_addr.clone()).unwrap();
-        let forward_message = ProxyMessage::new(Some(src_sim), Some(dst_sim), src_to_dst_msg);
+        let src_and_proxy = Some(AddressProxyPair {
+            address: src.clone(),
+            proxy: proxy_addr.clone(),
+        });
+        let dst_and_proxy = AddressProxyPair {
+            address: dst.clone(),
+            proxy: proxy_addr.clone(),
+        };
+        let forward_message = ProxyMessage::new(src_and_proxy, Some(dst_and_proxy), src_to_dst_msg);
         let external_message =
             MessageEnvelope::new_unknown(port_id, Serialized::serialize(&forward_message).unwrap());
         tx.try_post(external_message, oneshot::channel().0).unwrap();

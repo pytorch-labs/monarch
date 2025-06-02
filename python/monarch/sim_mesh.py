@@ -82,7 +82,7 @@ def sim_mesh(
     client_proc_id = "client[0]"
     client_proc: Proc = init_proc(
         proc_id=client_proc_id,
-        bootstrap_addr=bootstrap.bootstrap_addr,
+        bootstrap_addr=bootstrap.client_bootstrap_addr,
         timeout=SIM_MESH_CLIENT_TIMEOUT,  # unused
         supervision_update_interval=SIM_MESH_CLIENT_SUPERVISION_UPDATE_INTERVAL,
         listen_addr=bootstrap.client_listen_addr,
@@ -202,6 +202,9 @@ class Bootstrap:
         proxy_addr = proxy_addr or f"unix!@{_random_id()}-proxy"
         self.bootstrap_addr: str = f"sim!unix!@system,{proxy_addr}"
         self.client_listen_addr: str = f"sim!unix!@client,{proxy_addr}"
+        self.client_bootstrap_addr: str = (
+            f"sim!unix!@client,{proxy_addr},unix!@system,{proxy_addr}"
+        )
         bootstrap_simulator_backend(self.bootstrap_addr, world_size)
 
         self._simulator_client = SimulatorClient(proxy_addr)
@@ -339,7 +342,7 @@ def sim_mesh_provider(
     client_proc_id = "client[0]"
     client_proc: Proc = init_proc(
         proc_id=client_proc_id,
-        bootstrap_addr=bootstrap.bootstrap_addr,
+        bootstrap_addr=bootstrap.client_bootstrap_addr,
         timeout=SIM_MESH_CLIENT_TIMEOUT,  # unused
         supervision_update_interval=SIM_MESH_CLIENT_SUPERVISION_UPDATE_INTERVAL,
         listen_addr=bootstrap.client_listen_addr,
