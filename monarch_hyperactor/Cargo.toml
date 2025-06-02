@@ -17,6 +17,7 @@ hyperactor_extension = { version = "0.0.0", path = "../hyperactor_extension" }
 hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }
 hyperactor_multiprocess = { version = "0.0.0", path = "../hyperactor_multiprocess" }
 hyperactor_telemetry = { version = "0.0.0", path = "../hyperactor_telemetry" }
+monarch_rdma = { version = "0.0.0", path = "../monarch_rdma" }
 monarch_types = { version = "0.0.0", path = "../monarch_types" }
 ndslice = { version = "0.0.0", path = "../ndslice" }
 pyo3 = { version = "0.22.6", features = ["anyhow"] }

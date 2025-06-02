@@ -325,7 +325,7 @@ impl RdmaQueuePair {
     /// * Completion queue (CQ) creation fails
     /// * Queue pair (QP) creation fails
     pub fn new(domain: &RdmaDomain) -> Result<Self> {
-        tracing::info!("creating an RdmaQueuePair from config {}", domain.config);
+        tracing::debug!("creating an RdmaQueuePair from config {}", domain.config);
         // SAFETY:
         // This code uses unsafe FFI calls to interact with the RDMA device, but is safe because:
         // - All pointers are properly initialized and checked for null before use

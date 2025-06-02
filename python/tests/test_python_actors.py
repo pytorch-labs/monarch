@@ -91,7 +91,7 @@ class ParameterClient(Actor):
     @endpoint
     async def upload(self, tensor):
         gh = await self.server.grad_handle.call_one()
-        await gh.write(tensor)
+        await gh.write_from(tensor)
 
     @endpoint
     async def download(self):
@@ -227,7 +227,7 @@ async def test_rank_size():
 class TrainerActor(Actor):
     def __init__(self):
         super().__init__()
-        self.trainer = torch.nn.Linear(10, 10).to("cuda")
+        self.trainer = torch.nn.Linear(10, 10).to("cpu")
         self.trainer.weight.data.zero_()
 
     @endpoint
