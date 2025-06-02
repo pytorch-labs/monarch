@@ -2965,7 +2965,8 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_split_port_id_sum_reducer() {
-        std::env::set_var("HYPERACTOR_SPLIT_MAX_BUFFER_SIZE", "1");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("HYPERACTOR_SPLIT_MAX_BUFFER_SIZE", "1") };
         set_tracing_env_filter(Level::INFO);
 
         let sum_accumulator = accum::sum::<u64>();

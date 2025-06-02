@@ -97,7 +97,7 @@ impl LocalAlloc {
     }
 
     /// A chaos monkey that can be used to stop procs at random.
-    pub(crate) fn chaos_monkey(&self) -> impl Fn(usize, ProcStopReason) {
+    pub(crate) fn chaos_monkey(&self) -> impl Fn(usize, ProcStopReason) + use<> {
         let todo_tx = self.todo_tx.clone();
         move |rank, reason| {
             todo_tx.send(Action::Stop(rank, reason)).unwrap();
@@ -105,7 +105,7 @@ impl LocalAlloc {
     }
 
     /// A function to shut down the alloc for testing purposes.
-    pub(crate) fn stopper(&self) -> impl Fn() {
+    pub(crate) fn stopper(&self) -> impl Fn() + use<> {
         let todo_tx = self.todo_tx.clone();
         let size = self.size();
         move || {

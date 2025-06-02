@@ -213,8 +213,10 @@ mod tests {
     #[test]
     fn test_from_env() {
         // Set environment variables
-        std::env::set_var("HYPERACTOR_CODEC_MAX_FRAME_LENGTH", "1024");
-        std::env::set_var("HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT_SECS", "60");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("HYPERACTOR_CODEC_MAX_FRAME_LENGTH", "1024") };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT_SECS", "60") };
 
         let config = Config::from_env();
 
@@ -223,8 +225,10 @@ mod tests {
         assert_eq!(config.message_ack_time_interval, Duration::from_millis(500)); // Default value
 
         // Clean up
-        std::env::remove_var("HYPERACTOR_CODEC_MAX_FRAME_LENGTH");
-        std::env::remove_var("HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT_SECS");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("HYPERACTOR_CODEC_MAX_FRAME_LENGTH") };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT_SECS") };
     }
 
     #[test]
