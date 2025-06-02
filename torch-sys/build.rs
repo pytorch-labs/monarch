@@ -195,7 +195,7 @@ fn main() {
     println!("cargo::rustc-link-lib=cudart");
 
     // Set cargo metadata to inform dependent binaries about how to set their
-    // RPATH (see monarch_worker/build.rs for an example).
+    // RPATH (see monarch_tensor_worker/build.rs for an example).
     println!(
         "cargo::metadata=LIB_PATH={}",
         libtorch_lib_dir.clone().unwrap().display()

@@ -7,7 +7,7 @@
  */
 
 //! A binary to launch the system, host, or controller actors. Controller actors should be
-//! launched through a separate binary that is defined in crate [`monarch_worker`]
+//! launched through a separate binary that is defined in crate [`monarch_tensor_worker`]
 //! due to Python dependency for workers.
 
 use std::os::fd::FromRawFd;

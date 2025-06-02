@@ -22,17 +22,19 @@ if IN_PAR:
     # current executable.
     import __main__ as main_module  # @manual
 
-    if hasattr(main_module, "__MONARCH_WORKER_ENV__"):
+    if hasattr(main_module, "__MONARCH_TENSOR_WORKER_ENV__"):
         PYTHON_EXECUTABLE = os.environ["FB_XAR_INVOKED_NAME"]
     else:
         try:
-            with importlib.resources.path("monarch_worker_env", "worker_env") as path:
+            with importlib.resources.path(
+                "monarch_tensor_worker_env", "worker_env"
+            ) as path:
                 if not path.exists():
                     raise ImportError()
                 PYTHON_EXECUTABLE = str(path)
         except ImportError:
             raise ImportError(
-                "Monarch worker env not found, please define a custom 'monarch_worker_env' or "
+                "Monarch worker env not found, please define a custom 'monarch_tensor_worker_env' or "
                 "add '//monarch/python/monarch_supervisor/worker:default_worker_env' "
                 "to your binary dependencies in TARGETS"
             )

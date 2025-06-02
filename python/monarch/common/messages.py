@@ -21,7 +21,7 @@ from typing import (
     TYPE_CHECKING,
 )
 
-from monarch._rust_bindings.monarch_extension import worker
+from monarch._rust_bindings.monarch_extension import tensor_worker
 from monarch.common.function import ResolvableFromCloudpickle, ResolvableFunction
 from monarch.common.invocation import DeviceException, RemoteException
 from monarch.common.reference import Referenceable
@@ -44,13 +44,13 @@ Dims = Tuple[str, ...]
 
 def _to_rust_function(
     x: ResolvableFunction,
-) -> worker.ResolvableFunction:
+) -> tensor_worker.ResolvableFunction:
     if isinstance(x, ResolvableFromCloudpickle):
-        return worker.Cloudpickle(bytes=x.data)
-    return worker.FunctionPath(path=str(x))
+        return tensor_worker.Cloudpickle(bytes=x.data)
+    return tensor_worker.FunctionPath(path=str(x))
 
 
-def _result_to_references(result: object) -> List[worker.Ref | None]:
+def _result_to_references(result: object) -> List[tensor_worker.Ref | None]:
     """
     Flatten the result pytree.
     Only keep the referenceables and leave the rest as None.
@@ -60,15 +60,15 @@ def _result_to_references(result: object) -> List[worker.Ref | None]:
     leaves = flattener(result, lambda x: True)(result)
     return [
         _ref(leaf)
-        if isinstance(leaf, Referenceable) or isinstance(leaf, worker.Ref)
+        if isinstance(leaf, Referenceable) or isinstance(leaf, tensor_worker.Ref)
         else None
         for leaf in leaves
     ]
 
 
-def _ref(r: Referenceable | worker.Ref) -> worker.Ref:
+def _ref(r: Referenceable | tensor_worker.Ref) -> tensor_worker.Ref:
     if isinstance(r, Referenceable):
-        return worker.Ref(id=none_throws(r.ref))
+        return tensor_worker.Ref(id=none_throws(r.ref))
     return r
 
 
@@ -77,7 +77,7 @@ def _ref(r: Referenceable | worker.Ref) -> worker.Ref:
 # Preferring this over a massive if else to keep everything co-located and
 # easier to identify drift.
 class SupportsToRustMessage(Protocol):
-    def to_rust_message(self) -> worker.WorkerMessage: ...
+    def to_rust_message(self) -> tensor_worker.WorkerMessage: ...
 
 
 class CreateDeviceMesh(NamedTuple):
@@ -85,9 +85,9 @@ class CreateDeviceMesh(NamedTuple):
     names: Dims
     ranks: NDSlice
 
-    def to_rust_message(self) -> worker.WorkerMessage:
-        return worker.CreateDeviceMesh(
-            result=worker.Ref(id=self.result.ref),
+    def to_rust_message(self) -> tensor_worker.WorkerMessage:
+        return tensor_worker.CreateDeviceMesh(
+            result=tensor_worker.Ref(id=self.result.ref),
             names=self.names,
             ranks=NDSlice(
                 offset=self.ranks.offset,
@@ -101,13 +101,13 @@ class CreateStream(NamedTuple):
     result: StreamRef
     default: bool
 
-    def to_rust_message(self) -> worker.WorkerMessage:
-        return worker.CreateStream(
-            id=worker.StreamRef(id=self.result.ref),
+    def to_rust_message(self) -> tensor_worker.WorkerMessage:
+        return tensor_worker.CreateStream(
+            id=tensor_worker.StreamRef(id=self.result.ref),
             stream_creation=(
-                worker.StreamCreationMode.UseDefaultStream
+                tensor_worker.StreamCreationMode.UseDefaultStream
                 if self.default
-                else worker.StreamCreationMode.CreateNewStream
+                else tensor_worker.StreamCreationMode.CreateNewStream
             ),
         )
 
@@ -117,10 +117,10 @@ class CreateRemoteProcessGroup(NamedTuple):
     device_mesh: DeviceMesh
     dims: Dims
 
-    def to_rust_message(self) -> worker.WorkerMessage:
-        return worker.CreateRemoteProcessGroup(
-            result=worker.Ref(id=none_throws(self.result.ref)),
-            device_mesh=worker.Ref(id=self.device_mesh.ref),
+    def to_rust_message(self) -> tensor_worker.WorkerMessage:
+        return tensor_worker.CreateRemoteProcessGroup(
+            result=tensor_worker.Ref(id=none_throws(self.result.ref)),
+            device_mesh=tensor_worker.Ref(id=self.device_mesh.ref),
             dims=self.dims,
         )
 
@@ -128,7 +128,7 @@ class CreateRemoteProcessGroup(NamedTuple):
 class CallFunction(NamedTuple):
     ident: int
     result: object  # pytree with tensors in it
-    mutates: Tuple[Tensor | worker.Ref, ...]
+    mutates: Tuple[Tensor | tensor_worker.Ref, ...]
     function: ResolvableFunction
     args: Tuple[object, ...]
     kwargs: Dict[str, object]
@@ -136,17 +136,17 @@ class CallFunction(NamedTuple):
     device_mesh: DeviceMesh
     remote_process_groups: List[RemoteProcessGroup]
 
-    def to_rust_message(self) -> worker.WorkerMessage:
-        return worker.CallFunction(
+    def to_rust_message(self) -> tensor_worker.WorkerMessage:
+        return tensor_worker.CallFunction(
             seq=self.ident,
             results=_result_to_references(self.result),
             mutates=[_ref(r) for r in self.mutates],
             function=_to_rust_function(self.function),
             args=self.args,
             kwargs=self.kwargs,
-            stream=worker.StreamRef(id=self.stream.ref),
+            stream=tensor_worker.StreamRef(id=self.stream.ref),
             remote_process_groups=[
-                worker.Ref(id=none_throws(remote_process_group.ref))
+                tensor_worker.Ref(id=none_throws(remote_process_group.ref))
                 for remote_process_group in self.remote_process_groups
             ],
         )
@@ -156,7 +156,7 @@ class Exit(NamedTuple):
     destroy_pg: bool
     error: Optional[RemoteException | DeviceException | Exception]
 
-    def to_rust_message(self) -> worker.WorkerMessage:
+    def to_rust_message(self) -> tensor_worker.WorkerMessage:
         actor_id = None
         error_message = None
         if isinstance(self.error, (RemoteException, DeviceException)):
@@ -166,13 +166,13 @@ class Exit(NamedTuple):
             error_message = str(self.error)
 
         error_reason = None if error_message is None else (actor_id, error_message)
-        return worker.Exit(error_reason=error_reason)
+        return tensor_worker.Exit(error_reason=error_reason)
 
 
 class CommandGroup(NamedTuple):
     commands: List[NamedTuple]
 
-    def to_rust_message(self) -> worker.WorkerMessage:
+    def to_rust_message(self) -> tensor_worker.WorkerMessage:
         rust_commands = []
         for c in self.commands:
             if hasattr(c, "to_rust_message"):
@@ -180,32 +180,32 @@ class CommandGroup(NamedTuple):
                 rust_commands.append(c.to_rust_message())
             else:
                 raise NotImplementedError(f"Unsupported command {c}")
-        return worker.CommandGroup(commands=rust_commands)
+        return tensor_worker.CommandGroup(commands=rust_commands)
 
 
 class RecordingFormal(NamedTuple):
-    result: Tensor | worker.Ref
+    result: Tensor | tensor_worker.Ref
     argument_index: int
     stream: "StreamRef"
 
-    def to_rust_message(self) -> worker.WorkerMessage:
-        return worker.RecordingFormal(
+    def to_rust_message(self) -> tensor_worker.WorkerMessage:
+        return tensor_worker.RecordingFormal(
             result=_ref(self.result),
             argument_index=self.argument_index,
-            stream=worker.StreamRef(id=self.stream.ref),
+            stream=tensor_worker.StreamRef(id=self.stream.ref),
         )
 
 
 class RecordingResult(NamedTuple):
-    input: Tensor | worker.Ref
+    input: Tensor | tensor_worker.Ref
     output_index: int
     stream: StreamRef
 
-    def to_rust_message(self) -> worker.WorkerMessage:
-        return worker.RecordingResult(
+    def to_rust_message(self) -> tensor_worker.WorkerMessage:
+        return tensor_worker.RecordingResult(
             result=_ref(self.input),
             output_index=self.output_index,
-            stream=worker.StreamRef(id=self.stream.ref),
+            stream=tensor_worker.StreamRef(id=self.stream.ref),
         )
 
 
@@ -217,9 +217,9 @@ class DefineRecording(NamedTuple):
     ntotal_messages: int
     message_index: int
 
-    def to_rust_message(self) -> worker.WorkerMessage:
-        define_recording = worker.DefineRecording(
-            result=worker.Ref(id=none_throws(self.result.ref)),
+    def to_rust_message(self) -> tensor_worker.WorkerMessage:
+        define_recording = tensor_worker.DefineRecording(
+            result=tensor_worker.Ref(id=none_throws(self.result.ref)),
             nresults=self.nresults,
             nformals=self.nformals,
             commands=[],
@@ -237,9 +237,9 @@ class DefineRecording(NamedTuple):
                         function=_to_rust_function(c.function),
                         args=c.args,
                         kwargs=c.kwargs,
-                        stream=worker.StreamRef(id=c.stream.ref),
+                        stream=tensor_worker.StreamRef(id=c.stream.ref),
                         remote_process_groups=[
-                            worker.Ref(id=none_throws(remote_process_group.ref))
+                            tensor_worker.Ref(id=none_throws(remote_process_group.ref))
                             for remote_process_group in c.remote_process_groups
                         ],
                     )
@@ -253,13 +253,13 @@ class DefineRecording(NamedTuple):
 class CallRecording(NamedTuple):
     ident: int
     recording: Recording
-    results: List[Tensor | worker.Ref]
-    actuals: List[Tensor | worker.Ref]
+    results: List[Tensor | tensor_worker.Ref]
+    actuals: List[Tensor | tensor_worker.Ref]
 
-    def to_rust_message(self) -> worker.WorkerMessage:
-        return worker.CallRecording(
+    def to_rust_message(self) -> tensor_worker.WorkerMessage:
+        return tensor_worker.CallRecording(
             seq=self.ident,
-            recording=worker.Ref(id=none_throws(self.recording.ref)),
+            recording=tensor_worker.Ref(id=none_throws(self.recording.ref)),
             results=[_ref(r) for r in self.results],
             actuals=[_ref(r) for r in self.actuals],
         )
@@ -268,8 +268,10 @@ class CallRecording(NamedTuple):
 class DeleteRefs(NamedTuple):
     refs: List[int]
 
-    def to_rust_message(self) -> worker.WorkerMessage:
-        return worker.DeleteRefs(refs=[worker.Ref(id=r) for r in self.refs])
+    def to_rust_message(self) -> tensor_worker.WorkerMessage:
+        return tensor_worker.DeleteRefs(
+            refs=[tensor_worker.Ref(id=r) for r in self.refs]
+        )
 
 
 # This is worker <> controller/backend comms only will be supported differently
@@ -281,23 +283,23 @@ class SendValue(NamedTuple):
     ident: int
     destination: Pipe | None  # if present the pipe along which to send the result,
     # otherwise send FetchResult to controller
-    mutates: Tuple[Tensor | worker.Ref, ...]
+    mutates: Tuple[Tensor | tensor_worker.Ref, ...]
     function: ResolvableFunction | None  # None is equivalent to lambda x: x
     args: Tuple[object, ...]
     kwargs: Dict[str, object]
     stream: StreamRef
 
-    def to_rust_message(self) -> worker.WorkerMessage:
-        return worker.SendValue(
+    def to_rust_message(self) -> tensor_worker.WorkerMessage:
+        return tensor_worker.SendValue(
             seq=self.ident,
             destination=(
-                worker.Ref(id=self.destination.ref) if self.destination else None
+                tensor_worker.Ref(id=self.destination.ref) if self.destination else None
             ),
             mutates=[_ref(r) for r in self.mutates],
             function=_to_rust_function(self.function) if self.function else None,
             args=self.args,
             kwargs=self.kwargs,
-            stream=worker.StreamRef(id=self.stream.ref),
+            stream=tensor_worker.StreamRef(id=self.stream.ref),
         )
 
 
@@ -339,32 +341,32 @@ class RequestStatus(NamedTuple):
     ident: int
     controller: bool
 
-    def to_rust_message(self) -> worker.WorkerMessage:
-        return worker.RequestStatus(seq=self.ident, controller=self.controller)
+    def to_rust_message(self) -> tensor_worker.WorkerMessage:
+        return tensor_worker.RequestStatus(seq=self.ident, controller=self.controller)
 
 
 class BorrowCreate(NamedTuple):
-    result: Tensor | worker.Ref
+    result: Tensor | tensor_worker.Ref
     borrow: int
-    tensor: Tensor | worker.Ref
+    tensor: Tensor | tensor_worker.Ref
     from_stream: StreamRef
     to_stream: StreamRef
 
-    def to_rust_message(self) -> worker.WorkerMessage:
-        return worker.BorrowCreate(
+    def to_rust_message(self) -> tensor_worker.WorkerMessage:
+        return tensor_worker.BorrowCreate(
             result=_ref(self.result),
             borrow=self.borrow,
             tensor=_ref(self.tensor),
-            from_stream=worker.StreamRef(id=self.from_stream.ref),
-            to_stream=worker.StreamRef(id=self.to_stream.ref),
+            from_stream=tensor_worker.StreamRef(id=self.from_stream.ref),
+            to_stream=tensor_worker.StreamRef(id=self.to_stream.ref),
         )
 
 
 class BorrowDrop(NamedTuple):
     borrow: int  # id of borrowed tensor
 
-    def to_rust_message(self) -> worker.WorkerMessage:
-        return worker.BorrowDrop(
+    def to_rust_message(self) -> tensor_worker.WorkerMessage:
+        return tensor_worker.BorrowDrop(
             borrow=self.borrow,
         )
 
@@ -372,8 +374,8 @@ class BorrowDrop(NamedTuple):
 class BorrowFirstUse(NamedTuple):
     borrow: int  # id of borrowed tensor
 
-    def to_rust_message(self) -> worker.WorkerMessage:
-        return worker.BorrowFirstUse(
+    def to_rust_message(self) -> tensor_worker.WorkerMessage:
+        return tensor_worker.BorrowFirstUse(
             borrow=self.borrow,
         )
 
@@ -381,23 +383,23 @@ class BorrowFirstUse(NamedTuple):
 class BorrowLastUse(NamedTuple):
     borrow: int  # id of borrowed tensor
 
-    def to_rust_message(self) -> worker.WorkerMessage:
-        return worker.BorrowLastUse(
+    def to_rust_message(self) -> tensor_worker.WorkerMessage:
+        return tensor_worker.BorrowLastUse(
             borrow=self.borrow,
         )
 
 
 class SendTensor(NamedTuple):
-    result: Tensor | worker.Ref
+    result: Tensor | tensor_worker.Ref
     from_ranks: NDSlice
     to_ranks: NDSlice
-    tensor: Tensor | worker.Ref
+    tensor: Tensor | tensor_worker.Ref
     factory: TensorFactory
     from_stream: StreamRef
     to_stream: StreamRef
 
-    def to_rust_message(self) -> worker.WorkerMessage:
-        return worker.SendTensor(
+    def to_rust_message(self) -> tensor_worker.WorkerMessage:
+        return tensor_worker.SendTensor(
             result=_ref(self.result),
             from_ranks=NDSlice(
                 offset=self.from_ranks.offset,
@@ -410,14 +412,14 @@ class SendTensor(NamedTuple):
                 strides=self.to_ranks.strides,
             ),
             tensor=_ref(self.tensor),
-            factory=worker.TensorFactory(
+            factory=tensor_worker.TensorFactory(
                 size=self.factory.size,
                 dtype=self.factory.dtype,
                 device=self.factory.device,
                 layout=self.factory.layout,
             ),
-            from_stream=worker.StreamRef(id=self.from_stream.ref),
-            to_stream=worker.StreamRef(id=self.to_stream.ref),
+            from_stream=tensor_worker.StreamRef(id=self.from_stream.ref),
+            to_stream=tensor_worker.StreamRef(id=self.to_stream.ref),
         )
 
 
@@ -426,11 +428,11 @@ class SplitComm(NamedTuple):
     device_mesh: DeviceMesh
     stream: StreamRef
 
-    def to_rust_message(self) -> worker.WorkerMessage:
-        return worker.SplitComm(
+    def to_rust_message(self) -> tensor_worker.WorkerMessage:
+        return tensor_worker.SplitComm(
             dims=self.dims,
-            device_mesh=worker.Ref(id=self.device_mesh.ref),
-            stream=worker.StreamRef(id=self.stream.ref),
+            device_mesh=tensor_worker.Ref(id=self.device_mesh.ref),
+            stream=tensor_worker.StreamRef(id=self.stream.ref),
         )
 
 
@@ -438,16 +440,16 @@ class SplitCommForProcessGroup(NamedTuple):
     remote_process_group: DeviceMesh
     stream: StreamRef
 
-    def to_rust_message(self) -> worker.WorkerMessage:
-        return worker.SplitCommForProcessGroup(
-            remote_process_group=worker.Ref(id=self.remote_process_group.ref),
-            stream=worker.StreamRef(id=self.stream.ref),
+    def to_rust_message(self) -> tensor_worker.WorkerMessage:
+        return tensor_worker.SplitCommForProcessGroup(
+            remote_process_group=tensor_worker.Ref(id=self.remote_process_group.ref),
+            stream=tensor_worker.StreamRef(id=self.stream.ref),
         )
 
 
 class Reduce(NamedTuple):
-    result: Tensor | worker.Ref
-    local_tensor: Tensor | worker.Ref
+    result: Tensor | tensor_worker.Ref
+    local_tensor: Tensor | tensor_worker.Ref
     factory: TensorFactory
     source_mesh: DeviceMesh
     stream: StreamRef
@@ -455,36 +457,36 @@ class Reduce(NamedTuple):
     reduction: str
     scatter: bool
     inplace: bool
-    out: Tensor | worker.Ref | None
+    out: Tensor | tensor_worker.Ref | None
 
-    def to_rust_message(self) -> worker.WorkerMessage:
+    def to_rust_message(self) -> tensor_worker.WorkerMessage:
         match self.reduction:
             case "sum":
-                reduction = worker.ReductionType.Sum
+                reduction = tensor_worker.ReductionType.Sum
             case "prod":
-                reduction = worker.ReductionType.Prod
+                reduction = tensor_worker.ReductionType.Prod
             case "stack":
-                reduction = worker.ReductionType.Stack
+                reduction = tensor_worker.ReductionType.Stack
             case "avg":
-                reduction = worker.ReductionType.Avg
+                reduction = tensor_worker.ReductionType.Avg
             case "min":
-                reduction = worker.ReductionType.Min
+                reduction = tensor_worker.ReductionType.Min
             case "max":
-                reduction = worker.ReductionType.Max
+                reduction = tensor_worker.ReductionType.Max
             case _:
                 raise ValueError(f"Unsupported reduction {self.reduction}")
 
-        return worker.Reduce(
+        return tensor_worker.Reduce(
             result=_ref(self.result),
             tensor=_ref(self.local_tensor),
-            factory=worker.TensorFactory(
+            factory=tensor_worker.TensorFactory(
                 size=self.factory.size,
                 dtype=self.factory.dtype,
                 device=self.factory.device,
                 layout=self.factory.layout,
             ),
-            mesh=worker.Ref(id=self.source_mesh.ref),
-            stream=worker.StreamRef(id=self.stream.ref),
+            mesh=tensor_worker.Ref(id=self.source_mesh.ref),
+            stream=tensor_worker.StreamRef(id=self.stream.ref),
             dims=self.dims,
             reduction=reduction,
             scatter=self.scatter,
@@ -502,13 +504,13 @@ class CreatePipe(NamedTuple):
     args: Tuple[object, ...]
     kwargs: Dict[str, object]
 
-    def to_rust_message(self) -> worker.WorkerMessage:
-        return worker.CreatePipe(
-            result=worker.Ref(id=self.result.ref),
+    def to_rust_message(self) -> tensor_worker.WorkerMessage:
+        return tensor_worker.CreatePipe(
+            result=tensor_worker.Ref(id=self.result.ref),
             key=self.key,
             function=_to_rust_function(self.function),
             max_messages=self.max_messages,
-            mesh=worker.Ref(id=self.device_mesh.ref),
+            mesh=tensor_worker.Ref(id=self.device_mesh.ref),
             args=self.args,
             kwargs=self.kwargs,
         )
@@ -520,12 +522,12 @@ class PipeRecv(NamedTuple):
     pipe: Pipe
     stream: StreamRef
 
-    def to_rust_message(self) -> worker.WorkerMessage:
-        return worker.PipeRecv(
+    def to_rust_message(self) -> tensor_worker.WorkerMessage:
+        return tensor_worker.PipeRecv(
             seq=self.ident,
             results=_result_to_references(self.result),
-            pipe=worker.Ref(id=self.pipe.ref),
-            stream=worker.StreamRef(id=self.stream.ref),
+            pipe=tensor_worker.Ref(id=self.pipe.ref),
+            stream=tensor_worker.StreamRef(id=self.stream.ref),
         )
 
 
@@ -533,18 +535,18 @@ class BackendNetworkInit(NamedTuple):
     hostname: str | None = None
     port: int | None = None
 
-    def to_rust_message(self) -> worker.WorkerMessage:
-        return worker.BackendNetworkInit()
+    def to_rust_message(self) -> tensor_worker.WorkerMessage:
+        return tensor_worker.BackendNetworkInit()
 
 
 class BackendNetworkPointToPointInit(NamedTuple):
     from_stream: StreamRef
     to_stream: StreamRef
 
-    def to_rust_message(self) -> worker.WorkerMessage:
-        return worker.BackendNetworkPointToPointInit(
-            from_stream=worker.StreamRef(id=self.from_stream.ref),
-            to_stream=worker.StreamRef(id=self.to_stream.ref),
+    def to_rust_message(self) -> tensor_worker.WorkerMessage:
+        return tensor_worker.BackendNetworkPointToPointInit(
+            from_stream=tensor_worker.StreamRef(id=self.from_stream.ref),
+            to_stream=tensor_worker.StreamRef(id=self.to_stream.ref),
         )
 
 

@@ -127,7 +127,10 @@ fn parse_key_val(s: &str) -> anyhow::Result<(String, String)> {
     }
 }
 
-#[pyclass(frozen, module = "monarch._rust_bindings.monarch_worker.bootstrap")]
+#[pyclass(
+    frozen,
+    module = "monarch._rust_bindings.monarch_tensor_worker.bootstrap"
+)]
 #[derive(Debug, Serialize, Deserialize)]
 pub enum WorkerServerRequest {
     Run {
@@ -150,7 +153,10 @@ impl WorkerServerRequest {
     }
 }
 
-#[pyclass(frozen, module = "monarch._rust_bindings.monarch_worker.bootstrap")]
+#[pyclass(
+    frozen,
+    module = "monarch._rust_bindings.monarch_tensor_worker.bootstrap"
+)]
 #[derive(Debug, Serialize, Deserialize)]
 pub enum WorkerServerResponse {
     Finished { error: Option<String> },

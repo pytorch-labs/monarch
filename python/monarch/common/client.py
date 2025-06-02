@@ -32,7 +32,7 @@ from weakref import WeakKeyDictionary
 
 import torch
 import torch.distributed
-from monarch._rust_bindings.monarch_extension import worker
+from monarch._rust_bindings.monarch_extension import tensor_worker
 from monarch._rust_bindings.monarch_extension.client import (  # @manual=//monarch/monarch_extension:monarch_extension
     LogLevel,
     WorldState,
@@ -255,7 +255,7 @@ class Client:
             self.send(ranks, messages.DeleteRefs(refs))
         else:
             self.send_nocoalesce(ranks, messages.DeleteRefs(refs))
-        self.inner.drop_refs([worker.Ref(id=ref) for ref in refs])
+        self.inner.drop_refs([tensor_worker.Ref(id=ref) for ref in refs])
 
     def flush_deletes(self, coalesce: bool = True):
         for mesh, refs in self._pending_del.items():

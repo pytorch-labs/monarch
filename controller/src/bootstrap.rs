@@ -622,7 +622,7 @@ async fn spawn_worker_actors(
             .spawn(
                 &client,
                 // Use explicit actor type to avoid the WorkActor dependency.
-                "monarch_worker::WorkerActor".to_owned(),
+                "monarch_tensor_worker::WorkerActor".to_owned(),
                 worker_name.clone(),
                 bincode::serialize(&param)?,
                 spawned_port.bind(),

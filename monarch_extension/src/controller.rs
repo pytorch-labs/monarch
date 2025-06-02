@@ -19,7 +19,7 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-use crate::worker::PyWorkerMessage;
+use crate::tensor_worker::PyWorkerMessage;
 
 #[pyclass(
     frozen,
@@ -106,7 +106,7 @@ impl Send {
         let worker_message = self.message.deserialized().map_err(|err| {
             PyRuntimeError::new_err(format!("Failed to deserialize worker message: {}", err))
         })?;
-        crate::worker::worker_message_to_py(py, &worker_message)
+        crate::tensor_worker::worker_message_to_py(py, &worker_message)
     }
 
     fn serialize(&self) -> PyResult<PySerialized> {

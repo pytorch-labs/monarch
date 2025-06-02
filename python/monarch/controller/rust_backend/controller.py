@@ -16,7 +16,7 @@ from monarch._rust_bindings.monarch_extension import (
     client,
     controller,
     debugger,
-    worker,
+    tensor_worker,
 )
 from monarch._rust_bindings.monarch_extension.client import (  # @manual=//monarch/monarch_extension:monarch_extension
     ClientActor,
@@ -83,7 +83,7 @@ class RustController:
                 "Please implement it to send the message to the controller."
             )
 
-    def drop_refs(self, refs: Sequence[worker.Ref]) -> None:
+    def drop_refs(self, refs: Sequence[tensor_worker.Ref]) -> None:
         self._actor.drop_refs(self._controller_actor, list(refs))
 
     def node(
@@ -94,8 +94,8 @@ class RustController:
     ) -> None:
         node = controller.Node(
             seq=seq,
-            defs=[worker.Ref(id=t.ref) for t in defs if t.ref is not None],
-            uses=[worker.Ref(id=t.ref) for t in uses if t.ref is not None],
+            defs=[tensor_worker.Ref(id=t.ref) for t in defs if t.ref is not None],
+            uses=[tensor_worker.Ref(id=t.ref) for t in uses if t.ref is not None],
         )
 
         self._actor.send(self._controller_actor, node.serialize())

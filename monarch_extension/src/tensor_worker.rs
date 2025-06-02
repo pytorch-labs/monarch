@@ -29,11 +29,11 @@ use monarch_hyperactor::proc::PyActorId;
 use monarch_messages::wire_value::WireValue;
 use monarch_messages::wire_value::func_call_args_to_wire_values;
 use monarch_messages::worker::*;
+use monarch_tensor_worker::bootstrap::BinaryArgs;
+use monarch_tensor_worker::bootstrap::bootstrap_pipe;
+use monarch_tensor_worker::bootstrap::bootstrap_worker_proc;
+use monarch_tensor_worker::bootstrap::worker_server;
 use monarch_types::TryIntoPyObjectUnsafe;
-use monarch_worker::bootstrap::BinaryArgs;
-use monarch_worker::bootstrap::bootstrap_pipe;
-use monarch_worker::bootstrap::bootstrap_worker_proc;
-use monarch_worker::bootstrap::worker_server;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -45,7 +45,7 @@ use torch_sys::nccl::UniqueId;
 #[pyclass(
     name = "WorkerMessage",
     subclass,
-    module = "monarch._rust_bindings.monarch_extension.worker"
+    module = "monarch._rust_bindings.monarch_extension.tensor_worker"
 )]
 pub(crate) struct PyWorkerMessage {
     message: WorkerMessage,
@@ -58,7 +58,7 @@ impl PyWorkerMessage {
     }
 }
 
-#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.worker")]
+#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.tensor_worker")]
 struct BackendNetworkInit;
 
 #[pymethods]
@@ -76,7 +76,7 @@ impl BackendNetworkInit {
     }
 }
 
-#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.worker")]
+#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.tensor_worker")]
 struct BackendNetworkPointToPointInit;
 
 #[pymethods]
@@ -118,7 +118,7 @@ impl BackendNetworkPointToPointInit {
     }
 }
 
-#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.worker")]
+#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.tensor_worker")]
 struct CallFunction;
 
 #[pymethods]
@@ -248,7 +248,7 @@ impl CallFunction {
     }
 }
 
-#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.worker")]
+#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.tensor_worker")]
 struct CreateStream;
 
 #[pymethods]
@@ -281,7 +281,7 @@ impl CreateStream {
     }
 }
 
-#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.worker")]
+#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.tensor_worker")]
 struct CreateDeviceMesh;
 
 #[pymethods]
@@ -336,7 +336,7 @@ impl CreateDeviceMesh {
     }
 }
 
-#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.worker")]
+#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.tensor_worker")]
 struct CreateRemoteProcessGroup;
 
 #[pymethods]
@@ -390,7 +390,7 @@ impl CreateRemoteProcessGroup {
     }
 }
 
-#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.worker")]
+#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.tensor_worker")]
 struct BorrowCreate;
 
 #[pymethods]
@@ -444,7 +444,7 @@ impl BorrowCreate {
     }
 }
 
-#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.worker")]
+#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.tensor_worker")]
 struct BorrowFirstUse;
 
 #[pymethods]
@@ -466,7 +466,7 @@ impl BorrowFirstUse {
     }
 }
 
-#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.worker")]
+#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.tensor_worker")]
 struct BorrowLastUse;
 
 #[pymethods]
@@ -488,7 +488,7 @@ impl BorrowLastUse {
     }
 }
 
-#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.worker")]
+#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.tensor_worker")]
 struct BorrowDrop;
 
 #[pymethods]
@@ -510,7 +510,7 @@ impl BorrowDrop {
     }
 }
 
-#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.worker")]
+#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.tensor_worker")]
 struct DeleteRefs;
 
 #[pymethods]
@@ -532,7 +532,7 @@ impl DeleteRefs {
     }
 }
 
-#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.worker")]
+#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.tensor_worker")]
 struct RequestStatus;
 
 #[pymethods]
@@ -570,7 +570,7 @@ impl RequestStatus {
 
 #[pyclass(
     name = "ReductionType",
-    module = "monarch._rust_bindings.monarch_extension.worker",
+    module = "monarch._rust_bindings.monarch_extension.tensor_worker",
     eq,
     eq_int
 )]
@@ -597,7 +597,7 @@ impl From<PyReduction> for Reduction {
     }
 }
 
-#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.worker")]
+#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.tensor_worker")]
 struct Reduce;
 
 #[pymethods]
@@ -693,7 +693,7 @@ impl Reduce {
     }
 }
 
-#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.worker")]
+#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.tensor_worker")]
 struct SendTensor;
 
 #[pymethods]
@@ -775,7 +775,7 @@ impl SendTensor {
     }
 }
 
-#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.worker")]
+#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.tensor_worker")]
 struct CreatePipe;
 
 #[pymethods]
@@ -850,7 +850,7 @@ impl CreatePipe {
     }
 }
 
-#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.worker")]
+#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.tensor_worker")]
 struct SendValue;
 
 #[pymethods]
@@ -931,7 +931,7 @@ impl SendValue {
     }
 }
 
-#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.worker")]
+#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.tensor_worker")]
 struct SplitComm;
 
 #[pymethods]
@@ -967,7 +967,7 @@ impl SplitComm {
     }
 }
 
-#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.worker")]
+#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.tensor_worker")]
 struct SplitCommForProcessGroup;
 
 #[pymethods]
@@ -998,7 +998,7 @@ impl SplitCommForProcessGroup {
     }
 }
 
-#[pyclass(extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.worker")]
+#[pyclass(extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.tensor_worker")]
 struct DefineRecording;
 
 #[pymethods]
@@ -1076,7 +1076,7 @@ impl DefineRecording {
     }
 }
 
-#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.worker")]
+#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.tensor_worker")]
 struct RecordingFormal;
 
 #[pymethods]
@@ -1097,7 +1097,7 @@ impl RecordingFormal {
     }
 }
 
-#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.worker")]
+#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.tensor_worker")]
 struct RecordingResult;
 
 #[pymethods]
@@ -1118,7 +1118,7 @@ impl RecordingResult {
     }
 }
 
-#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.worker")]
+#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.tensor_worker")]
 struct CallRecording;
 
 #[pymethods]
@@ -1145,7 +1145,7 @@ impl CallRecording {
     }
 }
 
-#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.worker")]
+#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.tensor_worker")]
 struct PipeRecv;
 
 #[pymethods]
@@ -1192,7 +1192,7 @@ impl PipeRecv {
     }
 }
 
-#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.worker")]
+#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.tensor_worker")]
 struct Exit;
 
 #[pymethods]
@@ -1212,7 +1212,7 @@ impl Exit {
     }
 }
 
-#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.worker")]
+#[pyclass(frozen, extends=PyWorkerMessage, module = "monarch._rust_bindings.monarch_extension.tensor_worker")]
 struct CommandGroup;
 
 #[pymethods]
@@ -1442,7 +1442,7 @@ pub(crate) fn register_python_bindings(worker_mod: &Bound<'_, PyModule>) -> PyRe
     let f = wrap_pyfunction!(worker_main, worker_mod)?;
     f.setattr(
         "__module__",
-        "monarch._rust_bindings.monarch_extension.worker",
+        "monarch._rust_bindings.monarch_extension.tensor_worker",
     )?;
     worker_mod.add_function(f)?;
 

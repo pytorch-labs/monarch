@@ -10,7 +10,7 @@ members = [
     "hyperactor_mesh_macros",
     "ndslice",
     "monarch_extension",
-    "monarch_worker",
+    "monarch_tensor_worker",
     "nccl-sys",
     "torch-sys",
 ]

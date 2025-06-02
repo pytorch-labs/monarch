@@ -6,7 +6,7 @@
 
 from typing import Any, ClassVar, Dict, final, List
 
-from monarch._rust_bindings.monarch_extension.worker import Ref
+from monarch._rust_bindings.monarch_extension.tensor_worker import Ref
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId, Proc, Serialized
 
 from monarch._rust_bindings.monarch_messages.debugger import DebuggerActionType

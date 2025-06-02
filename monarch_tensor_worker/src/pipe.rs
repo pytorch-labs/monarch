@@ -277,10 +277,10 @@ impl Actor for PipeActor {
 
     async fn new(params: Self::Params) -> Result<Self> {
         let mut command = Command::new(
-            std::env::var("MONARCH_WORKER_EXE")
-                .map_err(|e| anyhow!("could not get var MONARCH_WORKER_EXE: {}", e))?,
+            std::env::var("MONARCH_TENSOR_WORKER_EXE")
+                .map_err(|e| anyhow!("could not get var MONARCH_TENSOR_WORKER_EXE: {}", e))?,
         );
-        if let Ok(main) = std::env::var("MONARCH_WORKER_MAIN") {
+        if let Ok(main) = std::env::var("MONARCH_TENSOR_WORKER_MAIN") {
             if std::env::var("FB_XAR_INVOKED_NAME").is_ok() {
                 command.env("PAR_MAIN_OVERRIDE", main);
             } else {

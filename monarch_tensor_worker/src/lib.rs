@@ -716,11 +716,11 @@ impl WorkerMessageHandler for WorkerActor {
                 .await;
         }
 
-        let self_error_exit_code = std::env::var("MONARCH_WORKER_SELF_ERROR_EXIT_CODE")
+        let self_error_exit_code = std::env::var("MONARCH_TENSOR_WORKER_SELF_ERROR_EXIT_CODE")
             .ok()
             .and_then(|val| val.parse::<i32>().ok())
             .unwrap_or(1);
-        let peer_error_exit_code = std::env::var("MONARCH_WORKER_PEER_ERROR_EXIT_CODE")
+        let peer_error_exit_code = std::env::var("MONARCH_TENSOR_WORKER_PEER_ERROR_EXIT_CODE")
             .ok()
             .and_then(|val| val.parse::<i32>().ok())
             .unwrap_or(1);
@@ -1553,7 +1553,7 @@ mod tests {
                         seq: 2.into(),
                         results: vec![Some(6.into())],
                         mutates: vec![],
-                        function: "monarch.monarch_worker.test_utils.mesh_rank".into(),
+                        function: "monarch.monarch_tensor_worker.test_utils.mesh_rank".into(),
                         args: vec![mesh_ref.into(), dim.into()],
                         kwargs: HashMap::new(),
                         stream: 1.into(),
@@ -1563,7 +1563,8 @@ mod tests {
                         seq: 4.into(),
                         results: vec![Some(7.into())],
                         mutates: vec![],
-                        function: "monarch.monarch_worker.test_utils.test_scalar_type".into(),
+                        function: "monarch.monarch_tensor_worker.test_utils.test_scalar_type"
+                            .into(),
                         args: vec![scalar.into()],
                         kwargs: HashMap::new(),
                         stream: 1.into(),
@@ -1573,7 +1574,7 @@ mod tests {
                         seq: 5.into(),
                         results: vec![Some(8.into())],
                         mutates: vec![],
-                        function: "monarch.monarch_worker.test_utils.test_layout".into(),
+                        function: "monarch.monarch_tensor_worker.test_utils.test_layout".into(),
                         args: vec![layout.into()],
                         kwargs: HashMap::new(),
                         stream: 1.into(),
@@ -1583,7 +1584,7 @@ mod tests {
                         seq: 6.into(),
                         results: vec![Some(9.into())],
                         mutates: vec![],
-                        function: "monarch.monarch_worker.test_utils.test_none".into(),
+                        function: "monarch.monarch_tensor_worker.test_utils.test_none".into(),
                         args: vec![none.into()],
                         kwargs: HashMap::new(),
                         stream: 1.into(),
@@ -1595,7 +1596,7 @@ mod tests {
                         seq: 7.into(),
                         results: vec![None],
                         mutates: vec![],
-                        function: "monarch.monarch_worker.test_utils.none".into(),
+                        function: "monarch.monarch_tensor_worker.test_utils.none".into(),
                         args: vec![],
                         kwargs: HashMap::new(),
                         stream: 1.into(),
@@ -1605,7 +1606,7 @@ mod tests {
                         seq: 8.into(),
                         results: vec![Some(10.into())],
                         mutates: vec![],
-                        function: "monarch.monarch_worker.test_utils.test_device".into(),
+                        function: "monarch.monarch_tensor_worker.test_utils.test_device".into(),
                         args: vec![device.into()],
                         kwargs: HashMap::new(),
                         stream: 1.into(),
@@ -1615,7 +1616,8 @@ mod tests {
                         seq: 9.into(),
                         results: vec![Some(11.into())],
                         mutates: vec![],
-                        function: "monarch.monarch_worker.test_utils.test_memory_format".into(),
+                        function: "monarch.monarch_tensor_worker.test_utils.test_memory_format"
+                            .into(),
                         args: vec![memory_format.into()],
                         kwargs: HashMap::new(),
                         stream: 1.into(),
@@ -2199,7 +2201,7 @@ mod tests {
                     WorkerMessage::CreatePipe {
                         result: 3.into(),
                         key: "unused".into(),
-                        function: "monarch.monarch_worker.test_utils.handler".into(),
+                        function: "monarch.monarch_tensor_worker.test_utils.handler".into(),
                         max_messages: 1,
                         mesh: 1.into(),
                         args: vec![],
@@ -2209,7 +2211,9 @@ mod tests {
                         seq: 1.into(),
                         destination: Some(3.into()),
                         mutates: vec![],
-                        function: Some("monarch.monarch_worker.test_utils.resolve_value".into()),
+                        function: Some(
+                            "monarch.monarch_tensor_worker.test_utils.resolve_value".into(),
+                        ),
                         args: vec![resolve_value_arg.into()],
                         kwargs: HashMap::new(),
                         stream: 0.into(),
@@ -2322,19 +2326,19 @@ mod tests {
             let proc_id = format!("{world_id}[{rank}]");
             worker_procs.push(ActorRef::attest(format!("world[{rank}].proc[0]").parse()?));
 
-            let mut handle = Command::new(
-                std::env::var("MONARCH_WORKER_EXE")
-                    .map_err(|e| anyhow::anyhow!("could not get var MONARCH_WORKER_EXE: {}", e))?,
-            )
-            .arg("worker")
-            .arg(format!("--bootstrap-addr={system_addr}"))
-            .arg(format!("--world-id={world_id}"))
-            .arg(format!("--proc-id={proc_id}"))
-            .env("HYPERACTOR_MANAGED_SUBPROCESS", "1")
-            .stdout(Stdio::piped())
-            .stdin(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()?;
+            let mut handle =
+                Command::new(std::env::var("MONARCH_TENSOR_WORKER_EXE").map_err(|e| {
+                    anyhow::anyhow!("could not get var MONARCH_TENSOR_WORKER_EXE: {}", e)
+                })?)
+                .arg("worker")
+                .arg(format!("--bootstrap-addr={system_addr}"))
+                .arg(format!("--world-id={world_id}"))
+                .arg(format!("--proc-id={proc_id}"))
+                .env("HYPERACTOR_MANAGED_SUBPROCESS", "1")
+                .stdout(Stdio::piped())
+                .stdin(Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()?;
 
             let out = handle.stdout.take().unwrap();
             tokio::spawn(async move {
@@ -2361,7 +2365,7 @@ mod tests {
             worker_proc
                 .spawn(
                     &client,
-                    "monarch_worker::WorkerActor".to_owned(),
+                    "monarch_tensor_worker::WorkerActor".to_owned(),
                     "worker".to_owned(),
                     bincode::serialize(&params)?,
                     spawned_port.bind(),
@@ -2407,7 +2411,8 @@ mod tests {
                 seq: 0.into(),
                 results: vec![Some(3.into())],
                 mutates: vec![],
-                function: "monarch.monarch_worker.test_utils.test_remote_process_group".into(),
+                function: "monarch.monarch_tensor_worker.test_utils.test_remote_process_group"
+                    .into(),
                 args: vec![remote_proc_grp_ref.into()],
                 kwargs: HashMap::new(),
                 stream: 0.into(),
@@ -2463,7 +2468,7 @@ mod tests {
                     result: 2.into(),
                     key: "unused".into(),
                     mesh: 1.into(),
-                    function: "monarch.monarch_worker.pipe_test_utils.handler".into(),
+                    function: "monarch.monarch_tensor_worker.pipe_test_utils.handler".into(),
                     max_messages: 1,
                     args: vec![],
                     kwargs: HashMap::new(),

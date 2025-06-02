@@ -30,7 +30,7 @@ use serde::Serialize;
 /// * [`Dim`] 1 will be `(1, *, 3)`
 /// * [`Dim`] 2 will be `(1, 2, *)`
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[pyclass(frozen, module = "monarch_worker._internal")]
+#[pyclass(frozen, module = "monarch_tensor_worker._internal")]
 #[pyo3(get_all)]
 pub struct Dim {
     /// The name of the dimension.
@@ -56,7 +56,7 @@ impl Dim {
 /// A device mesh represents each (named) dimension ([`Dim`]) of a
 /// multi-dimensional mesh, relative to a specific rank.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[pyclass(frozen, module = "monarch_worker._internal")]
+#[pyclass(frozen, module = "monarch_tensor_worker._internal")]
 #[pyo3(get_all)]
 pub struct DeviceMesh {
     /// Each dim in the mesh.

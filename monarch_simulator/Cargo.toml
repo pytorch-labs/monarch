@@ -22,8 +22,8 @@ hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_multiprocess = { version = "0.0.0", path = "../hyperactor_multiprocess" }
 lazy_static = { version = "1.5", features = ["spin_no_std"], default-features = false }
 monarch_messages = { version = "0.0.0", path = "../monarch_messages" }
+monarch_tensor_worker = { version = "0.0.0", path = "../monarch_tensor_worker" }
 monarch_types = { version = "0.0.0", path = "../monarch_types" }
-monarch_worker = { version = "0.0.0", path = "../monarch_worker" }
 ndslice = { version = "0.0.0", path = "../ndslice" }
 serde = { version = "1.0.185", features = ["derive", "rc"] }
 serde_json = { version = "1.0.140", features = ["float_roundtrip", "unbounded_depth"] }

@@ -7,7 +7,7 @@
 from enum import Enum
 from typing import Any, final, List, Optional, Tuple, Union
 
-from monarch._rust_bindings.monarch_extension.worker import Ref, WorkerMessage
+from monarch._rust_bindings.monarch_extension.tensor_worker import Ref, WorkerMessage
 
 from monarch._rust_bindings.monarch_hyperactor.proc import Serialized
 

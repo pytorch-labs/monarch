@@ -5,7 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 """
-Simplified version of worker_main.py for testing the monarch_worker standalone.
+Simplified version of worker_main.py for testing the monarch_tensor_worker standalone.
 
 We want a Python entrypoint here because we want to initialize the Monarch
 Python extension on the main thread.
@@ -23,11 +23,11 @@ def main() -> None:
     torch.cuda.init()
 
     from monarch._rust_bindings.monarch_extension import (  # @manual=//monarch/monarch_extension:monarch_extension
-        worker,
+        tensor_worker,
     )
 
     # pyre-ignore[16]
-    worker.worker_main()
+    tensor_worker.worker_main()
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@
 This is the main function for the worker / pipe processes. It expects the args to
 the process to be passed in on the command line and accessible in `sys.argv`.
 
-To see the supported arguments checkout `monarch_worker::bootstrap`.
+To see the supported arguments checkout `monarch_tensor_worker::bootstrap`.
 """
 
 # pyre-unsafe
@@ -232,7 +232,7 @@ if __name__ == "__main__":
         torch.cuda.init()
 
     from monarch._rust_bindings.monarch_extension import (  # @manual=//monarch/monarch_extension:monarch_extension
-        worker,
+        tensor_worker,
     )
 
     initialize_logging()
@@ -257,4 +257,4 @@ if __name__ == "__main__":
 
     pdb.set_trace = _set_trace
     # pyre-ignore[16]
-    worker.worker_main()
+    tensor_worker.worker_main()

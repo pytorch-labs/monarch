@@ -23,8 +23,8 @@ hyperactor_multiprocess = { version = "0.0.0", path = "../hyperactor_multiproces
 monarch_hyperactor = { version = "0.0.0", path = "../monarch_hyperactor" }
 monarch_messages = { version = "0.0.0", path = "../monarch_messages" }
 monarch_simulator_lib = { version = "0.0.0", path = "../monarch_simulator" }
+monarch_tensor_worker = { version = "0.0.0", path = "../monarch_tensor_worker" }
 monarch_types = { version = "0.0.0", path = "../monarch_types" }
-monarch_worker = { version = "0.0.0", path = "../monarch_worker" }
 nccl-sys = { path = "../nccl-sys" }
 pyo3 = { version = "0.22.6", features = ["anyhow"] }
 tokio = { version = "1.45.0", features = ["full", "test-util", "tracing"] }
