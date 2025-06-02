@@ -378,9 +378,8 @@ impl ProcActor {
         labels: HashMap<String, String>,
         lifecycle_mode: ProcLifecycleMode,
     ) -> Result<BootstrappedProc, anyhow::Error> {
-        let system_sender = BoxedMailboxSender::new(MailboxClient::new(
-            channel::dial_from_address(bootstrap_addr.clone(), listen_addr.clone())?,
-        ));
+        let system_sender =
+            BoxedMailboxSender::new(MailboxClient::new(channel::dial(bootstrap_addr.clone())?));
         let clock = ClockKind::for_channel_addr(&listen_addr);
 
         let proc_forwarder =
