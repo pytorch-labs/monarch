@@ -52,11 +52,7 @@ impl System {
         world_eviction_timeout: tokio::time::Duration,
     ) -> Result<ServerHandle, anyhow::Error> {
         let clock = ClockKind::for_channel_addr(&addr);
-        let params = SystemActorParams::new(
-            addr.clone(),
-            supervision_update_timeout,
-            world_eviction_timeout,
-        );
+        let params = SystemActorParams::new(supervision_update_timeout, world_eviction_timeout);
         let (actor_handle, system_proc) = SystemActor::bootstrap_with_clock(params, clock).await?;
         actor_handle.bind::<SystemActor>();
 
