@@ -2085,30 +2085,22 @@ pub struct DialMailboxRouter {
     // The default sender, to which messages for unknown recipients
     // are sent. (This is like a default route in a routing table.)
     default: BoxedMailboxSender,
-    /// The address a [`Proc`] is listening to when the [`DialMailboxRouter`]
-    /// is being used as the forwarder for that [`Proc`].
-    /// This will be used as the dialer when dialing an address
-    self_address: ChannelAddr,
 }
 
 impl DialMailboxRouter {
     /// Create a new [`DialMailboxRouter`] with an empty routing table.
-    pub fn new(self_address: ChannelAddr) -> Self {
-        Self::new_with_default(
-            self_address,
-            BoxedMailboxSender::new(UnroutableMailboxSender),
-        )
+    pub fn new() -> Self {
+        Self::new_with_default(BoxedMailboxSender::new(UnroutableMailboxSender))
     }
 
     /// Create a new [`DialMailboxRouter`] with an empty routing table,
     /// and a default sender. Any message with an unknown destination is
     /// dispatched on this default sender.
-    pub fn new_with_default(self_address: ChannelAddr, default: BoxedMailboxSender) -> Self {
+    pub fn new_with_default(default: BoxedMailboxSender) -> Self {
         Self {
             address_book: Arc::new(RwLock::new(BTreeMap::new())),
             sender_cache: Arc::new(DashMap::new()),
             default,
-            self_address,
         }
     }
 
@@ -2180,14 +2172,13 @@ impl DialMailboxRouter {
         match self.sender_cache.entry(addr.clone()) {
             Entry::Occupied(entry) => Ok(entry.get().clone()),
             Entry::Vacant(entry) => {
-                let tx = channel::dial_from_address(addr.clone(), self.self_address.clone())
-                    .map_err(|err| {
-                        MailboxSenderError::new_unbound_type(
-                            actor_id.clone(),
-                            MailboxSenderErrorKind::Channel(err),
-                            "unknown",
-                        )
-                    })?;
+                let tx = channel::dial(addr.clone()).map_err(|err| {
+                    MailboxSenderError::new_unbound_type(
+                        actor_id.clone(),
+                        MailboxSenderErrorKind::Channel(err),
+                        "unknown",
+                    )
+                })?;
                 let sender = MailboxClient::new(tx);
                 Ok(entry.insert(Arc::new(sender)).value().clone())
             }
@@ -2250,8 +2241,9 @@ mod tests {
     use crate::PortId;
     use crate::accum;
     use crate::channel::ChannelTransport;
-    use crate::channel::dial_from_address;
+    use crate::channel::dial;
     use crate::channel::serve;
+    use crate::channel::sim::AddressProxyPair;
     use crate::channel::sim::SimAddr;
     use crate::clock::Clock;
     use crate::clock::RealClock;
@@ -2453,15 +2445,24 @@ mod tests {
     #[tokio::test]
     async fn test_sim_client_server() {
         let proxy = ChannelAddr::any(channel::ChannelTransport::Unix);
-        let addr = ChannelAddr::Sim(
-            SimAddr::new("local!1".parse::<ChannelAddr>().unwrap(), proxy.clone()).unwrap(),
-        );
-        let dialer = ChannelAddr::Sim(
-            SimAddr::new("local!0".parse::<ChannelAddr>().unwrap(), proxy.clone()).unwrap(),
+        let dst_addr =
+            SimAddr::new("local!1".parse::<ChannelAddr>().unwrap(), proxy.clone()).unwrap();
+        let src_to_dst = ChannelAddr::Sim(
+            SimAddr::new_with_src(
+                AddressProxyPair {
+                    address: "local!0".parse::<ChannelAddr>().unwrap(),
+                    proxy: proxy.clone(),
+                },
+                dst_addr.addr().clone(),
+                dst_addr.proxy().clone(),
+            )
+            .unwrap(),
         );
 
-        let (_, rx) = serve::<MessageEnvelope>(addr.clone()).await.unwrap();
-        let tx = dial_from_address::<MessageEnvelope>(addr, dialer).unwrap();
+        let (_, rx) = serve::<MessageEnvelope>(ChannelAddr::Sim(dst_addr.clone()))
+            .await
+            .unwrap();
+        let tx = dial::<MessageEnvelope>(src_to_dst).unwrap();
         let mbox = Mailbox::new_detached(id!(test[0].actor0));
         let serve_handle = mbox.clone().serve(rx, monitored_return_handle());
         let client = MailboxClient::new(tx);
@@ -2509,7 +2510,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_dial_mailbox_router() {
-        let router = DialMailboxRouter::new(ChannelAddr::any(ChannelTransport::Unix));
+        let router = DialMailboxRouter::new();
 
         router.bind(id!(world0[0]).into(), "unix!@1".parse().unwrap());
         router.bind(id!(world1[0]).into(), "unix!@2".parse().unwrap());
@@ -2541,14 +2542,8 @@ mod tests {
         // We don't need to dial here, since we gain direct access to the
         // underlying routers.
         let root = MailboxRouter::new();
-        let world0_router = DialMailboxRouter::new_with_default(
-            ChannelAddr::any(ChannelTransport::Local),
-            root.boxed(),
-        );
-        let world1_router = DialMailboxRouter::new_with_default(
-            ChannelAddr::any(ChannelTransport::Local),
-            root.boxed(),
-        );
+        let world0_router = DialMailboxRouter::new_with_default(root.boxed());
+        let world1_router = DialMailboxRouter::new_with_default(root.boxed());
 
         root.bind(id!(world0).into(), world0_router.clone());
         root.bind(id!(world1).into(), world1_router.clone());
@@ -2664,7 +2659,6 @@ mod tests {
         use crate::test_utils::proc_supervison::ProcSupervisionCoordinator;
 
         let proc_forwarder = BoxedMailboxSender::new(DialMailboxRouter::new_with_default(
-            ChannelAddr::any(ChannelTransport::Local),
             BOXED_PANICKING_MAILBOX_SENDER.clone(),
         ));
         let proc_id = id!(quux[0]);

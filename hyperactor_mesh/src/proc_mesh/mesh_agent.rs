@@ -146,11 +146,7 @@ impl MeshAgentMessageHandler for MeshAgent {
         // for better ergonomics in the allocator.
         self.supervisor = Some(supervisor);
         let client = MailboxClient::new(channel::dial(forwarder)?);
-        let self_address = address_book
-            .get(this.self_id().proc_id())
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("self rank {} missing in address book", rank))?;
-        let router = DialMailboxRouter::new_with_default(self_address, client.into_boxed());
+        let router = DialMailboxRouter::new_with_default(client.into_boxed());
         for (proc_id, addr) in address_book {
             router.bind(proc_id.into(), addr);
         }
