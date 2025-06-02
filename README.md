@@ -13,7 +13,7 @@ PyTorch, but at cluster scale.
 
 ## Installation
 
-pip install torchmonarch
+`pip install torchmonarch`
 
 or manually
 
@@ -25,13 +25,11 @@ conda activate monarchenv
 
 # Install nightly rust toolchain
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-
 rustup toolchain install nightly
 rustup default nightly
 
 # Install non-python dependencies
-conda install libunwind
+conda install libunwind -y
 
 # Install the correct cuda and cuda-toolkit versions for your machine
 sudo dnf install cuda-toolkit-12-0 cuda-12-0 libnccl-devel clang-devel
