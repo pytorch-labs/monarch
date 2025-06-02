@@ -5,7 +5,7 @@ name = "monarch_meta_extension"
 version = "0.0.0"
 authors = ["Meta"]
 edition = "2021"
-license = "BSD-3"
+license = "BSD-3-Clause"
 
 [lib]
 name = "_lib_meta"

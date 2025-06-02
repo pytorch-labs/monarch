@@ -5,7 +5,7 @@ name = "hyperactor_extension"
 version = "0.0.0"
 authors = ["Meta"]
 edition = "2021"
-license = "BSD-3"
+license = "BSD-3-Clause"
 
 [dependencies]
 async-trait = "0.1.86"

@@ -5,7 +5,7 @@ name = "hyperactor_mesh"
 version = "0.0.0"
 authors = ["Meta"]
 edition = "2021"
-license = "BSD-3"
+license = "BSD-3-Clause"
 
 [[bin]]
 name = "hyperactor_mesh_example_dining_philosophers"
