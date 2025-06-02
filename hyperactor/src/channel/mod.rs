@@ -516,25 +516,6 @@ impl<M: RemoteMessage> Rx<M> for ChannelRx<M> {
 /// dropped whenever the returned Tx is dropped.
 #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ChannelError`.
 pub fn dial<M: RemoteMessage>(addr: ChannelAddr) -> Result<ChannelTx<M>, ChannelError> {
-    dial_impl(addr, None)
-}
-
-/// Dial the provided address, providing the address of the dialer, returning
-/// the corresponding Tx, or error if the channel cannot be established.
-/// The underlying connection is dropped whenever the returned Tx is dropped.
-#[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ChannelError`.
-pub fn dial_from_address<M: RemoteMessage>(
-    addr: ChannelAddr,
-    dialer: ChannelAddr,
-) -> Result<ChannelTx<M>, ChannelError> {
-    dial_impl(addr, Some(dialer))
-}
-
-#[crate::instrument]
-fn dial_impl<M: RemoteMessage>(
-    addr: ChannelAddr,
-    _dialer: Option<ChannelAddr>,
-) -> Result<ChannelTx<M>, ChannelError> {
     tracing::debug!(name = "dial", "dialing channel {}", addr);
     let inner = match addr {
         ChannelAddr::Local(port) => ChannelTxKind::Local(local::dial(port)?),
