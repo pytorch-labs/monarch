@@ -238,16 +238,6 @@ impl Actor for WorkerActor {
             defining_recording: None,
         })
     }
-
-    async fn handle_supervision_event(
-        &mut self,
-        _this: &Instance<Self>,
-        _event: &ActorSupervisionEvent,
-    ) -> Result<bool, anyhow::Error> {
-        // Exit the worker directly on any worker actor errors, with error exit code.
-        tracing::info!("worker error happened, stop the worker process, exit code: 1");
-        std::process::exit(1);
-    }
 }
 
 #[async_trait]
