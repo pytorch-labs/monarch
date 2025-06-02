@@ -533,14 +533,14 @@ pub fn dial_from_address<M: RemoteMessage>(
 #[crate::instrument]
 fn dial_impl<M: RemoteMessage>(
     addr: ChannelAddr,
-    dialer: Option<ChannelAddr>,
+    _dialer: Option<ChannelAddr>,
 ) -> Result<ChannelTx<M>, ChannelError> {
     tracing::debug!(name = "dial", "dialing channel {}", addr);
     let inner = match addr {
         ChannelAddr::Local(port) => ChannelTxKind::Local(local::dial(port)?),
         ChannelAddr::Tcp(addr) => ChannelTxKind::Tcp(net::tcp::dial(addr)),
         ChannelAddr::MetaTls(host, port) => ChannelTxKind::MetaTls(net::meta::dial(host, port)),
-        ChannelAddr::Sim(sim_addr) => ChannelTxKind::Sim(sim::dial::<M>(sim_addr, dialer)?),
+        ChannelAddr::Sim(sim_addr) => ChannelTxKind::Sim(sim::dial::<M>(sim_addr)?),
         ChannelAddr::Unix(path) => ChannelTxKind::Unix(net::unix::dial(path)),
     };
     Ok(ChannelTx { inner })
