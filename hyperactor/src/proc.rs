@@ -993,6 +993,9 @@ impl<A: Actor> Instance<A> {
                     let _ = MESSAGE_HANDLER_DURATION.start(metric_pairs);
                     let work = work.expect("inconsistent work queue state");
                     if let Err(err) = work.handle(actor, self).await {
+                        for supervision_event in self.supervision_event_receiver.drain() {
+                            self.handle_supervision_event(actor, supervision_event).await;
+                        }
                         return Err(ActorError::new(self.self_id().clone(), ActorErrorKind::Processing(err)));
                     }
                 }
@@ -1014,23 +1017,7 @@ impl<A: Actor> Instance<A> {
                     }
                 }
                 Ok(supervision_event) = self.supervision_event_receiver.recv() => {
-                    // Handle the supervision event with the current actor.
-                    if let Ok(false) = actor.handle_supervision_event(self, &supervision_event).await {
-                        // The supervision event wasn't handled by this actor, try to bubble it up.
-                        let result = self.cell.get_parent_cell();
-                        if let Some(parent) = result {
-                            parent
-                                .send_supervision_event_or_crash(supervision_event);
-                        } else {
-                            // Reaching here means the actor is either a root actor, or an orphaned
-                            // child actor (i.e. the parent actor was dropped unexpectedly). In either
-                            // case, the supervision event should be sent to proc.
-                            //
-                            // Note that orphaned actor is unexpected and would only happen if there
-                            // is a bug.
-                            self.proc.handle_supervision_event(supervision_event);
-                        }
-                    }
+                    self.handle_supervision_event(actor, supervision_event).await;
                 }
             }
             self.cell
@@ -1056,6 +1043,32 @@ impl<A: Actor> Instance<A> {
         tracing::debug!("exited actor loop");
         self.change_status(ActorStatus::Stopped);
         Ok(())
+    }
+
+    async fn handle_supervision_event(
+        &self,
+        actor: &mut A,
+        supervision_event: ActorSupervisionEvent,
+    ) {
+        // Handle the supervision event with the current actor.
+        if let Ok(false) = actor
+            .handle_supervision_event(self, &supervision_event)
+            .await
+        {
+            // The supervision event wasn't handled by this actor, try to bubble it up.
+            let result = self.cell.get_parent_cell();
+            if let Some(parent) = result {
+                parent.send_supervision_event_or_crash(supervision_event);
+            } else {
+                // Reaching here means the actor is either a root actor, or an orphaned
+                // child actor (i.e. the parent actor was dropped unexpectedly). In either
+                // case, the supervision event should be sent to proc.
+                //
+                // Note that orphaned actor is unexpected and would only happen if there
+                // is a bug.
+                self.proc.handle_supervision_event(supervision_event);
+            }
+        }
     }
 
     async unsafe fn handle_message<M: Message>(

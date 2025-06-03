@@ -62,7 +62,6 @@ use hyperactor::cap;
 use hyperactor::forward;
 use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::reference::ActorId;
-use hyperactor::supervision::ActorSupervisionEvent;
 use itertools::Itertools;
 use monarch_messages::controller::ControllerActor;
 use monarch_messages::controller::ControllerMessageClient;
@@ -239,15 +238,7 @@ impl Actor for WorkerActor {
         })
     }
 
-    async fn handle_supervision_event(
-        &mut self,
-        _this: &Instance<Self>,
-        _event: &ActorSupervisionEvent,
-    ) -> Result<bool, anyhow::Error> {
-        // Exit the worker directly on any worker actor errors, with error exit code.
-        tracing::info!("worker error happened, stop the worker process, exit code: 1");
-        std::process::exit(1);
-    }
+    // TODO: Exit the worker directly on any worker actor errors, with error exit code.
 }
 
 #[async_trait]

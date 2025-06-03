@@ -636,12 +636,11 @@ class TestController:
 
 
 def test_panicking_worker():
-    with pytest.raises(DeviceException, match="Actor .* crashed") as exc_info:
-        with local_rust_device_mesh(2, 2) as _:
+    with pytest.raises(DeviceException, match="__test_panic called"):
+        with local_rust_device_mesh(1, 1) as _:
             panic()
             # induce a sync to allow the panic to propagate back
             _ = fetch_shard(torch.ones(2, 3)).result()
-    assert len(exc_info.value.frames) > 0
 
 
 def test_timeout_warning(caplog):

@@ -680,7 +680,7 @@ impl ProcMessageHandler for ProcActor {
             proc_id: self.params.proc.proc_id().clone(),
             proc_addr: self.params.local_addr.clone(),
             proc_health: ProcStatus::Alive,
-            failed_actors: HashMap::new(),
+            failed_actors: Vec::new(),
         };
 
         match tokio::time::timeout(
@@ -787,7 +787,7 @@ impl Handler<ActorSupervisionEvent> for ProcActor {
             proc_id: self.params.proc.proc_id().clone(),
             proc_addr: self.params.local_addr.clone(),
             proc_health: ProcStatus::Alive,
-            failed_actors: HashMap::from([event.into_inner()]),
+            failed_actors: Vec::from([event.into_inner()]),
         };
         self.params
             .supervisor_actor_ref
@@ -1211,7 +1211,7 @@ mod tests {
                         proc_addr: ChannelAddr::Local(3),
                         proc_id: local_proc_id.clone(),
                         proc_health: ProcStatus::Alive,
-                        failed_actors: HashMap::new(),
+                        failed_actors: Vec::new(),
                     }
                 );
                 let _ = port.send(&supervisor_mailbox, ());
@@ -1234,20 +1234,23 @@ mod tests {
         // Since we could get messages from both the periodic task and the
         // report from the failed actor, we need to poll for a while to make
         // sure we get the right message.
-        let result = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                match supervisor_supervision_receiver.recv().await {
-                    Ok(ProcSupervisionMessage::Update(state, _port)) => {
-                        match state.failed_actors.get(test_actor_ref.clone().actor_id()) {
-                            Some(actor_status) => return Ok(actor_status.clone()),
-                            None => {}
+        let result =
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    match supervisor_supervision_receiver.recv().await {
+                        Ok(ProcSupervisionMessage::Update(state, _port)) => {
+                            match state.failed_actors.iter().find(|(failed_id, _)| {
+                                failed_id == test_actor_ref.clone().actor_id()
+                            }) {
+                                Some((_, actor_status)) => return Ok(actor_status.clone()),
+                                None => {}
+                            }
                         }
+                        _ => anyhow::bail!("unexpected message type"),
                     }
-                    _ => anyhow::bail!("unexpected message type"),
                 }
-            }
-        })
-        .await;
+            })
+            .await;
         assert_matches!(
             result.unwrap().unwrap(),
             ActorStatus::Failed(msg) if msg.contains("test actor is erroring out")
