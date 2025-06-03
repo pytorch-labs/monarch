@@ -55,7 +55,16 @@ pub trait Unbind: Sized {
     /// Unbinds the message into an envelope [`Unbound<M>`] containing
     /// the message along with extracted parameters that can are
     /// independently accessible.
-    fn unbind(self) -> anyhow::Result<Unbound<Self>>;
+    fn unbind(self) -> anyhow::Result<Unbound<Self>> {
+        let bindings = self.bindings()?;
+        Ok(Unbound {
+            message: self,
+            bindings,
+        })
+    }
+
+    /// Get the bindings of this message.
+    fn bindings(&self) -> anyhow::Result<Bindings>;
 }
 
 /// A message `M` that is [`Bind`] can bind a set of externally provided
@@ -104,7 +113,6 @@ impl Bindings {
 
     /// Get this type's values from the binding.
     /// If the binding did not have this type present, empty Vec is returned.
-    #[allow(dead_code)]
     pub fn get<T: DeserializeOwned + Named>(&self) -> anyhow::Result<Vec<T>> {
         match self.0.get(&T::typehash()) {
             None => Ok(vec![]),
@@ -120,7 +128,6 @@ impl Bindings {
 
     /// Rebind all values of type `T`. The input iterator must exactly match the
     /// number of `T`-typed values in the binding.
-    #[allow(dead_code)]
     pub fn rebind<T: DeserializeOwned + Named>(
         &self,
         mut_refs: impl ExactSizeIterator<Item = &mut T>,

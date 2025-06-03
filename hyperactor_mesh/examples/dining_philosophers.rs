@@ -14,10 +14,12 @@ use std::process::ExitCode;
 use anyhow::Result;
 use async_trait::async_trait;
 use hyperactor::Actor;
+use hyperactor::Bind;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::PortRef;
+use hyperactor::Unbind;
 use hyperactor::message::IndexedErasedUnbound;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::Mesh;
@@ -61,7 +63,7 @@ struct PhilosopherActor {
 }
 
 /// Message from the waiter to a philosopher
-#[derive(Debug, Serialize, Deserialize, Named, Clone)]
+#[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
 enum PhilosopherMessage {
     Start(PortRef<WaiterMessage>),
     GrantChopstick(usize),
