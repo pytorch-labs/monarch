@@ -20,7 +20,6 @@ use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::Unbind;
-use hyperactor::message::IndexedErasedUnbound;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::Mesh;
 use hyperactor_mesh::ProcMesh;
@@ -47,10 +46,7 @@ enum ChopstickStatus {
 }
 
 #[derive(Debug)]
-#[hyperactor::export_spawn(
-    Cast<PhilosopherMessage>,
-    IndexedErasedUnbound<Cast<PhilosopherMessage>>,
-)]
+#[hyperactor::export_spawn(Cast<PhilosopherMessage>(castable))]
 struct PhilosopherActor {
     /// Status of left and right chopsticks
     chopsticks: (ChopstickStatus, ChopstickStatus),

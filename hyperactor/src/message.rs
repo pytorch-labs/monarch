@@ -277,8 +277,8 @@ impl<M: DeserializeOwned> IndexedErasedUnbound<M> {
 }
 
 impl<M: Bind> IndexedErasedUnbound<M> {
-    /// Used in unit tests to bind CastBlobT<M> to the given actor. Do not use in
-    /// production.
+    /// Used in unit tests to bind IndexedErasedUnbound<M> to the given actor.
+    /// Do not use in production.
     pub fn bind_for_test_only<A>(actor_ref: ActorRef<A>, mailbox: &Mailbox) -> anyhow::Result<()>
     where
         A: RemoteActor + RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,

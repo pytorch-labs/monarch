@@ -18,7 +18,6 @@ use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::Unbind;
-use hyperactor::message::IndexedErasedUnbound;
 use hyperactor_mesh::actor_mesh::Cast;
 use monarch_types::PickledPyObject;
 use pyo3::exceptions::PyRuntimeError;
@@ -221,7 +220,7 @@ impl PythonActorHandle {
 }
 
 #[derive(Debug)]
-#[hyperactor::export_spawn(PythonMessage, Cast<PythonMessage>, IndexedErasedUnbound<Cast<PythonMessage>>)]
+#[hyperactor::export_spawn(PythonMessage, Cast<PythonMessage>(castable))]
 pub(super) struct PythonActor {
     pub(super) actor: PyObject,
 }

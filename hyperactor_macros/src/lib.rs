@@ -18,6 +18,7 @@ use convert_case::Casing;
 use indoc::indoc;
 use proc_macro::TokenStream;
 use proc_macro2::Span;
+use quote::ToTokens;
 use quote::format_ident;
 use quote::quote;
 use syn::Attribute;
@@ -38,8 +39,11 @@ use syn::MetaNameValue;
 use syn::Token;
 use syn::Type;
 use syn::parse_macro_input;
+use syn::parse_quote;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
+use syn::token::Comma;
+use syn::token::Paren;
 
 const REPLY_VARIANT_ERROR: &str = indoc! {r#"
 `call` message expects a typed `OncePortRef` or `OncePortHandle` argument in the last position
@@ -1143,10 +1147,53 @@ pub fn named_derive(input: TokenStream) -> TokenStream {
     TokenStream::from(expanded)
 }
 
+// /// Store nested parameters parsed from [`fn export`] and [`fn export_spawn`]
+// /// macros. e.g. in `#[export(MyMessage(castable))]`, parameter `MyMessage`
+// /// takes a nested flag `castable`.
+struct ExportParam {
+    ty: Type,
+    flags: Vec<Expr>,
+}
+
+impl syn::parse::Parse for ExportParam {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        // Parse the type. e.g. `MyMessage` in `#[export(MyMessage(castable))]`.
+        let ty: Type = input.parse()?;
+
+        // Parse the flag list: e.g. (foo, bar) in `#[export(MyType(foo, bar))]`.
+        let flags = if input.peek(Paren) {
+            let content;
+            syn::parenthesized!(content in input);
+            let parsed = content.parse_terminated(Expr::parse, Comma)?;
+            parsed.into_iter().collect()
+        } else {
+            Vec::new()
+        };
+
+        Ok(Self { ty, flags })
+    }
+}
+
+impl ToTokens for ExportParam {
+    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+        self.ty.to_tokens(tokens);
+        for flag in &self.flags {
+            flag.to_tokens(tokens);
+        }
+    }
+}
+
 /// Exports an actor so that it may be bound to [`hyperactor::ActorRef`]s.
 ///
 /// The macro must be provided with the set of types that are exported, and
-/// which may therefore be dispatched through references to the actor.
+/// which may therefore be dispatched through references to the actor. If the
+/// types need to be cast, add `castable` flag to those types. e.g. the following
+/// example exports 5 types, and 4 of which need to be cast.
+///
+/// ```
+/// #[hyperactor::export(TestMessage(castable), ()(castable), MyGeneric<()>(castable), u64)]
+/// struct TestActor;
+/// ```
 #[proc_macro_attribute]
 pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
     export_impl("export", attr, &parse_macro_input!(item as DeriveInput))
@@ -1171,17 +1218,74 @@ fn export_impl(which: &'static str, attr: TokenStream, input: &DeriveInput) -> T
     let data_type_name = &input.ident;
 
     let attr_args =
-        parse_macro_input!(attr with Punctuated::<syn::Type, Token![,]>::parse_terminated);
+        parse_macro_input!(attr with Punctuated::<ExportParam, Comma>::parse_terminated);
+
     if attr_args.is_empty() {
         return TokenStream::from(
-            syn::Error::new_spanned(attr_args, format!("`{}` expects one or more type path arguments\n\n= help: use `#[{}(MyType, MyOtherType<T>)]`", which, which)).to_compile_error(),
+            syn::Error::new_spanned(
+                attr_args,
+                format!(
+                    "`{}` expects one or more type path arguments\n\n= help: use `#[{}(MyType, MyOtherType<T>)]`",
+                    which,
+                    which,
+                )
+            ).to_compile_error(),
         );
+    }
+
+    let mut tys = Vec::new();
+    for ExportParam { ty, flags } in attr_args {
+        // Append types inferred from the `castable` flag into tys.
+        match flags.as_slice() {
+            [] => {}
+            [expr] => match expr {
+                Expr::Path(path) => {
+                    if path.path.is_ident("castable") {
+                        let indexed =
+                            parse_quote! { hyperactor::message::IndexedErasedUnbound<#ty> };
+                        tys.push(indexed);
+                    } else {
+                        return TokenStream::from(
+                            syn::Error::new_spanned(
+                                path,
+                                format!(
+                                    "unsupported flag `{}`; expected `castable`",
+                                    path.to_token_stream(),
+                                ),
+                            )
+                            .to_compile_error(),
+                        );
+                    }
+                }
+                _ => {
+                    return TokenStream::from(
+                        syn::Error::new_spanned(
+                            expr,
+                            format!(
+                                "unsupported expression `{}`; expected `castable`",
+                                expr.to_token_stream(),
+                            ),
+                        )
+                        .to_compile_error(),
+                    );
+                }
+            },
+            [_, _, ..] => {
+                return TokenStream::from(
+                    syn::Error::new_spanned(
+                        ExportParam { ty, flags },
+                    "expected at most one flag, e.g. `MyMessage(castable)`, not `MyMessage(castable, foo)`",
+                    ).to_compile_error(),
+                );
+            }
+        }
+        tys.push(ty);
     }
 
     let mut handles = Vec::new();
     let mut bindings = Vec::new();
 
-    for ty in &attr_args {
+    for ty in tys {
         handles.push(quote! {
             impl hyperactor::actor::RemoteHandles<#ty> for #data_type_name {}
         });
