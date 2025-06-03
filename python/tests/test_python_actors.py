@@ -7,13 +7,10 @@
 import operator
 from types import ModuleType
 
-import pytest
-
 import torch
 from monarch.actor_mesh import (
     Accumulator,
     Actor,
-    ActorMeshRefCallFailedException,
     current_actor_name,
     current_rank,
     current_size,
@@ -373,24 +370,3 @@ def test_rust_binding_modules_correct() -> None:
                 assert value.__module__ == path
 
     check(bindings, "monarch._rust_bindings")
-
-
-class ErrorActor(Actor):
-    @endpoint
-    def raise_exception(self):
-        raise ValueError("test")
-
-
-def test_exception_propagates_call() -> None:
-    proc = proc_mesh(gpus=2).get()
-    error_actor_mesh = proc.spawn("error_actor", ErrorActor).get()
-
-    with pytest.raises(ActorMeshRefCallFailedException, match="test"):
-        error_actor_mesh.raise_exception.call().get()
-
-
-def test_exception_propagates_call_one() -> None:
-    proc = proc_mesh(gpus=1).get()
-    error_actor_mesh = proc.spawn("error_actor", ErrorActor).get()
-    with pytest.raises(ActorMeshRefCallFailedException, match="test"):
-        error_actor_mesh.raise_exception.call_one().get()

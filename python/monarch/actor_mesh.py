@@ -519,9 +519,13 @@ class _Actor:
         except Exception as e:
             traceback.print_exc()
             s = ActorMeshRefCallFailedException(e)
+
+            # The exception is delivered to exactly one of:
+            # (1) our caller, (2) our supervisor
             if port is not None:
                 port.send("exception", s)
-            raise s from None
+            else:
+                raise s from None
 
     async def _complete(self) -> None:
         while True:
