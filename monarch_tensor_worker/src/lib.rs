@@ -60,7 +60,6 @@ use hyperactor::Instance;
 use hyperactor::actor::ActorHandle;
 use hyperactor::cap;
 use hyperactor::forward;
-use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::reference::ActorId;
 use itertools::Itertools;
 use monarch_messages::controller::ControllerActor;
@@ -141,7 +140,7 @@ enum Recording {
 ///
 /// See [`WorkerMessage`] for what it can do!
 #[derive(Debug)]
-#[hyperactor::export_spawn(WorkerMessage, IndexedErasedUnbound<WorkerMessage>)]
+#[hyperactor::export_spawn(WorkerMessage(castable))]
 pub struct WorkerActor {
     device: Option<CudaDevice>,
     streams: HashMap<StreamRef, Arc<ActorHandle<StreamActor>>>,

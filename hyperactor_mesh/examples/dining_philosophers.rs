@@ -14,11 +14,12 @@ use std::process::ExitCode;
 use anyhow::Result;
 use async_trait::async_trait;
 use hyperactor::Actor;
+use hyperactor::Bind;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::PortRef;
-use hyperactor::message::IndexedErasedUnbound;
+use hyperactor::Unbind;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::Mesh;
 use hyperactor_mesh::ProcMesh;
@@ -45,10 +46,7 @@ enum ChopstickStatus {
 }
 
 #[derive(Debug)]
-#[hyperactor::export_spawn(
-    Cast<PhilosopherMessage>,
-    IndexedErasedUnbound<Cast<PhilosopherMessage>>,
-)]
+#[hyperactor::export_spawn(Cast<PhilosopherMessage>(castable))]
 struct PhilosopherActor {
     /// Status of left and right chopsticks
     chopsticks: (ChopstickStatus, ChopstickStatus),
@@ -61,7 +59,7 @@ struct PhilosopherActor {
 }
 
 /// Message from the waiter to a philosopher
-#[derive(Debug, Serialize, Deserialize, Named, Clone)]
+#[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
 enum PhilosopherMessage {
     Start(PortRef<WaiterMessage>),
     GrantChopstick(usize),
