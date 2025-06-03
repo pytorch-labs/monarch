@@ -36,6 +36,9 @@ struct MyUnamedStruct(
     PortRef<u64>,
 );
 
+#[derive(Bind, Unbind)]
+struct MyGenericStruct<'a, T>(T, &'a T);
+
 #[derive(Clone, Debug, PartialEq, Bind, Unbind)]
 enum MyEnum {
     Unit,
