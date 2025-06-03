@@ -58,18 +58,19 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorRef;
+use hyperactor::Bind;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::OncePortRef;
 use hyperactor::PortRef;
+use hyperactor::Unbind;
 use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::Mesh;
 use hyperactor_mesh::ProcMesh;
 use hyperactor_mesh::actor_mesh::Cast;
-use hyperactor_mesh::alloc::AllocConstraints;
 use hyperactor_mesh::alloc::AllocSpec;
 use hyperactor_mesh::alloc::Allocator;
 use hyperactor_mesh::alloc::ProcessAllocator;
@@ -142,7 +143,7 @@ struct PsGetBuffers(pub usize, pub OncePortRef<(RdmaBuffer, RdmaBuffer)>);
 struct PsUpdate(pub OncePortRef<bool>);
 
 // Message to log actors' weights and gradients.
-#[derive(Debug, Serialize, Deserialize, Named, Clone)]
+#[derive(Debug, Serialize, Deserialize, Named, Bind, Unbind, Clone)]
 struct Log;
 
 #[async_trait]
@@ -283,7 +284,7 @@ impl Actor for WorkerActor {
 // - ActorRef<RdmaManagerActor>: the actor ref to the parameter server
 // - Vec<ActorRef<RdmaManagerActor>>: the list of RdmaManagerActors. Used for the worker to get
 //   given its casted rank.
-#[derive(Debug, Serialize, Deserialize, Named, Clone)]
+#[derive(Debug, Serialize, Deserialize, Named, Bind, Unbind, Clone)]
 pub struct WorkerInit(
     pub ActorRef<ParameterServerActor>,
     pub Vec<ActorRef<RdmaManagerActor>>,
@@ -293,14 +294,14 @@ pub struct WorkerInit(
 // The PortRef<bool> is used to notify the main process when the operation completes.
 // - Workers compute local gradients (weights + 1)
 // - Workers write these gradients to their assigned buffer on the parameter server using RDMA
-#[derive(Debug, Serialize, Deserialize, Named, Clone)]
+#[derive(Debug, Serialize, Deserialize, Named, Bind, Unbind, Clone)]
 pub struct WorkerStep(PortRef<bool>);
 
 // Message to signal the worker to pull updated weights from the parameter server.
 // The PortRef<bool> is used to notify the main process when the operation completes.
 // - Workers read the updated weights from the parameter server using RDMA
 // - This happens after the parameter server has applied all gradients to update the weights
-#[derive(Debug, Serialize, Deserialize, Named, Clone)]
+#[derive(Debug, Serialize, Deserialize, Named, Bind, Unbind, Clone)]
 pub struct WorkerUpdate(PortRef<bool>);
 
 #[async_trait]
