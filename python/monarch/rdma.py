@@ -16,7 +16,13 @@ import torch
 
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 
-from monarch.service import Actor, ActorMeshRef, endpoint, MonarchContext, Service
+from monarch.actor_mesh import (
+    _ActorMeshRefImpl,
+    Actor,
+    ActorMeshRef,
+    endpoint,
+    MonarchContext,
+)
 
 
 @dataclass
@@ -52,9 +58,9 @@ class RDMAManager(Actor):
         ctx = MonarchContext.get()
         return cast(
             RDMAManager,
-            Service(
+            ActorMeshRef(
                 RDMAManager,
-                ActorMeshRef.from_actor_id(
+                _ActorMeshRefImpl.from_actor_id(
                     ctx.mailbox,
                     ActorId.from_string(f"{proc_id}.rdma_manager[0]"),
                 ),
@@ -159,7 +165,7 @@ class RDMABuffer:
         await RDMAManager.on_proc(self.proc_id).put.call_one(self.addr, offset, bytes)
 
 
-class ServiceCallFailedException(Exception):
+class ActorMeshRefCallFailedException(Exception):
     """
     Deterministic problem with the user's code.
     For example, an OOM resulting in trying to allocate too much GPU memory, or violating
@@ -172,13 +178,13 @@ class ServiceCallFailedException(Exception):
         message: str = "A remote service call has failed asynchronously.",
     ) -> None:
         self.exception = exception
-        self.service_frames: StackSummary = extract_tb(exception.__traceback__)
+        self.actor_mesh_ref_frames: StackSummary = extract_tb(exception.__traceback__)
         self.message = message
 
     def __str__(self) -> str:
         exe = str(self.exception)
-        service_tb = "".join(traceback.format_list(self.service_frames))
+        actor_mesh_ref_tb = "".join(traceback.format_list(self.actor_mesh_ref_frames))
         return (
             f"{self.message}\n"
-            f"Traceback of where the service call failed (most recent call last):\n{service_tb}{type(self.exception).__name__}: {exe}"
+            f"Traceback of where the service call failed (most recent call last):\n{actor_mesh_ref_tb}{type(self.exception).__name__}: {exe}"
         )

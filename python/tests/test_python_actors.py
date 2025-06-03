@@ -10,18 +10,18 @@ from types import ModuleType
 import pytest
 
 import torch
-
-from monarch.proc_mesh import local_proc_mesh, proc_mesh
-from monarch.rdma import RDMABuffer
-from monarch.service import (
+from monarch.actor_mesh import (
     Accumulator,
     Actor,
+    ActorMeshRefCallFailedException,
     current_actor_name,
     current_rank,
     current_size,
     endpoint,
-    ServiceCallFailedException,
 )
+
+from monarch.proc_mesh import local_proc_mesh, proc_mesh
+from monarch.rdma import RDMABuffer
 
 
 class Counter(Actor):
@@ -385,12 +385,12 @@ def test_exception_propagates_call() -> None:
     proc = proc_mesh(gpus=2).get()
     error_actor_mesh = proc.spawn("error_actor", ErrorActor).get()
 
-    with pytest.raises(ServiceCallFailedException, match="test"):
+    with pytest.raises(ActorMeshRefCallFailedException, match="test"):
         error_actor_mesh.raise_exception.call().get()
 
 
 def test_exception_propagates_call_one() -> None:
     proc = proc_mesh(gpus=1).get()
     error_actor_mesh = proc.spawn("error_actor", ErrorActor).get()
-    with pytest.raises(ServiceCallFailedException, match="test"):
+    with pytest.raises(ActorMeshRefCallFailedException, match="test"):
         error_actor_mesh.raise_exception.call_one().get()

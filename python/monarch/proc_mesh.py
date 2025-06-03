@@ -18,10 +18,10 @@ from monarch._rust_bindings.hyperactor_extension.alloc import (  # @manual=//mon
 )
 from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyProcMesh
+from monarch.actor_mesh import _Actor, _ActorMeshRefImpl, Actor, ActorMeshRef
 
 from monarch.python_local_mesh import _local_device_count
 from monarch.rdma import RDMAManager
-from monarch.service import _Actor, Actor, ActorMeshRef, Service
 
 T = TypeVar("T")
 try:
@@ -68,13 +68,13 @@ class ProcMesh:
             )
 
         actor_mesh = self._proc_mesh.spawn_blocking(name, _Actor)
-        service = Service(
+        service = ActorMeshRef(
             Class,
-            ActorMeshRef.from_hyperactor_mesh(self._mailbox, actor_mesh),
+            _ActorMeshRefImpl.from_hyperactor_mesh(self._mailbox, actor_mesh),
             self._mailbox,
         )
-        # useful to have this separate, because eventually we can reconstitute Service objects across pickling by
-        # doing `Service(Class, actor_handle)` but not calling _create.
+        # useful to have this separate, because eventually we can reconstitute ActorMeshRef objects across pickling by
+        # doing `ActorMeshRef(Class, actor_handle)` but not calling _create.
         service._create(args, kwargs)
         return cast(T, service)
 
@@ -93,13 +93,13 @@ class ProcMesh:
             )
 
         actor_mesh = await self._proc_mesh.spawn_nonblocking(name, _Actor)
-        service = Service(
+        service = ActorMeshRef(
             Class,
-            ActorMeshRef.from_hyperactor_mesh(self._mailbox, actor_mesh),
+            _ActorMeshRefImpl.from_hyperactor_mesh(self._mailbox, actor_mesh),
             self._mailbox,
         )
-        # useful to have this separate, because eventually we can reconstitute Service objects across pickling by
-        # doing `Service(Class, actor_handle)` but not calling _create.
+        # useful to have this separate, because eventually we can reconstitute ActorMeshRef objects across pickling by
+        # doing `ActorMeshRef(Class, actor_handle)` but not calling _create.
         service._create(args, kwargs)
         return cast(T, service)
 

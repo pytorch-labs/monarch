@@ -13,10 +13,10 @@ from typing import Dict, List, Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from monarch.actor_mesh import Actor, ActorMeshRef, endpoint
 
 from monarch.proc_mesh import proc_mesh
 from monarch.rdma import RDMABuffer
-from monarch.service import Actor, endpoint, Service
 from torch.distributions import Categorical, kl_divergence
 
 """
@@ -153,7 +153,7 @@ class ReplayBuffer(Actor):
 class Scorer(Actor):
     """Evaluates actions and assigns rewards to trajectory slices."""
 
-    def __init__(self, trajectory_queue: Service, replay_buffer: Service):
+    def __init__(self, trajectory_queue: ActorMeshRef, replay_buffer: ActorMeshRef):
         """Initialize the scorer.
 
         Args:
@@ -217,7 +217,7 @@ class Scorer(Actor):
 class Learner(Actor):
     """Updates policy based on collected experiences using PPO algorithm."""
 
-    def __init__(self, replay_buffer: Service):
+    def __init__(self, replay_buffer: ActorMeshRef):
         """Initialize the learner.
 
         Args:
@@ -239,10 +239,10 @@ class Learner(Actor):
         self.policy_version = 0
         self.replay_buffer = replay_buffer
         self.batch_size = 2
-        self.generators: Optional[Service] = None
+        self.generators: Optional[ActorMeshRef] = None
 
     @endpoint
-    async def init_generators(self, generators: Service) -> None:
+    async def init_generators(self, generators: ActorMeshRef) -> None:
         """Set the generators service for weight updates.
 
         Args:

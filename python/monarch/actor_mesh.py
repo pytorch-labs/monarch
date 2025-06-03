@@ -136,7 +136,7 @@ Selection = Literal["all", "choose"]  # TODO: replace with real selection object
 # standin class for whatever is the serializable python object we use
 # to name an actor mesh. Hacked up today because ActorMesh
 # isn't plumbed to non-clients
-class ActorMeshRef:
+class _ActorMeshRefImpl:
     def __init__(
         self,
         mailbox: Mailbox,
@@ -152,9 +152,9 @@ class ActorMeshRef:
     @staticmethod
     def from_hyperactor_mesh(
         mailbox: Mailbox, hy_actor_mesh: PythonActorMesh
-    ) -> "ActorMeshRef":
+    ) -> "_ActorMeshRefImpl":
         shape: Shape = hy_actor_mesh.shape
-        return ActorMeshRef(
+        return _ActorMeshRefImpl(
             mailbox,
             hy_actor_mesh,
             hy_actor_mesh.shape,
@@ -162,12 +162,16 @@ class ActorMeshRef:
         )
 
     @staticmethod
-    def from_actor_id(mailbox: Mailbox, actor_id: ActorId) -> "ActorMeshRef":
-        return ActorMeshRef(mailbox, None, singleton_shape, [actor_id])
+    def from_actor_id(mailbox: Mailbox, actor_id: ActorId) -> "_ActorMeshRefImpl":
+        return _ActorMeshRefImpl(mailbox, None, singleton_shape, [actor_id])
 
     @staticmethod
-    def from_actor_ref_with_shape(ref: "ActorMeshRef", shape: Shape) -> "ActorMeshRef":
-        return ActorMeshRef(ref._mailbox, None, shape, ref._please_replace_me_actor_ids)
+    def from_actor_ref_with_shape(
+        ref: "_ActorMeshRefImpl", shape: Shape
+    ) -> "_ActorMeshRefImpl":
+        return _ActorMeshRefImpl(
+            ref._mailbox, None, shape, ref._please_replace_me_actor_ids
+        )
 
     def __getstate__(
         self,
@@ -227,7 +231,7 @@ class ActorMeshRef:
 class Endpoint(Generic[P, R]):
     def __init__(
         self,
-        actor_mesh_ref: ActorMeshRef,
+        actor_mesh_ref: _ActorMeshRefImpl,
         name: str,
         impl: Callable[Concatenate[Any, P], Coroutine[Any, Any, R]],
         mailbox: Mailbox,
@@ -492,7 +496,7 @@ class _Actor:
                 return self.run_async(ctx, self.run_task(port, result))
         except Exception as e:
             traceback.print_exc()
-            s = ServiceCallFailedException(e)
+            s = ActorMeshRefCallFailedException(e)
 
             # The exception is delivered to exactly one of:
             # (1) our caller, (2) our supervisor
@@ -514,7 +518,7 @@ class _Actor:
                 port.send("result", result)
         except Exception as e:
             traceback.print_exc()
-            s = ServiceCallFailedException(e)
+            s = ActorMeshRefCallFailedException(e)
             if port is not None:
                 port.send("exception", s)
             raise s from None
@@ -553,16 +557,17 @@ class Actor(MeshTrait):
             "actor implementations are not meshes, but we can't convince the typechecker of it..."
         )
 
-    def _new_with_shape(self, shape: Shape) -> "Service":
+    def _new_with_shape(self, shape: Shape) -> "ActorMeshRef":
         raise NotImplementedError(
             "actor implementations are not meshes, but we can't convince the typechecker of it..."
         )
 
 
-class Service(MeshTrait):
+class ActorMeshRef(MeshTrait):
     def __init__(
-        self, Class: Type[T], actor_mesh_ref: ActorMeshRef, mailbox: Mailbox
+        self, Class: Type[T], actor_mesh_ref: _ActorMeshRefImpl, mailbox: Mailbox
     ) -> None:
+        self.__name__ = Class.__name__
         self._class = Class
         self._actor_mesh_ref = actor_mesh_ref
         self._mailbox = mailbox
@@ -580,6 +585,32 @@ class Service(MeshTrait):
                     ),
                 )
 
+    def __getattr__(self, name: str) -> Any:
+        # This method is called when an attribute is not found
+        # For linting purposes, we need to tell the type checker that any attribute
+        # could be an endpoint that's dynamically added at runtime
+        # At runtime, we still want to raise AttributeError for truly missing attributes
+
+        # Check if this is a method on the underlying class
+        if hasattr(self._class, name):
+            attr = getattr(self._class, name)
+            if isinstance(attr, EndpointProperty):
+                # Dynamically create the endpoint
+                endpoint = Endpoint(
+                    self._actor_mesh_ref,
+                    name,
+                    attr._method,
+                    self._mailbox,
+                )
+                # Cache it for future use
+                setattr(self, name, endpoint)
+                return endpoint
+
+        # If we get here, it's truly not found
+        raise AttributeError(
+            f"'{self.__class__.__name__}' object has no attribute '{name}'"
+        )
+
     def _create(self, args: Iterable[Any], kwargs: Dict[str, Any]) -> None:
         async def null_func(*_args: Iterable[Any], **_kwargs: Dict[str, Any]) -> None:
             return None
@@ -593,8 +624,10 @@ class Service(MeshTrait):
         # pyre-ignore
         send(ep, (self._class, *args), kwargs)
 
-    def __reduce_ex__(self, protocol: ...) -> "Tuple[Type[Service], Tuple[Any, ...]]":
-        return Service, (
+    def __reduce_ex__(
+        self, protocol: ...
+    ) -> "Tuple[Type[ActorMeshRef], Tuple[Any, ...]]":
+        return ActorMeshRef, (
             self._class,
             self._actor_mesh_ref,
             self._mailbox,
@@ -608,15 +641,15 @@ class Service(MeshTrait):
     def _labels(self) -> Iterable[str]:
         return self._actor_mesh_ref._shape.labels
 
-    def _new_with_shape(self, shape: Shape) -> "Service":
-        return Service(
+    def _new_with_shape(self, shape: Shape) -> "ActorMeshRef":
+        return ActorMeshRef(
             self._class,
-            ActorMeshRef.from_actor_ref_with_shape(self._actor_mesh_ref, shape),
+            _ActorMeshRefImpl.from_actor_ref_with_shape(self._actor_mesh_ref, shape),
             self._mailbox,
         )
 
 
-class ServiceCallFailedException(Exception):
+class ActorMeshRefCallFailedException(Exception):
     """
     Deterministic problem with the user's code.
     For example, an OOM resulting in trying to allocate too much GPU memory, or violating
@@ -629,15 +662,15 @@ class ServiceCallFailedException(Exception):
         message: str = "A remote service call has failed asynchronously.",
     ) -> None:
         self.exception = exception
-        self.service_frames: StackSummary = extract_tb(exception.__traceback__)
+        self.actor_mesh_ref_frames: StackSummary = extract_tb(exception.__traceback__)
         self.message = message
 
     def __str__(self) -> str:
         exe = str(self.exception)
-        service_tb = "".join(traceback.format_list(self.service_frames))
+        actor_mesh_ref_tb = "".join(traceback.format_list(self.actor_mesh_ref_frames))
         return (
             f"{self.message}\n"
-            f"Traceback of where the service call failed (most recent call last):\n{service_tb}{type(self.exception).__name__}: {exe}"
+            f"Traceback of where the service call failed (most recent call last):\n{actor_mesh_ref_tb}{type(self.exception).__name__}: {exe}"
         )
 
 
