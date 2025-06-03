@@ -25,7 +25,6 @@ use hyperactor::channel::sim::HANDLE;
 use hyperactor::data::Serialized;
 use hyperactor::forward;
 use hyperactor::id;
-use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::reference::ActorId;
 use hyperactor::simnet::TorchOpEvent;
 use monarch_messages::controller::ControllerActor;
@@ -151,7 +150,7 @@ fn reduce_op<T: Clone + Default + Add<Output = T>>(
 }
 
 #[derive(Debug)]
-#[hyperactor::export_spawn(WorkerMessage, IndexedErasedUnbound<WorkerMessage>)]
+#[hyperactor::export_spawn(WorkerMessage(castable))]
 pub struct WorkerActor {
     rank: usize,
     worker_actor_id: ActorId,

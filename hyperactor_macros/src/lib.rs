@@ -6,7 +6,10 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+//! Defines macros used by the [`hyperactor`] crate.
+
 #![feature(proc_macro_def_site)]
+#![deny(missing_docs)]
 
 extern crate proc_macro;
 
@@ -15,16 +18,19 @@ use convert_case::Casing;
 use indoc::indoc;
 use proc_macro::TokenStream;
 use proc_macro2::Span;
+use quote::ToTokens;
 use quote::format_ident;
 use quote::quote;
 use syn::Attribute;
 use syn::Data;
 use syn::DataEnum;
+use syn::DataStruct;
 use syn::DeriveInput;
 use syn::Expr;
 use syn::Field;
 use syn::Fields;
 use syn::Ident;
+use syn::Index;
 use syn::ItemFn;
 use syn::ItemImpl;
 use syn::Lit;
@@ -33,8 +39,11 @@ use syn::MetaNameValue;
 use syn::Token;
 use syn::Type;
 use syn::parse_macro_input;
+use syn::parse_quote;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
+use syn::token::Comma;
+use syn::token::Paren;
 
 const REPLY_VARIANT_ERROR: &str = indoc! {r#"
 `call` message expects a typed `OncePortRef` or `OncePortHandle` argument in the last position
@@ -1138,10 +1147,53 @@ pub fn named_derive(input: TokenStream) -> TokenStream {
     TokenStream::from(expanded)
 }
 
+// /// Store nested parameters parsed from [`fn export`] and [`fn export_spawn`]
+// /// macros. e.g. in `#[export(MyMessage(castable))]`, parameter `MyMessage`
+// /// takes a nested flag `castable`.
+struct ExportParam {
+    ty: Type,
+    flags: Vec<Expr>,
+}
+
+impl syn::parse::Parse for ExportParam {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        // Parse the type. e.g. `MyMessage` in `#[export(MyMessage(castable))]`.
+        let ty: Type = input.parse()?;
+
+        // Parse the flag list: e.g. (foo, bar) in `#[export(MyType(foo, bar))]`.
+        let flags = if input.peek(Paren) {
+            let content;
+            syn::parenthesized!(content in input);
+            let parsed = content.parse_terminated(Expr::parse, Comma)?;
+            parsed.into_iter().collect()
+        } else {
+            Vec::new()
+        };
+
+        Ok(Self { ty, flags })
+    }
+}
+
+impl ToTokens for ExportParam {
+    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+        self.ty.to_tokens(tokens);
+        for flag in &self.flags {
+            flag.to_tokens(tokens);
+        }
+    }
+}
+
 /// Exports an actor so that it may be bound to [`hyperactor::ActorRef`]s.
 ///
 /// The macro must be provided with the set of types that are exported, and
-/// which may therefore be dispatched through references to the actor.
+/// which may therefore be dispatched through references to the actor. If the
+/// types need to be cast, add `castable` flag to those types. e.g. the following
+/// example exports 5 types, and 4 of which need to be cast.
+///
+/// ```
+/// #[hyperactor::export(TestMessage(castable), ()(castable), MyGeneric<()>(castable), u64)]
+/// struct TestActor;
+/// ```
 #[proc_macro_attribute]
 pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
     export_impl("export", attr, &parse_macro_input!(item as DeriveInput))
@@ -1166,17 +1218,74 @@ fn export_impl(which: &'static str, attr: TokenStream, input: &DeriveInput) -> T
     let data_type_name = &input.ident;
 
     let attr_args =
-        parse_macro_input!(attr with Punctuated::<syn::Type, Token![,]>::parse_terminated);
+        parse_macro_input!(attr with Punctuated::<ExportParam, Comma>::parse_terminated);
+
     if attr_args.is_empty() {
         return TokenStream::from(
-            syn::Error::new_spanned(attr_args, format!("`{}` expects one or more type path arguments\n\n= help: use `#[{}(MyType, MyOtherType<T>)]`", which, which)).to_compile_error(),
+            syn::Error::new_spanned(
+                attr_args,
+                format!(
+                    "`{}` expects one or more type path arguments\n\n= help: use `#[{}(MyType, MyOtherType<T>)]`",
+                    which,
+                    which,
+                )
+            ).to_compile_error(),
         );
+    }
+
+    let mut tys = Vec::new();
+    for ExportParam { ty, flags } in attr_args {
+        // Append types inferred from the `castable` flag into tys.
+        match flags.as_slice() {
+            [] => {}
+            [expr] => match expr {
+                Expr::Path(path) => {
+                    if path.path.is_ident("castable") {
+                        let indexed =
+                            parse_quote! { hyperactor::message::IndexedErasedUnbound<#ty> };
+                        tys.push(indexed);
+                    } else {
+                        return TokenStream::from(
+                            syn::Error::new_spanned(
+                                path,
+                                format!(
+                                    "unsupported flag `{}`; expected `castable`",
+                                    path.to_token_stream(),
+                                ),
+                            )
+                            .to_compile_error(),
+                        );
+                    }
+                }
+                _ => {
+                    return TokenStream::from(
+                        syn::Error::new_spanned(
+                            expr,
+                            format!(
+                                "unsupported expression `{}`; expected `castable`",
+                                expr.to_token_stream(),
+                            ),
+                        )
+                        .to_compile_error(),
+                    );
+                }
+            },
+            [_, _, ..] => {
+                return TokenStream::from(
+                    syn::Error::new_spanned(
+                        ExportParam { ty, flags },
+                    "expected at most one flag, e.g. `MyMessage(castable)`, not `MyMessage(castable, foo)`",
+                    ).to_compile_error(),
+                );
+            }
+        }
+        tys.push(ty);
     }
 
     let mut handles = Vec::new();
     let mut bindings = Vec::new();
 
-    for ty in &attr_args {
+    for ty in tys {
         handles.push(quote! {
             impl hyperactor::actor::RemoteHandles<#ty> for #data_type_name {}
         });
@@ -1207,4 +1316,351 @@ fn export_impl(which: &'static str, attr: TokenStream, input: &DeriveInput) -> T
     };
 
     TokenStream::from(expanded)
+}
+
+fn include_in_castable(field: &Field) -> bool {
+    matches!(
+        &field.ty,
+        Type::Path(path) if path.path.segments.last().expect("path must have at least one segment").ident == "PortRef"
+    )
+}
+
+/// The field accessor in struct or enum variant.
+/// e.g.:
+///   struct NamedStruct { foo: u32 } => FieldAccessor::Named(Ident::new("foo", Span::call_site()))
+///   struct UnnamedStruct(u32) => FieldAccessor::Unnamed(Index::from(0))
+enum FieldAccessor {
+    Named(Ident),
+    Unnamed(Index),
+}
+
+/// Result of parsing a field in a struct, or a enum variant.
+struct ParsedField {
+    accessor: FieldAccessor,
+    ty: Type,
+    included: bool,
+}
+
+impl From<&ParsedField> for (Ident, Type) {
+    fn from(field: &ParsedField) -> Self {
+        let field_ident = match &field.accessor {
+            FieldAccessor::Named(ident) => ident.clone(),
+            FieldAccessor::Unnamed(i) => {
+                Ident::new(&format!("f{}", i.index), proc_macro2::Span::call_site())
+            }
+        };
+        (field_ident, field.ty.clone())
+    }
+}
+
+fn collect_all_fields(fields: &Fields) -> Vec<ParsedField> {
+    match fields {
+        Fields::Named(named) => named
+            .named
+            .iter()
+            .map(|f| {
+                let accessor = FieldAccessor::Named(f.ident.clone().unwrap());
+                ParsedField {
+                    accessor,
+                    ty: f.ty.clone(),
+                    included: include_in_castable(f),
+                }
+            })
+            .collect(),
+        Fields::Unnamed(unnamed) => unnamed
+            .unnamed
+            .iter()
+            .enumerate()
+            .map(|(i, f)| {
+                let accessor = FieldAccessor::Unnamed(Index::from(i));
+                ParsedField {
+                    accessor,
+                    ty: f.ty.clone(),
+                    included: include_in_castable(f),
+                }
+            })
+            .collect(),
+        Fields::Unit => Vec::new(),
+    }
+}
+
+fn gen_struct_items<F>(fields: &Fields, make_item: F) -> Vec<proc_macro2::TokenStream>
+where
+    F: Fn(proc_macro2::TokenStream, Type) -> proc_macro2::TokenStream,
+{
+    collect_all_fields(fields)
+        .into_iter()
+        .filter(|f| f.included)
+        .map(
+            |ParsedField {
+                 accessor,
+                 ty,
+                 included,
+             }| {
+                assert!(included);
+                let field_accessor = match accessor {
+                    FieldAccessor::Named(ident) => quote! { self.#ident },
+                    FieldAccessor::Unnamed(index) => quote! { self.#index },
+                };
+                make_item(field_accessor, ty)
+            },
+        )
+        .collect()
+}
+
+/// Generate the field accessor for a enum variant in pattern matching. e.g.
+/// the <GENERATED> parts in the following example:
+///
+///   match my_enum {
+///     // e.g. MyEnum::Tuple(_, f1, f2, _)
+///     MyEnum::Tuple(<GENERATED>) => { ... }
+///     // e.g. MyEnum::Struct { field0: _, field1 }
+///     MyEnum::Struct(<GENERATED>) => { ... }
+///   }
+fn gen_enum_field_accessors(all_fields: &[ParsedField]) -> Vec<proc_macro2::TokenStream> {
+    all_fields
+        .iter()
+        .map(
+            |ParsedField {
+                 accessor,
+                 ty: _,
+                 included,
+             }| {
+                match accessor {
+                    FieldAccessor::Named(ident) => {
+                        if *included {
+                            quote! { #ident }
+                        } else {
+                            quote! { #ident: _ }
+                        }
+                    }
+                    FieldAccessor::Unnamed(i) => {
+                        if *included {
+                            let ident = Ident::new(
+                                &format!("f{}", i.index),
+                                proc_macro2::Span::call_site(),
+                            );
+                            quote! { #ident }
+                        } else {
+                            quote! { _ }
+                        }
+                    }
+                }
+            },
+        )
+        .collect()
+}
+
+/// Generate all the parts for enum variants. e.g. the <GENERATED> part in the
+/// following example:
+///
+///   match my_enum {
+///      <GENERATED>
+///   }
+fn gen_enum_arms<F>(data: &DataEnum, make_item: F) -> Vec<proc_macro2::TokenStream>
+where
+    F: Fn(proc_macro2::TokenStream, Type) -> proc_macro2::TokenStream,
+{
+    data.variants
+        .iter()
+        .map(|variant| {
+            let name = &variant.ident;
+            let all_fields = collect_all_fields(&variant.fields);
+            let field_accessors = gen_enum_field_accessors(&all_fields);
+            let included_fields = all_fields.iter().filter(|f| f.included).collect::<Vec<_>>();
+            let items = included_fields
+                .iter()
+                .map(|f| {
+                    let (accessor, ty) = <(Ident, Type)>::from(*f);
+                    make_item(quote! { #accessor }, ty)
+                })
+                .collect::<Vec<_>>();
+
+            match &variant.fields {
+                Fields::Named(_) => {
+                    quote! { Self::#name { #(#field_accessors),*, } => { #(#items)* } }
+                }
+                Fields::Unnamed(_) => {
+                    quote! { Self::#name( #(#field_accessors),* ) => { #(#items)* } }
+                }
+                Fields::Unit => quote! { Self::#name => { #(#items)* } },
+            }
+        })
+        .collect()
+}
+
+/// Derive a custom implementation of [`hyperactor::message::Bind`] trait for
+/// a struct or enum. This macro is normally used in tandem with [`fn derive_unbind`]
+/// to make the applied struct or enum castable.
+///
+/// Specifically, the derived implementation iterates through all fields of type
+/// [`PortRef`] based on the order of their declaration in the struct or enum.
+/// During the iteration, the corresponding [`PortId`] is taken from [`hyperactor::message::Bindings`],
+/// and assigns to the [`PortRef`] field. The ordering in `Bindings` is the
+/// same as the declaration order, which is guaranteed by [`fn derive_unbind`].
+///
+/// # Caveats
+///
+/// Nested PortRef fields, i.e. fields of fields' types, are not accounted in
+/// this implementation. e.g., in the following example:
+///
+/// ```
+/// struct MyType(PortRef<u64>);
+///
+/// #[derive(Bind, Unbind)]
+/// struct MyStruct(MyType);
+/// ```
+///
+/// `MyType`'s `PortRef` field is not accounted when deriving `MyStruct`.
+///
+/// Similarly, generic type parameters are not account either.
+///
+/// # Example
+///
+/// This macro supports named and unamed structs and enums. Bellow are examples
+/// of the supported types:
+///
+/// ```
+/// #[derive(Bind, Unbind)]
+/// struct MyNamedStruct {
+///     field0: u64,
+///     field1: MyReply,
+///     field2: PortRef<MyReply>,
+///     field3: bool,
+///     field4: hyperactor::PortRef<u64>,
+/// }
+///
+/// #[derive(Bind, Unbind)]
+/// struct MyUnamedStruct(
+///     u64,
+///     MyReply,
+///     hyperactor::PortRef<MyReply>,
+///     bool,
+///     PortRef<u64>,
+/// );
+///
+/// #[derive(Bind, Unbind)]
+/// enum MyEnum {
+///     Unit,
+///     NoopTuple(u64, bool),
+///     NoopStruct {
+///         field0: u64,
+///         field1: bool,
+///     },
+///     Tuple(
+///         u64,
+///         MyReply,
+///         PortRef<MyReply>,
+///         bool,
+///         hyperactor::PortRef<u64>,
+///     ),
+///     Struct {
+///         field0: u64,
+///         field1: MyReply,
+///         field2: PortRef<MyReply>,
+///         field3: bool,
+///         field4: hyperactor::PortRef<u64>,
+///     },
+/// }
+/// ```
+///
+/// The following shows what derived `Bind`` and `Unbind`` implementations for
+/// `MyNamedStruct` will look like. The implementations of other types are
+/// similar, and thus are not shown here.
+/// ```ignore
+/// impl Bind for MyNamedStruct {
+///     fn bind(mut self, bindings: &Bindings) -> anyhow::Result<Self> {
+///         let mut bindings_iter = bindings.get_iter::<hyperactor::PortId>();
+///         *self.field2.port_id_mut() = bindings_iter
+///             .next()
+///             .ok_or_else(|| anyhow::Error::msg("no value found"))??;
+///         *self.field4.port_id_mut() = bindings_iter
+///             .next()
+///             .ok_or_else(|| anyhow::Error::msg("no value found"))??;
+///         Ok(self)
+///     }
+/// }
+///
+/// impl Unbind for MyNamedStruct {
+///     fn bindings(&self) -> anyhow::Result<Bindings> {
+///         let mut bindings = Bindings::default();
+///         bindings.push(self.field2.port_id())?;
+///         bindings.push(self.field4.port_id())?;
+///         Ok(bindings)
+///     }
+/// }
+/// ```
+#[proc_macro_derive(Bind)]
+pub fn derive_bind(input: TokenStream) -> TokenStream {
+    fn make_item(field_accessor: proc_macro2::TokenStream, _ty: Type) -> proc_macro2::TokenStream {
+        quote! {  *#field_accessor.port_id_mut() = bindings_iter.next().ok_or_else(|| anyhow::Error::msg("no value found"))??; }
+    }
+
+    let input = parse_macro_input!(input as DeriveInput);
+    let name = &input.ident;
+    let inner = match &input.data {
+        Data::Struct(DataStruct { fields, .. }) => {
+            let assigns = gen_struct_items(fields, make_item);
+            quote! { #(#assigns)* }
+        }
+        Data::Enum(data_enum) => {
+            let arms = gen_enum_arms(data_enum, make_item);
+            quote! { match &mut self { #(#arms),* } }
+        }
+        _ => panic!("Bind can only be derived for structs and enums"),
+    };
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    let expand = quote! {
+        impl #impl_generics hyperactor::message::Bind for #name #ty_generics #where_clause {
+            fn bind(mut self, bindings: &hyperactor::message::Bindings) -> anyhow::Result<Self> {
+                let mut bindings_iter = bindings.get_iter::<hyperactor::PortId>();
+                #inner
+                Ok(self)
+            }
+        }
+    };
+    TokenStream::from(expand)
+}
+
+/// Derive a custom implementation of [`hyperactor::message::Unbind`] trait for
+/// a struct or enum. This macro is normally used in tandem with [`fn derive_bind`]
+/// to make the applied struct or enum castable.
+///
+/// Specifically, the derived implementation finds all fields of type [`PortRef`]
+/// and pushes them into the [`hyperactor::message::Bindings`] field of the
+/// resulted [`Unbound`] object. The [`PortRef`] fields are pushed in the same
+/// order of their declaration in the struct or enum. The ordering matters
+/// because the corresponding [`fn derive_bind`] relies on that order.
+///
+/// See [`fn derive_bind`]'s documentation for caveats and examples.
+#[proc_macro_derive(Unbind)]
+pub fn derive_unbind(input: TokenStream) -> TokenStream {
+    fn make_item(field_accessor: proc_macro2::TokenStream, _ty: Type) -> proc_macro2::TokenStream {
+        quote! {  bindings.push(#field_accessor.port_id())?; }
+    }
+
+    let input = parse_macro_input!(input as DeriveInput);
+    let name = &input.ident;
+    let inner = match &input.data {
+        Data::Struct(DataStruct { fields, .. }) => {
+            let collects = gen_struct_items(fields, make_item);
+            quote! { #(#collects)* }
+        }
+        Data::Enum(data_enum) => {
+            let arms = gen_enum_arms(data_enum, make_item);
+            quote! { match &self { #(#arms),* } }
+        }
+        _ => panic!("Unbind can only be derived for structs and enums"),
+    };
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    let expand = quote! {
+        impl #impl_generics hyperactor::message::Unbind for #name #ty_generics #where_clause {
+            fn bindings(&self) -> anyhow::Result<hyperactor::message::Bindings> {
+                let mut bindings = hyperactor::message::Bindings::default();
+                #inner
+                Ok(bindings)
+            }
+        }
+    };
+    TokenStream::from(expand)
 }

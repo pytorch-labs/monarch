@@ -8,25 +8,23 @@
 
 use async_trait::async_trait;
 use hyperactor::Actor;
+use hyperactor::Bind;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Named;
-use hyperactor::message::IndexedErasedUnbound;
+use hyperactor::Unbind;
 use serde::Deserialize;
 use serde::Serialize;
 
 use crate::actor_mesh::Cast;
 
 /// Message that can be sent to an EmptyActor.
-#[derive(Serialize, Deserialize, Debug, Named, Clone)]
+#[derive(Serialize, Deserialize, Debug, Named, Clone, Bind, Unbind)]
 pub struct EmptyMessage();
 
 /// No-op actor.
 #[derive(Debug, PartialEq)]
-#[hyperactor::export(
-    EmptyMessage,
-    Cast<EmptyMessage>, IndexedErasedUnbound<Cast<EmptyMessage>>
-)]
+#[hyperactor::export(EmptyMessage, Cast<EmptyMessage>(castable))]
 pub struct EmptyActor();
 
 #[async_trait]
