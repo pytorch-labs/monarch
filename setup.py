@@ -106,9 +106,13 @@ with open("requirements.txt") as f:
 with open("README.md", encoding="utf8") as f:
     readme = f.read()
 
+# Allow overriding the package name and version via environment variables
+package_name = os.environ.get("MONARCH_PACKAGE_NAME", "torchmonarch")
+package_version = os.environ.get("MONARCH_VERSION", "0.0.1")
+
 setup(
-    name="monarch",
-    version="0.0.1",
+    name=package_name,
+    version=package_version,
     packages=find_packages(
         where="python",
         exclude=["python/tests.*", "python/tests"],
