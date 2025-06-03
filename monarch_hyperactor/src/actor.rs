@@ -13,14 +13,12 @@ use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::ActorId;
+use hyperactor::Bind;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Named;
-use hyperactor::message::Bind;
-use hyperactor::message::Bindings;
+use hyperactor::Unbind;
 use hyperactor::message::IndexedErasedUnbound;
-use hyperactor::message::Unbind;
-use hyperactor::message::Unbound;
 use hyperactor_mesh::actor_mesh::Cast;
 use monarch_types::PickledPyObject;
 use pyo3::exceptions::PyRuntimeError;
@@ -162,7 +160,7 @@ impl PickledMessageClientActor {
 }
 
 #[pyclass(frozen, module = "monarch._rust_bindings.monarch_hyperactor.actor")]
-#[derive(Clone, Serialize, Deserialize, Named)]
+#[derive(Clone, Serialize, Deserialize, Named, Bind, Unbind)]
 pub struct PythonMessage {
     method: String,
     message: ByteBuf,
@@ -177,18 +175,6 @@ impl std::fmt::Debug for PythonMessage {
                 &hyperactor::data::HexFmt(self.message.as_slice()).to_string(),
             )
             .finish()
-    }
-}
-
-impl Unbind for PythonMessage {
-    fn unbind(self) -> anyhow::Result<Unbound<Self>> {
-        Ok(Unbound::new(self, Bindings::default()))
-    }
-}
-
-impl Bind for PythonMessage {
-    fn bind(self, _bindings: &Bindings) -> anyhow::Result<Self> {
-        Ok(self)
     }
 }
 

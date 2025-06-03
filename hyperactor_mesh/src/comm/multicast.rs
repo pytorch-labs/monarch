@@ -162,7 +162,7 @@ pub(crate) struct ForwardMessage {
 }
 
 /// This type is re-bound by the comm actor to contain the message destination rank.
-#[derive(Debug, Named, Serialize, Deserialize)]
+#[derive(Clone, Debug, Named, Serialize, Deserialize)]
 pub struct CastRank(pub usize);
 
 impl Deref for CastRank {
