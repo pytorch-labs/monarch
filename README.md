@@ -11,6 +11,8 @@ PyTorch, but at cluster scale.
 > work. It's recommended that you signal your intention to contribute in the
 > issue tracker, either by filing a new issue or by claiming an existing one.
 
+Note: Monarch is currently only supported on Linux systems
+
 ## Installation
 
 `pip install torchmonarch`
@@ -31,8 +33,14 @@ rustup default nightly
 # Install non-python dependencies
 conda install libunwind -y
 
-# Install the correct cuda and cuda-toolkit versions for your machine
-sudo dnf install cuda-toolkit-12-0 cuda-12-0 libnccl-devel clang-devel
+# Install the correct cuda and cuda-toolkit versions for your machine, as well as NCCL-dev
+sudo dnf install cuda-toolkit-12-0 cuda-12-0 libnccl-devel
+
+# Install clang dev
+sudo dnf install clang-devel
+# In some envrionments, the following may be necessary instead
+conda install conda-forge::clangdev
+conda update -n monarchenv --all -c conda-forge -y
 
 # Install build dependencies
 pip install -r build-requirements.txt
