@@ -1155,6 +1155,52 @@ struct ExportParam {
     flags: Vec<Expr>,
 }
 
+impl FromIterator<ExportParam> for Result<Vec<Type>, syn::Error> {
+    fn from_iter<I: IntoIterator<Item = ExportParam>>(params: I) -> Result<Vec<Type>, syn::Error> {
+        let mut tys = Vec::new();
+        for ExportParam { ty, flags } in params {
+            // Append types inferred from the `castable` flag into tys.
+            match flags.as_slice() {
+                [] => {}
+                [expr] => match expr {
+                    Expr::Path(path) => {
+                        if path.path.is_ident("castable") {
+                            let indexed =
+                                parse_quote! { hyperactor::message::IndexedErasedUnbound<#ty> };
+                            tys.push(indexed);
+                        } else {
+                            return Err(syn::Error::new_spanned(
+                                path,
+                                format!(
+                                    "unsupported flag `{}`; expected `castable`",
+                                    path.to_token_stream(),
+                                ),
+                            ));
+                        }
+                    }
+                    _ => {
+                        return Err(syn::Error::new_spanned(
+                            expr,
+                            format!(
+                                "unsupported expression `{}`; expected `castable`",
+                                expr.to_token_stream(),
+                            ),
+                        ));
+                    }
+                },
+                [_, _, ..] => {
+                    return Err(syn::Error::new_spanned(
+                        ExportParam { ty, flags },
+                        "expected at most one flag, e.g. `MyMessage(castable)`, not `MyMessage(castable, foo)`",
+                    ));
+                }
+            }
+            tys.push(ty);
+        }
+        Ok(tys)
+    }
+}
+
 impl syn::parse::Parse for ExportParam {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         // Parse the type. e.g. `MyMessage` in `#[export(MyMessage(castable))]`.
@@ -1233,54 +1279,10 @@ fn export_impl(which: &'static str, attr: TokenStream, input: &DeriveInput) -> T
         );
     }
 
-    let mut tys = Vec::new();
-    for ExportParam { ty, flags } in attr_args {
-        // Append types inferred from the `castable` flag into tys.
-        match flags.as_slice() {
-            [] => {}
-            [expr] => match expr {
-                Expr::Path(path) => {
-                    if path.path.is_ident("castable") {
-                        let indexed =
-                            parse_quote! { hyperactor::message::IndexedErasedUnbound<#ty> };
-                        tys.push(indexed);
-                    } else {
-                        return TokenStream::from(
-                            syn::Error::new_spanned(
-                                path,
-                                format!(
-                                    "unsupported flag `{}`; expected `castable`",
-                                    path.to_token_stream(),
-                                ),
-                            )
-                            .to_compile_error(),
-                        );
-                    }
-                }
-                _ => {
-                    return TokenStream::from(
-                        syn::Error::new_spanned(
-                            expr,
-                            format!(
-                                "unsupported expression `{}`; expected `castable`",
-                                expr.to_token_stream(),
-                            ),
-                        )
-                        .to_compile_error(),
-                    );
-                }
-            },
-            [_, _, ..] => {
-                return TokenStream::from(
-                    syn::Error::new_spanned(
-                        ExportParam { ty, flags },
-                    "expected at most one flag, e.g. `MyMessage(castable)`, not `MyMessage(castable, foo)`",
-                    ).to_compile_error(),
-                );
-            }
-        }
-        tys.push(ty);
-    }
+    let tys: Vec<_> = match Result::<Vec<Type>, syn::Error>::from_iter(attr_args) {
+        Ok(tys) => tys,
+        Err(err) => return TokenStream::from(err.to_compile_error()),
+    };
 
     let mut handles = Vec::new();
     let mut bindings = Vec::new();
@@ -1313,6 +1315,63 @@ fn export_impl(which: &'static str, attr: TokenStream, input: &DeriveInput) -> T
         impl hyperactor::data::Named for #data_type_name {
             fn typename() -> &'static str { concat!(std::module_path!(), "::", stringify!(#data_type_name)) }
         }
+    };
+
+    TokenStream::from(expanded)
+}
+
+/// Represents the full input to [`fn alias`].
+struct AliasInput {
+    alias: Ident,
+    params: Punctuated<ExportParam, Comma>,
+}
+
+impl syn::parse::Parse for AliasInput {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let alias: Ident = input.parse()?;
+        let _: Comma = input.parse()?;
+        let params = input.parse_terminated(ExportParam::parse, Comma)?;
+        Ok(AliasInput { alias, params })
+    }
+}
+
+/// Create a [`RemoteActor`] handling a specific set of message types.
+/// This is used to create an [`ActorRef`] without having to depend on the
+/// actor's implementation. If the message type need to be cast, add `castable`
+/// flag to those types. e.g. the following example creats an alias with 5
+/// message types, and 4 of which need to be cast.
+///
+/// ```
+/// hyperactor::alias!(TestActorAlias, TestMessage(castable), ()(castable), MyGeneric<()>(castable), u64);
+/// ```
+#[proc_macro]
+pub fn alias(input: TokenStream) -> TokenStream {
+    let AliasInput { alias, params } = parse_macro_input!(input as AliasInput);
+    let messages: Vec<_> = match Result::<Vec<Type>, syn::Error>::from_iter(params) {
+        Ok(tys) => tys,
+        Err(err) => return TokenStream::from(err.to_compile_error()),
+    };
+
+    let expanded = quote! {
+        #[doc = "The generated alias struct."]
+        #[derive(Debug, Named)]
+        #[named(dump = false)]
+        pub struct #alias;
+        impl hyperactor::actor::RemoteActor for #alias {}
+
+        impl<A> hyperactor::actor::Binds<A> for #alias
+        where
+            A: hyperactor::Actor #(+ hyperactor::Handler<#messages>)* {
+            fn bind(ports: &hyperactor::proc::Ports<A>) {
+                #(
+                    ports.bind::<#messages>();
+                )*
+            }
+        }
+
+        #(
+            impl hyperactor::actor::RemoteHandles<#messages> for #alias {}
+        )*
     };
 
     TokenStream::from(expanded)
