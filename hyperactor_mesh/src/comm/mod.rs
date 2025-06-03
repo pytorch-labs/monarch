@@ -378,7 +378,6 @@ pub mod test_utils {
     use hyperactor::PortRef;
     use hyperactor::message::Bind;
     use hyperactor::message::Bindings;
-    use hyperactor::message::IndexedErasedUnbound;
     use hyperactor::message::Unbind;
     use serde::Deserialize;
     use serde::Serialize;
@@ -452,7 +451,7 @@ pub mod test_utils {
     }
 
     #[derive(Debug)]
-    #[hyperactor::export_spawn(TestMessage, Cast<TestMessage>, IndexedErasedUnbound<TestMessage>, IndexedErasedUnbound<Cast<TestMessage>>)]
+    #[hyperactor::export_spawn(TestMessage(castable), Cast<TestMessage>(castable))]
     pub struct TestActor {
         // Forward the received message to this port, so it can be inspected by
         // the unit test.

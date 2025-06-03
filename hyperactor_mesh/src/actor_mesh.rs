@@ -284,10 +284,7 @@ pub(crate) mod test_util {
     // mesh test suite.
     #[derive(Debug)]
     #[hyperactor::export_spawn(
-        Cast<Echo>, Cast<GetRank>, Cast<Error>, Relay,
-        IndexedErasedUnbound<Cast<Echo>>,
-        IndexedErasedUnbound<Cast<GetRank>>,
-        IndexedErasedUnbound<Cast<Error>>,
+        Cast<Echo>(castable), Cast<GetRank>(castable), Cast<Error>(castable), Relay,
     )]
     pub struct TestActor;
 

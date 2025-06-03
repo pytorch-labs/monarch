@@ -65,7 +65,6 @@ use hyperactor::Named;
 use hyperactor::OncePortRef;
 use hyperactor::PortRef;
 use hyperactor::Unbind;
-use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::Mesh;
@@ -238,10 +237,10 @@ impl Handler<Log> for ParameterServerActor {
 // Worker Actor
 #[derive(Debug)]
 #[hyperactor::export_spawn(
-    Cast<WorkerInit>, IndexedErasedUnbound<Cast<WorkerInit>>,
-    Cast<WorkerStep>, IndexedErasedUnbound<Cast<WorkerStep>>,
-    Cast<WorkerUpdate>, IndexedErasedUnbound<Cast<WorkerUpdate>>,
-    Cast<Log>, IndexedErasedUnbound<Cast<Log>>,
+    Cast<WorkerInit>(castable),
+    Cast<WorkerStep>(castable),
+    Cast<WorkerUpdate>(castable),
+    Cast<Log>(castable),
 )]
 pub struct WorkerActor {
     ps_weights_handle: Option<RdmaBuffer>,
