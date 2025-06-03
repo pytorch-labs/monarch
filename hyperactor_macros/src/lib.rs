@@ -1395,6 +1395,22 @@ where
 /// and assigns to the [`PortRef`] field. The ordering in `Bindings` is the
 /// same as the declaration order, which is guaranteed by [`fn derive_unbind`].
 ///
+/// # Caveats
+///
+/// Nested PortRef fields, i.e. fields of fields' types, are not accounted in
+/// this implementation. e.g., in the following example:
+///
+/// ```
+/// struct MyType(PortRef<u64>);
+///
+/// #[derive(Bind, Unbind)]
+/// struct MyStruct(MyType);
+/// ```
+///
+/// `MyType`'s `PortRef` field is not accounted when deriving `MyStruct`.
+///
+/// Similarly, generic type parameters are not account either.
+///
 /// # Example
 ///
 /// This macro supports named and unamed structs and enums. Bellow are examples
@@ -1489,8 +1505,9 @@ pub fn derive_bind(input: TokenStream) -> TokenStream {
         }
         _ => panic!("Bind can only be derived for structs and enums"),
     };
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
     let expand = quote! {
-        impl hyperactor::message::Bind for #name {
+        impl #impl_generics hyperactor::message::Bind for #name #ty_generics #where_clause {
             fn bind(mut self, bindings: &hyperactor::message::Bindings) -> anyhow::Result<Self> {
                 let mut bindings_iter = bindings.get_iter::<hyperactor::PortId>();
                 #inner
@@ -1511,9 +1528,7 @@ pub fn derive_bind(input: TokenStream) -> TokenStream {
 /// order of their declaration in the struct or enum. The ordering matters
 /// because the corresponding [`fn derive_bind`] relies on that order.
 ///
-/// # Example
-///
-/// See [`fn derive_bind`]'s documentation for examples.
+/// See [`fn derive_bind`]'s documentation for caveats and examples.
 #[proc_macro_derive(Unbind)]
 pub fn derive_unbind(input: TokenStream) -> TokenStream {
     fn make_item(field_accessor: proc_macro2::TokenStream, _ty: Type) -> proc_macro2::TokenStream {
@@ -1533,8 +1548,9 @@ pub fn derive_unbind(input: TokenStream) -> TokenStream {
         }
         _ => panic!("Unbind can only be derived for structs and enums"),
     };
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
     let expand = quote! {
-        impl hyperactor::message::Unbind for #name {
+        impl #impl_generics hyperactor::message::Unbind for #name #ty_generics #where_clause {
             fn unbind(self) -> anyhow::Result<hyperactor::message::Unbound<Self>> {
                 let mut bindings = hyperactor::message::Bindings::default();
                 #inner
