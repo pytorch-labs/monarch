@@ -430,7 +430,7 @@ impl ControllerMessageHandler for ControllerActor {
 
         let slice = Slice::new(0usize, vec![self.world_size], vec![1])
             .unwrap()
-            .view_limit(Limit::from(CASTING_FANOUT_SIZE));
+            .reshape_with_limit(Limit::from(CASTING_FANOUT_SIZE));
 
         self.comm_actor_ref.send(
             this,
