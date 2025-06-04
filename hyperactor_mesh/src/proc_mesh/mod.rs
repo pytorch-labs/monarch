@@ -142,6 +142,13 @@ impl ProcMesh {
                         tracing::info!("proc {} rank {}: stopped: {}", proc_id, rank, reason);
                     }
                 }
+                ProcState::Failed {
+                    world_id,
+                    description,
+                } => {
+                    tracing::error!("allocation failed for world {}: {}", world_id, description);
+                    return Err(AllocatorError::Other(anyhow::Error::msg(description)));
+                }
             }
         }
 

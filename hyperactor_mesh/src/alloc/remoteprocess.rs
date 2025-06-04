@@ -354,7 +354,7 @@ impl RemoteProcessAllocator {
                                     router.bind(mesh_agent.actor_id().proc_id().clone().into(), addr);
                                     ProcState::Running { proc_id, mesh_agent, addr: forward_addr.clone() }
                                 },
-                                  ProcState::Stopped { proc_id, reason } => {
+                                ProcState::Stopped { proc_id, reason } => {
                                     match mesh_agents_by_proc_id.remove(&proc_id) {
                                         Some(mesh_agent) => {
                                             tracing::debug!("unmapping mesh_agent {}", mesh_agent);
@@ -367,6 +367,10 @@ impl RemoteProcessAllocator {
                                     }
                                     ProcState::Stopped { proc_id, reason }
                                 },
+                                ProcState::Failed { ref world_id, ref description } => {
+                                    tracing::error!("allocation failed for {}: {}", world_id, description);
+                                    event
+                                }
                             };
                             tracing::debug!("sending event: {:?}", event);
                             tx.post(RemoteProcessProcStateMessage::Update(event));
@@ -411,13 +415,20 @@ pub struct RemoteProcessAllocHost {
     pub hostname: String,
 }
 
+/// State of a host in the RemoteProcessAlloc.
 struct RemoteProcessAllocHostState {
+    /// The host ID of the remote host.
+    host_id: HostId,
+    /// TX channel to the remote host allocator.
     tx: ChannelTx<RemoteProcessAllocatorMessage>,
+    /// Set of active processes on this host.
     active_procs: HashSet<ProcId>,
     /// Slice offset for this host.
     offset: usize,
     /// World ID for this host as indicated from Allocated message.
     world_id: Option<WorldId>,
+    /// If remote allocator sent us ProcState::Failed.
+    failed: bool,
 }
 
 #[automock]
@@ -444,6 +455,8 @@ pub struct RemoteProcessAlloc {
     started: bool,
     // Indicates that this Alloc is active (we have at least one remote process running).
     running: bool,
+    // Inidicates that the allocation process has permanently failed.
+    failed: bool,
     hosts_by_offset: HashMap<usize, HostId>,
     host_states: HashMap<HostId, RemoteProcessAllocHostState>,
     world_shapes: HashMap<WorldId, Shape>,
@@ -498,6 +511,7 @@ impl RemoteProcessAlloc {
             rx,
             started: false,
             running: true,
+            failed: false,
         })
     }
 
@@ -555,7 +569,7 @@ impl RemoteProcessAlloc {
     /// the channel watcher.
     /// Function is idempotent.
     async fn ensure_started(&mut self) -> Result<(), anyhow::Error> {
-        if self.started {
+        if self.started || self.failed {
             return Ok(());
         }
 
@@ -624,10 +638,12 @@ impl RemoteProcessAlloc {
             self.host_states.insert(
                 host.id.clone(),
                 RemoteProcessAllocHostState {
+                    host_id: host.id.clone(),
                     tx,
                     active_procs: HashSet::new(),
                     offset,
                     world_id: None,
+                    failed: false,
                 },
             );
         }
@@ -651,31 +667,31 @@ impl RemoteProcessAlloc {
         None
     }
 
-    // Given a proc id, return the host id that it is running on.
-    fn host_id_for_proc_id(&self, proc_id: &ProcId) -> Option<HostId> {
-        self.host_id_for_world_id(proc_id.world_id())
-    }
-
-    // Given a proc_id, obtain the interal HostState structure.
-    fn host_state_for_proc_id(
+    fn host_state_for_world_id(
         &mut self,
-        proc_id: &ProcId,
+        world_id: &WorldId,
     ) -> Result<&mut RemoteProcessAllocHostState, anyhow::Error> {
-        if let Some(host_id) = self.host_id_for_proc_id(proc_id) {
+        if let Some(host_id) = self.host_id_for_world_id(world_id) {
             if let Some(task_state) = self.host_states.get_mut(&host_id) {
                 Ok(task_state)
             } else {
-                // Should never happen
                 anyhow::bail!(
-                    "task state not found for proc id: {}, host id: {}",
-                    proc_id,
+                    "task state not found for world id: {}, host id: {}",
+                    world_id,
                     host_id
                 );
             }
         } else {
-            // Should never happen
-            anyhow::bail!("task not found for proc id: {}", proc_id);
+            anyhow::bail!("task not found for world id: {}", world_id);
         }
+    }
+
+    // Given a proc_id, obtain the internal HostState structure.
+    fn host_state_for_proc_id(
+        &mut self,
+        proc_id: &ProcId,
+    ) -> Result<&mut RemoteProcessAllocHostState, anyhow::Error> {
+        self.host_state_for_world_id(proc_id.world_id())
     }
 
     fn add_proc_id_to_host_state(&mut self, proc_id: &ProcId) -> Result<(), anyhow::Error> {
@@ -768,8 +784,10 @@ impl Alloc for RemoteProcessAlloc {
             }
 
             if let Err(e) = self.ensure_started().await {
-                tracing::error!("failed to ensure started: {}", e);
-                break None;
+                break Some(ProcState::Failed {
+                    world_id: self.world_id.clone(),
+                    description: format!("failed to ensure started: {}", e),
+                });
             }
 
             let mut heartbeat_time =
@@ -807,20 +825,37 @@ impl Alloc for RemoteProcessAlloc {
                                 }
                             }
                             Ok(RemoteProcessProcStateMessage::Update(proc_state)) => {
-                                match proc_state {
+                                break match proc_state {
                                     ProcState::Created { ref proc_id, .. } => {
                                         if let Err(e) = self.add_proc_id_to_host_state(proc_id) {
                                             tracing::error!("failed to add proc id to host state: {}", e);
                                         }
+                                        Some(proc_state)
                                     }
                                     ProcState::Stopped{ ref proc_id, ..} => {
                                         if let Err(e) = self.remove_proc_from_host_state(proc_id) {
                                             tracing::error!("failed to remove proc id from host state: {}", e);
                                         }
+                                        Some(proc_state)
                                     }
-                                    _ => {}
-                                }
-                                break Some(proc_state);
+                                    ProcState::Failed { ref world_id, ref description } => {
+                                        match self.host_state_for_world_id(world_id) {
+                                            Ok(state) => {
+                                                state.failed = true;
+                                                Some(ProcState::Failed {
+                                                    world_id: world_id.clone(),
+                                                    description: format!("host {} failed: {}", state.host_id, description),
+                                                })
+                                            }
+                                            Err(e) => {
+                                                tracing::error!("failed to find host state for world id: {}: {}", world_id, e);
+                                                Some(proc_state)
+                                            }
+                                        }
+                                    }
+                                    _ => Some(proc_state)
+
+                                };
                             }
                             Ok(RemoteProcessProcStateMessage::Done(world_id)) => {
                                 tracing::info!("allocator world_id: {} is done", world_id);
@@ -844,10 +879,7 @@ impl Alloc for RemoteProcessAlloc {
                             }
                             Ok(RemoteProcessProcStateMessage::HeartBeat) => {}
                             Err(e) => {
-                                tracing::error!("error receiving events: {}", e);
-                                // We've lost our main listening channel. No fixing. Block and let
-                                // caller timeout and recycle us.
-                                hyperactor::clock::RealClock.sleep(std::time::Duration::from_secs(1)).await;
+                                break Some(ProcState::Failed {world_id: self.world_id.clone(), description: format!("error receiving events: {}", e)});
                             }
                         }
                     }
@@ -918,6 +950,15 @@ impl Alloc for RemoteProcessAlloc {
                             None
                         }
                     }
+                }
+
+                Some(ProcState::Failed {
+                    world_id: _,
+                    ref description,
+                }) => {
+                    tracing::error!(description);
+                    self.failed = true;
+                    update
                 }
 
                 _ => update,
@@ -1449,6 +1490,87 @@ mod test {
         remote_allocator.terminate();
         handle.await.unwrap().unwrap();
     }
+
+    #[timed_test::async_timed_test(timeout_secs = 15)]
+    async fn test_inner_alloc_failure() {
+        hyperactor_telemetry::initialize_logging();
+        let serve_addr = ChannelAddr::any(ChannelTransport::Unix);
+        let bootstrap_addr = ChannelAddr::any(ChannelTransport::Unix);
+        let (_, mut rx) = channel::serve(bootstrap_addr.clone()).await.unwrap();
+
+        let spec = AllocSpec {
+            shape: shape!(host = 1, gpu = 2),
+            constraints: Default::default(),
+        };
+        let tx = channel::dial(serve_addr.clone()).unwrap();
+
+        let test_world_id: WorldId = id!(test_world_id);
+        let mut alloc = MockAllocWrapper::new_block_next(
+            MockAlloc::new(),
+            // block after the failure update
+            1,
+        );
+        let next_tx = alloc.notify_tx();
+        alloc
+            .alloc
+            .expect_world_id()
+            .return_const(test_world_id.clone());
+        alloc.alloc.expect_shape().return_const(spec.shape.clone());
+        alloc
+            .alloc
+            .expect_next()
+            .times(1)
+            .return_const(Some(ProcState::Failed {
+                world_id: test_world_id.clone(),
+                description: "test".to_string(),
+            }));
+        alloc.alloc.expect_next().times(1).return_const(None);
+
+        alloc.alloc.expect_stop().times(1).return_once(|| Ok(()));
+
+        let mut allocator = MockAllocator::new();
+        allocator
+            .expect_allocate()
+            .times(1)
+            .return_once(|_| Ok(alloc));
+
+        let remote_allocator = RemoteProcessAllocator::new();
+        let handle = tokio::spawn({
+            let remote_allocator = remote_allocator.clone();
+            async move {
+                remote_allocator
+                    .start_with_allocator(serve_addr, allocator)
+                    .await
+            }
+        });
+
+        tx.send(RemoteProcessAllocatorMessage::Allocate {
+            spec: spec.clone(),
+            bootstrap_addr,
+            hosts: vec![],
+            heartbeat_interval: Duration::from_secs(60),
+        })
+        .await
+        .unwrap();
+
+        // Allocated
+        let m = rx.recv().await.unwrap();
+        assert_matches!(m, RemoteProcessProcStateMessage::Allocated {world_id, shape} if world_id == test_world_id && shape == spec.shape);
+        // Failed
+        let m = rx.recv().await.unwrap();
+        assert_matches!(m, RemoteProcessProcStateMessage::Update(ProcState::Failed {world_id, description}) if world_id == test_world_id && description == "test");
+
+        tracing::info!("stopping allocation");
+        tx.send(RemoteProcessAllocatorMessage::Stop).await.unwrap();
+        // receive all stops
+        next_tx.send(()).unwrap();
+        // we are expecting 1 Done when Alloc successfully stops.
+        let m = rx.recv().await.unwrap();
+        assert_matches!(m, RemoteProcessProcStateMessage::Done(world_id) if world_id == test_world_id);
+
+        remote_allocator.terminate();
+        handle.await.unwrap().unwrap();
+    }
 }
 
 #[cfg(test)]
@@ -1698,5 +1820,130 @@ mod test_alloc {
         // Anything afterwards is None
         let proc_state = alloc.next().await;
         assert!(proc_state.is_none());
+    }
+
+    #[async_timed_test(timeout_secs = 15)]
+    async fn test_alloc_inner_alloc_failure() {
+        // SAFETY: Test happens in single-threaded code.
+        unsafe {
+            std::env::set_var("MONARCH_MESSAGE_DELIVERY_TIMEOUT_SECS", "1");
+        }
+        hyperactor_telemetry::initialize_logging();
+
+        let spec = AllocSpec {
+            shape: shape!(host = 2, gpu = 2),
+            constraints: Default::default(),
+        };
+        let world_id = WorldId("test_world_id".to_string());
+        let transport = ChannelTransport::Unix;
+        let heartbeat = Duration::from_millis(100);
+
+        let task1_allocator = RemoteProcessAllocator::new();
+        let task1_addr = ChannelAddr::any(ChannelTransport::Unix);
+        let task1_addr_string = task1_addr.to_string();
+        let task1_cmd =
+            Command::new(buck_resources::get("monarch/hyperactor_mesh/bootstrap").unwrap());
+        let task2_allocator = RemoteProcessAllocator::new();
+        let task2_addr = ChannelAddr::any(ChannelTransport::Unix);
+        let task2_addr_string = task2_addr.to_string();
+        // non-existent binary to fail the allocation
+        let task2_cmd = Command::new("/caught/somewhere/in/time");
+        let task1_allocator_copy = task1_allocator.clone();
+        let task1_allocator_handle = tokio::spawn(async move {
+            tracing::info!("spawning task1");
+            task1_allocator_copy
+                .start(task1_cmd, task1_addr)
+                .await
+                .unwrap();
+        });
+        let task2_allocator_copy = task2_allocator.clone();
+        let task2_allocator_handle = tokio::spawn(async move {
+            task2_allocator_copy
+                .start(task2_cmd, task2_addr)
+                .await
+                .unwrap();
+        });
+
+        let mut initializer = MockRemoteProcessAllocInitializer::new();
+        initializer.expect_initialize_alloc().return_once(move || {
+            Ok(vec![
+                RemoteProcessAllocHost {
+                    hostname: task1_addr_string,
+                    id: "task1".to_string(),
+                },
+                RemoteProcessAllocHost {
+                    hostname: task2_addr_string,
+                    id: "task2".to_string(),
+                },
+            ])
+        });
+        let mut alloc =
+            RemoteProcessAlloc::new(spec.clone(), world_id, transport, 0, heartbeat, initializer)
+                .await
+                .unwrap();
+        let mut procs = HashSet::new();
+        let mut started_procs = HashSet::new();
+        let mut proc_coords = HashSet::new();
+        let mut failed = 0;
+        let alloc_len = spec.shape.slice().len();
+        // task 1 procs + 1 failed event for task 2
+        for _ in 0..alloc_len + 1 {
+            let proc_state = alloc.next().await.unwrap();
+            tracing::debug!("test got message: {:?}", proc_state);
+            match proc_state {
+                ProcState::Created { proc_id, coords } => {
+                    procs.insert(proc_id);
+                    proc_coords.insert(coords);
+                }
+                ProcState::Running { proc_id, .. } => {
+                    assert!(procs.contains(&proc_id));
+                    started_procs.insert(proc_id);
+                }
+                ProcState::Failed { .. } => {
+                    failed += 1;
+                }
+                _ => panic!("expected Created, Running or Failed"),
+            }
+        }
+        assert_eq!(procs, started_procs);
+        assert_eq!(failed, 1);
+        // ensure coords coverage for task 1
+        for rank in 0..spec.shape.slice().len() / 2 {
+            let coords = spec.shape.slice().coordinates(rank).unwrap();
+            assert!(proc_coords.contains(&coords));
+        }
+
+        // ensure no more pending items
+        let timeout = hyperactor::clock::RealClock.now() + std::time::Duration::from_millis(1000);
+        tokio::select! {
+            _ = hyperactor::clock::RealClock
+            .sleep_until(timeout) => {},
+            _ = alloc.next() => panic!("expected no more items"),
+        }
+
+        // stop the allocation
+        alloc.stop().await.unwrap();
+        for _ in 0..spec.shape.slice().len() / 2 {
+            let proc_state = alloc.next().await.unwrap();
+            tracing::info!("test received next proc_state: {:?}", proc_state);
+            match proc_state {
+                ProcState::Stopped { proc_id, reason } => {
+                    assert!(started_procs.remove(&proc_id));
+                    assert_eq!(reason, ProcStopReason::Stopped);
+                }
+                _ => panic!("expected stopped"),
+            }
+        }
+        // Exactly one None
+        let proc_state = alloc.next().await;
+        assert!(proc_state.is_none());
+        // Anything afterwards is None
+        let proc_state = alloc.next().await;
+        assert!(proc_state.is_none());
+
+        task1_allocator.terminate();
+        task1_allocator_handle.await.unwrap();
+        task2_allocator.terminate();
+        task2_allocator_handle.await.unwrap();
     }
 }

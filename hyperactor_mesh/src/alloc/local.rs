@@ -75,6 +75,7 @@ pub struct LocalAlloc {
     todo_tx: mpsc::UnboundedSender<Action>,
     todo_rx: mpsc::UnboundedReceiver<Action>,
     stopped: bool,
+    failed: bool,
 }
 
 impl LocalAlloc {
@@ -93,6 +94,7 @@ impl LocalAlloc {
             todo_tx,
             todo_rx,
             stopped: false,
+            failed: false,
         }
     }
 
@@ -133,6 +135,11 @@ impl Alloc for LocalAlloc {
         if self.stopped {
             return None;
         }
+        if self.failed && !self.stopped {
+            // Failed alloc. Wait for stop().
+            futures::future::pending::<()>().await;
+            unreachable!("future::pending completed");
+        }
         let event = loop {
             if let state @ Some(_) = self.queue.pop_front() {
                 break state;
@@ -145,10 +152,15 @@ impl Alloc for LocalAlloc {
                     let (proc, mesh_agent) = match MeshAgent::bootstrap(proc_id.clone()).await {
                         Ok(proc_and_agent) => proc_and_agent,
                         Err(err) => {
-                            tracing::error!("failed spawn mesh agent for {}: {}", rank, err);
+                            let message = format!("failed spawn mesh agent for {}: {}", rank, err);
+                            tracing::error!(message);
                             // It's unclear if this is actually recoverable in a practical sense,
                             // so we give up.
-                            break None;
+                            self.failed = true;
+                            break Some(ProcState::Failed {
+                                world_id: self.world_id.clone(),
+                                description: message,
+                            });
                         }
                     };
                     drop(bspan);
