@@ -30,6 +30,9 @@ pub enum SliceError {
 
     #[error("value {value} not in slice")]
     ValueNotInSlice { value: usize },
+
+    #[error("incompatible view: {reason}")]
+    IncompatibleView { reason: String },
 }
 
 /// Slice is a compact representation of indices into the flat
@@ -281,7 +284,94 @@ impl Slice {
             mapper,
         }
     }
+
+    /// Returns a new [`Slice`] with the given shape by reinterpreting
+    /// the layout of this slice.
+    ///
+    /// Constructs a new shape with standard row-major strides, using
+    /// the same base offset. Returns an error if the reshaped view
+    /// would access coordinates not valid in the original slice.
+    ///
+    /// # Requirements
+    ///
+    /// - This slice must be contiguous and have offset == 0.
+    /// - The number of elements must match:
+    ///   `self.sizes().iter().product() == new_sizes.iter().product()`
+    /// - Each flat offset in the proposed view must be valid in `self`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SliceError::IncompatibleView`] if:
+    /// - The element count differs
+    /// - The base offset is nonzero
+    /// - Any offset in the view is not reachable in the original slice
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use ndslice::Slice;
+    /// let base = Slice::new_row_major(&[2, 3, 4]);
+    /// let reshaped = base.view(&[6, 4]).unwrap();
+    /// ```
+    pub fn view(&self, new_sizes: &[usize]) -> Result<Slice, SliceError> {
+        let view_elems: usize = new_sizes.iter().product();
+        let base_elems: usize = self.sizes().iter().product();
+
+        // TODO: This version of `view` requires that `self` be
+        // "dense":
+        //
+        //   - `self.offset == 0`
+        //   - `self.strides` match the row-major layout for
+        //     `self.sizes`
+        //   - `self.len() == self.sizes.iter().product::<usize>()`
+        //
+        // Future iterations of this function will aim to relax or
+        // remove the "dense" requirement where possible.
+
+        if view_elems != base_elems {
+            return Err(SliceError::IncompatibleView {
+                reason: format!(
+                    "element count mismatch: base has {}, view wants {}",
+                    base_elems, view_elems
+                ),
+            });
+        }
+        if self.offset != 0 {
+            return Err(SliceError::IncompatibleView {
+                reason: format!("view requires base offset = 0, but found {}", self.offset),
+            });
+        }
+        // Compute row-major strides.
+        let mut new_strides = vec![1; new_sizes.len()];
+        for i in (0..new_sizes.len().saturating_sub(1)).rev() {
+            new_strides[i] = new_strides[i + 1] * new_sizes[i + 1];
+        }
+
+        // Validate that every address in the new view maps to a valid
+        // coordinate in base.
+        for coord in CartesianIterator::new(new_sizes) {
+            #[allow(clippy::identity_op)]
+            let offset_in_view = 0 + coord
+                .iter()
+                .zip(&new_strides)
+                .map(|(i, s)| i * s)
+                .sum::<usize>();
+
+            if self.coordinates(offset_in_view).is_err() {
+                return Err(SliceError::IncompatibleView {
+                    reason: format!("offset {} not reachable in base", offset_in_view),
+                });
+            }
+        }
+
+        Ok(Slice {
+            offset: 0,
+            sizes: new_sizes.to_vec(),
+            strides: new_strides,
+        })
+    }
 }
+
 impl std::fmt::Display for Slice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", self)
@@ -556,5 +646,69 @@ mod tests {
         assert_eq!(s.offset(), 0);
         assert_eq!(s.sizes(), &[4, 4, 4]);
         assert_eq!(s.strides(), &[16, 4, 1]);
+    }
+
+    #[test]
+    fn test_slice_view_smoke() {
+        use crate::Slice;
+
+        let base = Slice::new_row_major([2, 3, 4]);
+
+        // Reshape: compatible shape and layout
+        let view = base.view(&[6, 4]).unwrap();
+        assert_eq!(view.sizes(), &[6, 4]);
+        assert_eq!(view.offset(), 0);
+        assert_eq!(view.strides(), &[4, 1]);
+        assert_eq!(
+            view.location(&[5, 3]).unwrap(),
+            base.location(&[1, 2, 3]).unwrap()
+        );
+
+        // Reshape: identity (should succeed)
+        let view = base.view(&[2, 3, 4]).unwrap();
+        assert_eq!(view.sizes(), base.sizes());
+        assert_eq!(view.strides(), base.strides());
+
+        // Reshape: incompatible shape (wrong element count)
+        let err = base.view(&[5, 4]);
+        assert!(err.is_err());
+
+        // Reshape: incompatible layout (simulate select)
+        let selected = Slice::new(1, vec![2, 3], vec![6, 1]).unwrap(); // not offset=0
+        let err = selected.view(&[3, 2]);
+        assert!(err.is_err());
+
+        // Reshape: flat 1D view
+        let flat = base.view(&[24]).unwrap();
+        assert_eq!(flat.sizes(), &[24]);
+        assert_eq!(flat.strides(), &[1]);
+        assert_eq!(
+            flat.location(&[23]).unwrap(),
+            base.location(&[1, 2, 3]).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_view_of_view_when_dense() {
+        // Start with a dense base: 2 × 3 × 4 = 24 elements.
+        let base = Slice::new_row_major([2, 3, 4]);
+
+        // First view: flatten to 1D.
+        let flat = base.view(&[24]).unwrap();
+        assert_eq!(flat.sizes(), &[24]);
+        assert_eq!(flat.strides(), &[1]);
+        assert_eq!(flat.offset(), 0); // Still dense.
+
+        // Second view: reshape 1D to 6 × 4.
+        let reshaped = flat.view(&[6, 4]).unwrap();
+        assert_eq!(reshaped.sizes(), &[6, 4]);
+        assert_eq!(reshaped.strides(), &[4, 1]);
+        assert_eq!(reshaped.offset(), 0);
+
+        // Location agreement check
+        assert_eq!(
+            reshaped.location(&[5, 3]).unwrap(),
+            base.location(&[1, 2, 3]).unwrap()
+        );
     }
 }
