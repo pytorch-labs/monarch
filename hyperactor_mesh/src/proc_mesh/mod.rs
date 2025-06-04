@@ -395,6 +395,19 @@ pub enum ProcEvent {
     Crashed(usize, String),
 }
 
+impl fmt::Display for ProcEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProcEvent::Stopped(rank, reason) => {
+                write!(f, "Proc at rank {} stopped: {}", rank, reason)
+            }
+            ProcEvent::Crashed(rank, reason) => {
+                write!(f, "Proc at rank {} crashed: {}", rank, reason)
+            }
+        }
+    }
+}
+
 /// An event stream of [`ProcEvent`]
 // TODO: consider using streams for this.
 pub struct ProcEvents {

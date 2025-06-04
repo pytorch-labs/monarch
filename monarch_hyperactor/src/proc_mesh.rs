@@ -92,13 +92,9 @@ impl PyProcMesh {
                 // A graceful stop should not be cause for alarm, but
                 // everything else should be considered a crash.
                 ProcEvent::Stopped(_, ProcStopReason::Stopped) => continue,
-                ProcEvent::Crashed(rank, reason) => {
-                    eprintln!("ProcMesh {} rank {} crashed: {}", world_id, rank, reason);
-                    std::process::exit(1);
-                }
-                ProcEvent::Stopped(rank, reason) => {
-                    eprintln!("ProcMesh {} rank {} crashed: {}", world_id, rank, reason);
-                    std::process::exit(1);
+                event => {
+                    eprintln!("ProcMesh {}: {}", world_id, event);
+                    std::process::exit(1)
                 }
             }
         }
