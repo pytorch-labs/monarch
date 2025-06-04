@@ -1057,9 +1057,13 @@ mod tests {
         assert_eq!(2, actors_stopped);
         assert_eq!((NUM_ACTORS - 1) + 1, actors_aborted);
 
-        assert!(logs_contain("world[0].proc[0]: aborting JoinHandle"));
+        assert!(tracing_test::internal::logs_with_scope_contain(
+            "hyperactor::proc",
+            "world[0].proc[0]: aborting JoinHandle"
+        ));
         for i in 1..3 {
-            assert!(logs_contain(
+            assert!(tracing_test::internal::logs_with_scope_contain(
+                "hyperactor::proc",
                 format!("world[0].sleeper{}[0]: aborting JoinHandle", i).as_str()
             ));
         }

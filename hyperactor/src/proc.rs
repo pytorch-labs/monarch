@@ -22,6 +22,7 @@ use std::panic;
 use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::Weak;
 use std::sync::atomic::AtomicU64;
@@ -35,7 +36,6 @@ use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
 use dashmap::mapref::multiple::RefMulti;
 use futures::FutureExt;
-use hyperactor_telemetry::kv_pairs;
 use hyperactor_telemetry::recorder;
 use hyperactor_telemetry::recorder::Recording;
 use serde::Deserialize;
@@ -77,7 +77,6 @@ use crate::mailbox::PanickingMailboxSender;
 use crate::mailbox::PortHandle;
 use crate::mailbox::PortReceiver;
 use crate::mailbox::Undeliverable;
-use crate::metrics::ACTOR_STATUS;
 use crate::metrics::MESSAGE_HANDLER_DURATION;
 use crate::metrics::MESSAGE_QUEUE_SIZE;
 use crate::panic_handler;
@@ -443,6 +442,12 @@ impl Proc {
         params: A::Params,
     ) -> Result<ActorHandle<A>, anyhow::Error> {
         let actor_id = self.allocate_root_id(name)?;
+        let _ = tracing::debug_span!(
+            "spawn_actor",
+            actor_name = name,
+            actor_type = std::any::type_name::<A>(),
+            actor_id = actor_id.to_string(),
+        );
         let instance = Instance::new(self.clone(), actor_id.clone(), None);
         let actor = A::new(params).await?;
         // Add this actor to the proc's actor ledger. We do not actively remove
@@ -730,8 +735,10 @@ pub struct Instance<A: Actor> {
     /// A watch for communicating the actor's state.
     status_tx: watch::Sender<ActorStatus>,
 
+    status_span: Mutex<tracing::Span>,
+
     /// The timestamp of when the currently active status was set.
-    last_status_change: tokio::time::Instant,
+    last_status_change: Arc<tokio::time::Instant>,
 }
 
 impl<A: Actor> Instance<A> {
@@ -755,6 +762,7 @@ impl<A: Actor> Instance<A> {
             Some(info) => ActorType::Named(info),
             None => ActorType::Anonymous(std::any::type_name::<A>()),
         };
+        let ais = actor_id.to_string();
 
         let cell = InstanceCell::new(
             actor_id,
@@ -775,23 +783,26 @@ impl<A: Actor> Instance<A> {
             ports,
             work_rx,
             status_tx,
-            last_status_change: start,
+            status_span: Mutex::new(tracing::debug_span!(
+                "actor_status",
+                actor_id = ais,
+                name = "created"
+            )),
+            last_status_change: Arc::new(start),
         }
     }
 
     /// Notify subscribers of a change in the actors status and bump counters with the duration which
     /// the last status was active for.
-    fn change_status(&mut self, new: ActorStatus) {
-        let old = self.status_tx.send_replace(new.clone());
+    fn change_status(&self, new: ActorStatus) {
+        // let old = self.status_tx.send_replace(new.clone());
+        self.status_tx.send_replace(new.clone());
         let actor_id_str = self.self_id().to_string();
-        tracing::debug!(actor_id = %actor_id_str, "Changed status from {} to {}", old.arm().unwrap_or_default(), new.arm().unwrap_or_default());
-        let now = self.clock().now();
-        let dur = now.duration_since(self.last_status_change);
-        ACTOR_STATUS.record(
-            dur,
-            kv_pairs!("actor_id" => actor_id_str, "status" => old.arm().unwrap_or_default()),
+        *self.status_span.lock().expect("can't change") = tracing::debug_span!(
+            "actor_status",
+            actor_id = actor_id_str,
+            name = new.arm().unwrap_or_default()
         );
-        self.last_status_change = now;
     }
 
     /// This instance's actor ID.
@@ -848,6 +859,7 @@ impl<A: Actor> Instance<A> {
 
     /// Start an A-typed actor onto this instance with the provided params. When spawn returns,
     /// the actor has been linked with its parent, if it has one.
+    #[hyperactor::instrument]
     async fn start(self, actor: A) -> Result<ActorHandle<A>, anyhow::Error> {
         let instance_cell = self.cell.clone();
         let actor_id = self.cell.actor_id().clone();
@@ -914,6 +926,7 @@ impl<A: Actor> Instance<A> {
         // and tokio will catch the panic anyway:
         // https://docs.rs/tokio/latest/tokio/task/struct.JoinError.html#method.is_panic
         // What we do here is just to catch it early so we can handle it.
+
         let result = match AssertUnwindSafe(self.run(actor)).catch_unwind().await {
             Ok(result) => result,
             Err(err) => {
@@ -1091,14 +1104,12 @@ impl<A: Actor> Instance<A> {
             )
         });
 
-        let _ = self.status_tx.send(ActorStatus::Processing(
+        let _ = self.change_status(ActorStatus::Processing(
             self.clock().system_time_now(),
             handler,
         ));
-        actor
-            .handle(self, message)
-            .instrument(self.cell.state.recording.span())
-            .await
+        let span = self.status_span.lock().unwrap().clone();
+        actor.handle(self, message).instrument(span).await
     }
 
     /// Return a handle port handle representing the actor's message
@@ -1239,6 +1250,7 @@ impl InstanceCell {
         status: watch::Receiver<ActorStatus>,
         parent: Option<InstanceCell>,
     ) -> Self {
+        let ais = actor_id.to_string();
         let cell = Self {
             state: Arc::new(InstanceState {
                 actor_id,
@@ -1520,6 +1532,7 @@ mod tests {
     use tokio::sync::oneshot;
     use tracing::Level;
     use tracing_subscriber::layer::SubscriberExt;
+    use tracing_test::internal::logs_with_scope_contain;
 
     use super::*;
     // needed for in-crate macro expansion
@@ -1740,7 +1753,8 @@ mod tests {
         let third = TestActor::spawn_child(&second).await;
 
         // Check we've got the join handles.
-        assert!(logs_contain(
+        assert!(logs_with_scope_contain(
+            "hyperactor::proc",
             format!(
                 "{}: spawned with {:?}",
                 first.actor_id(),
@@ -1748,7 +1762,8 @@ mod tests {
             )
             .as_str()
         ));
-        assert!(logs_contain(
+        assert!(logs_with_scope_contain(
+            "hyperactor::proc",
             format!(
                 "{}: spawned with {:?}",
                 second.actor_id(),
@@ -1756,7 +1771,8 @@ mod tests {
             )
             .as_str()
         ));
-        assert!(logs_contain(
+        assert!(logs_with_scope_contain(
+            "hyperactor::proc",
             format!(
                 "{}: spawned with {:?}",
                 third.actor_id(),

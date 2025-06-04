@@ -104,8 +104,7 @@ pub async fn bootstrap() -> anyhow::Error {
         let mut procs = Vec::new();
 
         loop {
-            let _ =
-                hyperactor::tracing::info_span!("wait_for_next_message_from_mesh_agent").entered();
+            let _ = hyperactor::tracing::info_span!("wait_for_next_message_from_mesh_agent");
             match rx.recv().await? {
                 Allocator2Process::StartProc(proc_id, listen_transport) => {
                     let (proc, mesh_agent) = MeshAgent::bootstrap(proc_id.clone()).await?;

@@ -28,7 +28,6 @@ use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
-use tracing::Instrument;
 
 use crate as hyperactor; // for macros
 use crate::ActorRef;
@@ -107,12 +106,13 @@ pub trait Actor: Sized + Send + Sync + Debug + 'static {
     /// This method is used by the runtime to spawn the actor server. It can be
     /// used by actors that require customized runtime setups
     /// (e.g., dedicated actor threads), or want to use a custom tokio runtime.
+    #[hyperactor::instrument_infallible]
     fn spawn_server_task<F>(future: F) -> JoinHandle<F::Output>
     where
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        tokio::spawn(future.instrument(tracing::debug_span!("server_task").or_current()))
+        tokio::spawn(future)
     }
 
     /// Handle actor supervision event. Return `Ok(true)`` if the event is handled here.
@@ -437,6 +437,9 @@ impl ActorStatus {
             Self::Stopped => Self::Stopped,
             Self::Failed(err) => Self::Failed(err.clone()),
         }
+    }
+    fn span_string(&self) -> &'static str {
+        self.arm().unwrap_or_default()
     }
 }
 

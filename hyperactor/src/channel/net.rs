@@ -60,7 +60,6 @@ use tokio_util::codec::length_delimited::LengthDelimitedCodec;
 use tokio_util::net::Listener;
 use tokio_util::sync::CancellationToken;
 
-use super::hyperactor;
 use super::*;
 use crate::Message;
 use crate::RemoteMessage;
@@ -1121,7 +1120,6 @@ impl SessionManager {
 
 /// Main listen loop that actually runs the server. The loop will exit when `parent_cancel_token` is
 /// canceled.
-#[hyperactor::instrument]
 async fn listen<M: RemoteMessage, L: Listener>(
     mut listener: L,
     listener_channel_addr: ChannelAddr,
@@ -1140,6 +1138,7 @@ where
 
     let manager = SessionManager::new();
     let result: Result<(), ServerError> = loop {
+        let _ = tracing::info_span!("channel_listen_accept_loop");
         tokio::select! {
             result = listener.accept() => {
                 tracing::debug!("listener accepted a new connection.");
@@ -1166,7 +1165,7 @@ where
                                 match source {
                                     ChannelAddr::Tcp(source_addr) if source_addr.ip().is_loopback() => {},
                                     _ => {
-                                        tracing::info!(
+                                        tracing::error!(
                                             "serve: error processing peer connection {} <- {}: {:?}",
                                             dest, source, err
                                             );
@@ -1183,6 +1182,7 @@ where
             }
 
             _ = parent_cancel_token.cancelled() => {
+                tracing::info!("recieved parent token cancellation");
                 break Ok(());
             }
 

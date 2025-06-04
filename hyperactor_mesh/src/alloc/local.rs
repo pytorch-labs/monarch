@@ -141,6 +141,7 @@ impl Alloc for LocalAlloc {
             match self.todo_rx.recv().await? {
                 Action::Start(rank) => {
                     let proc_id = ProcId(self.world_id.clone(), rank);
+                    let bspan = tracing::info_span!("mesh_agent_bootstrap");
                     let (proc, mesh_agent) = match MeshAgent::bootstrap(proc_id.clone()).await {
                         Ok(proc_and_agent) => proc_and_agent,
                         Err(err) => {
@@ -150,6 +151,7 @@ impl Alloc for LocalAlloc {
                             break None;
                         }
                     };
+                    drop(bspan);
 
                     let (addr, proc_rx) = loop {
                         match channel::serve(ChannelAddr::any(self.transport())).await {

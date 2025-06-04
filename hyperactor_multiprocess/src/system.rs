@@ -660,7 +660,10 @@ mod tests {
         // are stopped by checking the logs.
         for m in 0..(shape.iter().product()) {
             let proc_id = worker_world_id.proc_id(m);
-            assert!(logs_contain(format!("{proc_id}: proc stopped",).as_str()));
+            assert!(tracing_test::internal::logs_with_scope_contain(
+                "hyperactor::proc",
+                format!("{proc_id}: proc stopped").as_str()
+            ));
         }
     }
 

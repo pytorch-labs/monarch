@@ -111,6 +111,7 @@ impl MeshAgent {
             supervisor: None, // not yet assigned
         };
         let handle = proc.spawn::<Self>("mesh", agent).await?;
+        tracing::info!("bootstrap_end");
         Ok((proc, handle))
     }
 }
