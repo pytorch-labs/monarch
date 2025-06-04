@@ -316,6 +316,7 @@ pub(crate) mod test_util {
         Cast<(String, PortRef<String>)>,
         Cast<GetRank>,
         Cast<Error>,
+        GetRank,
         Relay,
         IndexedErasedUnbound<Cast<(String, PortRef<String>)>>,
         IndexedErasedUnbound<Cast<GetRank>>,
@@ -357,6 +358,20 @@ pub(crate) mod test_util {
             }: Cast<GetRank>,
         ) -> Result<(), anyhow::Error> {
             reply.send(this, *rank)?;
+            anyhow::ensure!(ok, "intentional error!"); // If `!ok` exit with `Err()`.
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl Handler<GetRank> for TestActor {
+        async fn handle(
+            &mut self,
+            this: &Instance<Self>,
+            GetRank(ok, reply): GetRank,
+        ) -> Result<(), anyhow::Error> {
+            let rank = this.self_id().rank();
+            reply.send(this, rank)?;
             anyhow::ensure!(ok, "intentional error!"); // If `!ok` exit with `Err()`.
             Ok(())
         }
@@ -661,6 +676,65 @@ mod tests {
                 ProcEvent::Stopped(0, ProcStopReason::Stopped),
             );
             assert!(events.next().await.is_none());
+        }
+
+        #[tracing_test::traced_test]
+        #[tokio::test]
+        async fn test_behaviors_on_failed_send() {
+            use hyperactor::ActorId;
+            use hyperactor::ProcId;
+            use hyperactor::WorldId;
+
+            use crate::alloc::ProcStopReason;
+            use crate::proc_mesh::ProcEvent;
+            use crate::sel;
+
+            let alloc = LocalAllocator
+                .allocate(AllocSpec {
+                    shape: shape! { replica = 1  },
+                    constraints: Default::default(),
+                })
+                .await
+                .unwrap();
+
+            let stop = alloc.stopper();
+            let name = alloc.name().to_string();
+            let mut mesh = ProcMesh::allocate(alloc).await.unwrap();
+            let mut events = mesh.events().unwrap();
+
+            let actor_mesh = mesh.spawn::<TestActor>("foo", &()).await.unwrap();
+
+            let (reply_handle, mut reply_receiver) = actor_mesh.open_port();
+
+            // Send a message to an actor that exists.
+            let foo: ActorRef<TestActor> =
+                ActorRef::attest(ActorId(ProcId(WorldId(name.clone()), 0), "foo".into(), 0));
+            foo.send(mesh.client(), GetRank(true, reply_handle.bind()))
+                .unwrap();
+            // This is ok.
+            let rank = reply_receiver.recv().await.unwrap();
+            assert_eq!(rank, 0);
+
+            // Send a message to an actor that doesn't exist but the proc does.
+            let bar: ActorRef<TestActor> =
+                ActorRef::attest(ActorId(ProcId(WorldId(name.clone()), 0), "foo".into(), 1));
+            // Uncomment for infinite hang.
+            /*
+            // Message gets logged.
+            // delivery error: address not routable: no mailbox for actor _1ku59VQkwPSM[0].foo[1] registered in muxer
+            bar.send(mesh.client(), GetRank(true, reply_handle.bind())).unwrap();
+            */
+
+            // Send a message to an actor on a proc that doesn't exist.
+            let baz: ActorRef<TestActor> =
+                ActorRef::attest(ActorId(ProcId(WorldId(name.clone()), 1), "foo".into(), 0));
+            // Uncomment for stack overflow.
+            /*
+            baz.send(mesh.client(), GetRank(true, reply_handle.bind())).unwrap();
+            */
+
+            // Stop the mesh.
+            stop();
         }
     } // mod local
 
