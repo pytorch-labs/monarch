@@ -1,11 +1,6 @@
-name: Build monarch wheels
+name: Build and publish nightly monarch wheels
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - .github/workflows/wheels.yml
   pull_request:
     branches:
       - main
@@ -18,14 +13,13 @@ on:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
   cancel-in-progress: true
-
 jobs:
-  test:
+  build:
     name: cuda12.6-py${{ matrix.python-version }}-${{ matrix.name }}
     strategy:
       fail-fast: false  # Changed to false to see results from all Python versions
       matrix:
-        python-version: ["3.9", "3.10", "3.11", "3.12"]
+        python-version: ["3.10"]
         include:
           - name: 4xlarge
             runs-on: linux.g5.4xlarge.nvidia.gpu
@@ -64,4 +58,33 @@ jobs:
         pip install pyzmq requests numpy pyre-extensions
 
         # Build wheel
+        export MONARCH_PACKAGE_NAME="torchmonarch-nightly"
+        export MONARCH_VERSION=$(date +'%Y.%m.%d')
+
         python setup.py bdist_wheel
+
+        # hacky until the right distribution wheel can be made...
+        find dist -name "*linux_x86_64.whl" -type f -exec bash -c 'mv "$1" "${1/linux_x86_64.whl/manylinux2014_x86_64.whl}"' _ {} \;
+        ls -la dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # Required for PyPI trusted publishing
+      contents: read
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Display structure of downloaded files
+        run: ls -R dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          verbose: true
