@@ -517,9 +517,9 @@ mod tests {
     use hyperactor::Mailbox;
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
-    use hyperactor_mesh::ActorMesh;
     use hyperactor_mesh::Mesh;
     use hyperactor_mesh::ProcMesh;
+    use hyperactor_mesh::RootActorMesh;
     use hyperactor_mesh::alloc::AllocConstraints;
     use hyperactor_mesh::alloc::AllocSpec;
     use hyperactor_mesh::alloc::Allocator;
@@ -591,7 +591,7 @@ mod tests {
                 .unwrap();
 
             let proc_mesh_1 = Box::leak(Box::new(ProcMesh::allocate(alloc_1).await.unwrap()));
-            let actor_mesh_1: ActorMesh<'_, RdmaManagerActor> =
+            let actor_mesh_1: RootActorMesh<'_, RdmaManagerActor> =
                 proc_mesh_1.spawn("rdma_manager", &config1).await.unwrap();
 
             let alloc_2 = LocalAllocator
@@ -603,7 +603,7 @@ mod tests {
                 .unwrap();
 
             let proc_mesh_2 = Box::leak(Box::new(ProcMesh::allocate(alloc_2).await.unwrap()));
-            let actor_mesh_2: ActorMesh<'_, RdmaManagerActor> =
+            let actor_mesh_2: RootActorMesh<'_, RdmaManagerActor> =
                 proc_mesh_2.spawn("rdma_manager", &config2).await.unwrap();
 
             let mut buffer1 = vec![0u8; buffer_size].into_boxed_slice();

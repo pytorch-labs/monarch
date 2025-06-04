@@ -39,7 +39,7 @@ use ndslice::ShapeError;
 
 use crate::CommActor;
 use crate::Mesh;
-use crate::actor_mesh::ActorMesh;
+use crate::actor_mesh::RootActorMesh;
 use crate::alloc::Alloc;
 use crate::alloc::AllocatorError;
 use crate::alloc::ProcState;
@@ -347,11 +347,11 @@ impl ProcMesh {
         &self,
         actor_name: &str,
         params: &A::Params,
-    ) -> Result<ActorMesh<'_, A>, anyhow::Error>
+    ) -> Result<RootActorMesh<'_, A>, anyhow::Error>
     where
         A::Params: RemoteMessage,
     {
-        Ok(ActorMesh::new(
+        Ok(RootActorMesh::new(
             self,
             actor_name.to_string(),
             Self::spawn_on_procs::<A>(&self.client, self.agents(), actor_name, params).await?,
@@ -440,7 +440,7 @@ pub trait SharedSpawnable {
         &self,
         actor_name: &str,
         params: &A::Params,
-    ) -> Result<ActorMesh<'static, A>, anyhow::Error>
+    ) -> Result<RootActorMesh<'static, A>, anyhow::Error>
     where
         A::Params: RemoteMessage;
 }
@@ -451,11 +451,11 @@ impl SharedSpawnable for Arc<ProcMesh> {
         &self,
         actor_name: &str,
         params: &A::Params,
-    ) -> Result<ActorMesh<'static, A>, anyhow::Error>
+    ) -> Result<RootActorMesh<'static, A>, anyhow::Error>
     where
         A::Params: RemoteMessage,
     {
-        Ok(ActorMesh::new_shared(
+        Ok(RootActorMesh::new_shared(
             Arc::clone(self),
             actor_name.to_string(),
             ProcMesh::spawn_on_procs::<A>(&self.client, self.agents(), actor_name, params).await?,
@@ -537,6 +537,7 @@ mod tests {
     use ndslice::shape;
 
     use super::*;
+    use crate::actor_mesh::ActorMesh;
     use crate::actor_mesh::test_util::Error;
     use crate::actor_mesh::test_util::TestActor;
     use crate::alloc::AllocSpec;

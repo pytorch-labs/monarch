@@ -43,6 +43,60 @@ use crate::comm::multicast::Uslice;
 use crate::metrics;
 use crate::proc_mesh::ProcMesh;
 
+/// A mesh of actors, all of which reside on the same [`ProcMesh`].
+pub trait ActorMesh: Mesh {
+    /// The type of actor in the mesh.
+    type Actor: RemoteActor;
+
+    /// Cast an [`M`]-typed message to the ranks selected by `sel`
+    /// in this ActorMesh.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `CastError`.
+    fn cast<M: RemoteMessage + Clone>(
+        &self,
+        selection: Selection,
+        message: M,
+    ) -> Result<(), CastError>
+    where
+        Self::Actor: RemoteHandles<Cast<M>> + RemoteHandles<IndexedErasedUnbound<Cast<M>>>,
+    {
+        let _ = metrics::ACTOR_MESH_CAST_DURATION.start(hyperactor::kv_pairs!(
+            "message_type" => M::typename(),
+            "message_variant" => message.arm().unwrap_or_default(),
+        ));
+
+        let message = Cast {
+            rank: CastRank(usize::MAX),
+            shape: self.shape().clone(),
+            message,
+        };
+        let message = CastMessageEnvelope::new(
+            self.proc_mesh().client().actor_id().clone(),
+            DestinationPort::new::<Self::Actor, Cast<M>>(self.name().to_string()),
+            message,
+            None, // TODO: reducer typehash
+        )?;
+
+        self.proc_mesh().comm_actor().send(
+            self.proc_mesh().client(),
+            CastMessage {
+                dest: Uslice {
+                    slice: self.shape().slice().clone(),
+                    selection,
+                },
+                message,
+            },
+        )?;
+
+        Ok(())
+    }
+
+    /// The ProcMesh on top of which this actor mesh is spawned.
+    fn proc_mesh(&self) -> &ProcMesh;
+
+    /// The name global name of actors in this mesh.
+    fn name(&self) -> &str;
+}
+
 /// Abstracts over shared and borrowed references to a [`ProcMesh`].
 /// Given a shared ProcMesh, we can obtain a [`ActorMesh<'static, _>`]
 /// for it, useful when lifetime must be managed dynamically.
@@ -67,13 +121,13 @@ impl Deref for ProcMeshRef<'_> {
 
 /// A mesh of actor instances. ActorMeshes are obtained by spawning an
 /// actor on a [`ProcMesh`].
-pub struct ActorMesh<'a, A: RemoteActor> {
+pub struct RootActorMesh<'a, A: RemoteActor> {
     proc_mesh: ProcMeshRef<'a>,
     name: String,
     pub(crate) ranks: Vec<ActorRef<A>>, // temporary until we remove `ArcActorMesh`.
 }
 
-impl<'a, A: RemoteActor> ActorMesh<'a, A> {
+impl<'a, A: RemoteActor> RootActorMesh<'a, A> {
     pub(crate) fn new(proc_mesh: &'a ProcMesh, name: String, ranks: Vec<ActorRef<A>>) -> Self {
         Self {
             proc_mesh: ProcMeshRef::Borrowed(proc_mesh),
@@ -98,52 +152,10 @@ impl<'a, A: RemoteActor> ActorMesh<'a, A> {
     pub(crate) fn open_port<M: Message>(&self) -> (PortHandle<M>, PortReceiver<M>) {
         self.proc_mesh.client().open_port()
     }
-
-    /// Cast an [`M`]-typed message to the ranks selected by `sel`
-    /// in this ActorMesh.
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `CastError`.
-    pub fn cast<M: RemoteMessage + Clone>(
-        &self,
-        selection: Selection,
-        message: M,
-    ) -> Result<(), CastError>
-    where
-        A: RemoteHandles<Cast<M>> + RemoteHandles<IndexedErasedUnbound<Cast<M>>>,
-    {
-        let _ = metrics::ACTOR_MESH_CAST_DURATION.start(hyperactor::kv_pairs!(
-            "message_type" => M::typename(),
-            "message_variant" => message.arm().unwrap_or_default(),
-        ));
-
-        let message = Cast {
-            rank: CastRank(usize::MAX),
-            shape: self.shape().clone(),
-            message,
-        };
-        let message = CastMessageEnvelope::new(
-            self.proc_mesh.client().actor_id().clone(),
-            DestinationPort::new::<A, Cast<M>>(self.name.clone()),
-            message,
-            None, // TODO: reducer typehash
-        )?;
-
-        self.proc_mesh.comm_actor().send(
-            self.proc_mesh.client(),
-            CastMessage {
-                dest: Uslice {
-                    slice: self.shape().slice().clone(),
-                    selection,
-                },
-                message,
-            },
-        )?;
-
-        Ok(())
-    }
 }
 
 #[async_trait]
-impl<'a, A: RemoteActor> Mesh for ActorMesh<'a, A> {
+impl<'a, A: RemoteActor> Mesh for RootActorMesh<'a, A> {
     type Node = ActorRef<A>;
     type Sliced<'b>
         = SlicedActorMesh<'b, A>
@@ -167,10 +179,22 @@ impl<'a, A: RemoteActor> Mesh for ActorMesh<'a, A> {
     }
 }
 
-pub struct SlicedActorMesh<'a, A: RemoteActor>(&'a ActorMesh<'a, A>, Shape);
+impl<A: RemoteActor> ActorMesh for RootActorMesh<'_, A> {
+    type Actor = A;
+
+    fn proc_mesh(&self) -> &ProcMesh {
+        &self.proc_mesh
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+pub struct SlicedActorMesh<'a, A: RemoteActor>(&'a RootActorMesh<'a, A>, Shape);
 
 impl<'a, A: RemoteActor> SlicedActorMesh<'a, A> {
-    pub fn new(actor_mesh: &'a ActorMesh<'a, A>, shape: Shape) -> Self {
+    pub fn new(actor_mesh: &'a RootActorMesh<'a, A>, shape: Shape) -> Self {
         Self(actor_mesh, shape)
     }
 
@@ -201,6 +225,18 @@ impl<A: RemoteActor> Mesh for SlicedActorMesh<'_, A> {
 
     fn get(&self, _index: usize) -> Option<ActorRef<A>> {
         unimplemented!()
+    }
+}
+
+impl<A: RemoteActor> ActorMesh for SlicedActorMesh<'_, A> {
+    type Actor = A;
+
+    fn proc_mesh(&self) -> &ProcMesh {
+        &self.0.proc_mesh
+    }
+
+    fn name(&self) -> &str {
+        &self.0.name
     }
 }
 
@@ -409,7 +445,7 @@ mod tests {
                     .unwrap();
 
                 let proc_mesh = ProcMesh::allocate(alloc).await.unwrap();
-                let actor_mesh: ActorMesh<TestActor> = proc_mesh.spawn("echo", &()).await.unwrap();
+                let actor_mesh: RootActorMesh<TestActor> = proc_mesh.spawn("echo", &()).await.unwrap();
                 let (reply_handle, mut reply_receiver) = actor_mesh.open_port();
                 actor_mesh
                     .cast(sel!(*), ("Hello".to_string(), reply_handle.bind()))
@@ -430,7 +466,7 @@ mod tests {
                     .unwrap();
 
                 let proc_mesh = ProcMesh::allocate(alloc).await.unwrap();
-                let actor_mesh: ActorMesh<TestActor> = proc_mesh.spawn("echo", &()).await.unwrap();
+                let actor_mesh: RootActorMesh<TestActor> = proc_mesh.spawn("echo", &()).await.unwrap();
                 let dont_simulate_error = true;
                 let (reply_handle, mut reply_receiver) = actor_mesh.open_port();
                 actor_mesh
@@ -470,7 +506,7 @@ mod tests {
                     .unwrap();
 
                 let proc_mesh = ProcMesh::allocate(alloc).await.unwrap();
-                let actor_mesh: ActorMesh<TestActor> = proc_mesh.spawn("echo", &()).await.unwrap();
+                let actor_mesh: RootActorMesh<TestActor> = proc_mesh.spawn("echo", &()).await.unwrap();
 
                 // Bounce the message through all actors and return it to the sender (us).
                 let mut hops: VecDeque<_> = actor_mesh.iter().map(|actor| actor.port()).collect();
@@ -502,7 +538,7 @@ mod tests {
 
                     let proc_mesh = Arc::new(ProcMesh::allocate(alloc).await.unwrap());
                     let proc_mesh_clone = Arc::clone(&proc_mesh);
-                    let actor_mesh : ActorMesh<TestActor> = proc_mesh_clone.spawn("echo", &()).await.unwrap();
+                    let actor_mesh : RootActorMesh<TestActor> = proc_mesh_clone.spawn("echo", &()).await.unwrap();
                     meshes.push((proc_mesh, actor_mesh));
                 }
 
@@ -551,7 +587,7 @@ mod tests {
 
                 let (tx, mut rx) = hyperactor::mailbox::open_port(proc_mesh.client());
                 let params = CastTestActorParams{ forward_port: tx.bind() };
-                let actor_mesh: ActorMesh<CastTestActor> = proc_mesh.spawn("actor", &params).await.unwrap();
+                let actor_mesh: RootActorMesh<CastTestActor> = proc_mesh.spawn("actor", &params).await.unwrap();
 
                 actor_mesh.cast(sel!(*), CastTestMessage::Forward("abc".to_string())).unwrap();
 

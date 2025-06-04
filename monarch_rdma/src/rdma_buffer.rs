@@ -400,9 +400,9 @@ impl RdmaBuffer {
 
 #[cfg(test)]
 mod tests {
-    use hyperactor_mesh::ActorMesh;
     use hyperactor_mesh::Mesh;
     use hyperactor_mesh::ProcMesh;
+    use hyperactor_mesh::RootActorMesh;
     use hyperactor_mesh::alloc::AllocConstraints;
     use hyperactor_mesh::alloc::AllocSpec;
     use hyperactor_mesh::alloc::Allocator;
@@ -490,7 +490,7 @@ mod tests {
             })
             .await?;
         let proc_mesh_1 = ProcMesh::allocate(alloc1).await?;
-        let actor_mesh_1: ActorMesh<'_, RdmaManagerActor> =
+        let actor_mesh_1: RootActorMesh<'_, RdmaManagerActor> =
             proc_mesh_1.spawn("rdma_manager_1", &config1).await.unwrap();
         let buffer2_data = create_test_data(BUFFER_SIZE);
         let alloc2 = LocalAllocator
@@ -500,7 +500,7 @@ mod tests {
             })
             .await?;
         let proc_mesh_2 = ProcMesh::allocate(alloc2).await?;
-        let actor_mesh_2: ActorMesh<'_, RdmaManagerActor> =
+        let actor_mesh_2: RootActorMesh<'_, RdmaManagerActor> =
             proc_mesh_2.spawn("rdma_manager_2", &config2).await.unwrap();
 
         let actor_ref = actor_mesh_1.get(0).unwrap();
@@ -566,7 +566,7 @@ mod tests {
             })
             .await?;
         let proc_mesh_1 = ProcMesh::allocate(alloc1).await?;
-        let actor_mesh_1: ActorMesh<'_, RdmaManagerActor> =
+        let actor_mesh_1: RootActorMesh<'_, RdmaManagerActor> =
             proc_mesh_1.spawn("rdma_manager_1", &config1).await.unwrap();
         let buffer2_data = vec![0u8; BUFFER_SIZE].into_boxed_slice();
         let alloc2 = LocalAllocator
@@ -576,7 +576,7 @@ mod tests {
             })
             .await?;
         let proc_mesh_2 = ProcMesh::allocate(alloc2).await?;
-        let actor_mesh_2: ActorMesh<'_, RdmaManagerActor> =
+        let actor_mesh_2: RootActorMesh<'_, RdmaManagerActor> =
             proc_mesh_2.spawn("rdma_manager_2", &config2).await.unwrap();
 
         let actor_ref = actor_mesh_1.get(0).unwrap();

@@ -65,9 +65,10 @@ use hyperactor::OncePortRef;
 use hyperactor::PortRef;
 use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::supervision::ActorSupervisionEvent;
-use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::Mesh;
 use hyperactor_mesh::ProcMesh;
+use hyperactor_mesh::RootActorMesh;
+use hyperactor_mesh::actor_mesh::ActorMesh;
 use hyperactor_mesh::actor_mesh::Cast;
 use hyperactor_mesh::alloc::AllocConstraints;
 use hyperactor_mesh::alloc::AllocSpec;
@@ -502,7 +503,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
     // host for any actors using RdmaBuffer.
     // We spin this up manually here, but in Python-land we assume this will
     // be spun up with the PyProcMesh.
-    let ps_rdma_manager: ActorMesh<'_, RdmaManagerActor> = ps_proc_mesh
+    let ps_rdma_manager: RootActorMesh<'_, RdmaManagerActor> = ps_proc_mesh
         .spawn("ps_rdma_manager", &ps_ibv_config)
         .await
         .unwrap();
@@ -524,13 +525,13 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
         worker_ibv_config
     );
     // Similarly, create an RdmaManagerActor corresponding to each worker.
-    let worker_rdma_manager_mesh: ActorMesh<'_, RdmaManagerActor> = worker_proc_mesh
+    let worker_rdma_manager_mesh: RootActorMesh<'_, RdmaManagerActor> = worker_proc_mesh
         .spawn("ps_rdma_manager", &worker_ibv_config)
         .await
         .unwrap();
 
     println!("spawning parameter server");
-    let ps_actor_mesh: ActorMesh<'_, ParameterServerActor> = ps_proc_mesh
+    let ps_actor_mesh: RootActorMesh<'_, ParameterServerActor> = ps_proc_mesh
         .spawn(
             "parameter_server",
             &(ps_rdma_manager.iter().next().unwrap(), num_workers),
@@ -542,7 +543,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
     let ps_actor = ps_actor_mesh.iter().next().unwrap();
 
     println!("spawning worker actors");
-    let worker_actor_mesh: ActorMesh<'_, WorkerActor> =
+    let worker_actor_mesh: RootActorMesh<'_, WorkerActor> =
         worker_proc_mesh.spawn("worker_actors", &()).await.unwrap();
 
     let worker_rdma_managers: Vec<ActorRef<RdmaManagerActor>> =
