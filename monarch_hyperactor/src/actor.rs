@@ -33,6 +33,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_bytes::ByteBuf;
 use tokio::sync::Mutex;
+use tracing::span::Id;
 
 use crate::mailbox::PyMailbox;
 use crate::proc::InstanceWrapper;
@@ -292,6 +293,7 @@ impl Handler<PythonMessage> for PythonActor {
         this: &Instance<Self>,
         message: PythonMessage,
     ) -> anyhow::Result<()> {
+        this.self_id();
         let future = Python::with_gil(|py| -> PyResult<_> {
             let mailbox = PyMailbox {
                 inner: this.mailbox_for_py().clone(),
