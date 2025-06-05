@@ -44,6 +44,11 @@ pub trait Clock {
         &self,
         duration: tokio::time::Duration,
     ) -> impl std::future::Future<Output = ()> + Send + Sync;
+    /// Initiates a sleep for the specified duration
+    fn non_advancing_sleep(
+        &self,
+        duration: tokio::time::Duration,
+    ) -> impl std::future::Future<Output = ()> + Send + Sync;
     /// Get the current time according to the clock
     fn now(&self) -> tokio::time::Instant;
     /// Sleep until the specified deadline.
@@ -70,6 +75,12 @@ impl Clock for ClockKind {
         match self {
             Self::Sim(clock) => clock.sleep(duration).await,
             Self::Real(clock) => clock.sleep(duration).await,
+        }
+    }
+    async fn non_advancing_sleep(&self, duration: tokio::time::Duration) {
+        match self {
+            Self::Sim(clock) => clock.non_advancing_sleep(duration).await,
+            Self::Real(clock) => clock.non_advancing_sleep(duration).await,
         }
     }
     async fn sleep_until(&self, deadline: tokio::time::Instant) {
@@ -131,6 +142,22 @@ impl Clock for SimClock {
             .unwrap();
         rx.recv().await.unwrap();
     }
+
+    async fn non_advancing_sleep(&self, duration: tokio::time::Duration) {
+        let mailbox = Mailbox::new_detached(id!(proc[0].proc).clone());
+        let (tx, rx) = mailbox.open_once_port::<()>();
+
+        simnet_handle()
+            .unwrap()
+            .send_nonadvanceable_event(SleepEvent::new(
+                tx.bind(),
+                mailbox,
+                duration.as_millis() as u64,
+            ))
+            .unwrap();
+        rx.recv().await.unwrap();
+    }
+
     async fn sleep_until(&self, deadline: tokio::time::Instant) {
         let now = self.now();
         if deadline <= now {
@@ -169,6 +196,9 @@ impl Clock for RealClock {
     #[allow(clippy::disallowed_methods)]
     async fn sleep(&self, duration: tokio::time::Duration) {
         tokio::time::sleep(duration).await;
+    }
+    async fn non_advancing_sleep(&self, duration: tokio::time::Duration) {
+        Self::sleep(self, duration).await;
     }
     #[allow(clippy::disallowed_methods)]
     async fn sleep_until(&self, deadline: tokio::time::Instant) {

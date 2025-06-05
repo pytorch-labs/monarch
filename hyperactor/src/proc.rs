@@ -847,7 +847,7 @@ impl<A: Actor> Instance<A> {
         let self_id = self.self_id().clone();
         let clock = self.proc.state().clock.clone();
         tokio::spawn(async move {
-            clock.sleep(delay).await;
+            clock.non_advancing_sleep(delay).await;
             if let Err(e) = port.send(message) {
                 // TODO: this is a fire-n-forget thread. We need to
                 // handle errors in a better way.

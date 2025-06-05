@@ -334,7 +334,12 @@ pub enum SimNetError {
 }
 
 struct State {
+    // The simnet is allowed to advance to the time of the earliest event in this queue at any time
     scheduled_events: BTreeMap<SimulatorTimeInstant, Vec<ScheduledEvent>>,
+    // The simnet is allowed to advance to the time of the earliest event in this queue at any time
+    // only if the earliest event in `scheduled_events` occurs after the earliest event in this queue
+    // or some debounce period has passed where there are only events in this queue.
+    unadvanceable_scheduled_events: BTreeMap<SimulatorTimeInstant, Vec<ScheduledEvent>>,
 }
 
 /// The state of the python training script.
@@ -349,8 +354,7 @@ pub enum TrainingScriptState {
 /// A handle to a running [`SimNet`] instance.
 pub struct SimNetHandle {
     join_handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
-    event_tx: UnboundedSender<Box<dyn Event>>,
-    scheduled_event_tx: UnboundedSender<ScheduledEvent>,
+    event_tx: UnboundedSender<(Box<dyn Event>, bool, Option<SimulatorTimeInstant>)>,
     config: Arc<Mutex<SimNetConfig>>,
     records: Option<Arc<Mutex<Vec<SimulatorEventRecord>>>>,
     pending_event_count: Arc<AtomicUsize>,
@@ -370,23 +374,38 @@ impl SimNetHandle {
     /// Sends an event to be scheduled onto the simnet's event loop
     #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SimNetError`.
     pub fn send_event(&self, event: Box<dyn Event>) -> Result<(), SimNetError> {
+        self.send_event_impl(event, true)
+    }
+
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SimNetError`.
+    fn send_event_impl(&self, event: Box<dyn Event>, advanceable: bool) -> Result<(), SimNetError> {
         self.pending_event_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.event_tx
-            .send(event)
+            .send((event, advanceable, None))
             .map_err(|err| SimNetError::Closed(err.to_string()))
+    }
+
+    /// Sends an non-advanceable event to be scheduled onto the simnet's event loop
+    /// A non-advanceable event is an event that cannot advance the simnet's time unless
+    /// the earliest event in the simnet's advancing event queue occurs after the earliest
+    /// event in the simnet's non-advancing event queue, or some debounce period has passed
+    /// where there are only events in the simnet's non-advancing event queue.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SimNetError`.
+    pub fn send_nonadvanceable_event(&self, event: Box<dyn Event>) -> Result<(), SimNetError> {
+        self.send_event_impl(event, false)
     }
 
     /// Sends an event that already has a scheduled time onto the simnet's event loop
     #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SimNetError`.
     pub(crate) fn send_scheduled_event(
         &self,
-        scheduled_event: ScheduledEvent,
+        ScheduledEvent { event, time }: ScheduledEvent,
     ) -> Result<(), SimNetError> {
         self.pending_event_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.scheduled_event_tx
-            .send(scheduled_event)
+        self.event_tx
+            .send((event, true, Some(time)))
             .map_err(|err| SimNetError::Closed(err.to_string()))
     }
 
@@ -402,9 +421,13 @@ impl SimNetHandle {
         self.pending_event_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.event_tx
-            .send(Box::new(NodeJoinEvent {
-                channel_addr: address,
-            }))
+            .send((
+                Box::new(NodeJoinEvent {
+                    channel_addr: address,
+                }),
+                true,
+                None,
+            ))
             .map_err(|err| SimNetError::Closed(err.to_string()))
     }
 
@@ -652,7 +675,7 @@ impl ProxyHandle {
     ///  to_event: a function that specifies how to generate an Event from a forward message
     async fn start(
         proxy_addr: ChannelAddr,
-        event_tx: UnboundedSender<Box<dyn Event>>,
+        event_tx: UnboundedSender<(Box<dyn Event>, bool, Option<SimulatorTimeInstant>)>,
         pending_event_count: Arc<AtomicUsize>,
         operational_message_tx: UnboundedSender<OperationalMessage>,
     ) -> anyhow::Result<Self> {
@@ -683,7 +706,7 @@ impl ProxyHandle {
                             }
                         };
 
-                        if let Err(e) = event_tx.send(event) {
+                        if let Err(e) = event_tx.send((event, true, None)) {
                             tracing::error!("error sending message to simnet: {:?}", e);
                         } else {
                             pending_event_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -744,8 +767,8 @@ pub fn start(
 
     let (training_script_state_tx, training_script_state_rx) =
         tokio::sync::watch::channel(TrainingScriptState::Running);
-    let (event_tx, event_rx) = mpsc::unbounded_channel::<Box<dyn Event>>();
-    let (scheduled_event_tx, scheduled_event_rx) = mpsc::unbounded_channel::<ScheduledEvent>();
+    let (event_tx, event_rx) =
+        mpsc::unbounded_channel::<(Box<dyn Event>, bool, Option<SimulatorTimeInstant>)>();
     let records = Some(Arc::new(Mutex::new(vec![]))); // TODO remove optional
     let pending_event_count = Arc::new(AtomicUsize::new(0));
     let stop_signal = Arc::new(AtomicBool::new(false));
@@ -754,24 +777,19 @@ pub fn start(
         let config = config.clone();
         let pending_event_count = pending_event_count.clone();
         let stop_signal = stop_signal.clone();
-        tokio::spawn(async move {
+        tokio::task::spawn_blocking(move || {
             let mut net = SimNet {
                 config,
                 address_book,
                 state: State {
                     scheduled_events: BTreeMap::new(),
+                    unadvanceable_scheduled_events: BTreeMap::new(),
                 },
                 max_latency: Duration::from_millis(max_duration_ms),
                 records,
                 pending_event_count,
             };
-            net.run(
-                event_rx,
-                scheduled_event_rx,
-                training_script_state_rx,
-                stop_signal,
-            )
-            .await;
+            block_on(net.run(event_rx, training_script_state_rx, stop_signal));
         })
     };
     let join_handles = Arc::new(Mutex::new(vec![simnet_join_handle]));
@@ -789,7 +807,6 @@ pub fn start(
     HANDLE.get_or_init(|| SimNetHandle {
         join_handles,
         event_tx,
-        scheduled_event_tx,
         config,
         records,
         pending_event_count,
@@ -850,7 +867,7 @@ impl SimNet {
     }
 
     /// Schedule the event into the network.
-    async fn schedule_event(&mut self, scheduled_event: ScheduledEvent) {
+    async fn schedule_event(&mut self, scheduled_event: ScheduledEvent, advanceable: bool) {
         if let Some(records) = &self.records {
             records.lock().await.push(SimulatorEventRecord {
                 summary: scheduled_event.event.summary(),
@@ -858,52 +875,49 @@ impl SimNet {
                 end_at: scheduled_event.time,
             });
         }
-        self.state
-            .scheduled_events
-            .entry(scheduled_event.time)
-            .or_insert_with(Vec::new)
-            .push(scheduled_event);
+        if advanceable {
+            self.state
+                .scheduled_events
+                .entry(scheduled_event.time)
+                .or_insert_with(Vec::new)
+                .push(scheduled_event);
+        } else {
+            self.state
+                .unadvanceable_scheduled_events
+                .entry(scheduled_event.time)
+                .or_insert_with(Vec::new)
+                .push(scheduled_event);
+        }
     }
 
     /// Run the simulation. This will dispatch all the messages in the network.
     /// And wait for new ones.
     async fn run(
         &mut self,
-        mut event_rx: UnboundedReceiver<Box<dyn Event>>,
-        mut scheduled_event_rx: UnboundedReceiver<ScheduledEvent>,
+        mut event_rx: UnboundedReceiver<(Box<dyn Event>, bool, Option<SimulatorTimeInstant>)>,
         training_script_state_rx: tokio::sync::watch::Receiver<TrainingScriptState>,
         stop_signal: Arc<AtomicBool>,
     ) {
         // The simulated number of milliseconds the training script
         // has spent waiting for the backend to resolve a future
         let mut training_script_waiting_time: u64 = 0;
+        // Duration elapsed while only non_advanceable_events has events
+        let mut debounce_timer: Option<tokio::time::Instant> = None;
         'outer: loop {
             // Check if we should stop
             if stop_signal.load(Ordering::SeqCst) {
                 break 'outer;
             }
 
-            // TODO: Find a way to drain all needed messages with better guarantees.
-            //
-            // Allow tiny grace period for messages to stop coming in before we actually advance time
-            // to handle inflight events
-            while let Ok(event) =
-                tokio::time::timeout(tokio::time::Duration::from_millis(10), event_rx.recv()).await
-            {
-                if let Some(event) = event {
-                    let scheduled_event = self.create_scheduled_event(event).await;
-                    self.schedule_event(scheduled_event).await;
-                } else {
-                    break 'outer;
-                }
-            }
-
-            while let Ok(ScheduledEvent { time, event }) = scheduled_event_rx.try_recv() {
-                self.schedule_event(ScheduledEvent {
-                    time: time + training_script_waiting_time,
-                    event,
-                })
-                .await;
+            while let Ok((event, advanceable, time)) = event_rx.try_recv() {
+                let scheduled_event = match time {
+                    Some(time) => ScheduledEvent {
+                        time: time + training_script_waiting_time,
+                        event,
+                    },
+                    None => self.create_scheduled_event(event).await,
+                };
+                self.schedule_event(scheduled_event, advanceable).await;
             }
 
             {
@@ -924,10 +938,62 @@ impl SimNet {
                 {
                     continue;
                 }
+                match (
+                    self.state.scheduled_events.first_key_value(),
+                    self.state.unadvanceable_scheduled_events.first_key_value(),
+                ) {
+                    (None, Some(_)) if debounce_timer.is_none() => {
+                        // Start debounce timer when only the non-advancedable
+                        // queue has events and the timer has not already started
+                        debounce_timer = Some(RealClock.now());
+                    }
+                    // Timer already active
+                    (None, Some(_)) => {}
+                    // Reset timer when non-advanceable queue is not the only queue with events
+                    _ => {
+                        debounce_timer = None;
+                    }
+                }
                 // process for next delivery time.
-                let Some((scheduled_time, scheduled_events)) =
-                    self.state.scheduled_events.pop_first()
-                else {
+                let Some((scheduled_time, scheduled_events)) = (match (
+                    self.state.scheduled_events.first_key_value(),
+                    self.state.unadvanceable_scheduled_events.first_key_value(),
+                ) {
+                    (Some((advanceable_time, _)), Some((unadvanceable_time, _))) => {
+                        if unadvanceable_time < advanceable_time {
+                            self.state.unadvanceable_scheduled_events.pop_first()
+                        } else {
+                            self.state.scheduled_events.pop_first()
+                        }
+                    }
+                    (Some(_), None) => self.state.scheduled_events.pop_first(),
+                    (None, Some(_)) => match debounce_timer {
+                        Some(time) => {
+                            if time.elapsed() > tokio::time::Duration::from_millis(1000) {
+                                // debounce interval has elapsed, reset timer
+                                debounce_timer = None;
+                                self.state.unadvanceable_scheduled_events.pop_first()
+                            } else {
+                                None
+                            }
+                        }
+                        None => None,
+                    },
+                    (None, None) => None,
+                }) else {
+                    tokio::select! {
+                        Some((event, advanceable, time)) = event_rx.recv() => {
+                            let scheduled_event = match time {
+                                Some(time) => ScheduledEvent {
+                                    time: time + training_script_waiting_time,
+                                    event,
+                                },
+                                None => self.create_scheduled_event(event).await,
+                            };
+                            self.schedule_event(scheduled_event, advanceable).await;
+                        },
+                        _ = RealClock.sleep(Duration::from_millis(10)) => {}
+                    }
                     continue;
                 };
                 if training_script_state_rx.borrow().is_waiting() {
