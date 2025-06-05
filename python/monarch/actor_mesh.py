@@ -50,7 +50,7 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.shape import Point as HyPoint, Shape
 from monarch.common.pickle_flatten import flatten, unflatten
-from monarch.common.shape import MeshTrait, NDSlice, Shape
+from monarch.common.shape import MeshTrait, NDSlice
 
 logger = logging.getLogger(__name__)
 
@@ -158,7 +158,7 @@ class _ActorMeshRefImpl:
             mailbox,
             hy_actor_mesh,
             hy_actor_mesh.shape,
-            [cast(ActorId, hy_actor_mesh.get(i)) for i in range(len(shape.ndslice))],
+            [cast(ActorId, hy_actor_mesh.get(i)) for i in range(len(shape))],
         )
 
     @staticmethod
@@ -204,7 +204,7 @@ class _ActorMeshRefImpl:
         # The fix is to provide a first-class reference into Python, and always call "cast"
         # on it, including for load balanced requests.
         if selection == "choose":
-            idx = _load_balancing_seed.randrange(len(self._shape.ndslice))
+            idx = _load_balancing_seed.randrange(len(self._shape))
             actor_rank = self._shape.ndslice[idx]
             self._mailbox.post(self._please_replace_me_actor_ids[actor_rank], message)
             return
@@ -223,9 +223,8 @@ class _ActorMeshRefImpl:
         else:
             raise ValueError(f"invalid selection: {selection}")
 
-    @property
-    def len(self) -> int:
-        return len(self._shape.ndslice)
+    def __len__(self) -> int:
+        return len(self._shape)
 
 
 class Endpoint(Generic[P, R]):
@@ -258,7 +257,7 @@ class Endpoint(Generic[P, R]):
         return r.recv()
 
     def call_one(self, *args: P.args, **kwargs: P.kwargs) -> Future[R]:
-        if self._actor_mesh.len != 1:
+        if len(self._actor_mesh) != 1:
             raise ValueError(
                 f"Can only use 'call_one' on a single Actor but this actor has shape {self._actor_mesh._shape}"
             )
@@ -270,8 +269,8 @@ class Endpoint(Generic[P, R]):
         send(self, args, kwargs, port=p)
 
         async def process():
-            results = [None] * self._actor_mesh.len
-            for _ in range(self._actor_mesh.len):
+            results = [None] * len(self._actor_mesh)
+            for _ in range(len(self._actor_mesh)):
                 rank, value = await r.recv()
                 results[rank] = value
             call_shape = Shape(
@@ -292,7 +291,7 @@ class Endpoint(Generic[P, R]):
         p, r = port(self)
         # pyre-ignore
         send(self, args, kwargs, port=p)
-        for _ in range(self._actor_mesh.len):
+        for _ in range(len(self._actor_mesh)):
             yield await r.recv()
 
     def broadcast(self, *args: P.args, **kwargs: P.kwargs) -> None:
@@ -345,6 +344,9 @@ class ValueMesh(MeshTrait, Generic[R]):
     def __iter__(self):
         for rank in self._shape.ranks():
             yield Point(rank, self._shape), self._values[rank]
+
+    def __len__(self):
+        return len(self._shape)
 
     @property
     def _ndslice(self) -> NDSlice:

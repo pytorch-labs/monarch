@@ -100,8 +100,7 @@ impl PyShape {
         self.inner.slice().iter().collect()
     }
 
-    #[getter]
-    fn len(&self) -> usize {
+    fn __len__(&self) -> usize {
         self.inner.slice().len()
     }
 
@@ -152,7 +151,7 @@ impl PyPoint {
         }
     }
     fn __len__(&self, py: Python) -> usize {
-        self.shape.bind(py).get().len()
+        self.shape.bind(py).get().__len__()
     }
     fn __iter__<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         self.shape
