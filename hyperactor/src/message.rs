@@ -94,6 +94,14 @@ impl Bindings {
         Ok(self.0.insert(T::typehash(), ser))
     }
 
+    /// Appends an element to the back of its type's corresponding vector in the
+    /// binding.
+    pub fn push<T: Serialize + Named>(&mut self, value: &T) -> anyhow::Result<()> {
+        let ser = Serialized::serialize(value)?;
+        self.0.entry(T::typehash()).or_default().push(ser);
+        Ok(())
+    }
+
     /// Get this type's values from the binding.
     /// If the binding did not have this type present, empty Vec is returned.
     #[allow(dead_code)]
@@ -141,6 +149,27 @@ impl Bindings {
     /// Returns the number of values of type `T` in the binding.
     pub fn len<T: Named>(&self) -> usize {
         self.0.get(&T::typehash()).map_or(0, Vec::len)
+    }
+
+    /// Return iterator over a type stored in bindings.
+    pub fn get_iter<T: DeserializeOwned + Named>(&self) -> BindingsIter<T> {
+        let iter = self
+            .0
+            .get(&T::typehash())
+            .map(|v| v.iter())
+            .unwrap_or_default();
+        BindingsIter(iter, PhantomData)
+    }
+}
+
+/// Iterator over a type stored in bindings.
+pub struct BindingsIter<'a, T>(std::slice::Iter<'a, Serialized>, PhantomData<T>);
+
+impl<'a, T: DeserializeOwned + Named> Iterator for BindingsIter<'a, T> {
+    type Item = anyhow::Result<T>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next().map(|v| v.deserialized::<T>())
     }
 }
 
@@ -319,41 +348,21 @@ mod tests {
     use maplit::hashmap;
 
     use super::*;
+    use crate::Bind;
     use crate::PortId;
+    use crate::Unbind;
 
     // Used to demonstrate a user defined reply type.
     #[derive(Debug, PartialEq, Serialize, Deserialize, Named)]
     struct MyReply(String);
 
     // Used to demonstrate a two-way message type.
-    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
     struct MyMessage {
         arg0: bool,
         arg1: u32,
         reply0: PortRef<String>,
         reply1: PortRef<MyReply>,
-    }
-
-    // TODO(pzhang) add macro to auto-gen this implementation.
-    impl Unbind for MyMessage {
-        fn unbind(self) -> anyhow::Result<Unbound<Self>> {
-            let mut bindings = Bindings::default();
-            let ports = [self.reply0.port_id(), self.reply1.port_id()];
-            bindings.insert::<PortId>(ports)?;
-            Ok(Unbound {
-                message: self,
-                bindings,
-            })
-        }
-    }
-
-    // TODO(pzhang) add macro to auto-gen this implementation.
-    impl Bind for MyMessage {
-        fn bind(mut self, bindings: &Bindings) -> anyhow::Result<Self> {
-            let mut_ports = [self.reply0.port_id_mut(), self.reply1.port_id_mut()];
-            bindings.rebind::<PortId>(mut_ports.into_iter())?;
-            Ok(self)
-        }
     }
 
     #[test]
