@@ -271,6 +271,47 @@ impl<M: Named + 'static> Named for IndexedErasedUnbound<M> {
     }
 }
 
+macro_rules! impl_bind_unbind_basic {
+    ($t:ty) => {
+        impl Bind for $t {
+            fn bind(self, bindings: &Bindings) -> anyhow::Result<Self> {
+                anyhow::ensure!(
+                    bindings.0.is_empty(),
+                    "bindings for {} should be empty, but got {:?}",
+                    stringify!($t),
+                    bindings
+                );
+                Ok(self)
+            }
+        }
+
+        impl Unbind for $t {
+            fn unbind(self) -> anyhow::Result<Unbound<Self>> {
+                Ok(Unbound {
+                    message: self,
+                    bindings: Bindings::default(),
+                })
+            }
+        }
+    };
+}
+
+impl_bind_unbind_basic!(());
+impl_bind_unbind_basic!(bool);
+impl_bind_unbind_basic!(i8);
+impl_bind_unbind_basic!(u8);
+impl_bind_unbind_basic!(i16);
+impl_bind_unbind_basic!(u16);
+impl_bind_unbind_basic!(i32);
+impl_bind_unbind_basic!(u32);
+impl_bind_unbind_basic!(i64);
+impl_bind_unbind_basic!(u64);
+impl_bind_unbind_basic!(i128);
+impl_bind_unbind_basic!(u128);
+impl_bind_unbind_basic!(isize);
+impl_bind_unbind_basic!(usize);
+impl_bind_unbind_basic!(String);
+
 #[cfg(test)]
 mod tests {
     use hyperactor::PortRef;
