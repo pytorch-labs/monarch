@@ -52,7 +52,9 @@ class SimulatorClient:
         """
         ...
 
-def bootstrap_simulator_backend(system_addr: str, world_size: int) -> None:
+def bootstrap_simulator_backend(
+    system_addr: str, proxy_addr: str, world_size: int
+) -> None:
     """
     Bootstrap the simulator backend on the current process
     """

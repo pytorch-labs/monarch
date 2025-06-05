@@ -116,6 +116,8 @@ mod tests {
     use hyperactor::ProcId;
     use hyperactor::WorldId;
     use hyperactor::channel::ChannelAddr;
+    use hyperactor::channel::ChannelTransport;
+    use hyperactor::simnet;
     use rand::Rng;
     use rand::distributions::Alphanumeric;
 
@@ -131,8 +133,16 @@ mod tests {
     #[tracing_test::traced_test]
     #[tokio::test]
     async fn test_spawn_and_kill_mesh() {
-        let s = random_str();
-        let system_addr = format!("sim!unix!@system,unix!@{}", &s)
+        let proxy = format!("unix!@{}", random_str());
+
+        simnet::start(
+            ChannelAddr::any(ChannelTransport::Unix),
+            proxy.parse().unwrap(),
+            1000,
+        )
+        .unwrap();
+
+        let system_addr = format!("sim!unix!@system,{}", &proxy)
             .parse::<ChannelAddr>()
             .unwrap();
         let mut simulator = super::Simulator::new(system_addr.clone()).await.unwrap();

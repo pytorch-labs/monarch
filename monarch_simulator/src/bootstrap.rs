@@ -19,11 +19,11 @@ use hyperactor::ProcId;
 use hyperactor::WorldId;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::sim::AddressProxyPair;
-use hyperactor::channel::sim::HANDLE;
 use hyperactor::channel::sim::SimAddr;
-use hyperactor::channel::sim::operational_message_receiver;
+use hyperactor::simnet;
 use hyperactor::simnet::OperationalMessage;
 use hyperactor::simnet::SpawnMesh;
+use hyperactor::simnet::simnet_handle;
 use hyperactor_multiprocess::System;
 use hyperactor_multiprocess::proc_actor::ProcActor;
 use hyperactor_multiprocess::proc_actor::spawn;
@@ -188,10 +188,14 @@ pub async fn spawn_sim_worker(
 /// Bootstrap the simulation. Spawns the system, controllers, and workers.
 /// Args:
 ///    system_addr: The address of the system actor.
-pub async fn bootstrap(system_addr: ChannelAddr, world_size: usize) -> Result<JoinHandle<()>> {
+pub async fn bootstrap(
+    system_addr: ChannelAddr,
+    proxy_addr: ChannelAddr,
+    world_size: usize,
+) -> Result<JoinHandle<()>> {
     // TODO: enable supervision events.
-    let mut operational_message_rx = operational_message_receiver().await?;
-    let simulator = Arc::new(Mutex::new(Simulator::new(system_addr.clone()).await?));
+    let mut operational_message_rx = simnet::start(system_addr.clone(), proxy_addr, 1000)?;
+    let simulator = Arc::new(Mutex::new(Simulator::new(system_addr).await?));
     let operational_listener_handle = {
         let simulator = simulator.clone();
         tokio::spawn(async move {
@@ -229,9 +233,12 @@ async fn handle_operational_message(
                     tracing::error!("failed to kill world: {:?}", e);
                 }
             }
-            OperationalMessage::SetTrainingScriptState(state) => {
-                HANDLE.set_training_script_state(state);
-            }
+            OperationalMessage::SetTrainingScriptState(state) => match simnet_handle() {
+                Ok(handle) => handle.set_training_script_state(state),
+                Err(e) => {
+                    tracing::error!("failed to set training script state: {:?}", e);
+                }
+            },
         }
     }
 }

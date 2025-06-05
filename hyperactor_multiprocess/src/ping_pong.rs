@@ -21,6 +21,7 @@ mod tests {
     use hyperactor::id;
     use hyperactor::reference::Index;
     use hyperactor::reference::WorldId;
+    use hyperactor::simnet;
     use hyperactor::simnet::NetworkConfig;
     use hyperactor::test_utils::pingpong::PingPongActor;
     use hyperactor::test_utils::pingpong::PingPongActorParams;
@@ -36,6 +37,13 @@ mod tests {
     async fn test_sim_ping_pong() {
         let system_addr = "local!1".parse::<ChannelAddr>().unwrap();
         let proxy_addr = ChannelAddr::any(ChannelTransport::Unix);
+
+        simnet::start(
+            ChannelAddr::any(ChannelTransport::Unix),
+            proxy_addr.clone(),
+            1000,
+        )
+        .unwrap();
 
         let system_sim_addr = SimAddr::new(system_addr.clone(), proxy_addr.clone()).unwrap();
         let server_handle = System::serve(
@@ -107,7 +115,7 @@ edges:
 
         assert!(done_rx.recv().await.unwrap());
 
-        let records = sim::records().await;
+        let records = sim::records().await.unwrap();
         eprintln!(
             "records: {}",
             serde_json::to_string_pretty(&records).unwrap()

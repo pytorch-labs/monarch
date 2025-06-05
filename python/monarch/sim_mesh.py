@@ -205,7 +205,7 @@ class Bootstrap:
         self.client_bootstrap_addr: str = (
             f"sim!unix!@client,{proxy_addr},unix!@system,{proxy_addr}"
         )
-        bootstrap_simulator_backend(self.bootstrap_addr, world_size)
+        bootstrap_simulator_backend(self.bootstrap_addr, proxy_addr, world_size)
 
         self._simulator_client = SimulatorClient(proxy_addr)
         for i in range(num_meshes):

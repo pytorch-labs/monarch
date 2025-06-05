@@ -15,10 +15,8 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use futures::executor::block_on;
 use regex::Regex;
 use tokio::sync::Mutex;
-use tokio::sync::mpsc::UnboundedReceiver;
 
 use super::*;
 use crate::PortId;
@@ -32,19 +30,14 @@ use crate::mailbox::MessageEnvelope;
 use crate::simnet;
 use crate::simnet::Dispatcher;
 use crate::simnet::Event;
-use crate::simnet::OperationalMessage;
 use crate::simnet::ProxyMessage;
 use crate::simnet::ScheduledEvent;
 use crate::simnet::SimNetConfig;
 use crate::simnet::SimNetEdge;
 use crate::simnet::SimNetError;
-use crate::simnet::SimNetHandle;
+use crate::simnet::simnet_handle;
 
 lazy_static! {
-    /// A handle for SimNet through which you can send and schedule events in the
-    /// network.
-    pub static ref HANDLE: SimNetHandle =
-        simnet::start(ChannelAddr::Local(0), 1000).unwrap();
     static ref SENDER: SimDispatcher = SimDispatcher::default();
 }
 static SIM_LINK_BUF_SIZE: usize = 256;
@@ -229,31 +222,20 @@ impl Event for MessageDeliveryEvent {
 }
 
 /// Export the message delivery records of the simnet.
-pub async fn records() -> Option<Vec<simnet::SimulatorEventRecord>> {
-    HANDLE.records().await
+pub async fn records() -> anyhow::Result<Option<Vec<simnet::SimulatorEventRecord>>, SimNetError> {
+    Ok(simnet_handle()?.records().await)
 }
 
 /// Bind a channel address to the simnet. It will register the address as a node in simnet,
 /// and configure default latencies between this node and all other existing nodes.
 pub async fn bind(addr: ChannelAddr) -> anyhow::Result<(), SimNetError> {
-    HANDLE.bind(addr)
+    simnet_handle()?.bind(addr)
 }
 
 /// Update the configuration for simnet.
 pub async fn update_config(config: simnet::NetworkConfig) -> anyhow::Result<(), SimNetError> {
     // Only update network config for now, will add host config in the future.
-    HANDLE.update_network_config(config).await
-}
-
-/// Adds a proxy to simnet so it can communicate with external nodes.
-pub async fn add_proxy(addr: ChannelAddr) -> anyhow::Result<(), SimNetError> {
-    HANDLE.add_proxy(addr).await
-}
-
-/// Moves the operational message receiver out of the simnet.
-pub async fn operational_message_receiver()
--> anyhow::Result<UnboundedReceiver<OperationalMessage>, SimNetError> {
-    HANDLE.operational_message_receiver().await
+    simnet_handle()?.update_network_config(config).await
 }
 
 /// Returns a simulated channel address that is bound to "any" channel address.
@@ -336,11 +318,9 @@ fn create_egress_sender(
 }
 
 /// Check if the address is outside of the simulation.
-pub async fn is_external_addr(addr: &AddressProxyPair) -> bool {
-    HANDLE
-        .proxy_addr()
-        .await
-        .is_none_or(|local_proxy| local_proxy != addr.proxy)
+#[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SimNetError`.
+fn is_external_addr(addr: &AddressProxyPair) -> anyhow::Result<bool, SimNetError> {
+    Ok(simnet_handle()?.proxy_addr() != &addr.proxy)
 }
 
 #[async_trait]
@@ -351,7 +331,7 @@ impl Dispatcher<AddressProxyPair> for SimDispatcher {
         addr: AddressProxyPair,
         data: Serialized,
     ) -> Result<(), SimNetError> {
-        if is_external_addr(&addr).await {
+        if is_external_addr(&addr)? {
             let dst_proxy = addr.proxy.clone();
             let sender = self
                 .sender_cache
@@ -418,24 +398,25 @@ impl<M: RemoteMessage> Tx<M> for SimTx<M> {
             Ok(data) => data,
             Err(err) => return Err(SendError(err.into(), message)),
         };
-        match &self.src_addr {
-            Some(src_addr) if src_addr.address.to_string() == CLIENT_ADDRESS => HANDLE
-                .send_scheduled_event(ScheduledEvent {
-                    event: Box::new(MessageDeliveryEvent::new(
-                        self.src_addr.clone(),
-                        self.dst_addr.clone(),
-                        data,
-                    )),
-                    time: SimClock.millis_since_start(RealClock.now()),
-                })
-                .map_err(|err: SimNetError| SendError(ChannelError::from(err), message)),
-            _ => HANDLE
-                .send_event(Box::new(MessageDeliveryEvent::new(
+        match simnet_handle() {
+            Ok(handle) => match &self.src_addr {
+                Some(src_addr) if src_addr.address.to_string() == CLIENT_ADDRESS => handle
+                    .send_scheduled_event(ScheduledEvent {
+                        event: Box::new(MessageDeliveryEvent::new(
+                            self.src_addr.clone(),
+                            self.dst_addr.clone(),
+                            data,
+                        )),
+                        time: SimClock.millis_since_start(RealClock.now()),
+                    }),
+                _ => handle.send_event(Box::new(MessageDeliveryEvent::new(
                     self.src_addr.clone(),
                     self.dst_addr.clone(),
                     data,
-                )))
-                .map_err(|err| SendError(ChannelError::from(err), message)),
+                ))),
+            }
+            .map_err(|err: SimNetError| SendError(ChannelError::from(err), message)),
+            Err(err) => Err(SendError(ChannelError::from(err), message)),
         }
     }
 
@@ -479,8 +460,6 @@ pub(crate) fn serve<M: RemoteMessage>(
     // Serves sim address at sim_addr.src and set up local proxy at sim_addr.src_proxy.
     // Reversing the src and dst since the first element in the output tuple is the
     // dialing address of this sim channel. So the served address is the dst.
-    tracing::info!("adding proxy for sim addr: {:#?}", &sim_addr);
-    block_on(add_proxy(*sim_addr.proxy.clone()))?;
     let (tx, rx) = mpsc::channel::<Serialized>(SIM_LINK_BUF_SIZE);
     // Add tx to sender dispatch.
     SENDER.dispatchers.insert(*sim_addr.addr.clone(), tx);
@@ -516,22 +495,31 @@ mod tests {
     use crate::clock::RealClock;
     use crate::clock::SimClock;
     use crate::simnet::NetworkConfig;
+    use crate::simnet::start;
 
     #[tokio::test]
     async fn test_sim_basic() {
         let dst_ok = vec!["[::1]:1234", "tcp!127.0.0.1:8080", "local!123"];
         let srcs_ok = vec!["[::2]:1234", "tcp!127.0.0.2:8080", "local!124"];
 
+        let proxy = ChannelAddr::any(ChannelTransport::Unix);
+        start(
+            ChannelAddr::any(ChannelTransport::Unix),
+            proxy.clone(),
+            1000,
+        )
+        .unwrap();
+
         // TODO: New NodeAdd event should do this for you..
         for addr in dst_ok.iter().chain(srcs_ok.iter()) {
             // Add to network along with its edges.
-            sim::HANDLE
+            simnet_handle()
+                .unwrap()
                 .bind(addr.parse::<ChannelAddr>().unwrap())
                 .unwrap();
         }
         // Messages are transferred internally if only there's a local proxy and the
         // dst proxy is the same as local proxy.
-        let proxy = ChannelAddr::any(ChannelTransport::Unix);
         for (src_addr, dst_addr) in zip(srcs_ok, dst_ok) {
             let dst_addr = SimAddr::new_with_src(
                 AddressProxyPair {
@@ -555,6 +543,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_send_egress_message() {
+        let proxy = ChannelAddr::any(ChannelTransport::Unix);
+        start(
+            ChannelAddr::any(ChannelTransport::Unix),
+            proxy.clone(),
+            1000,
+        )
+        .unwrap();
+
         // Serve an external proxy channel to receive the egress message.
         let egress_addr = ChannelAddr::any(ChannelTransport::Unix);
         let dispatcher = SimDispatcher::default();
@@ -664,19 +660,24 @@ mod tests {
 
     #[tokio::test]
     async fn test_realtime_frontier() {
-        tokio::time::pause();
-        let sim_addr = SimAddr::new(
-            "unix!@dst".parse::<ChannelAddr>().unwrap(),
-            "unix!@proxy".parse::<ChannelAddr>().unwrap(),
+        let proxy: ChannelAddr = "unix!@proxy".parse().unwrap();
+        start(
+            ChannelAddr::any(ChannelTransport::Unix),
+            proxy.clone(),
+            1000,
         )
         .unwrap();
+
+        tokio::time::pause();
+        let sim_addr =
+            SimAddr::new("unix!@dst".parse::<ChannelAddr>().unwrap(), proxy.clone()).unwrap();
         let sim_addr_with_src = SimAddr::new_with_src(
             AddressProxyPair {
                 address: "unix!@src".parse::<ChannelAddr>().unwrap(),
-                proxy: "unix!@proxy".parse::<ChannelAddr>().unwrap(),
+                proxy: proxy.clone(),
             },
             "unix!@dst".parse::<ChannelAddr>().unwrap(),
-            "unix!@proxy".parse::<ChannelAddr>().unwrap(),
+            proxy.clone(),
         )
         .unwrap();
         let (_, mut rx) = sim::serve::<()>(sim_addr.clone()).unwrap();
@@ -713,13 +714,20 @@ mod tests {
     #[tokio::test]
     async fn test_client_message_scheduled_realtime() {
         tokio::time::pause();
+        let proxy_addr = ChannelAddr::any(ChannelTransport::Unix);
+        start(
+            ChannelAddr::any(ChannelTransport::Unix),
+            proxy_addr.clone(),
+            1000,
+        )
+        .unwrap();
         let controller_to_dst = SimAddr::new_with_src(
             AddressProxyPair {
                 address: "unix!@controller".parse::<ChannelAddr>().unwrap(),
-                proxy: "unix!@proxy".parse::<ChannelAddr>().unwrap(),
+                proxy: proxy_addr.clone(),
             },
             "unix!@dst".parse::<ChannelAddr>().unwrap(),
-            "unix!@proxy".parse::<ChannelAddr>().unwrap(),
+            proxy_addr.clone(),
         )
         .unwrap();
         let controller_tx = sim::dial::<()>(controller_to_dst.clone()).unwrap();
@@ -727,10 +735,10 @@ mod tests {
         let client_to_dst = SimAddr::new_with_src(
             AddressProxyPair {
                 address: "unix!@client".parse::<ChannelAddr>().unwrap(),
-                proxy: "unix!@proxy".parse::<ChannelAddr>().unwrap(),
+                proxy: proxy_addr.clone(),
             },
             "unix!@dst".parse::<ChannelAddr>().unwrap(),
-            "unix!@proxy".parse::<ChannelAddr>().unwrap(),
+            proxy_addr.clone(),
         )
         .unwrap();
         let client_tx = sim::dial::<()>(client_to_dst).unwrap();
@@ -758,7 +766,7 @@ mod tests {
             // Allow some time for simnet to run
             RealClock.sleep(tokio::time::Duration::from_secs(1)).await;
         }
-        let recs = records().await.unwrap();
+        let recs = records().await.unwrap().unwrap();
         assert_eq!(recs.len(), 2);
         let end_times = recs.iter().map(|rec| rec.end_at).collect::<Vec<_>>();
         // client message was delivered at "real" time = 5 seconds

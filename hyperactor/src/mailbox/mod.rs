@@ -2249,6 +2249,7 @@ mod tests {
     use crate::proc::Proc;
     use crate::reference::ProcId;
     use crate::reference::WorldId;
+    use crate::simnet;
     use crate::test_utils::tracing::set_tracing_env_filter;
 
     #[test]
@@ -2442,6 +2443,12 @@ mod tests {
     #[tokio::test]
     async fn test_sim_client_server() {
         let proxy = ChannelAddr::any(channel::ChannelTransport::Unix);
+        simnet::start(
+            ChannelAddr::any(ChannelTransport::Unix),
+            proxy.clone(),
+            1000,
+        )
+        .unwrap();
         let dst_addr =
             SimAddr::new("local!1".parse::<ChannelAddr>().unwrap(), proxy.clone()).unwrap();
         let src_to_dst = ChannelAddr::Sim(

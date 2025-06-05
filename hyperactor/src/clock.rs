@@ -17,9 +17,9 @@ use serde::Serialize;
 
 use crate::Mailbox;
 use crate::channel::ChannelAddr;
-use crate::channel::sim::HANDLE;
 use crate::id;
 use crate::simnet::SleepEvent;
+use crate::simnet::simnet_handle;
 
 struct SimTime {
     start: tokio::time::Instant,
@@ -121,7 +121,8 @@ impl Clock for SimClock {
         let mailbox = Mailbox::new_detached(id!(proc[0].proc).clone());
         let (tx, rx) = mailbox.open_once_port::<()>();
 
-        HANDLE
+        simnet_handle()
+            .unwrap()
             .send_event(SleepEvent::new(
                 tx.bind(),
                 mailbox,

@@ -51,9 +51,20 @@ fn wrap_operational_message(operational_message: OperationalMessage) -> MessageE
 }
 
 #[pyfunction]
-fn bootstrap_simulator_backend(py: Python, system_addr: String, world_size: i32) -> PyResult<()> {
+fn bootstrap_simulator_backend(
+    py: Python,
+    system_addr: String,
+    proxy_addr: String,
+    world_size: i32,
+) -> PyResult<()> {
     signal_safe_block_on(py, async move {
-        match bootstrap(system_addr.parse().unwrap(), world_size as usize).await {
+        match bootstrap(
+            system_addr.parse().unwrap(),
+            proxy_addr.parse().unwrap(),
+            world_size as usize,
+        )
+        .await
+        {
             Ok(_) => Ok(()),
             Err(err) => Err(PyRuntimeError::new_err(err.to_string())),
         }
