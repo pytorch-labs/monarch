@@ -386,7 +386,6 @@ pub mod test_utils {
     use hyperactor::message::Bindings;
     use hyperactor::message::IndexedErasedUnbound;
     use hyperactor::message::Unbind;
-    use hyperactor::message::Unbound;
     use hyperactor::proc::Proc;
     use hyperactor::test_utils::proc_supervison::ProcSupervisionCoordinator;
     use serde::Deserialize;
@@ -414,9 +413,9 @@ pub mod test_utils {
 
     // TODO(pzhang) add macro to auto implement these traits.
     impl Unbind for TestMessage {
-        fn unbind(self) -> anyhow::Result<Unbound<Self>> {
+        fn bindings(&self) -> anyhow::Result<Bindings> {
             match &self {
-                TestMessage::Forward(_) => Ok(Unbound::new(self, Bindings::default())),
+                TestMessage::Forward(_) => Ok(Bindings::default()),
                 TestMessage::CastAndReply {
                     reply_to1,
                     reply_to2,
@@ -431,7 +430,7 @@ pub mod test_utils {
                         reply_to2.port_id(),
                     ];
                     bindings.insert::<PortId>(ports.into_iter())?;
-                    Ok(Unbound::new(self, bindings))
+                    Ok(bindings)
                 }
             }
         }

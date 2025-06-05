@@ -20,7 +20,6 @@ use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::message::Unbind;
-use hyperactor::message::Unbound;
 use hyperactor_mesh::actor_mesh::Cast;
 use monarch_types::PickledPyObject;
 use pyo3::exceptions::PyRuntimeError;
@@ -181,8 +180,8 @@ impl std::fmt::Debug for PythonMessage {
 }
 
 impl Unbind for PythonMessage {
-    fn unbind(self) -> anyhow::Result<Unbound<Self>> {
-        Ok(Unbound::new(self, Bindings::default()))
+    fn bindings(&self) -> anyhow::Result<Bindings> {
+        Ok(Bindings::default())
     }
 }
 
