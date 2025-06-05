@@ -33,13 +33,13 @@ rustup default nightly
 # Install non-python dependencies
 conda install libunwind -y
 
-# Install the correct cuda and cuda-toolkit versions for your machine, as well as NCCL-dev
-sudo dnf install cuda-toolkit-12-0 cuda-12-0 libnccl-devel
+# Install the correct cuda and cuda-toolkit versions for your machine
+sudo dnf install cuda-toolkit-12-0 cuda-12-0
 
-# Install clang dev
-sudo dnf install clang-devel
-# In some envrionments, the following may be necessary instead
-conda install conda-forge::clangdev
+# Install clang-dev and nccl-dev
+sudo dnf install clang-devel libnccl-devel
+# Or, in some envrionments, the following may be necessary instead
+conda install -c conda-forge clangdev nccl
 conda update -n monarchenv --all -c conda-forge -y
 
 # Install build dependencies
