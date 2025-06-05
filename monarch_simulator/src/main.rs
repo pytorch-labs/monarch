@@ -18,6 +18,8 @@ use monarch_simulator_lib::bootstrap::bootstrap;
 struct Args {
     #[arg(short, long)]
     system_addr: ChannelAddr,
+    #[arg(short, long)]
+    proxy_addr: ChannelAddr,
 }
 
 const TITLE: &str = r#"
@@ -39,9 +41,10 @@ async fn main() -> Result<ExitCode> {
     let args = Args::parse();
 
     let system_addr = args.system_addr.clone();
+    let proxy_addr = args.proxy_addr.clone();
     tracing::info!("starting Monarch simulation");
 
-    let operational_listener_handle = bootstrap(system_addr, 1).await?;
+    let operational_listener_handle = bootstrap(system_addr, proxy_addr, 1).await?;
 
     operational_listener_handle
         .await

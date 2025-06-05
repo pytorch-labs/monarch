@@ -1813,7 +1813,6 @@ mod tests {
     use hyperactor::channel;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::channel::Rx;
-    use hyperactor::channel::sim::HANDLE;
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
     use hyperactor::data::Serialized;
@@ -1824,6 +1823,7 @@ mod tests {
     use hyperactor::mailbox::PortHandle;
     use hyperactor::mailbox::PortReceiver;
     use hyperactor::mailbox::monitored_return_handle;
+    use hyperactor::simnet;
     use hyperactor::test_utils::pingpong::PingPongActorParams;
 
     use super::*;
@@ -2801,7 +2801,12 @@ mod tests {
     #[tokio::test]
     async fn test_update_sim_address() {
         let proxy = ChannelAddr::any(ChannelTransport::Unix);
-        HANDLE.add_proxy(proxy.clone()).await.unwrap();
+        simnet::start(
+            ChannelAddr::any(ChannelTransport::Unix),
+            proxy.clone(),
+            1000,
+        )
+        .unwrap();
 
         let src_id = id!(proc[0].actor);
         let src_addr =

@@ -1647,7 +1647,7 @@ mod tests {
         assert_eq!(result.0, Seq::default());
         assert!(result.1.expect("result").is_err());
 
-        let records = sim::records().await;
+        let records = sim::records().await.unwrap();
         eprintln!("{}", serde_json::to_string_pretty(&records).unwrap());
     }
     #[tokio::test]
