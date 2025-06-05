@@ -97,6 +97,10 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         module,
         "monarch_hyperactor.alloc",
     )?)?;
+    monarch_hyperactor::channel::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_hyperactor.channel",
+    )?)?;
     monarch_hyperactor::actor_mesh::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_hyperactor.actor_mesh",
