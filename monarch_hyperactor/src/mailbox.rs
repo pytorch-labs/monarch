@@ -160,6 +160,12 @@ impl From<PortId> for PyPortId {
     }
 }
 
+impl From<PyPortId> for PortId {
+    fn from(port_id: PyPortId) -> Self {
+        port_id.inner
+    }
+}
+
 #[pymethods]
 impl PyPortId {
     #[new]

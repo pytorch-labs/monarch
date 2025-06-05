@@ -50,7 +50,8 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.shape import Point as HyPoint, Shape
 from monarch.common.pickle_flatten import flatten, unflatten
-from monarch.common.shape import MeshTrait, NDSlice, Shape
+from monarch.common.shape import MeshTrait, NDSlice
+from torch.utils._pytree import tree_flatten, tree_unflatten
 
 logger = logging.getLogger(__name__)
 
@@ -368,7 +369,7 @@ def send(
     This sends the message to all actors but does not wait for any result.
     """
     endpoint._signature.bind(None, *args, **kwargs)
-    message = PythonMessage(endpoint._name, _pickle((args, kwargs, port)))
+    message = pickle_message(endpoint._name, (args, kwargs, port))
     endpoint._actor_mesh.cast(message, selection)
 
 
@@ -397,7 +398,7 @@ class Port:
     def send(self, method: str, obj: object) -> None:
         self._mailbox.post(
             self._port,
-            PythonMessage(method, _pickle(obj)),
+            pickle_message(method, obj),
         )
 
 
@@ -431,7 +432,7 @@ class PortReceiver(Generic[R]):
 
     def _process(self, msg: PythonMessage):
         # TODO: Try to do something more structured than a cast here
-        payload = cast(R, _unpickle(msg.message, self._mailbox))
+        payload = cast(R, unpickle_message(msg, self._mailbox))
         if msg.method == "result":
             return payload
         else:
@@ -476,7 +477,7 @@ class _Actor:
     ) -> Optional[Coroutine[Any, Any, Any]]:
         port = None
         try:
-            args, kwargs, port = _unpickle(message.message, mailbox)
+            args, kwargs, port = unpickle_message(message, mailbox)
 
             ctx = MonarchContext(mailbox, mailbox.actor_id.proc_id, Point(rank, shape))
             _context.set(ctx)
@@ -537,15 +538,38 @@ def _is_mailbox(x: object) -> bool:
     return isinstance(x, Mailbox)
 
 
-def _pickle(obj: object) -> bytes:
-    _, msg = flatten(obj, _is_mailbox)
-    return msg
+def pickle_message(method: str, obj: object) -> PythonMessage:
+    # pickling obj, but keep Mailbox as external object
+    _, message = flatten(obj, _is_mailbox)
+    # extract the port ids and save them separately in PythonMessage, so they
+    # can be used in port splitting.
+    flat_args, _ = tree_flatten(obj)
+    port_ids = [a._port for a in flat_args if isinstance(a, Port)]
+    return PythonMessage(method, message, port_ids)
 
 
-def _unpickle(data: bytes, mailbox: Mailbox) -> Any:
+def unpickle_message(message: PythonMessage, mailbox: Mailbox) -> Any:
     # regardless of the mailboxes of the remote objects
     # they all become the local mailbox.
-    return unflatten(data, itertools.repeat(mailbox))
+    obj = unflatten(message.message, itertools.repeat(mailbox))
+    # replace the port ids with the actual ports from port splitting.
+    flat_args, args_spec = tree_flatten(obj)
+    port_iterator = iter(message.port_ids)
+    for a in flat_args:
+        if isinstance(a, Port):
+            try:
+                a._port = next(port_iterator)
+            except StopIteration:
+                raise RuntimeError(
+                    f"not enough ports to replace when unpickling message for {message.method}"
+                )
+
+    if next(port_iterator, None) is not None:
+        raise RuntimeError(
+            f"too many ports to replace when unpickling message for {message.method}"
+        )
+
+    return tree_unflatten(flat_args, args_spec)
 
 
 class Actor(MeshTrait):

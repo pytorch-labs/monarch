@@ -6,9 +6,9 @@
 
 # pyre-strict
 
-from typing import final, List, Protocol
+from typing import final, List, Protocol, Sequence
 
-from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
+from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox, PortId
 
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId, Proc, Serialized
 
@@ -97,7 +97,9 @@ class PythonMessage:
     the arguments to the method.
     """
 
-    def __init__(self, method: str, message: bytes) -> None: ...
+    def __init__(
+        self, method: str, message: bytes, port_ids: Sequence[PortId]
+    ) -> None: ...
     @property
     def method(self) -> str:
         """The method of the message."""
@@ -106,6 +108,11 @@ class PythonMessage:
     @property
     def message(self) -> bytes:
         """The pickled arguments."""
+        ...
+
+    @property
+    def port_ids(self) -> Sequence[PortId]:
+        """The port ids of the message."""
         ...
 
 @final

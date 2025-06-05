@@ -16,6 +16,7 @@ use hyperactor::ActorId;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Named;
+use hyperactor::PortId;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::IndexedErasedUnbound;
@@ -35,6 +36,7 @@ use serde_bytes::ByteBuf;
 use tokio::sync::Mutex;
 
 use crate::mailbox::PyMailbox;
+use crate::mailbox::PyPortId;
 use crate::proc::InstanceWrapper;
 use crate::proc::PyActorId;
 use crate::proc::PyProc;
@@ -162,10 +164,13 @@ impl PickledMessageClientActor {
 }
 
 #[pyclass(frozen, module = "monarch._rust_bindings.monarch_hyperactor.actor")]
-#[derive(Clone, Serialize, Deserialize, Named)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, Named)]
 pub struct PythonMessage {
     method: String,
     message: ByteBuf,
+    /// The port ids contained by this message. These port ids are used to
+    /// implement the [`Bind`] and [`Unbind`] traits.
+    port_ids: Vec<PortId>,
 }
 
 impl std::fmt::Debug for PythonMessage {
@@ -176,18 +181,22 @@ impl std::fmt::Debug for PythonMessage {
                 "message",
                 &hyperactor::data::HexFmt(self.message.as_slice()).to_string(),
             )
+            .field("port_ids", &self.port_ids)
             .finish()
     }
 }
 
 impl Unbind for PythonMessage {
     fn unbind(self) -> anyhow::Result<Unbound<Self>> {
-        Ok(Unbound::new(self, Bindings::default()))
+        let mut bindings = Bindings::default();
+        bindings.insert(self.port_ids.iter())?;
+        Ok(Unbound::new(self, bindings))
     }
 }
 
 impl Bind for PythonMessage {
-    fn bind(self, _bindings: &Bindings) -> anyhow::Result<Self> {
+    fn bind(mut self, bindings: &Bindings) -> anyhow::Result<Self> {
+        bindings.rebind::<PortId>(self.port_ids.iter_mut())?;
         Ok(self)
     }
 }
@@ -195,11 +204,12 @@ impl Bind for PythonMessage {
 #[pymethods]
 impl PythonMessage {
     #[new]
-    #[pyo3(signature = (method, message))]
-    fn new(method: String, message: Vec<u8>) -> Self {
+    #[pyo3(signature = (method, message, port_ids))]
+    fn new(method: String, message: Vec<u8>, port_ids: Vec<PyPortId>) -> Self {
         Self {
             method,
             message: ByteBuf::from(message),
+            port_ids: port_ids.into_iter().map(|id| id.into()).collect(),
         }
     }
 
@@ -211,6 +221,11 @@ impl PythonMessage {
     #[getter]
     fn message<'a>(&self, py: Python<'a>) -> Bound<'a, PyBytes> {
         PyBytes::new_bound(py, self.message.as_ref())
+    }
+
+    #[getter]
+    fn port_ids(&self) -> Vec<PyPortId> {
+        self.port_ids.iter().map(|id| id.clone().into()).collect()
     }
 }
 
@@ -364,4 +379,26 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
     hyperactor_mod.add_class::<PythonActorHandle>()?;
     hyperactor_mod.add_class::<PythonMessage>()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use hyperactor::id;
+
+    use super::*;
+
+    #[test]
+    fn test_python_message_bind_unbind() {
+        let message = PythonMessage {
+            method: "test".to_string(),
+            message: ByteBuf::from(vec![1, 2, 3]),
+            port_ids: vec![
+                id!(world[0].client[0][123]),
+                id!(world[1].client[0][456]),
+                id!(world[2].client[0][789]),
+            ],
+        };
+        let unbound = message.clone().unbind().unwrap();
+        assert_eq!(message, unbound.bind().unwrap());
+    }
 }

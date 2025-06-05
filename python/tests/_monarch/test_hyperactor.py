@@ -40,7 +40,7 @@ class MyActor:
         message: PythonMessage,
     ) -> None:
         reply_port = pickle.loads(message.message)
-        mailbox.post(reply_port, PythonMessage("echo", pickle.dumps(coordinates)))
+        mailbox.post(reply_port, PythonMessage("echo", pickle.dumps(coordinates), []))
 
 
 def test_import() -> None:
@@ -116,7 +116,7 @@ async def test_proc_mesh_process_allocator() -> None:
     proc_mesh = await ProcMesh.allocate_nonblocking(alloc)
     actor_mesh = await proc_mesh.spawn_nonblocking("test", MyActor)
     handle, receiver = actor_mesh.client.open_port()
-    actor_mesh.cast(PythonMessage("hello", pickle.dumps(handle.bind())))
+    actor_mesh.cast(PythonMessage("hello", pickle.dumps(handle.bind()), []))
     coords = {await receiver.recv(), await receiver.recv()}
     # `coords` is a pair of messages. logically:
     # assert coords == {(("replica", 0)), (("replica", 1))}

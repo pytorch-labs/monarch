@@ -5,9 +5,15 @@
 # LICENSE file in the root directory of this source tree.
 
 import operator
+from dataclasses import dataclass
 from types import ModuleType
+from typing import List
+
+from unittest.mock import Mock
 
 import torch
+from monarch._rust_bindings.monarch_hyperactor.actor import PythonMessage
+from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox, PortId
 from monarch.actor_mesh import (
     Accumulator,
     Actor,
@@ -15,6 +21,9 @@ from monarch.actor_mesh import (
     current_rank,
     current_size,
     endpoint,
+    pickle_message,
+    Port,
+    unpickle_message,
 )
 
 from monarch.proc_mesh import local_proc_mesh, proc_mesh
@@ -370,3 +379,59 @@ def test_rust_binding_modules_correct() -> None:
                 assert value.__module__ == path
 
     check(bindings, "monarch._rust_bindings")
+
+
+@dataclass
+class MyClass:
+    port: Port
+
+
+def test_python_message_pickling() -> None:
+    mailbox0 = Mock(spec=Mailbox)
+    mailbox1 = Mock(spec=Mailbox)
+
+    assert mailbox0 is not mailbox1
+
+    port_id0 = PortId.from_string("test[0].actor[0][0]")
+    port_id1 = PortId.from_string("test[0].actor[0][1]")
+    port_id2 = PortId.from_string("test[0].actor[0][2]")
+    port_id3 = PortId.from_string("test[0].actor[0][3]")
+
+    my_tuple = (
+        [
+            Port(port_id1, mailbox0),
+            Port(port_id2, mailbox0),
+            Port(port_id3, mailbox0),
+        ],
+        Port(port_id0, mailbox0),
+        "test",
+        MyClass(Port(PortId.from_string("test[0].my_class[0][4]"), mailbox0)),
+    )
+    message = pickle_message("test_method", my_tuple)
+    # Port ids are extracted if they are positioned as a pytree leaf.
+    # Note that the port nested in MyClass is not extracted.
+    assert message.port_ids == [port_id1, port_id2, port_id3, port_id0]
+
+    # Update the port ids
+    updated_message = PythonMessage(
+        "test_method",
+        message.message,
+        [PortId.from_string(f"test[0].comm[{i}][{100 + i}]") for i in range(4)],
+    )
+
+    ([port1, port2, port3], port0, value, my_class) = unpickle_message(
+        updated_message, mailbox1
+    )
+    for i, port in enumerate([port1, port2, port3, port0]):
+        # mailbox is changed to mailbox1
+        assert port._mailbox is mailbox1
+        # port ids are updated
+        assert port._port == PortId.from_string(f"test[0].comm[{i}][{100 + i}]")
+
+    # mailbox is changed to mailbox1 even if it is nested in a class object
+    assert my_class.port._mailbox is mailbox1
+    # but its port id is not changed
+    assert my_class.port._port == PortId.from_string("test[0].my_class[0][4]")
+
+    # other field is unchanged
+    assert value == "test"
