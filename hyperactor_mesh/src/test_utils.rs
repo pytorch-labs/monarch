@@ -11,7 +11,10 @@ use hyperactor::Actor;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Named;
+use hyperactor::message::Bind;
+use hyperactor::message::Bindings;
 use hyperactor::message::IndexedErasedUnbound;
+use hyperactor::message::Unbind;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -20,6 +23,19 @@ use crate::actor_mesh::Cast;
 /// Message that can be sent to an EmptyActor.
 #[derive(Serialize, Deserialize, Debug, Named, Clone)]
 pub struct EmptyMessage();
+
+// TODO(pzhang) replace the boilerplate Bind/Unbind impls with a macro.
+impl Bind for EmptyMessage {
+    fn bind(self, _bindings: &Bindings) -> anyhow::Result<Self> {
+        Ok(self)
+    }
+}
+
+impl Unbind for EmptyMessage {
+    fn bindings(&self) -> anyhow::Result<Bindings> {
+        Ok(Bindings::default())
+    }
+}
 
 /// No-op actor.
 #[derive(Debug, PartialEq)]

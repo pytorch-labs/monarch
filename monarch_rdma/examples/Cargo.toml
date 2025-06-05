@@ -26,7 +26,6 @@ hyperactor = { version = "0.0.0", path = "../../hyperactor" }
 hyperactor_mesh = { version = "0.0.0", path = "../../hyperactor_mesh" }
 monarch_rdma = { version = "0.0.0", path = ".." }
 ndslice = { version = "0.0.0", path = "../../ndslice" }
-rand = { version = "0.8", features = ["small_rng"] }
 serde = { version = "1.0.185", features = ["derive", "rc"] }
 timed_test = { version = "0.0.0", path = "../../timed_test" }
 tokio = { version = "1.45.0", features = ["full", "test-util", "tracing"] }

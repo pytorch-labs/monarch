@@ -28,7 +28,6 @@ use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::message::Unbind;
-use hyperactor::message::Unbound;
 use hyperactor::reference::ActorId;
 use monarch_types::SerializablePyErr;
 use ndslice::Slice;
@@ -842,8 +841,8 @@ pub enum WorkerMessage {
 // WorkerMessage currently has no accumulation reply port.
 // TODO(pzhang) add macro to auto implement these traits.
 impl Unbind for WorkerMessage {
-    fn unbind(self) -> anyhow::Result<Unbound<Self>> {
-        Ok(Unbound::new(self, Bindings::default()))
+    fn bindings(&self) -> anyhow::Result<Bindings> {
+        Ok(Bindings::default())
     }
 }
 
