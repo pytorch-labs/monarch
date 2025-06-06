@@ -634,6 +634,38 @@ class TestController:
         assert torch.equal(host1_a, torch.tensor([2.0]))
         assert torch.equal(host1_b, torch.tensor([4.0]))
 
+    def test_ivalue_problems(self, backend_type) -> None:
+        with local_mesh(hosts=1, gpus_per_host=1):
+            from typing import cast
+
+            from monarch.common.messages import CallFunction, CommandGroup
+
+            a = cast(monarch.Tensor, torch.rand(3, 4))
+            result = monarch.Tensor(a._fake, a.mesh, a.stream)
+            msg = CallFunction(
+                0,
+                result,
+                (),
+                monarch.common.function.ResolvableFunctionFromPath(
+                    "torch.ops.aten.mul.Tensor"
+                ),
+                (2, a),
+                {},
+                a.stream._to_ref(a.mesh.client),
+                a.mesh,
+                [],
+            )
+            # Internally, this will call CallFunction(...).to_rust_message().
+            # The 2 arg will be converted to an IValue tensor via rust + C++.
+            # Then when the CommandGroup message gets converted to rust, it
+            # will attempt to clone the rust CallFunction message, which will
+            # attempt to clone the IValue tensor, which will cause a crash.
+            # Upon attempting to clone the IValue tensor, our custom __torch_dispatch__
+            # intercepts the following two calls:
+            #   aten._to_copy.default () (2,) {'dtype': torch.float64, 'device': device(type='cpu')}
+            #   aten.clone.default () (2,) {}
+            CommandGroup([msg]).to_rust_message()
+
 
 def test_panicking_worker():
     with pytest.raises(DeviceException, match="__test_panic called"):

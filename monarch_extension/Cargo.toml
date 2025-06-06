@@ -19,6 +19,7 @@ clap = { version = "4.5.38", features = ["derive", "env", "string", "unicode", "
 controller = { version = "0.0.0", path = "../controller" }
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_extension = { version = "0.0.0", path = "../hyperactor_extension" }
+hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }
 hyperactor_multiprocess = { version = "0.0.0", path = "../hyperactor_multiprocess" }
 monarch_hyperactor = { version = "0.0.0", path = "../monarch_hyperactor" }
 monarch_messages = { version = "0.0.0", path = "../monarch_messages" }

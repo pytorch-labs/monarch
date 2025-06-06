@@ -46,7 +46,7 @@ class Error(Exception):
         ...
 
     @staticmethod
-    def new_for_unit_test(
+    def new(
         seq: int, caused_by_seq: int, actor_id: ActorId, backtrace: str
     ) -> "Error": ...
 
@@ -74,7 +74,7 @@ class Failure(Exception):
         ...
 
     @staticmethod
-    def new_for_unit_test(actor_id: ActorId) -> "Failure": ...
+    def new(actor_id: ActorId) -> "Failure": ...
 
 @final
 class WorkerResponse:
@@ -109,7 +109,7 @@ class WorkerResponse:
         ...
 
     @staticmethod
-    def new_for_unit_test(*, seq: int, response: Any) -> "WorkerResponse": ...
+    def new(*, seq: int, response: Any) -> "WorkerResponse": ...
 
 @final
 class LogLevel:

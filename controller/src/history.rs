@@ -115,7 +115,7 @@ enum RefStatus {
 /// borrows, drops etc. directly.
 #[derive(Debug)]
 #[allow(dead_code)]
-pub(crate) struct History {
+pub struct History {
     /// The first incomplete Seq for each rank. This is used to determine which
     /// Seqs are no longer relevant and can be purged from the history.
     first_incomplete_seqs: MinVector<Seq>,
@@ -198,7 +198,7 @@ where
 }
 
 impl History {
-    pub(crate) fn new(world_size: usize) -> Self {
+    pub fn new(world_size: usize) -> Self {
         Self {
             first_incomplete_seqs: MinVector::new(vec![Seq::default(); world_size]),
             min_incomplete_seq: Seq::default(),
@@ -213,23 +213,23 @@ impl History {
     }
 
     #[cfg(test)]
-    pub(crate) fn first_incomplete_seqs(&self) -> &[Seq] {
+    pub fn first_incomplete_seqs(&self) -> &[Seq] {
         self.first_incomplete_seqs.vec()
     }
 
-    pub(crate) fn first_incomplete_seqs_controller(&self) -> &[Seq] {
+    pub fn first_incomplete_seqs_controller(&self) -> &[Seq] {
         self.first_incomplete_seqs_controller.vec()
     }
 
-    pub(crate) fn min_incomplete_seq_reported(&self) -> Seq {
+    pub fn min_incomplete_seq_reported(&self) -> Seq {
         self.min_incompleted_seq_controller
     }
 
-    pub(crate) fn world_size(&self) -> usize {
+    pub fn world_size(&self) -> usize {
         self.first_incomplete_seqs.len()
     }
 
-    pub(crate) fn delete_invocations_for_refs(&mut self, refs: Vec<Ref>) {
+    pub fn delete_invocations_for_refs(&mut self, refs: Vec<Ref>) {
         self.marked_for_deletion.extend(refs);
 
         self.marked_for_deletion
@@ -251,7 +251,7 @@ impl History {
     }
 
     /// Add an invocation to the history.
-    pub(crate) fn add_invocation(
+    pub fn add_invocation(
         &mut self,
         seq: Seq,
         uses: Vec<Ref>,
@@ -306,7 +306,7 @@ impl History {
 
     /// Propagate worker error to the invocation with the given Seq. This will also propagate
     /// to all seqs that depend on this seq directly or indirectly.
-    pub(crate) fn propagate_exception(&mut self, seq: Seq, exception: Exception) {
+    pub fn propagate_exception(&mut self, seq: Seq, exception: Exception) {
         let mut queue = vec![seq];
         let mut visited = HashSet::new();
 
@@ -364,13 +364,13 @@ impl History {
         results
     }
 
-    pub(crate) fn report_deadline_missed(&mut self) {
+    pub fn report_deadline_missed(&mut self) {
         if let Some((seq, time, _)) = self.deadline {
             self.deadline = Some((seq, time, true));
         }
     }
 
-    pub(crate) fn deadline(
+    pub fn deadline(
         &mut self,
         expected_progress: u64,
         timeout: tokio::time::Duration,
@@ -397,7 +397,7 @@ impl History {
         self.deadline
     }
 
-    pub(crate) fn update_deadline_tracking(&mut self, rank: usize, seq: Seq) {
+    pub fn update_deadline_tracking(&mut self, rank: usize, seq: Seq) {
         // rank_completed also calls this so that we stay up to date with client request_status messages.
         // However, controller request_status messages may be ahead of the client as the client may retain invocations
         // past the time completed so we should take the max
@@ -411,7 +411,7 @@ impl History {
 
     /// Mark the given rank as completed up to but excluding the given Seq. This will also purge history for
     /// any Seqs that are no longer relevant (completed on all ranks).
-    pub(crate) fn rank_completed(
+    pub fn rank_completed(
         &mut self,
         rank: usize,
         seq: Seq,

@@ -56,12 +56,16 @@ use device_mesh::DeviceMesh;
 use futures::future::try_join_all;
 use hyperactor::Actor;
 use hyperactor::ActorRef;
+use hyperactor::Handler;
 use hyperactor::Instance;
+use hyperactor::Named;
 use hyperactor::actor::ActorHandle;
 use hyperactor::cap;
 use hyperactor::forward;
 use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::reference::ActorId;
+
+use hyperactor_mesh::actor_mesh::Cast;
 use itertools::Itertools;
 use monarch_messages::controller::ControllerActor;
 use monarch_messages::controller::ControllerMessageClient;
@@ -83,6 +87,8 @@ use monarch_types::PyTree;
 use ndslice::Slice;
 use pipe::PipeActor;
 use pipe::PipeParams;
+use serde::Deserialize;
+use serde::Serialize;
 use sorted_vec::SortedVec;
 use stream::StreamActor;
 use stream::StreamMessageClient;
@@ -141,7 +147,7 @@ enum Recording {
 ///
 /// See [`WorkerMessage`] for what it can do!
 #[derive(Debug)]
-#[hyperactor::export_spawn(WorkerMessage, IndexedErasedUnbound<WorkerMessage>)]
+#[hyperactor::export_spawn(WorkerMessage, IndexedErasedUnbound<WorkerMessage>, Cast<AssignRankMessage>, Cast<WorkerMessage>, IndexedErasedUnbound<Cast<AssignRankMessage>>, IndexedErasedUnbound<Cast<WorkerMessage>>)]
 pub struct WorkerActor {
     device: Option<CudaDevice>,
     streams: HashMap<StreamRef, Arc<ActorHandle<StreamActor>>>,
@@ -239,6 +245,36 @@ impl Actor for WorkerActor {
     }
 
     // TODO: Exit the worker directly on any worker actor errors, with error exit code.
+}
+
+#[async_trait]
+impl Handler<Cast<AssignRankMessage>> for WorkerActor {
+    async fn handle(
+        &mut self,
+        _this: &Instance<Self>,
+        message: Cast<AssignRankMessage>,
+    ) -> anyhow::Result<()> {
+        self.rank = message.rank.0;
+        Ok(())
+    }
+}
+
+/// Worker messages. These define the observable behavior of the worker, so the
+/// documentations here
+#[derive(Handler, Clone, Serialize, Deserialize, Debug, Named)]
+pub enum AssignRankMessage {
+    AssignRank(),
+}
+
+#[async_trait]
+impl Handler<Cast<WorkerMessage>> for WorkerActor {
+    async fn handle(
+        &mut self,
+        this: &Instance<Self>,
+        message: Cast<WorkerMessage>,
+    ) -> anyhow::Result<()> {
+        WorkerMessageHandler::handle(self, this, message.message).await
+    }
 }
 
 #[async_trait]
@@ -741,6 +777,7 @@ impl WorkerMessageHandler for WorkerActor {
             tracing::info!("stopping the worker process, exit code: {}", exit_code);
             std::process::exit(exit_code);
         }
+        this.stop()?;
         Ok(())
     }
 

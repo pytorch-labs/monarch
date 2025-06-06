@@ -30,6 +30,7 @@ use ndslice::Range;
 use ndslice::Selection;
 use ndslice::Shape;
 use ndslice::ShapeError;
+use ndslice::Slice;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -146,6 +147,75 @@ impl<'a, A: RemoteActor> RootActorMesh<'a, A> {
     /// Open a port on this ActorMesh.
     pub(crate) fn open_port<M: Message>(&self) -> (PortHandle<M>, PortReceiver<M>) {
         self.proc_mesh.client().open_port()
+    }
+
+    /// Cast an [`M`]-typed message to the ranks selected by `sel`
+    /// in this ActorMesh.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `CastError`.
+    pub fn cast<M: RemoteMessage + Clone>(
+        &self,
+        selection: Selection,
+        message: M,
+    ) -> Result<(), CastError>
+    where
+        A: RemoteHandles<Cast<M>> + RemoteHandles<IndexedErasedUnbound<Cast<M>>>,
+    {
+        let _ = metrics::ACTOR_MESH_CAST_DURATION.start(hyperactor::kv_pairs!(
+            "message_type" => M::typename(),
+            "message_variant" => message.arm().unwrap_or_default(),
+        ));
+        let message = Cast {
+            rank: CastRank(usize::MAX),
+            shape: self.shape().clone(),
+            message,
+        };
+        let message = CastMessageEnvelope::new(
+            self.proc_mesh.client().actor_id().clone(),
+            DestinationPort::new::<A, Cast<M>>(self.name.clone()),
+            message,
+            None, // TODO: reducer typehash
+        )?;
+
+        self.proc_mesh.comm_actor().send(
+            self.proc_mesh.client(),
+            CastMessage {
+                dest: Uslice {
+                    slice: self.shape().slice().clone(),
+                    selection,
+                },
+                message,
+            },
+        )?;
+        Ok(())
+    }
+
+    /// Until the selection logic is more powerful, we need a way to
+    /// replicate the send patterns that the worker actor mesh actually does.
+    pub fn cast_slices<M: RemoteMessage + Clone>(
+        &self,
+        sel: Vec<Slice>,
+        message: M,
+    ) -> Result<(), CastError>
+    where
+        A: RemoteHandles<Cast<M>> + RemoteHandles<IndexedErasedUnbound<Cast<M>>>,
+    {
+        let _ = metrics::ACTOR_MESH_CAST_DURATION.start(hyperactor::kv_pairs!(
+            "message_type" => M::typename(),
+            "message_variant" => message.arm().unwrap_or_default(),
+        ));
+        for ref slice in sel {
+            for rank in slice.iter() {
+                let cast = Cast {
+                    rank: CastRank(rank),
+                    shape: self.shape().clone(),
+                    message: message.clone(),
+                };
+                self.ranks[rank]
+                    .send(self.proc_mesh.client(), cast)
+                    .map_err(|err| CastError::MailboxSenderError(rank, err))?;
+            }
+        }
+        Ok(())
     }
 }
 

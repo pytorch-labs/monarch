@@ -234,7 +234,7 @@ impl Shape {
             .collect())
     }
 
-    fn dim(&self, label: &str) -> Result<usize, ShapeError> {
+    pub fn dim(&self, label: &str) -> Result<usize, ShapeError> {
         self.labels
             .iter()
             .position(|l| l == label)

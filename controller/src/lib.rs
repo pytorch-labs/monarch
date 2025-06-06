@@ -12,7 +12,7 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 pub mod bootstrap;
-mod history;
+pub mod history;
 
 use std::collections::HashMap;
 use std::collections::HashSet;

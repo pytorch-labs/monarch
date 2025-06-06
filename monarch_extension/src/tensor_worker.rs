@@ -48,7 +48,7 @@ use torch_sys::nccl::UniqueId;
     module = "monarch._rust_bindings.monarch_extension.tensor_worker"
 )]
 pub(crate) struct PyWorkerMessage {
-    message: WorkerMessage,
+    pub message: WorkerMessage,
 }
 
 impl PyWorkerMessage {
@@ -1448,3 +1448,27 @@ pub(crate) fn register_python_bindings(worker_mod: &Bound<'_, PyModule>) -> PyRe
 
     Ok(())
 }
+
+// #[pymethods]
+// impl CreateStream {
+//     #[new]
+//     #[pyo3(signature = (id, stream_creation))]
+//     fn new(id: StreamRef, stream_creation: StreamCreationMode) -> PyResult<WorkerMessage> {
+//         Ok(WorkerMessage::CreateStream {
+//             id,
+//             stream_creation,
+//         })
+//     }
+// }
+
+// class CreateStream(NamedTuple):
+//     result: StreamRef
+//     default: bool
+//     def to_rust_message(self) -> worker.WorkerMessage:
+//         return worker.CreateStream(
+//             id=worker.StreamRef(id=self.result.ref),
+//             stream_creation=(
+//                 worker.StreamCreationMode.UseDefaultStream
+//                 if self.default
+//                 else worker.StreamCreationMode.CreateNewStream
+//             ),

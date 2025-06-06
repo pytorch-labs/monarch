@@ -371,6 +371,14 @@ impl ProcMesh {
         &self.client
     }
 
+    pub fn client_proc(&self) -> &Proc {
+        &self.client_proc
+    }
+
+    pub fn proc_id(&self) -> &ProcId {
+        self.client_proc.proc_id()
+    }
+
     /// An event stream of proc events. Each ProcMesh can produce only one such
     /// stream, returning None after the first call.
     pub fn events(&mut self) -> Option<ProcEvents> {
