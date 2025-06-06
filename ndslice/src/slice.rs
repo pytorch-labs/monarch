@@ -217,7 +217,47 @@ impl Slice {
         Ok(result)
     }
 
-    /// Retrieve the underlying location of the provided slice index.
+    /// Given a logical index (in row-major order), return the
+    /// physical memory offset of that element according to this
+    /// slice’s layout.
+    ///
+    /// The index is interpreted as a position in row-major traversal
+    /// — that is, iterating across columns within rows. This method
+    /// decodes the index into a multidimensional coordinate, and then
+    /// applies the slice’s `strides` to compute the memory offset of
+    /// that coordinate.
+    ///
+    /// For example, with shape `[3, 4]` (3 rows, 4 columns) and
+    /// column-major layout:
+    ///
+    /// ```text
+    /// sizes  = [3, 4]         // rows, cols
+    /// strides = [1, 3]        // column-major: down, then right
+    ///
+    /// Logical matrix:
+    ///   A  B  C  D
+    ///   E  F  G  H
+    ///   I  J  K  L
+    ///
+    /// Memory layout:
+    /// offset 0  → [0, 0] = A
+    /// offset 1  → [1, 0] = E
+    /// offset 2  → [2, 0] = I
+    /// offset 3  → [0, 1] = B
+    /// offset 4  → [1, 1] = F
+    /// offset 5  → [2, 1] = J
+    /// offset 6  → [0, 2] = C
+    /// offset 7  → [1, 2] = G
+    /// offset 8  → [2, 2] = K
+    /// offset 9  → [0, 3] = D
+    /// offset 10 → [1, 3] = H
+    /// offset 11 → [2, 3] = L
+    ///
+    /// Then:
+    ///   index = 1  → coordinate [0, 1]  → offset = 0*1 + 1*3 = 3
+    /// ```
+    ///
+    /// Returns an error if `index >= product(sizes)`.
     pub fn get(&self, index: usize) -> Result<usize, SliceError> {
         let mut val = self.offset;
         let mut rest = index;
