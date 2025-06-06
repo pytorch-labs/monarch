@@ -18,6 +18,7 @@ use hyperactor::Message;
 use hyperactor::Named;
 use hyperactor::PortHandle;
 use hyperactor::RemoteHandles;
+use hyperactor::RemoteMessage;
 use hyperactor::actor::RemoteActor;
 use hyperactor::mailbox::MailboxSenderError;
 use hyperactor::mailbox::PortReceiver;
@@ -30,6 +31,7 @@ use ndslice::Range;
 use ndslice::Selection;
 use ndslice::Shape;
 use ndslice::ShapeError;
+use ndslice::Slice;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -146,6 +148,35 @@ impl<'a, A: RemoteActor> RootActorMesh<'a, A> {
     /// Open a port on this ActorMesh.
     pub(crate) fn open_port<M: Message>(&self) -> (PortHandle<M>, PortReceiver<M>) {
         self.proc_mesh.client().open_port()
+    }
+
+    /// Until the selection logic is more powerful, we need a way to
+    /// replicate the send patterns that the worker actor mesh actually does.
+    pub fn cast_slices<M: RemoteMessage + Clone>(
+        &self,
+        sel: Vec<Slice>,
+        message: M,
+    ) -> Result<(), CastError>
+    where
+        A: RemoteHandles<Cast<M>> + RemoteHandles<IndexedErasedUnbound<Cast<M>>>,
+    {
+        let _ = metrics::ACTOR_MESH_CAST_DURATION.start(hyperactor::kv_pairs!(
+            "message_type" => M::typename(),
+            "message_variant" => message.arm().unwrap_or_default(),
+        ));
+        for ref slice in sel {
+            for rank in slice.iter() {
+                let cast = Cast {
+                    rank: CastRank(rank),
+                    shape: self.shape().clone(),
+                    message: message.clone(),
+                };
+                self.ranks[rank]
+                    .send(self.proc_mesh.client(), cast)
+                    .map_err(|err| CastError::MailboxSenderError(rank, err))?;
+            }
+        }
+        Ok(())
     }
 }
 

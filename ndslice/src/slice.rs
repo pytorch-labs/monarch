@@ -6,6 +6,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::iter::zip;
+
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -168,6 +170,17 @@ impl Slice {
     /// element at a given index in the underlying array.
     pub fn strides(&self) -> &[usize] {
         &self.strides
+    }
+
+    pub fn is_contiguous(&self) -> bool {
+        let mut expected_stride = 1;
+        for (stride, size) in zip(self.strides.iter(), self.sizes.iter()).rev() {
+            if *stride != expected_stride {
+                return false;
+            }
+            expected_stride *= *size
+        }
+        true
     }
 
     /// Return the location of the provided coordinates.

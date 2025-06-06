@@ -7,7 +7,12 @@
 import operator
 from types import ModuleType
 
+import monarch
+
+import pytest
+
 import torch
+
 from monarch.actor_mesh import (
     Accumulator,
     Actor,
@@ -16,6 +21,8 @@ from monarch.actor_mesh import (
     current_size,
     endpoint,
 )
+
+from monarch.mesh_controller import spawn_tensor_engine
 
 from monarch.proc_mesh import local_proc_mesh, proc_mesh
 from monarch.rdma import RDMABuffer
@@ -375,3 +382,20 @@ def test_rust_binding_modules_correct() -> None:
                 assert value.__module__ == path
 
     check(bindings, "monarch._rust_bindings")
+
+
+def test_tensor_engine() -> None:
+    pm = proc_mesh(gpus=2).get()
+
+    dm = spawn_tensor_engine(pm)
+    with dm.activate():
+        r = monarch.inspect(2 * torch.zeros(3, 4))
+
+    fm = dm.flatten("all")
+    with fm.activate():
+        f = monarch.inspect(2 * torch.zeros(3, 4), all=1)
+
+    assert torch.allclose(torch.zeros(3, 4), r)
+    assert torch.allclose(torch.zeros(3, 4), f)
+
+    dm.exit()

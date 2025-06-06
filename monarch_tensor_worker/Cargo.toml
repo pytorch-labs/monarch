@@ -16,6 +16,7 @@ cxx = "1.0.119"
 derive_more = { version = "1.0.0", features = ["full"] }
 futures = { version = "0.3.30", features = ["async-await", "compat"] }
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
+hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }
 hyperactor_multiprocess = { version = "0.0.0", path = "../hyperactor_multiprocess" }
 itertools = "0.14.0"
 monarch_messages = { version = "0.0.0", path = "../monarch_messages" }

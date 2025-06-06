@@ -14,6 +14,7 @@ import monarch
 
 import pytest
 import torch
+import torch.utils._python_dispatch
 from monarch import fetch_shard, no_mesh, remote, Stream
 from monarch.common.device_mesh import DeviceMesh
 from monarch.rust_local_mesh import local_meshes, LoggingLocation, SocketType
@@ -180,3 +181,37 @@ class TestRustBackend(TestCase):
 
             self.assertIsNotNone(mesh_info.mesh_labels)
             self.assertEqual(len(mesh_info.devices_labels), 2)
+
+    def test_ivalue_problems(self) -> None:
+        with local_mesh(hosts=1, gpu_per_host=1):
+            from typing import cast
+
+            from monarch.common.messages import CallFunction, CommandGroup
+
+            a = cast(monarch.Tensor, torch.rand(3, 4))
+            result = monarch.Tensor(a._fake, a.mesh, a.stream)
+            msg = CallFunction(
+                0,
+                result,
+                (),
+                monarch.common.function.ResolvableFunctionFromPath(
+                    "torch.ops.aten.mul.Tensor"
+                ),
+                (2, a),
+                {},
+                a.stream._to_ref(a.mesh.client),
+                a.mesh,
+                [],
+            )
+            # Internally, this will call CallFunction(...).to_rust_message().
+            # The 2 arg will be converted to an IValue tensor via rust + C++.
+            # Then when the CommandGroup message gets converted to rust, it
+            # will attempt to clone the rust CallFunction message, which will
+            # attempt to clone the IValue tensor, which will cause a crash.
+            # Upon attempting to clone the IValue tensor, our custom __torch_dispatch__
+            # intercepts the following two calls:
+            #   aten._to_copy.default () (2,) {'dtype': torch.float64, 'device': device(type='cpu')}
+            #   aten.clone.default () (2,) {}
+
+            with torch.utils._python_dispatch._disable_current_modes():
+                CommandGroup([msg]).to_rust_message()

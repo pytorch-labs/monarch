@@ -31,10 +31,9 @@ use crate::shape::PyShape;
     module = "monarch._rust_bindings.monarch_hyperactor.proc_mesh"
 )]
 pub struct PyProcMesh {
-    pub(super) inner: Arc<ProcMesh>,
+    pub inner: Arc<ProcMesh>,
     monitor: tokio::task::JoinHandle<()>,
 }
-
 fn allocate_proc_mesh<'py>(py: Python<'py>, alloc: &PyAlloc) -> PyResult<Bound<'py, PyAny>> {
     let alloc = match alloc.take() {
         Some(alloc) => alloc,
