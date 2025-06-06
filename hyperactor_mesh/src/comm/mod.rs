@@ -28,7 +28,6 @@ use ndslice::selection::routing::RoutingFrame;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::actor_mesh::Cast;
 use crate::comm::multicast::CastMessage;
 use crate::comm::multicast::CastMessageEnvelope;
 use crate::comm::multicast::CastRank;
@@ -358,40 +357,25 @@ impl Handler<ForwardMessage> for CommActor {
     }
 }
 
-// Some tests are located in mod hyperactor_multiprocess/system.rs
-
-// Need to be public since it is used in hyperactor_multiprocess/system.rs
 pub mod test_utils {
-    // use std::collections::HashMap;
-    // use std::collections::HashSet;
-    // use std::time::Duration;
-
-    // use anyhow::Context;
     use anyhow::Result;
     use async_trait::async_trait;
     use hyperactor::Actor;
-    use hyperactor::ActorHandle;
     use hyperactor::ActorId;
     use hyperactor::Handler;
     use hyperactor::Instance;
     use hyperactor::Named;
     use hyperactor::PortId;
     use hyperactor::PortRef;
-    use hyperactor::ProcId;
-    use hyperactor::WorldId;
-    use hyperactor::id;
-    use hyperactor::mailbox::BoxedMailboxSender;
-    use hyperactor::mailbox::MailboxRouter;
     use hyperactor::message::Bind;
     use hyperactor::message::Bindings;
     use hyperactor::message::IndexedErasedUnbound;
     use hyperactor::message::Unbind;
-    use hyperactor::proc::Proc;
-    use hyperactor::test_utils::proc_supervison::ProcSupervisionCoordinator;
     use serde::Deserialize;
     use serde::Serialize;
 
     use super::*;
+    use crate::actor_mesh::Cast;
 
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Named)]
     pub struct MyReply {
@@ -500,31 +484,6 @@ pub mod test_utils {
             self.handle(this, msg.message).await
         }
     }
-
-    pub async fn spawn_comm_actors(num: usize) -> Result<Vec<(Proc, ActorHandle<CommActor>)>> {
-        let router = MailboxRouter::new();
-        spawn_comm_actors_with_router(id!(local), num, &router).await
-    }
-
-    pub async fn spawn_comm_actors_with_router(
-        world_id: WorldId,
-        num: usize,
-        router: &MailboxRouter,
-    ) -> Result<Vec<(Proc, ActorHandle<CommActor>)>> {
-        let mut comms = vec![];
-        for idx in 0..num {
-            let proc_id = ProcId(world_id.clone(), idx);
-            let proc = Proc::new(proc_id, BoxedMailboxSender::new(router.clone()));
-            router.bind(proc.proc_id().clone().into(), proc.clone());
-            ProcSupervisionCoordinator::set(&proc).await?;
-
-            let comm = proc.spawn::<CommActor>("comm", CommActorParams {}).await?;
-            comm.bind::<CommActor>();
-            comms.push((proc, comm));
-        }
-
-        Ok(comms)
-    }
 }
 
 #[cfg(test)]
@@ -534,37 +493,40 @@ mod tests {
     use std::fmt::Display;
     use std::hash::Hash;
     use std::ops::DerefMut;
+    use std::sync::Arc;
     use std::sync::Mutex;
     use std::sync::OnceLock;
 
-    use hyperactor::ActorHandle;
-    use hyperactor::Mailbox;
     use hyperactor::PortId;
     use hyperactor::PortRef;
-    use hyperactor::WorldId;
     use hyperactor::accum;
     use hyperactor::accum::Accumulator;
     use hyperactor::accum::CommReducer;
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
-    use hyperactor::id;
-    use hyperactor::mailbox::MailboxRouter;
     use hyperactor::mailbox::PortReceiver;
     use hyperactor::mailbox::open_port;
     use hyperactor::reference::Index;
     use hyperactor::test_utils::tracing::set_tracing_env_filter;
+    use hyperactor_mesh_macros::sel;
     use maplit::btreemap;
     use maplit::hashmap;
-    use ndslice::selection;
+    use ndslice::Selection;
     use ndslice::selection::test_utils::collect_commactor_routing_tree;
+    use ndslice::shape;
     use test_utils::*;
     use timed_test::async_timed_test;
     use tokio::time::Duration;
     use tracing::Level;
 
     use super::*;
-    use crate::comm::multicast::DestinationPort;
-    use crate::comm::multicast::Uslice;
+    use crate::ProcMesh;
+    use crate::actor_mesh::ActorMesh;
+    use crate::actor_mesh::RootActorMesh;
+    use crate::alloc::AllocSpec;
+    use crate::alloc::Allocator;
+    use crate::alloc::LocalAllocator;
+    use crate::proc_mesh::SharedSpawnable;
 
     struct Edge<T> {
         from: T,
@@ -705,11 +667,7 @@ mod tests {
     //     1 -> 0, 1
     //     2 -> 0, 2
     //     3 -> 0, 2, 3
-    fn get_ranks(
-        paths: PathToLeaves<PortId>,
-        client_reply: &PortId,
-        dest_world: &WorldId,
-    ) -> PathToLeaves<Index> {
+    fn get_ranks(paths: PathToLeaves<PortId>, client_reply: &PortId) -> PathToLeaves<Index> {
         let ranks = paths
             .0
             .into_iter()
@@ -719,12 +677,10 @@ mod tests {
                 assert_eq!(&first, client_reply);
                 // Other ports's actor ID must be dest[?].comm[0], where ? is
                 // the rank we want to extract here.
-                assert_eq!(dst.actor_id().proc_id().world_id(), dest_world);
                 assert_eq!(dst.actor_id().name(), "comm");
                 let actor_path = path
                     .into_iter()
                     .map(|p| {
-                        assert_eq!(p.actor_id().proc_id().world_id(), dest_world);
                         assert_eq!(p.actor_id().name(), "comm");
                         p.actor_id().rank()
                     })
@@ -736,7 +692,7 @@ mod tests {
     }
 
     struct MeshSetup {
-        dest_actors_and_caps: Vec<(ActorHandle<TestActor>, Mailbox)>,
+        actor_mesh: RootActorMesh<'static, TestActor>,
         reply1_rx: PortReceiver<u64>,
         reply2_rx: PortReceiver<MyReply>,
         reply_tos: Vec<(PortRef<u64>, PortRef<MyReply>)>,
@@ -765,96 +721,52 @@ mod tests {
         }
     }
 
-    async fn setup_mesh<A>(dest_world: &WorldId, accum: Option<A>) -> MeshSetup
+    async fn setup_mesh<A>(accum: Option<A>) -> MeshSetup
     where
         A: Accumulator<Update = u64, State = u64> + Send + Sync + 'static,
     {
-        tracing::info!("create a client proc and actor, which is used to send cast messages");
-        let router = MailboxRouter::new();
-        let (client_proc, client_actor) = spawn_comm_actors_with_router(id!(client), 1, &router)
-            .await
-            .unwrap()
-            .pop()
-            .expect("no monitor proc and actor is found");
-
-        tracing::info!("create a mesh of destination mesh");
-        let slice = Slice::new(0, vec![4, 4, 4], vec![16, 4, 1]).unwrap();
-
-        tracing::debug!("start to spawn procs, comm actors and dest actors",);
-        let procs_and_comm_actors =
-            spawn_comm_actors_with_router(dest_world.clone(), slice.len(), &router)
-                .await
-                .unwrap();
-        // Spawn a TestActor on each dest proc. These TestActors are the
-        // destination actors.
-        let dest_actor_name = "dest_actor";
-        let mut queues = vec![];
-        let mut dest_actors_and_caps = vec![];
-        for (proc, _) in procs_and_comm_actors.iter() {
-            let caps = proc.attach("dest_user").unwrap();
-            let (tx, rx) = open_port(&caps);
-            queues.push(rx);
-            let test = proc
-                .spawn::<TestActor>(
-                    dest_actor_name,
-                    TestActorParams {
-                        forward_port: tx.bind(),
-                    },
-                )
-                .await
-                .unwrap();
-            test.bind::<TestActor>();
-            dest_actors_and_caps.push((test, caps));
-        }
-        tracing::info!("done with spawning procs, comm actors and dest actors.");
-
-        // We should be able to correctly send the message to any of the comm actors
-        // in the group.
-        use rand::seq::SliceRandom;
-        let mut rng = rand::thread_rng();
-        let comm_actor = procs_and_comm_actors.choose(&mut rng).unwrap().1.clone();
-
-        let client = client_proc.attach("client_user").unwrap();
-        let (reply_port_handle0, _) = open_port::<String>(&client);
-        let reply_port_ref0 = reply_port_handle0.bind();
-        let (reply_port_handle1, reply1_rx) = match accum {
-            Some(a) => client.open_accum_port(a),
-            None => open_port(&client),
-        };
-        let reply_port_ref1 = reply_port_handle1.bind();
-        let (reply_port_handle2, reply2_rx) = open_port::<MyReply>(&client);
-        let reply_port_ref2 = reply_port_handle2.bind();
-        // Destination is every node in the world.
-        let uslice = Uslice {
-            slice,
-            selection: selection::dsl::true_(),
-        };
-        comm_actor
-            .send(CastMessage {
-                // Destination is every node in the world.
-                dest: uslice.clone(),
-                message: CastMessageEnvelope::new(
-                    client_actor.actor_id().clone(),
-                    DestinationPort::new::<TestActor, TestMessage>(dest_actor_name.to_string()),
-                    TestMessage::CastAndReply {
-                        arg: "abc".to_string(),
-                        reply_to0: reply_port_ref0.clone(),
-                        reply_to1: reply_port_ref1.clone(),
-                        reply_to2: reply_port_ref2.clone(),
-                    },
-                    None,
-                )
-                .unwrap(),
+        let shape = shape! { replica = 4, host = 4, gpu = 4 };
+        let alloc = LocalAllocator
+            .allocate(AllocSpec {
+                shape: shape.clone(),
+                constraints: Default::default(),
             })
+            .await
             .unwrap();
 
-        tracing::info!("message was cast to dest actors");
+        let proc_mesh = Arc::new(ProcMesh::allocate(alloc).await.unwrap());
+        let dest_actor_name = "dest_actor";
+        let (tx, mut rx) = hyperactor::mailbox::open_port(proc_mesh.client());
+        let params = TestActorParams {
+            forward_port: tx.bind(),
+        };
+        let actor_mesh = proc_mesh
+            .spawn::<TestActor>(dest_actor_name, &params)
+            .await
+            .unwrap();
+
+        let (reply_port_handle0, _) = open_port::<String>(proc_mesh.client());
+        let reply_port_ref0 = reply_port_handle0.bind();
+        let (reply_port_handle1, reply1_rx) = match accum {
+            Some(a) => proc_mesh.client().open_accum_port(a),
+            None => open_port(proc_mesh.client()),
+        };
+        let reply_port_ref1 = reply_port_handle1.bind();
+        let (reply_port_handle2, reply2_rx) = open_port::<MyReply>(proc_mesh.client());
+        let reply_port_ref2 = reply_port_handle2.bind();
+        let message = TestMessage::CastAndReply {
+            arg: "abc".to_string(),
+            reply_to0: reply_port_ref0.clone(),
+            reply_to1: reply_port_ref1.clone(),
+            reply_to2: reply_port_ref2.clone(),
+        };
+
+        let selection = sel!(*);
+        actor_mesh.cast(selection.clone(), message).unwrap();
 
         let mut reply_tos = vec![];
-        // Verify dest actors received the message, and the reply ports were
-        // split as expected.
-        for queue in queues.iter_mut() {
-            let msg = queue.recv().await.expect("missing");
+        for _ in 0..shape.slice().len() {
+            let msg = rx.recv().await.expect("missing");
             match msg {
                 TestMessage::CastAndReply {
                     arg,
@@ -868,16 +780,8 @@ mod tests {
                     assert_eq!(reply_to0, reply_port_ref0);
                     // ports have been replaced by comm actor's split ports.
                     assert_ne!(reply_to1, reply_port_ref1);
-                    assert_eq!(
-                        reply_to1.port_id().actor_id().proc_id().world_id(),
-                        dest_world
-                    );
                     assert_eq!(reply_to1.port_id().actor_id().name(), "comm");
                     assert_ne!(reply_to2, reply_port_ref2);
-                    assert_eq!(
-                        reply_to2.port_id().actor_id().proc_id().world_id(),
-                        dest_world
-                    );
                     assert_eq!(reply_to2.port_id().actor_id().name(), "comm");
                     reply_tos.push((reply_to1, reply_to2));
                 }
@@ -886,13 +790,12 @@ mod tests {
                 }
             }
         }
-        tracing::info!("message was received by all dest actors");
 
         // Verify the split port paths are the same as the casting paths.
         {
             // Get the paths used in casting
             let sel_paths = PathToLeaves(
-                collect_commactor_routing_tree(&uslice.selection, &uslice.slice)
+                collect_commactor_routing_tree(&selection, shape.slice())
                     .delivered
                     .into_iter()
                     .collect(),
@@ -907,8 +810,8 @@ mod tests {
                     .into_iter()
                     .partition(|(_dst, path)| &path[0] == reply_port_ref1.port_id());
                 (
-                    get_ranks(PathToLeaves(reply1), reply_port_ref1.port_id(), dest_world),
-                    get_ranks(PathToLeaves(reply2), reply_port_ref2.port_id(), dest_world),
+                    get_ranks(PathToLeaves(reply1), reply_port_ref1.port_id()),
+                    get_ranks(PathToLeaves(reply2), reply_port_ref2.port_id()),
                 )
             };
 
@@ -918,7 +821,7 @@ mod tests {
         }
 
         MeshSetup {
-            dest_actors_and_caps,
+            actor_mesh,
             reply1_rx,
             reply2_rx,
             reply_tos,
@@ -928,27 +831,27 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_cast_and_reply() {
         set_tracing_env_filter(Level::INFO);
-        let dest_world = id!(dest);
         let MeshSetup {
-            dest_actors_and_caps,
+            actor_mesh,
             mut reply1_rx,
             mut reply2_rx,
             reply_tos,
             ..
-        } = setup_mesh::<NoneAccumulator>(&dest_world, None).await;
+        } = setup_mesh::<NoneAccumulator>(None).await;
+        let proc_mesh_client = actor_mesh.proc_mesh().client();
 
         // Reply from each dest actor. The replies should be received by client.
         {
-            for ((dest_actor, caps), (reply_to1, reply_to2)) in
-                dest_actors_and_caps.iter().zip(reply_tos.iter())
+            for (dest_actor, (reply_to1, reply_to2)) in
+                actor_mesh.ranks.iter().zip(reply_tos.iter())
             {
                 let rank = dest_actor.actor_id().rank() as u64;
-                reply_to1.send(caps, rank).unwrap();
+                reply_to1.send(proc_mesh_client, rank).unwrap();
                 let my_reply = MyReply {
                     sender: dest_actor.actor_id().clone(),
                     value: rank,
                 };
-                reply_to2.send(caps, my_reply.clone()).unwrap();
+                reply_to2.send(proc_mesh_client, my_reply.clone()).unwrap();
 
                 assert_eq!(reply1_rx.recv().await.unwrap(), rank);
                 assert_eq!(reply2_rx.recv().await.unwrap(), my_reply);
@@ -963,8 +866,8 @@ mod tests {
         {
             let n = 100;
             let mut expected2: HashMap<usize, Vec<MyReply>> = hashmap! {};
-            for ((dest_actor, caps), (_reply_to1, reply_to2)) in
-                dest_actors_and_caps.iter().zip(reply_tos.iter())
+            for (dest_actor, (_reply_to1, reply_to2)) in
+                actor_mesh.ranks.iter().zip(reply_tos.iter())
             {
                 let rank = dest_actor.actor_id().rank();
                 let mut sent2 = vec![];
@@ -974,7 +877,7 @@ mod tests {
                         sender: dest_actor.actor_id().clone(),
                         value,
                     };
-                    reply_to2.send(caps, my_reply.clone()).unwrap();
+                    reply_to2.send(proc_mesh_client, my_reply.clone()).unwrap();
                     sent2.push(my_reply);
                 }
                 assert!(
@@ -985,7 +888,7 @@ mod tests {
 
             let mut received2: HashMap<usize, Vec<MyReply>> = hashmap! {};
 
-            for _ in 0..(n * dest_actors_and_caps.len()) {
+            for _ in 0..(n * actor_mesh.ranks.len()) {
                 let my_reply = reply2_rx.recv().await.unwrap();
                 received2
                     .entry(my_reply.sender.rank())
@@ -1017,13 +920,13 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_cast_and_accum() -> Result<()> {
         set_tracing_env_filter(Level::INFO);
-        let dest_world = id!(dest);
         let MeshSetup {
-            dest_actors_and_caps,
+            actor_mesh,
             mut reply1_rx,
             reply_tos,
             ..
-        } = setup_mesh(&dest_world, Some(accum::sum::<u64>())).await;
+        } = setup_mesh(Some(accum::sum::<u64>())).await;
+        let proc_mesh_client = actor_mesh.proc_mesh().client();
 
         // Now send multiple replies from the dest actors. They should all be
         // received by client. Replies sent from the same dest actor should
@@ -1031,13 +934,13 @@ mod tests {
         {
             let mut sum = 0;
             let n = 100;
-            for ((dest_actor, caps), (reply_to1, _reply_to2)) in
-                dest_actors_and_caps.iter().zip(reply_tos.iter())
+            for (dest_actor, (reply_to1, _reply_to2)) in
+                actor_mesh.ranks.iter().zip(reply_tos.iter())
             {
                 let rank = dest_actor.actor_id().rank();
                 for i in 0..n {
                     let value = (rank + i) as u64;
-                    reply_to1.send(caps, value).unwrap();
+                    reply_to1.send(proc_mesh_client, value).unwrap();
                     sum += value;
                 }
             }
