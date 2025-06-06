@@ -13,22 +13,24 @@ use clap::command;
 use hyperactor::channel::ChannelAddr;
 use hyperactor_mesh::alloc::remoteprocess::RemoteProcessAllocator;
 use tokio::process::Command;
+
 #[derive(Parser, Debug)]
 #[command(about = "Runs hyperactor's process allocator")]
 pub struct Args {
     #[arg(
         long,
-        default_value = "[::]",
-        help = "The address bind to. The process allocator runs on `bind_addr:port`"
+        default_value_t = 26600,
+        help = "The port to bind to on [::] (all network interfaces on this host). Same as specifying `--addr=[::]:{port}`"
     )]
-    pub addr: String,
+    pub port: u16,
 
     #[arg(
         long,
-        default_value_t = 26600,
-        help = "Port to bind to. The process allocator runs on `bind_addr:port`"
+        help = "The address to bind to in the form: \
+                `{transport}!{address}:{port}` (e.g. `tcp!127.0.0.1:26600`). \
+                If specified, `--port` argument is ignored"
     )]
-    pub port: u16,
+    pub addr: Option<String>,
 
     #[arg(
         long,
@@ -72,8 +74,8 @@ mod tests {
 
         let parsed_args = Args::parse_from(args);
 
-        assert_eq!(parsed_args.addr, "[::]");
         assert_eq!(parsed_args.port, 26600);
+        assert_eq!(parsed_args.addr, None);
         assert_eq!(parsed_args.program, "monarch_bootstrap");
         Ok(())
     }
@@ -82,15 +84,13 @@ mod tests {
     async fn test_args() -> Result<(), anyhow::Error> {
         let args = vec![
             "process_allocator",
-            "--addr=127.0.0.1",
-            "--port=29500",
+            "--addr=tcp!127.0.0.1:29501",
             "--program=/bin/echo",
         ];
 
         let parsed_args = Args::parse_from(args);
 
-        assert_eq!(parsed_args.addr, "127.0.0.1");
-        assert_eq!(parsed_args.port, 29500);
+        assert_eq!(parsed_args.addr, Some("tcp!127.0.0.1:29501".to_string()));
         assert_eq!(parsed_args.program, "/bin/echo");
         Ok(())
     }
