@@ -51,9 +51,15 @@ use crate::controller::PyRanks;
 use crate::convert::convert;
 
 #[pyclass(frozen, module = "monarch._rust_bindings.monarch_extension.client")]
-struct WorkerResponse {
+pub struct WorkerResponse {
     seq: Seq,
     result: Option<Result<Serialized, Exception>>,
+}
+
+impl WorkerResponse {
+    pub fn new(seq: Seq, result: Option<Result<Serialized, Exception>>) -> Self {
+        Self { seq, result }
+    }
 }
 
 #[pymethods]
@@ -510,7 +516,7 @@ pub struct DebuggerMessage {
 impl DebuggerMessage {
     #[new]
     #[pyo3(signature = (*, debugger_actor_id, action))]
-    fn new(debugger_actor_id: PyActorId, action: DebuggerAction) -> PyResult<Self> {
+    pub fn new(debugger_actor_id: PyActorId, action: DebuggerAction) -> PyResult<Self> {
         Ok(Self {
             debugger_actor_id,
             action,

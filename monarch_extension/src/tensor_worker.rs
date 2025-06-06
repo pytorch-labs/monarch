@@ -48,7 +48,7 @@ use torch_sys::nccl::UniqueId;
     module = "monarch._rust_bindings.monarch_extension.tensor_worker"
 )]
 pub(crate) struct PyWorkerMessage {
-    message: WorkerMessage,
+    pub message: WorkerMessage,
 }
 
 impl PyWorkerMessage {

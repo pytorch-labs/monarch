@@ -12,6 +12,7 @@ mod client;
 mod controller;
 pub mod convert;
 mod debugger;
+mod mesh_controller;
 mod panic;
 mod simulator_client;
 mod tensor_worker;
@@ -148,6 +149,11 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
     crate::panic::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_extension.panic",
+    )?)?;
+
+    crate::mesh_controller::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_extension.mesh_controller",
     )?)?;
 
     Ok(())
