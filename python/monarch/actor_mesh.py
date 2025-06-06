@@ -7,6 +7,7 @@
 import asyncio
 import collections
 import contextvars
+import functools
 import inspect
 
 import itertools
@@ -38,6 +39,7 @@ from typing import (
 
 import monarch
 from monarch import ActorFuture as Future
+from monarch._rust_bindings.hyperactor_extension.telemetry import enter_span, exit_span
 
 from monarch._rust_bindings.monarch_hyperactor.actor import PythonMessage
 from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
@@ -49,6 +51,7 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
 )
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.shape import Point as HyPoint, Shape
+
 from monarch.common.pickle_flatten import flatten, unflatten
 from monarch.common.shape import MeshTrait, NDSlice
 
@@ -489,13 +492,31 @@ class _Actor:
                 return None
             else:
                 the_method = getattr(self.instance, message.method)._method
-                result = the_method(self.instance, *args, **kwargs)
+
                 if not inspect.iscoroutinefunction(the_method):
+                    enter_span(
+                        the_method.__module__, message.method, str(ctx.mailbox.actor_id)
+                    )
+                    result = the_method(self.instance, *args, **kwargs)
+                    exit_span()
                     if port is not None:
                         port.send("result", result)
                     return None
 
-                return self.run_async(ctx, self.run_task(port, result))
+                async def instrumented():
+                    enter_span(
+                        the_method.__module__, message.method, str(ctx.mailbox.actor_id)
+                    )
+                    result = await the_method(self.instance, *args, **kwargs)
+                    exit_span()
+                    return result
+
+                return self.run_async(
+                    self.instance.__module__,
+                    message.method,
+                    ctx,
+                    self.run_task(port, instrumented()),
+                )
         except Exception as e:
             traceback.print_exc()
             s = ActorMeshRefCallFailedException(e)
@@ -507,7 +528,13 @@ class _Actor:
             else:
                 raise s from None
 
-    async def run_async(self, ctx, coroutine):
+    async def run_async(
+        self,
+        module_name: str,
+        method_name: str,
+        ctx: MonarchContext,
+        coroutine: Coroutine[Any, None, Any],
+    ) -> None:
         _context.set(ctx)
         if self.complete_task is None:
             asyncio.create_task(self._complete())
@@ -551,6 +578,12 @@ def _unpickle(data: bytes, mailbox: Mailbox) -> Any:
 
 
 class Actor(MeshTrait):
+    @functools.cached_property
+    def logger(cls) -> logging.Logger:
+        lgr = logging.getLogger(cls.__class__.__name__)
+        lgr.setLevel(logging.DEBUG)
+        return lgr
+
     @property
     def _ndslice(self) -> NDSlice:
         raise NotImplementedError(
