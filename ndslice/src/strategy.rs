@@ -76,6 +76,104 @@ pub fn gen_slice(max_dims: usize, max_len: usize) -> impl Strategy<Value = Slice
     prop::collection::vec(1..=max_len, 1..=max_dims).prop_map(Slice::new_row_major)
 }
 
+/// Generates a pair `(base, subview)` where:
+/// - `base` is a randomly shaped row-major `Slice`,
+/// - `subview` is a valid rectangular region within `base`.
+pub fn gen_slice_and_subview(
+    max_dims: usize,
+    max_len: usize,
+) -> impl Strategy<Value = (Slice, Slice)> {
+    assert!(max_dims <= 8, "Supports up to 4 dimensions explicitly");
+
+    gen_slice(max_dims, max_len).prop_flat_map(|base| {
+        let sizes = base.sizes().to_vec();
+
+        // Strategy per dimension
+        let dim_strat = |extent| {
+            if extent == 0 {
+                Just((0, 0)).boxed()
+            } else {
+                (0..extent)
+                    .prop_flat_map(move |start| {
+                        (1..=extent - start).prop_map(move |len| (start, len))
+                    })
+                    .boxed()
+            }
+        };
+
+        // Explicit match based on dims
+        match sizes.len() {
+            1 => (dim_strat(sizes[0]),).prop_map(|(a,)| vec![a]).boxed(),
+            2 => (dim_strat(sizes[0]), dim_strat(sizes[1]))
+                .prop_map(|(a, b)| vec![a, b])
+                .boxed(),
+            3 => (
+                dim_strat(sizes[0]),
+                dim_strat(sizes[1]),
+                dim_strat(sizes[2]),
+            )
+                .prop_map(|(a, b, c)| vec![a, b, c])
+                .boxed(),
+            4 => (
+                dim_strat(sizes[0]),
+                dim_strat(sizes[1]),
+                dim_strat(sizes[2]),
+                dim_strat(sizes[3]),
+            )
+                .prop_map(|(a, b, c, d)| vec![a, b, c, d])
+                .boxed(),
+            5 => (
+                dim_strat(sizes[0]),
+                dim_strat(sizes[1]),
+                dim_strat(sizes[2]),
+                dim_strat(sizes[3]),
+                dim_strat(sizes[4]),
+            )
+                .prop_map(|(a, b, c, d, e)| vec![a, b, c, d, e])
+                .boxed(),
+            6 => (
+                dim_strat(sizes[0]),
+                dim_strat(sizes[1]),
+                dim_strat(sizes[2]),
+                dim_strat(sizes[3]),
+                dim_strat(sizes[4]),
+                dim_strat(sizes[5]),
+            )
+                .prop_map(|(a, b, c, d, e, f)| vec![a, b, c, d, e, f])
+                .boxed(),
+            7 => (
+                dim_strat(sizes[0]),
+                dim_strat(sizes[1]),
+                dim_strat(sizes[2]),
+                dim_strat(sizes[3]),
+                dim_strat(sizes[4]),
+                dim_strat(sizes[5]),
+                dim_strat(sizes[6]),
+            )
+                .prop_map(|(a, b, c, d, e, f, g)| vec![a, b, c, d, e, f, g])
+                .boxed(),
+            8 => (
+                dim_strat(sizes[0]),
+                dim_strat(sizes[1]),
+                dim_strat(sizes[2]),
+                dim_strat(sizes[3]),
+                dim_strat(sizes[4]),
+                dim_strat(sizes[5]),
+                dim_strat(sizes[6]),
+                dim_strat(sizes[7]),
+            )
+                .prop_map(|(a, b, c, d, e, f, g, h)| vec![a, b, c, d, e, f, g, h])
+                .boxed(),
+            _ => unreachable!("max_dims constrained to 8"),
+        }
+        .prop_map(move |ranges| {
+            let (starts, lens): (Vec<_>, Vec<_>) = ranges.into_iter().unzip();
+            let subview = base.subview(&starts, &lens).expect("valid subview");
+            (base.clone(), subview)
+        })
+    })
+}
+
 /// Recursively generates a random `Selection` expression of bounded
 /// depth, aligned with the given slice `shape`.
 ///
@@ -492,6 +590,33 @@ mod tests {
                     non_self_preds,
                     s,
                 );
+            }
+        }
+    }
+
+    // Theorem (Subview-Coordinate Inclusion):
+    //
+    // For any rectangular subview `V` of a base slice `B`, each
+    // coordinate `v` in `V` maps to a coordinate `b = view_offset +
+    // v` that must be in `B`.
+    //
+    // This test verifies that all coordinates of a generated subview
+    // are valid when translated back into the coordinate system of
+    // the base slice.
+    proptest! {
+        #[test]
+        fn test_gen_slice_and_subview((base, subview) in gen_slice_and_subview(4, 8)) {
+            for idx in subview.iter() {
+                let v = subview.coordinates(idx).unwrap();
+                let view_offset_in_base = base.coordinates(subview.offset()).unwrap();
+
+                // b = view_offset + v
+                let b: Vec<_> = v.iter()
+                    .zip(&view_offset_in_base)
+                    .map(|(sub_c, offset)| sub_c + offset)
+                    .collect();
+
+                assert!(base.location(&b).is_ok());
             }
         }
     }

@@ -991,6 +991,120 @@ impl Selection {
     }
 } // impl Selection
 
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for crate::slice::Slice {}
+}
+
+/// Connects the `select!` API to the `Selection` algebra by enabling
+/// `base.reify_view(view)` syntax, where `base: Slice`.
+///
+/// The base slice defines the coordinate system in which the view is
+/// interpreted. Views are themselves `Slice` values, typically
+/// produced by `select!`, and are reified as `Selection` expressions
+/// over the base.
+pub trait ReifyView: sealed::Sealed {
+    /// Reify a view as a `Selection` in the coordinate system of
+    /// `self`.
+    fn reify_view(&self, view: &Slice) -> Result<Selection, SliceError>;
+
+    /// Reify multiple views as a union of selections in the
+    /// coordinate system of `self`.
+    fn reify_views(&self, views: &[&Slice]) -> Result<Selection, SliceError>;
+}
+
+impl ReifyView for Slice {
+    /// Constructs a [`Selection`] expression that symbolically
+    /// matches all coordinates in the given `view`, expressed in the
+    /// coordinate system of the provided `base` slice (`self`).
+    ///
+    /// The resulting expression uses nested `range(start..end, ...)`
+    /// combinators to represent the rectangular region selected by
+    /// the view within the base slice.
+    ///
+    /// Returns [`dsl::false_()`] for empty views.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The number of dimensions in the view does not match the base
+    /// - The view lies outside the bounds of the base slice
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use ndslice::selection::ReifyView;
+    /// let shape = ndslice::shape!(x = 4, y = 4);
+    /// let base = shape.slice();
+    /// let selected = ndslice::select!(shape, x = 1..3, y = 2..4).unwrap();
+    /// let view = selected.slice();
+    /// let selection = base.reify_view(view).unwrap();
+    /// ```
+    fn reify_view(&self, view: &Slice) -> Result<Selection, SliceError> {
+        if view.num_dim() != self.num_dim() {
+            return Err(SliceError::InvalidDims {
+                expected: self.num_dim(),
+                got: view.num_dim(),
+            });
+        }
+        if view.is_empty() {
+            return Ok(dsl::false_());
+        }
+
+        let origin = self.coordinates(view.offset())?;
+        let mut acc = dsl::true_();
+        for (&start, &len) in origin.iter().zip(view.sizes()).rev() {
+            acc = dsl::range(start..start + len, acc);
+        }
+
+        Ok(acc)
+    }
+
+    /// Converts a list of `views` into a symbolic [`Selection`]
+    /// expression over a common `base` [`Slice`].
+    ///
+    /// Each view describes a rectangular subregion of the base. This
+    /// function reifies each view into a nested `range(.., ..)`
+    /// expression in the base coordinate system and returns the union
+    /// of all such selections.
+    ///
+    /// Empty views are ignored.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any view:
+    /// - Has a different number of dimensions than the base slice
+    /// - Refers to coordinates not contained within the base
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use ndslice::selection::ReifyView;
+    ///
+    /// let shape = ndslice::shape!(x = 4, y = 4);
+    /// let base = shape.slice();
+    ///
+    /// let a = ndslice::select!(shape, x = 0..2, y = 0..2).unwrap();
+    /// let b = ndslice::select!(shape, x = 2..4, y = 2..4).unwrap();
+    ///
+    /// let sel = base.reify_views(&[a.slice(), b.slice()]).unwrap();
+    /// ```
+    fn reify_views(&self, views: &[&Slice]) -> Result<Selection, SliceError> {
+        let mut selections = Vec::with_capacity(views.len());
+
+        for &view in views {
+            if view.is_empty() {
+                continue;
+            }
+            selections.push(self.reify_view(view)?);
+        }
+
+        let mut iter = selections.into_iter();
+        let first = iter.next().unwrap_or_else(dsl::false_);
+        Ok(iter.fold(first, dsl::union))
+    }
+}
+
 /// Trivial all(true) equivalence.
 pub fn is_equivalent_true(sel: impl std::borrow::Borrow<Selection>) -> bool {
     Selection::is_equivalent_to_true(sel.borrow())
@@ -1212,11 +1326,13 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::EvalOpts;
+    use super::ReifyView;
     use super::Selection;
     use super::dsl::*;
     use super::is_equivalent_true;
-    use super::structurally_equal;
     use crate::Slice;
+    use crate::assert_structurally_eq;
+    use crate::select;
     use crate::shape;
     use crate::shape::ShapeError;
 
@@ -1870,7 +1986,7 @@ mod tests {
     }
 
     #[test]
-    fn test_selection_of_ranks_1d() {
+    fn test_of_ranks_1d() {
         let slice = Slice::new_row_major([5]);
         let ranks = BTreeSet::from([1, 3]);
         let selection = Selection::of_ranks(&slice, &ranks).unwrap();
@@ -1884,7 +2000,7 @@ mod tests {
     }
 
     #[test]
-    fn test_selection_of_ranks_empty_set() {
+    fn test_of_ranks_empty_set() {
         let slice = Slice::new_row_major([4]);
         let ranks = BTreeSet::new();
         let selection = Selection::of_ranks(&slice, &ranks).unwrap();
@@ -1898,16 +2014,16 @@ mod tests {
     }
 
     #[test]
-    fn test_selection_of_ranks_singleton_structural() {
+    fn test_of_ranks_singleton_structural() {
         let slice = Slice::new_row_major([5]);
         let ranks = BTreeSet::from([2]);
         let actual = Selection::of_ranks(&slice, &ranks).unwrap();
         let expected = range(2..=2, true_());
-        assert!(structurally_equal(&actual, &expected));
+        assert_structurally_eq!(&actual, &expected);
     }
 
     #[test]
-    fn test_selection_of_ranks_union_2d_structural() {
+    fn test_of_ranks_union_2d_structural() {
         let slice = Slice::new_row_major([2, 3]);
         // [ [0, 1, 2],
         //   [3, 4, 5] ]
@@ -1924,11 +2040,11 @@ mod tests {
             union(range(0, range(2, true_())), range(1, range(0, true_()))),
             range(1, range(1, true_())),
         );
-        assert!(structurally_equal(&actual, &expected));
+        assert_structurally_eq!(&actual, &expected);
     }
 
     #[test]
-    fn test_selection_of_ranks_3d_structural() {
+    fn test_of_ranks_3d_structural() {
         let slice = Slice::new_row_major([2, 2, 2]);
         // [ [ [0, 1],
         //     [2, 3] ],
@@ -1940,16 +2056,189 @@ mod tests {
             range(0, range(0, range(1, true_()))), // (0, 0, 1)
             range(1, range(1, range(0, true_()))), // (1, 1, 0)
         );
-        assert!(structurally_equal(&actual, &expected));
+        assert_structurally_eq!(&actual, &expected);
     }
 
     #[test]
-    fn test_selection_of_ranks_invalid_index() {
+    fn test_of_ranks_invalid_index() {
         let slice = Slice::new_row_major([4]);
         let ranks = BTreeSet::from([0, 4]); // 4 is out of bounds
         assert!(
             Selection::of_ranks(&slice, &ranks).is_err(),
             "expected out-of-bounds error"
+        );
+    }
+
+    #[test]
+    fn test_reify_view_empty() {
+        let slice = Slice::new_row_major([0]);
+        let selection = slice.reify_view(&slice).unwrap();
+        let expected = false_();
+        assert_structurally_eq!(&selection, expected);
+        assert_eq!(
+            selection
+                .eval(&EvalOpts::lenient(), &slice)
+                .unwrap()
+                .collect::<Vec<_>>(),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn test_reify_view_1d() {
+        let shape = shape!(x = 6); // 1D shape with 6 elements
+        let base = shape.slice();
+
+        let selected = select!(shape, x = 2..5).unwrap();
+        let view = selected.slice();
+
+        let selection = base.reify_view(view).unwrap();
+        let expected = range(2..5, true_());
+        assert_structurally_eq!(&selection, expected);
+
+        let flat: Vec<_> = selection.eval(&EvalOpts::strict(), base).unwrap().collect();
+        assert_eq!(flat, vec![2, 3, 4]);
+    }
+
+    #[test]
+    fn test_reify_view_2d() {
+        let shape = shape!(x = 4, y = 5); // 2D shape: 4 rows, 5 columns
+        let base = shape.slice();
+
+        // Select the middle 2x3 block: rows 1..3 and columns 2..5
+        let selected = select!(shape, x = 1..3, y = 2..5).unwrap();
+        let view = selected.slice();
+        let selection = base.reify_view(view).unwrap();
+        let expected = range(1..3, range(2..5, true_()));
+        assert_structurally_eq!(&selection, expected);
+
+        let flat: Vec<_> = selection.eval(&EvalOpts::strict(), base).unwrap().collect();
+        assert_eq!(
+            flat,
+            vec![
+                base.location(&[1, 2]).unwrap(),
+                base.location(&[1, 3]).unwrap(),
+                base.location(&[1, 4]).unwrap(),
+                base.location(&[2, 2]).unwrap(),
+                base.location(&[2, 3]).unwrap(),
+                base.location(&[2, 4]).unwrap(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_reify_view_selects_column_across_rows() {
+        let shape = shape!(host = 2, gpu = 4); // shape [2, 4]
+        let base = shape.slice();
+
+        // Select the 3rd GPU (index 2) across both hosts
+        let selected = select!(shape, gpu = 2).unwrap(); // (0, 2) and (1, 2)
+        let view = selected.slice();
+        let coordinates: Vec<_> = view.iter().map(|i| view.coordinates(i).unwrap()).collect();
+        assert_eq!(coordinates, [[0, 0], [1, 0]]);
+
+        let selection = base.reify_view(view).unwrap();
+        let expected = range(0..2, range(2..3, true_()));
+        assert_structurally_eq!(&selection, expected);
+
+        let actual = selection
+            .eval(&EvalOpts::strict(), base)
+            .unwrap()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            actual,
+            vec![
+                base.location(&[0, 2]).unwrap(),
+                base.location(&[1, 2]).unwrap()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_union_of_slices_empty() {
+        let base = Slice::new_row_major([2]);
+        let sel = base.reify_views(&[]).unwrap();
+        assert_structurally_eq!(&sel, &false_());
+        assert_eq!(
+            sel.eval(&EvalOpts::strict(), &base)
+                .unwrap()
+                .collect::<Vec<_>>(),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn test_union_of_slices_singleton() {
+        let shape = shape!(x = 3);
+        let base = shape.slice();
+        let selected = select!(shape, x = 1).unwrap();
+        let view = selected.slice();
+
+        let selection = base.reify_views(&[view]).unwrap();
+        let expected = range(1..=1, true_());
+        assert_structurally_eq!(&selection, &expected);
+
+        assert_eq!(
+            selection
+                .eval(&EvalOpts::strict(), base)
+                .unwrap()
+                .collect::<Vec<_>>(),
+            vec![1],
+        );
+    }
+
+    #[test]
+    fn test_union_of_slices_disjoint() {
+        let shape = shape!(x = 2, y = 2); // 2x2 grid
+        let base = shape.slice();
+
+        // View A: (0, *)
+        let a = select!(shape, x = 0).unwrap();
+        let view_a = a.slice();
+
+        // View B: (1, *)
+        let b = select!(shape, x = 1).unwrap();
+        let view_b = b.slice();
+
+        let selection = base.reify_views(&[view_a, view_b]).unwrap();
+        let expected = union(
+            range(0..1, range(0..2, true_())),
+            range(1..2, range(0..2, true_())),
+        );
+        assert_structurally_eq!(&selection, &expected);
+        assert_eq!(
+            selection
+                .eval(&EvalOpts::strict(), base)
+                .unwrap()
+                .collect::<Vec<_>>(),
+            base.iter().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_union_of_slices_overlapping() {
+        let shape = shape!(x = 1, y = 4); // 1x4 grid
+        let base = shape.slice();
+
+        let selected1 = select!(shape, y = 0..2).unwrap();
+        let view1 = selected1.slice();
+
+        let selected2 = select!(shape, y = 1..4).unwrap();
+        let view2 = selected2.slice();
+
+        let selection = base.reify_views(&[view1, view2]).unwrap();
+        let expected = union(
+            range(0..1, range(0..2, true_())),
+            range(0..1, range(1..4, true_())),
+        );
+        assert_structurally_eq!(&selection, &expected);
+
+        assert_eq!(
+            selection
+                .eval(&EvalOpts::strict(), base)
+                .unwrap()
+                .collect::<Vec<_>>(),
+            base.iter().collect::<Vec<_>>()
         );
     }
 }

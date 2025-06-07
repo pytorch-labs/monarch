@@ -410,6 +410,32 @@ impl Slice {
             strides: new_strides,
         })
     }
+
+    /// Returns a sub-slice of `self` starting at `starts`, of size `lens`.
+    pub fn subview(&self, starts: &[usize], lens: &[usize]) -> Result<Slice, SliceError> {
+        if starts.len() != self.num_dim() || lens.len() != self.num_dim() {
+            return Err(SliceError::InvalidDims {
+                expected: self.num_dim(),
+                got: starts.len().max(lens.len()),
+            });
+        }
+
+        for (d, (&start, &len)) in starts.iter().zip(lens).enumerate() {
+            if start + len > self.sizes[d] {
+                return Err(SliceError::IndexOutOfRange {
+                    index: start + len,
+                    total: self.sizes[d],
+                });
+            }
+        }
+
+        let offset = self.location(starts)?;
+        Ok(Slice {
+            offset,
+            sizes: lens.to_vec(),
+            strides: self.strides.clone(),
+        })
+    }
 }
 
 impl std::fmt::Display for Slice {
