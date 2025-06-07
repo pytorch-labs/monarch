@@ -26,6 +26,10 @@ pub use slice::Slice;
 pub use slice::SliceError;
 pub use slice::SliceIterator;
 
+/// Layout traits and types for mapping multidimensional coordinates
+/// to linear memory.
+pub mod layout;
+
 /// Selection algebra for describing multidimensional mesh regions.
 pub mod selection;
 

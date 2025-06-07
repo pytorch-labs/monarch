@@ -52,6 +52,9 @@ pub enum ShapeError {
 
     #[error(transparent)]
     SliceError(#[from] SliceError),
+
+    #[error("rank mismatch: expected {expected}, got {actual}")]
+    RankMismatch { expected: usize, actual: usize },
 }
 
 /// A shape is a [`Slice`] with labeled dimensions and a selection API.
