@@ -83,7 +83,7 @@ class MonarchContext:
 
 
 _context: contextvars.ContextVar[MonarchContext] = contextvars.ContextVar(
-    "monarch.service._context"
+    "monarch.actor_mesh._context"
 )
 
 
@@ -676,7 +676,7 @@ class ActorError(Exception):
     def __init__(
         self,
         exception: Exception,
-        message: str = "A remote service call has failed asynchronously.",
+        message: str = "A remote actor call has failed asynchronously.",
     ) -> None:
         self.exception = exception
         self.actor_mesh_ref_frames: StackSummary = extract_tb(exception.__traceback__)
@@ -687,7 +687,7 @@ class ActorError(Exception):
         actor_mesh_ref_tb = "".join(traceback.format_list(self.actor_mesh_ref_frames))
         return (
             f"{self.message}\n"
-            f"Traceback of where the service call failed (most recent call last):\n{actor_mesh_ref_tb}{type(self.exception).__name__}: {exe}"
+            f"Traceback of where the remote call failed (most recent call last):\n{actor_mesh_ref_tb}{type(self.exception).__name__}: {exe}"
         )
 
 
