@@ -166,7 +166,7 @@ impl PickledMessageClientActor {
 }
 
 #[pyclass(frozen, module = "monarch._rust_bindings.monarch_hyperactor.actor")]
-#[derive(Clone, Serialize, Deserialize, Named)]
+#[derive(Clone, Serialize, Deserialize, Named, PartialEq)]
 pub struct PythonMessage {
     method: String,
     message: ByteBuf,
@@ -188,12 +188,19 @@ impl std::fmt::Debug for PythonMessage {
 
 impl Unbind for PythonMessage {
     fn bindings(&self) -> anyhow::Result<Bindings> {
-        Ok(Bindings::default())
+        let mut bindings = Bindings::default();
+        if let Some(response_port) = &self.response_port {
+            bindings.push(response_port)?;
+        }
+        Ok(bindings)
     }
 }
 
 impl Bind for PythonMessage {
-    fn bind(self, _bindings: &Bindings) -> anyhow::Result<Self> {
+    fn bind(mut self, bindings: &Bindings) -> anyhow::Result<Self> {
+        if let Some(response_port) = &mut self.response_port {
+            bindings.rebind::<PortId>([response_port].into_iter())?;
+        }
         Ok(self)
     }
 }
@@ -500,4 +507,34 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
     hyperactor_mod.add_class::<PythonMessage>()?;
     hyperactor_mod.add_class::<PanicFlag>()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use hyperactor::id;
+
+    use super::*;
+
+    #[test]
+    fn test_python_message_bind_unbind() {
+        let message = PythonMessage {
+            method: "test".to_string(),
+            message: ByteBuf::from(vec![1, 2, 3]),
+            response_port: Some(id!(world[0].client[0][123])),
+            rank_in_response: false,
+        };
+        {
+            let unbound = message.clone().unbind().unwrap();
+            assert_eq!(message, unbound.bind().unwrap());
+        }
+
+        let no_port_message = PythonMessage {
+            response_port: None,
+            ..message
+        };
+        {
+            let unbound = no_port_message.clone().unbind().unwrap();
+            assert_eq!(no_port_message, unbound.bind().unwrap());
+        }
+    }
 }
