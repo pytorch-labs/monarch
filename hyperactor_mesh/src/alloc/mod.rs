@@ -239,7 +239,7 @@ pub mod test_utils {
         pub alloc: MockAlloc,
         pub block_next_after: usize,
         notify_tx: Sender<()>,
-        _notify_rx: Receiver<()>,
+        notify_rx: Receiver<()>,
         next_unblocked: bool,
     }
 
@@ -254,7 +254,7 @@ pub mod test_utils {
                 alloc,
                 block_next_after: count,
                 notify_tx: tx,
-                _notify_rx: rx,
+                notify_rx: rx,
                 next_unblocked: false,
             }
         }
@@ -270,8 +270,7 @@ pub mod test_utils {
             match self.block_next_after {
                 0 => {
                     if !self.next_unblocked {
-                        // resubscribe everytime as recv() gets cancelled
-                        self.notify_tx.subscribe().recv().await.unwrap();
+                        self.notify_rx.recv().await.unwrap();
                         self.next_unblocked = true;
                     }
                 }
