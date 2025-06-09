@@ -70,6 +70,7 @@ async fn run() -> Result<(), anyhow::Error> {
         Command::Demo(command) => Ok(command.run().await?),
         Command::Show(command) => Ok(command.run().await?),
         Command::Procs(command) => Ok(command.run().await?),
+        #[cfg(fbcode_build)]
         Command::Top(command) => Ok(command.run().await?),
     }
 }
