@@ -1,5 +1,9 @@
-[tool.pytest.ini_options]
+[build-system]
+requires = ["setuptools", "setuptools-rust"]
+build-backend = "setuptools.build_meta"
 
+
+[tool.pytest.ini_options]
 markers = [
     "oss_skip: marks tests to skip in OSS CI",
 ]

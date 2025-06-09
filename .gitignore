@@ -13,6 +13,7 @@ monarch.egg-info/*
 python/monarch/monarch_controller
 
 .ipynb_checkpoints
+.venv
 
 # Rust stuff
 target/
