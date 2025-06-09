@@ -1018,14 +1018,14 @@ impl Mailbox {
     /// forwarder for external destinations.
     pub fn new(actor_id: ActorId, forwarder: BoxedMailboxSender) -> Self {
         Self {
-            state: Arc::new(State::new(actor_id, forwarder)),
+            state: State::new(actor_id, forwarder),
         }
     }
 
     /// Create a new detached mailbox associated with the provided actor ID.
     pub fn new_detached(actor_id: ActorId) -> Self {
         Self {
-            state: Arc::new(State::new(actor_id, BOXED_PANICKING_MAILBOX_SENDER.clone())),
+            state: State::new(actor_id, BOXED_PANICKING_MAILBOX_SENDER.clone()),
         }
     }
 
@@ -1039,101 +1039,34 @@ impl Mailbox {
     /// returned receiver should only be retained by the actor responsible
     /// for processing the delivered messages.
     pub fn open_port<M: Message>(&self) -> (PortHandle<M>, PortReceiver<M>) {
-        let port_index = self.state.allocate_port();
-        let (sender, receiver) = mpsc::unbounded_channel::<M>();
-        let port_id = PortId(self.state.actor_id.clone(), port_index);
-        tracing::trace!(
-            name = "open_port",
-            "opening port for {} at {}",
-            self.state.actor_id,
-            port_id
-        );
-        (
-            PortHandle::new(self.clone(), port_index, UnboundedPortSender::Mpsc(sender)),
-            PortReceiver::new(
-                receiver,
-                port_id,
-                /*coalesce=*/ false,
-                self.state.clone(),
-            ),
-        )
+        self.state.open_port()
     }
 
-    /// Open a new port with an accumulator. This port accepts A::Update type
-    /// messages, accumulate them into A::State with the given accumulator.
-    /// The latest changed state can be received from the returned receiver as
-    /// a single A::State message. If there is no new update, the receiver will
-    /// not receive any message.
+    /// Open a new port with an accumulator.
     pub fn open_accum_port<A>(&self, accum: A) -> (PortHandle<A::Update>, PortReceiver<A::State>)
     where
         A: Accumulator + Send + Sync + 'static,
         A::Update: Message,
         A::State: Message + Default + Clone,
     {
-        let port_index = self.state.allocate_port();
-        let (sender, receiver) = mpsc::unbounded_channel::<A::State>();
-        let port_id = PortId(self.state.actor_id.clone(), port_index);
-        let state = Mutex::new(A::State::default());
-        let reducer_typehash = accum.reducer_typehash();
-        let enqueue = move |update: A::Update| {
-            let mut state = state.lock().unwrap();
-            accum.accumulate(&mut state, update);
-            let _ = sender.send(state.clone());
-            Ok(())
-        };
-        (
-            PortHandle {
-                mailbox: self.clone(),
-                port_index,
-                sender: UnboundedPortSender::Func(Arc::new(enqueue)),
-                bound: Arc::new(OnceLock::new()),
-                reducer_typehash: Some(reducer_typehash),
-            },
-            PortReceiver::new(
-                receiver,
-                port_id,
-                /*coalesce=*/ true,
-                self.state.clone(),
-            ),
-        )
+        self.state.open_accum_port(accum)
     }
 
-    /// Open a port that accepts M-typed messages, using the provided function
-    /// to enqueue.
+    /// Open a port that accepts M-typed messages, using the provided
+    /// function to enqueue.
     // TODO: consider making lifetime bound to Self instead.
     pub(crate) fn open_enqueue_port<M: Message>(
         &self,
         enqueue: impl Fn(M) -> Result<(), anyhow::Error> + Send + Sync + 'static,
     ) -> PortHandle<M> {
-        PortHandle {
-            mailbox: self.clone(),
-            port_index: self.state.allocate_port(),
-            sender: UnboundedPortSender::Func(Arc::new(enqueue)),
-            bound: Arc::new(OnceLock::new()),
-            reducer_typehash: None,
-        }
+        self.state.open_enqueue_port(enqueue)
     }
 
     /// Open a new one-shot port that accepts M-typed messages. The
     /// returned port may be used to send a single message; ditto the
     /// receiver may receive a single message.
     pub fn open_once_port<M: Message>(&self) -> (OncePortHandle<M>, OncePortReceiver<M>) {
-        let port_index = self.state.allocate_port();
-        let port_id = PortId(self.state.actor_id.clone(), port_index);
-        let (sender, receiver) = oneshot::channel::<M>();
-        (
-            OncePortHandle {
-                mailbox: self.clone(),
-                port_index,
-                port_id: port_id.clone(),
-                sender,
-            },
-            OncePortReceiver {
-                receiver: Some(receiver),
-                port_id,
-                state: self.state.clone(),
-            },
-        )
+        self.state.open_once_port()
     }
 
     fn error(&self, err: MailboxErrorKind) -> MailboxError {
@@ -1858,6 +1791,33 @@ impl SerializedSender for UntypedUnboundedSender {
     }
 }
 
+/// Events emitted by a mailbox for external supervision, such as
+/// failed deliveries.
+#[derive(Debug)]
+pub enum MailboxSupervisionEvent {
+    /// A message that could not be delivered to its destination.
+    UndeliverableMessage(Undeliverable<MessageEnvelope>),
+}
+
+/// Background task that handles mailbox supervision events, such as
+/// rerouting undeliverable messages.
+async fn run_mailbox_supervisor(mut receiver: PortReceiver<MailboxSupervisionEvent>) {
+    // TODO: This is a placeholder for supervision logic.
+
+    // Note, this is required by the `post` API but goes unused here.
+    let (h, _) = new_undeliverable_port();
+    while let Ok(event) = receiver.recv().await {
+        match event {
+            MailboxSupervisionEvent::UndeliverableMessage(Undeliverable(mut envelope)) => {
+                envelope.try_set_error(DeliveryError::BrokenLink(
+                    "message returned to undeliverable port".to_string(),
+                ));
+                UndeliverableMailboxSender.post(envelope, /*unused */ h.clone());
+            }
+        }
+    }
+}
+
 /// State is the internal state of the mailbox.
 struct State {
     /// The ID of the mailbox owner.
@@ -1873,24 +1833,143 @@ struct State {
 
     /// The forwarder for this mailbox.
     forwarder: BoxedMailboxSender,
+
+    /// Set once after mailbox construction to enable supervision.
+    supervision_port: OnceLock<PortHandle<MailboxSupervisionEvent>>,
 }
 
 impl State {
     /// Create a new state with the provided owning ActorId.
-    fn new(actor_id: ActorId, forwarder: BoxedMailboxSender) -> Self {
-        Self {
+    fn new(actor_id: ActorId, forwarder: BoxedMailboxSender) -> Arc<Self> {
+        let state = Arc::new(Self {
             actor_id,
             ports: DashMap::new(),
             // The first 1024 ports are allocated to actor handlers.
             // Other port IDs are ephemeral.
             next_port: AtomicU64::new(USER_PORT_OFFSET),
             forwarder,
-        }
+            supervision_port: OnceLock::new(),
+        });
+        let (handle, receiver) = state.open_port::<MailboxSupervisionEvent>();
+        state.supervision_port.set(handle).unwrap();
+        crate::init::RUNTIME.spawn(run_mailbox_supervisor(receiver));
+
+        state
     }
 
     /// Allocate a fresh port.
     fn allocate_port(&self) -> u64 {
         self.next_port.fetch_add(1, Ordering::SeqCst)
+    }
+
+    /// Open a new port that accepts M-typed messages. The returned
+    /// port may be freely cloned, serialized, and passed around. The
+    /// returned receiver should only be retained by the actor
+    /// responsible for processing the delivered messages.
+    pub fn open_port<M: Message>(self: &Arc<Self>) -> (PortHandle<M>, PortReceiver<M>) {
+        let port_index = self.allocate_port();
+        let (sender, receiver) = mpsc::unbounded_channel::<M>();
+        let port_id = PortId(self.actor_id.clone(), port_index);
+        tracing::trace!(
+            name = "open_port",
+            "opening port for {} at {}",
+            self.actor_id,
+            port_id
+        );
+        (
+            PortHandle::new(
+                Mailbox {
+                    state: self.clone(),
+                },
+                port_index,
+                UnboundedPortSender::Mpsc(sender),
+            ),
+            PortReceiver::new(receiver, port_id, /*coalesce=*/ false, self.clone()),
+        )
+    }
+
+    /// Open a new port with an accumulator. This port accepts
+    /// `A::Update` type messages, accumulate them into `A::State`
+    /// with the given accumulator. The latest changed state can be
+    /// received from the returned receiver as a single `A::State`
+    /// message. If there is no new update, the receiver will not
+    /// receive any message.
+    pub fn open_accum_port<A>(
+        self: &Arc<Self>,
+        accum: A,
+    ) -> (PortHandle<A::Update>, PortReceiver<A::State>)
+    where
+        A: Accumulator + Send + Sync + 'static,
+        A::Update: Message,
+        A::State: Message + Default + Clone,
+    {
+        let port_index = self.allocate_port();
+        let (sender, receiver) = mpsc::unbounded_channel::<A::State>();
+        let port_id = PortId(self.actor_id.clone(), port_index);
+        let state = Mutex::new(A::State::default());
+        let reducer_typehash = accum.reducer_typehash();
+        let enqueue = move |update: A::Update| {
+            let mut state = state.lock().unwrap();
+            accum.accumulate(&mut state, update);
+            let _ = sender.send(state.clone());
+            Ok(())
+        };
+        (
+            PortHandle {
+                mailbox: Mailbox {
+                    state: self.clone(),
+                },
+                port_index,
+                sender: UnboundedPortSender::Func(Arc::new(enqueue)),
+                bound: Arc::new(OnceLock::new()),
+                reducer_typehash: Some(reducer_typehash),
+            },
+            PortReceiver::new(receiver, port_id, /*coalesce=*/ true, self.clone()),
+        )
+    }
+
+    /// Open a port that accepts M-typed messages, using the provided function
+    /// to enqueue.
+    // TODO: consider making lifetime bound to Self instead.
+    pub(crate) fn open_enqueue_port<M: Message>(
+        self: &Arc<Self>,
+        enqueue: impl Fn(M) -> Result<(), anyhow::Error> + Send + Sync + 'static,
+    ) -> PortHandle<M> {
+        PortHandle {
+            mailbox: Mailbox {
+                state: self.clone(),
+            },
+            port_index: self.allocate_port(),
+            sender: UnboundedPortSender::Func(Arc::new(enqueue)),
+            bound: Arc::new(OnceLock::new()),
+            reducer_typehash: None,
+        }
+    }
+
+    /// Open a new one-shot port that accepts M-typed messages. The
+    /// returned port may be used to send a single message; ditto the
+    /// receiver may receive a single message.
+    pub fn open_once_port<M: Message>(
+        self: &Arc<Self>,
+    ) -> (OncePortHandle<M>, OncePortReceiver<M>) {
+        let port_index = self.allocate_port();
+        let port_id = PortId(self.actor_id.clone(), port_index);
+        let (sender, receiver) = oneshot::channel::<M>();
+        (
+            OncePortHandle {
+                mailbox: Mailbox {
+                    state: self.clone(),
+                },
+                port_index,
+                port_id: port_id.clone(),
+                sender,
+            },
+            OncePortReceiver {
+                receiver: Some(receiver),
+                port_id,
+                state: self.clone(),
+            },
+        )
     }
 }
 
@@ -2744,7 +2823,7 @@ mod tests {
                 receiver,
                 port_id: dummy_port_id,
                 coalesce,
-                state: Arc::new(dummy_state),
+                state: dummy_state,
             };
             (sender, receiver)
         }
