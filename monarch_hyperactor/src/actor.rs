@@ -37,6 +37,7 @@ use serde::Serialize;
 use serde_bytes::ByteBuf;
 use tokio::sync::Mutex;
 use tokio::sync::oneshot;
+use tracing::span::Id;
 
 use crate::mailbox::PyMailbox;
 use crate::proc::InstanceWrapper;
