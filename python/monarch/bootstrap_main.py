@@ -58,7 +58,7 @@ def invoke_main():
 
     # forward logs to rust tracing. Defaults to on.
     if os.environ.get("MONARCH_PYTHON_LOG_TRACING", "1") == "1":
-        logging.root.addHandler(TracingForwarder())
+        logging.root.addHandler(TracingForwarder(level=logging.DEBUG))
 
     try:
         with (
