@@ -30,28 +30,9 @@ def invoke_main():
     # behavior of std out as if it were a terminal.
     sys.stdout.reconfigure(line_buffering=True)
     global bootstrap_main
-    from monarch._rust_bindings.hyperactor_extension.telemetry import (  # @manual=//monarch/monarch_extension:monarch_extension  # @manual=//monarch/monarch_extension:monarch_extension
-        forward_to_tracing,
-    )
 
     # TODO: figure out what from worker_main.py we should reproduce here.
-
-    class TracingForwarder(logging.Handler):
-        def emit(self, record: logging.LogRecord) -> None:
-            try:
-                forward_to_tracing(
-                    record.getMessage(),
-                    record.filename or "",
-                    record.lineno or 0,
-                    record.levelno,
-                )
-            except AttributeError:
-                forward_to_tracing(
-                    record.__str__(),
-                    record.filename or "",
-                    record.lineno or 0,
-                    record.levelno,
-                )
+    from monarch.telemetry import TracingForwarder
 
     if os.environ.get("MONARCH_ERROR_DURING_BOOTSTRAP_FOR_TESTING") == "1":
         raise RuntimeError("Error during bootstrap for testing")
