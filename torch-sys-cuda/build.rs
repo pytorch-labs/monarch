@@ -149,7 +149,7 @@ fn main() {
     // Prefix includes with `monarch` to maintain consistency with fbcode
     // folder structure
     CFG.include_prefix = "monarch/torch-sys-cuda";
-    let mut builder = cxx_build::bridge("src/bridge.rs")
+    let _builder = cxx_build::bridge("src/bridge.rs")
         .file("src/bridge.cpp")
         .std("c++20")
         .includes(&libtorch_include_dirs)

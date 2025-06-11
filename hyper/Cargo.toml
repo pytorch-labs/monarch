@@ -21,3 +21,6 @@ serde_json = { version = "1.0.132", features = ["float_roundtrip", "unbounded_de
 tabwriter = { version = "1.2.1", features = ["ansi_formatting"] }
 tokio = { version = "1.41.0", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
+
+[lints]
+rust = { unexpected_cfgs = { check-cfg = ["cfg(fbcode_build)"], level = "warn" } }
