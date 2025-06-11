@@ -6,11 +6,13 @@
 
 # pyre-strict
 
+import abc
+
 from typing import final, List, Protocol
 
 from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox, PortId
-
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId, Proc, Serialized
+from monarch._rust_bindings.monarch_hyperactor.shape import Shape
 
 @final
 class PickledMessage:
@@ -149,17 +151,6 @@ class PythonActorHandle:
         """
         ...
 
-class Actor(Protocol):
-    async def handle(self, mailbox: Mailbox, message: PythonMessage) -> None: ...
-    async def handle_cast(
-        self,
-        mailbox: Mailbox,
-        rank: int,
-        coordinates: list[tuple[str, int]],
-        message: PythonMessage,
-    ) -> None:
-        await self.handle(mailbox, message)
-
 @final
 class PanicFlag:
     """
@@ -172,3 +163,16 @@ class PanicFlag:
         Signal that a panic has occurred in an asynchronous Python task.
         """
         ...
+
+class Actor(Protocol):
+    async def handle(
+        self, mailbox: Mailbox, message: PythonMessage, panic_flag: PanicFlag
+    ) -> None: ...
+    async def handle_cast(
+        self,
+        mailbox: Mailbox,
+        rank: int,
+        shape: Shape,
+        message: PythonMessage,
+        panic_flag: PanicFlag,
+    ) -> None: ...

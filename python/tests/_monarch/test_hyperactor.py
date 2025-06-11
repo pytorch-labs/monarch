@@ -8,39 +8,38 @@
 
 import multiprocessing
 import os
-import pickle
 import signal
-import sys
 import time
 
 import monarch
-import pytest
 
 from monarch._rust_bindings.hyperactor_extension.alloc import (  # @manual=//monarch/monarch_extension:monarch_extension
     AllocConstraints,
     AllocSpec,
 )
 
-from monarch._rust_bindings.monarch_hyperactor.actor import PythonMessage
-
+from monarch._rust_bindings.monarch_hyperactor.actor import PanicFlag, PythonMessage
 from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
+from monarch._rust_bindings.monarch_hyperactor.shape import Shape
 
 
 class MyActor:
-    async def handle(self, mailbox: Mailbox, message: PythonMessage) -> None:
-        return None
+    async def handle(
+        self, mailbox: Mailbox, message: PythonMessage, panic_flag: PanicFlag
+    ) -> None:
+        raise NotImplementedError()
 
     async def handle_cast(
         self,
         mailbox: Mailbox,
         rank: int,
-        coordinates: list[tuple[str, int]],
+        shape: Shape,
         message: PythonMessage,
+        panic_flag: PanicFlag,
     ) -> None:
-        reply_port = pickle.loads(message.message)
-        mailbox.post(reply_port, PythonMessage("echo", pickle.dumps(coordinates)))
+        raise NotImplementedError()
 
 
 def test_import() -> None:

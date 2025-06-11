@@ -5,7 +5,6 @@
 # LICENSE file in the root directory of this source tree.
 
 # pyre-strict
-import abc
 
 from monarch._rust_bindings.monarch_hyperactor.actor import PythonMessage
 
@@ -28,21 +27,6 @@ from monarch._rust_bindings.monarch_hyperactor.proc import (  # @manual=//monarc
 from monarch._rust_bindings.monarch_hyperactor.shape import (  # @manual=//monarch/monarch_extension:monarch_extension
     Shape,
 )
-
-
-class Actor(abc.ABC):
-    @abc.abstractmethod
-    async def handle(self, mailbox: Mailbox, message: PythonMessage) -> None: ...
-
-    async def handle_cast(
-        self,
-        mailbox: Mailbox,
-        rank: int,
-        coordinates: list[tuple[str, int]],
-        message: PythonMessage,
-    ) -> None:
-        await self.handle(mailbox, message)
-
 
 __all__ = [
     "init_proc",

@@ -4,9 +4,11 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-strict
+
 import sys
 
-from typing import Any, cast, Optional, Type, TypeVar
+from typing import Any, cast, List, Optional, Type, TypeVar
 
 import monarch
 from monarch import ActorFuture as Future
@@ -18,7 +20,7 @@ from monarch._rust_bindings.hyperactor_extension.alloc import (  # @manual=//mon
 )
 from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyProcMesh
-from monarch._rust_bindings.monarch_hyperactor.shape import Shape
+from monarch._rust_bindings.monarch_hyperactor.shape import Shape, Slice
 from monarch.actor_mesh import _Actor, _ActorMeshRefImpl, Actor, ActorMeshRef
 
 from monarch.common._device_utils import _local_device_count
@@ -46,14 +48,16 @@ class ProcMesh(MeshTrait):
     def __init__(self, hy_proc_mesh: HyProcMesh) -> None:
         self._proc_mesh = hy_proc_mesh
         self._mailbox: Mailbox = self._proc_mesh.client
-        self._rdma_manager = self._spawn_blocking("rdma_manager", RDMAManager)
+        self._rdma_manager: RDMAManager = self._spawn_blocking(
+            "rdma_manager", RDMAManager
+        )
 
     @property
-    def _ndslice(self):
+    def _ndslice(self) -> Slice:
         return self._proc_mesh.shape.ndslice
 
     @property
-    def _labels(self):
+    def _labels(self) -> List[str]:
         return self._proc_mesh.shape.labels
 
     def _new_with_shape(self, shape: Shape) -> "ProcMesh":
