@@ -4,3 +4,5 @@ markers = [
     "oss_skip: marks tests to skip in OSS CI",
 ]
 asyncio_mode = "auto"
+# Default timeout of 5 minutes
+timeout = 300

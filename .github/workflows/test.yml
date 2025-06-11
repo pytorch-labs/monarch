@@ -64,5 +64,5 @@ jobs:
         pip install --no-build-isolation .
 
         # Run tests
-        LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip"
+        LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip" -n auto
         python python/tests/test_mock_cuda.py

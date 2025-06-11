@@ -1,3 +1,4 @@
 pytest
 pytest-timeout
 pytest-asyncio
+pytest-xdist
