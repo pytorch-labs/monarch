@@ -4,6 +4,8 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-unsafe
+
 import asyncio
 import collections
 import contextvars
@@ -20,6 +22,7 @@ from traceback import extract_tb, StackSummary
 from typing import (
     Any,
     AsyncGenerator,
+    Awaitable,
     Callable,
     cast,
     Concatenate,
@@ -55,7 +58,7 @@ from monarch._rust_bindings.monarch_hyperactor.shape import Point as HyPoint, Sh
 from monarch.common.pickle_flatten import flatten, unflatten
 from monarch.common.shape import MeshTrait, NDSlice
 
-logger = logging.getLogger(__name__)
+logger: logging.Logger = logging.getLogger(__name__)
 
 Allocator = monarch.ProcessAllocator | monarch.LocalAllocator
 
@@ -92,7 +95,7 @@ _context: contextvars.ContextVar[MonarchContext] = contextvars.ContextVar(
 
 # this was implemented in python 3.12 as an argument to task
 # but I have to backport to 3.10/3.11.
-def create_eager_task(coro: Coroutine[Any, None, Any]) -> asyncio.Future:
+def create_eager_task(coro: Awaitable[None]) -> asyncio.Future:
     iter = coro.__await__()
     try:
         first_yield = next(iter)
@@ -235,7 +238,7 @@ class Endpoint(Generic[P, R]):
         self,
         actor_mesh_ref: _ActorMeshRefImpl,
         name: str,
-        impl: Callable[Concatenate[Any, P], Coroutine[Any, Any, R]],
+        impl: Callable[Concatenate[Any, P], Awaitable[R]],
         mailbox: Mailbox,
     ) -> None:
         self._actor_mesh = actor_mesh_ref
@@ -267,14 +270,16 @@ class Endpoint(Generic[P, R]):
         return self.choose(*args, **kwargs)
 
     def call(self, *args: P.args, **kwargs: P.kwargs) -> "Future[ValueMesh[R]]":
+        p: PortId
+        r: PortReceiver[R]
         p, r = port(self)
         # pyre-ignore
         send(self, args, kwargs, port=p, rank_in_response=True)
 
-        async def process():
-            results = [None] * len(self._actor_mesh)
+        async def process() -> ValueMesh[R]:
+            results: List[R] = [None] * len(self._actor_mesh)  # pyre-fixme[9]
             for _ in range(len(self._actor_mesh)):
-                rank, value = await r.recv()
+                rank, value = await r.recv()  # pyre-fixme[23]
                 results[rank] = value
             call_shape = Shape(
                 self._actor_mesh._shape.labels,
@@ -312,15 +317,15 @@ class Endpoint(Generic[P, R]):
 class Accumulator(Generic[P, R, A]):
     def __init__(
         self, endpoint: Endpoint[P, R], identity: A, combine: Callable[[A, R], A]
-    ):
-        self._endpoint = endpoint
-        self._identity = identity
-        self._combine = combine
+    ) -> None:
+        self._endpoint: Endpoint[P, R] = endpoint
+        self._identity: A = identity
+        self._combine: Callable[[A, R], A] = combine
 
     def accumulate(self, *args: P.args, **kwargs: P.kwargs) -> "Future[A]":
-        gen = self._endpoint.stream(*args, **kwargs)
+        gen: AsyncGenerator[R, R] = self._endpoint.stream(*args, **kwargs)
 
-        async def impl():
+        async def impl() -> A:
             value = self._identity
             async for x in gen:
                 value = self._combine(value, x)
@@ -337,7 +342,7 @@ class ValueMesh(MeshTrait, Generic[R]):
     def _new_with_shape(self, shape: Shape) -> "ValueMesh[R]":
         return ValueMesh(shape, self._values)
 
-    def item(self, **kwargs):
+    def item(self, **kwargs) -> R:
         coordinates = [kwargs.pop(label) for label in self._labels]
         if kwargs:
             raise KeyError(f"item has extra dimensions: {list(kwargs.keys())}")
@@ -348,7 +353,7 @@ class ValueMesh(MeshTrait, Generic[R]):
         for rank in self._shape.ranks():
             yield Point(rank, self._shape), self._values[rank]
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self._shape)
 
     @property
@@ -381,7 +386,7 @@ def send(
 
 
 class EndpointProperty(Generic[P, R]):
-    def __init__(self, method: Callable[Concatenate[Any, P], Coroutine[Any, Any, R]]):
+    def __init__(self, method: Callable[Concatenate[Any, P], Awaitable[R]]) -> None:
         self._method = method
 
     def __get__(self, instance, owner) -> Endpoint[P, R]:
@@ -392,7 +397,7 @@ class EndpointProperty(Generic[P, R]):
 
 
 def endpoint(
-    method: Callable[Concatenate[Any, P], Coroutine[Any, Any, R]],
+    method: Callable[Concatenate[Any, P], Awaitable[R]],
 ) -> EndpointProperty[P, R]:
     return EndpointProperty(method)
 
@@ -415,7 +420,9 @@ class Port:
 # advance lower-level API for sending messages. This is intentially
 # not part of the Endpoint API because they way it accepts arguments
 # and handles concerns is different.
-def port(endpoint: Endpoint[P, R], once=False) -> Tuple["PortId", "PortReceiver[R]"]:
+def port(
+    endpoint: Endpoint[P, R], once: bool = False
+) -> Tuple["PortId", "PortReceiver[R]"]:
     handle, receiver = (
         endpoint._mailbox.open_once_port() if once else endpoint._mailbox.open_port()
     )
@@ -428,9 +435,9 @@ class PortReceiver(Generic[R]):
         self,
         mailbox: Mailbox,
         receiver: HyPortReceiver | OncePortReceiver,
-    ):
-        self._mailbox = mailbox
-        self._receiver = receiver
+    ) -> None:
+        self._mailbox: Mailbox = mailbox
+        self._receiver: HyPortReceiver | OncePortReceiver = receiver
 
     async def _recv(self) -> R:
         return self._process(await self._receiver.recv())
@@ -438,7 +445,7 @@ class PortReceiver(Generic[R]):
     def _blocking_recv(self) -> R:
         return self._process(self._receiver.blocking_recv())
 
-    def _process(self, msg: PythonMessage):
+    def _process(self, msg: PythonMessage) -> R:
         # TODO: Try to do something more structured than a cast here
         payload = cast(R, _unpickle(msg.message, self._mailbox))
         if msg.method == "result":
@@ -485,7 +492,9 @@ class _Actor:
             else None
         )
         try:
-            ctx = MonarchContext(mailbox, mailbox.actor_id.proc_id, Point(rank, shape))
+            ctx: MonarchContext = MonarchContext(
+                mailbox, mailbox.actor_id.proc_id, Point(rank, shape)
+            )
             _context.set(ctx)
 
             args, kwargs = _unpickle(message.message, mailbox)
@@ -532,14 +541,19 @@ class _Actor:
     async def run_async(
         self,
         ctx: MonarchContext,
-        coroutine: Coroutine[Any, None, Any],
+        coroutine: Awaitable[None],
     ) -> None:
         _context.set(ctx)
         if self.complete_task is None:
             self.complete_task = asyncio.create_task(self._complete())
         await self.active_requests.put(create_eager_task(coroutine))
 
-    async def run_task(self, port, coroutine, panic_flag):
+    async def run_task(
+        self,
+        port: Port | None,
+        coroutine: Awaitable[Any],
+        panic_flag: PanicFlag,
+    ) -> None:
         try:
             result = await coroutine
             if port is not None:
@@ -615,10 +629,10 @@ class ActorMeshRef(MeshTrait):
     def __init__(
         self, Class: Type[T], actor_mesh_ref: _ActorMeshRefImpl, mailbox: Mailbox
     ) -> None:
-        self.__name__ = Class.__name__
-        self._class = Class
-        self._actor_mesh_ref = actor_mesh_ref
-        self._mailbox = mailbox
+        self.__name__: str = Class.__name__
+        self._class: Type[T] = Class
+        self._actor_mesh_ref: _ActorMeshRefImpl = actor_mesh_ref
+        self._mailbox: Mailbox = mailbox
         for attr_name in dir(self._class):
             attr_value = getattr(self._class, attr_name, None)
             if isinstance(attr_value, EndpointProperty):
@@ -659,7 +673,11 @@ class ActorMeshRef(MeshTrait):
             f"'{self.__class__.__name__}' object has no attribute '{name}'"
         )
 
-    def _create(self, args: Iterable[Any], kwargs: Dict[str, Any]) -> None:
+    def _create(
+        self,
+        args: Iterable[Any],
+        kwargs: Dict[str, Any],
+    ) -> None:
         async def null_func(*_args: Iterable[Any], **_kwargs: Dict[str, Any]) -> None:
             return None
 
