@@ -177,10 +177,16 @@ impl CommActor {
         // way, children actors will reply to this comm actor's ports, instead
         // of to the original ports provided by parent.
         let reply_ports = message.data().get::<PortId>()?;
+        let reducer_typehashes = message.data().get::<Option<u64>>()?;
+        anyhow::ensure!(
+            reply_ports.len() == reducer_typehashes.len(),
+            "mismatched ports and their reducer typehashs"
+        );
         if !reply_ports.is_empty() {
             let split_ports = reply_ports
                 .iter()
-                .map(|p| p.split(this, message.reducer_typehash().clone()))
+                .zip(reducer_typehashes.iter())
+                .map(|(p, r)| p.split(this, r.clone()))
                 .collect::<Vec<_>>();
             message.data_mut().replace::<PortId>(split_ports.iter())?;
 
@@ -413,7 +419,15 @@ pub mod test_utils {
                         reply_to1.port_id(),
                         reply_to2.port_id(),
                     ];
-                    bindings.insert::<PortId>(ports.into_iter())?;
+                    bindings.insert::<PortId>(ports)?;
+                    let reducer_typehashes = [
+                        // Intentionally not visiting 0. As a result, this port
+                        // will not be split.
+                        // reply_to0.reducer_typehash().clone(),
+                        reply_to1.reducer_typehash(),
+                        reply_to2.reducer_typehash(),
+                    ];
+                    bindings.insert::<Option<u64>>(reducer_typehashes)?;
                     Ok(bindings)
                 }
             }
@@ -504,6 +518,7 @@ mod tests {
     use hyperactor::accum::CommReducer;
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
+    use hyperactor::config;
     use hyperactor::mailbox::PortReceiver;
     use hyperactor::mailbox::open_port;
     use hyperactor::reference::Index;
@@ -916,6 +931,12 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_cast_and_accum() -> Result<()> {
+        // Use temporary config for this test
+        let _guard = config::global::set_temp_config(config::Config {
+            split_max_buffer_size: 1,
+            ..Default::default()
+        });
+
         let MeshSetup {
             actor_mesh,
             mut reply1_rx,
