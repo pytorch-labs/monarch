@@ -32,6 +32,8 @@ use ndslice::Selection;
 use ndslice::Shape;
 use ndslice::ShapeError;
 use ndslice::Slice;
+use ndslice::dsl;
+use ndslice::selection::ReifyView;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -73,11 +75,28 @@ pub trait ActorMesh: Mesh {
             None, // TODO: reducer typehash
         )?;
 
+        // Sub-set the selection to the selection that represents the mesh's view
+        // of the root mesh. We need to do this because the comm actor uses the
+        // slice as the stream key; thus different sub-slices will result in potentially
+        // out of order delivery.
+        //
+        // TODO: We should repair this by introducing an explicit stream key, associated
+        // with the root mesh.
+        let selection_of_slice = self
+            .shape()
+            .slice()
+            .reify_view(self.shape().slice())
+            .expect("invalid slice");
+        let selection = dsl::intersection(selection, selection_of_slice);
+
         self.proc_mesh().comm_actor().send(
             self.proc_mesh().client(),
             CastMessage {
                 dest: Uslice {
-                    slice: self.shape().slice().clone(),
+                    // TODO: currently this slice is being used as the stream key
+                    // in comm actor. We should change it to an explicit id, maintained
+                    // by the root proc mesh.
+                    slice: self.proc_mesh().shape().slice().clone(),
                     selection,
                 },
                 message,
