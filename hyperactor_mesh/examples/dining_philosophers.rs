@@ -71,29 +71,20 @@ enum PhilosopherMessage {
 
 // TODO(pzhang) replace the boilerplate Bind/Unbind impls with a macro.
 impl Bind for PhilosopherMessage {
-    fn bind(mut self, bindings: &Bindings) -> anyhow::Result<Self> {
-        match &mut self {
-            Self::Start(port) => {
-                let mut_ports = [port.port_id_mut()];
-                bindings.rebind(mut_ports.into_iter())?;
-            }
-            Self::GrantChopstick(_) => {}
+    fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
+        match self {
+            Self::Start(port) => port.bind(bindings),
+            Self::GrantChopstick(_) => Ok(()),
         }
-        Ok(self)
     }
 }
 
 impl Unbind for PhilosopherMessage {
-    fn bindings(&self) -> anyhow::Result<Bindings> {
-        let mut bindings = Bindings::default();
+    fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
         match self {
-            Self::Start(port) => {
-                let ports = [port.port_id()];
-                bindings.insert(ports)?;
-            }
-            Self::GrantChopstick(_) => {}
+            Self::Start(port) => port.unbind(bindings),
+            Self::GrantChopstick(_) => Ok(()),
         }
-        Ok(bindings)
     }
 }
 

@@ -397,47 +397,38 @@ pub mod test_utils {
 
     // TODO(pzhang) add macro to auto implement these traits.
     impl Unbind for TestMessage {
-        fn bindings(&self) -> anyhow::Result<Bindings> {
+        fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
             match &self {
-                TestMessage::Forward(_) => Ok(Bindings::default()),
+                TestMessage::Forward(_) => Ok(()),
                 TestMessage::CastAndReply {
                     reply_to1,
                     reply_to2,
                     ..
                 } => {
-                    let mut bindings = Bindings::default();
-                    let ports = [
-                        // Intentionally not visiting 0. As a result, this port
-                        // will not be split.
-                        // reply_to0.port_id().clone(),
-                        reply_to1.port_id(),
-                        reply_to2.port_id(),
-                    ];
-                    bindings.insert::<PortId>(ports.into_iter())?;
-                    Ok(bindings)
+                    // Intentionally not visiting 0. As a result, this port
+                    // will not be split.
+                    reply_to1.unbind(bindings)?;
+                    reply_to2.unbind(bindings)?;
+                    Ok(())
                 }
             }
         }
     }
 
     impl Bind for TestMessage {
-        fn bind(mut self, bindings: &Bindings) -> anyhow::Result<Self> {
-            match &mut self {
-                TestMessage::Forward(_) => Ok(self),
+        fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
+            match self {
+                TestMessage::Forward(_) => Ok(()),
                 TestMessage::CastAndReply {
                     reply_to1,
                     reply_to2,
                     ..
                 } => {
-                    let mut_ports = [
-                        // Intentionally not visiting 0. As a result, this port
-                        // will not be split.
-                        // reply_to0.port_id_mut(),
-                        reply_to1.port_id_mut(),
-                        reply_to2.port_id_mut(),
-                    ];
-                    bindings.rebind(mut_ports.into_iter())?;
-                    Ok(self)
+                    // Intentionally not visiting 0. As a result, this port
+                    // will not be split.
+                    reply_to2.bind(bindings)?;
+                    reply_to1.bind(bindings)?;
+                    Ok(())
                 }
             }
         }
