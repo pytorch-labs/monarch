@@ -115,7 +115,7 @@ edges:
 
         assert!(done_rx.recv().await.unwrap());
 
-        let records = sim::records().await.unwrap();
+        let records = simnet::simnet_handle().unwrap().close().await.unwrap();
         eprintln!(
             "records: {}",
             serde_json::to_string_pretty(&records).unwrap()

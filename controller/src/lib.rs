@@ -612,7 +612,6 @@ mod tests {
     use hyperactor::RefClient;
     use hyperactor::channel;
     use hyperactor::channel::ChannelTransport;
-    use hyperactor::channel::sim;
     use hyperactor::channel::sim::SimAddr;
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
@@ -631,6 +630,7 @@ mod tests {
     use hyperactor::reference::GangId;
     use hyperactor::reference::ProcId;
     use hyperactor::reference::WorldId;
+    use hyperactor::simnet;
     use hyperactor_mesh::comm::CommActorParams;
     use hyperactor_multiprocess::System;
     use hyperactor_multiprocess::proc_actor::ProcMessage;
@@ -1549,6 +1549,15 @@ mod tests {
         // Start system actor.
         let system_addr = ChannelAddr::any(ChannelTransport::Unix);
         let proxy_addr = ChannelAddr::any(ChannelTransport::Unix);
+        simnet::start(
+            ChannelAddr::any(ChannelTransport::Unix),
+            proxy_addr.clone(),
+            1000,
+        )
+        .unwrap();
+        simnet::simnet_handle()
+            .unwrap()
+            .set_training_script_state(simnet::TrainingScriptState::Waiting);
 
         let system_sim_addr =
             ChannelAddr::Sim(SimAddr::new(system_addr, proxy_addr.clone()).unwrap());
@@ -1647,7 +1656,7 @@ mod tests {
         assert_eq!(result.0, Seq::default());
         assert!(result.1.expect("result").is_err());
 
-        let records = sim::records().await.unwrap();
+        let records = simnet::simnet_handle().unwrap().close().await.unwrap();
         eprintln!("{}", serde_json::to_string_pretty(&records).unwrap());
     }
     #[tokio::test]
