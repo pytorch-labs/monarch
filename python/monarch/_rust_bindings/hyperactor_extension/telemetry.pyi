@@ -56,3 +56,31 @@ def exit_span() -> None:
     If no span is currently active for this thread, this function has no effect.
     """
     ...
+
+def get_current_span_id() -> int:
+    """
+    Get the current span ID from the active span.
+
+    Returns the span ID of the current active span. If no span is active,
+    returns 0 (invalid span ID).
+
+    Returns:
+    - int: The span ID as an integer.
+    """
+    ...
+
+class PySpan:
+    def __init__(self, name: str) -> None:
+        """
+        Create a new PySpan.
+
+        Args:
+        - name (str): The name of the span.
+        """
+        ...
+
+    def exit(self) -> None:
+        """
+        Exit the span.
+        """
+        ...

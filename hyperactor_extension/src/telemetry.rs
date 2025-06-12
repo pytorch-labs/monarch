@@ -44,6 +44,12 @@ pub fn exit_span() -> PyResult<()> {
     Ok(())
 }
 
+/// Get the current span ID from the active span
+#[pyfunction]
+pub fn get_current_span_id() -> PyResult<u64> {
+    Ok(tracing::Span::current().id().map_or(0, |id| id.into_u64()))
+}
+
 /// Log a message with the given metaata
 #[pyfunction]
 pub fn forward_to_tracing(py: Python, record: PyObject) -> PyResult<()> {
@@ -89,6 +95,33 @@ pub fn forward_to_tracing(py: Python, record: PyObject) -> PyResult<()> {
     Ok(())
 }
 
+#[pyclass(
+    unsendable,
+    subclass,
+    module = "monarch._rust_bindings.hyperactor_extension.telemetry"
+)]
+struct PySpan {
+    span: tracing::span::EnteredSpan,
+}
+
+#[pymethods]
+impl PySpan {
+    #[new]
+    fn new(name: &str) -> Self {
+        let span = tracing::span!(tracing::Level::DEBUG, "python.span", name = name);
+        let entered_span = span.entered();
+
+        Self { span: entered_span }
+    }
+
+    fn exit(&mut self) {
+        self.span = tracing::span::Span::none().entered();
+    }
+}
+
+use pyo3::Bound;
+use pyo3::types::PyModule;
+
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     // Register the forward_to_tracing function
     let f = wrap_pyfunction!(forward_to_tracing, module)?;
@@ -113,5 +146,13 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     )?;
     module.add_function(exit_span_fn)?;
 
+    let get_current_span_id_fn = wrap_pyfunction!(get_current_span_id, module)?;
+    get_current_span_id_fn.setattr(
+        "__module__",
+        "monarch._rust_bindings.hyperactor_extension.telemetry",
+    )?;
+    module.add_function(get_current_span_id_fn)?;
+
+    module.add_class::<PySpan>()?;
     Ok(())
 }
