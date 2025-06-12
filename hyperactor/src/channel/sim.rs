@@ -698,8 +698,8 @@ mod tests {
         // This message will be delievered at simulator time = 100 seconds
         tx.try_post((), oneshot::channel().0).unwrap();
         {
-            // Allow some time for simnet to run
-            RealClock.sleep(tokio::time::Duration::from_secs(1)).await;
+            // Allow simnet to run
+            tokio::task::yield_now().await;
             // Messages have not been receive since 10 seconds have not elapsed
             assert!(rx.rx.try_recv().is_err());
         }
@@ -707,7 +707,7 @@ mod tests {
         tokio::time::advance(tokio::time::Duration::from_secs(100)).await;
         {
             // Allow some time for simnet to run
-            RealClock.sleep(tokio::time::Duration::from_secs(1)).await;
+            tokio::task::yield_now().await;
             // Messages are received
             assert!(rx.rx.try_recv().is_ok());
         }
