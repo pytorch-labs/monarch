@@ -19,6 +19,7 @@ use hyperactor::Named;
 use hyperactor::PortHandle;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
+use hyperactor::accum::ReducerSpec;
 use hyperactor::actor::RemoteActor;
 use hyperactor::mailbox::MailboxSenderError;
 use hyperactor::mailbox::PortReceiver;
@@ -419,8 +420,8 @@ pub(crate) mod test_util {
             let mut bindings = Bindings::default();
             let ports = [self.1.port_id()];
             bindings.insert(ports)?;
-            let reducer_typehashes = [self.1.reducer_typehash()];
-            bindings.insert::<Option<u64>>(reducer_typehashes)?;
+            let reducer_specs = [self.1.reducer_spec()];
+            bindings.insert::<Option<ReducerSpec>>(reducer_specs)?;
             Ok(bindings)
         }
     }
@@ -473,8 +474,8 @@ pub(crate) mod test_util {
             let mut bindings = Bindings::default();
             let ports = [self.1.port_id()];
             bindings.insert(ports)?;
-            let reducer_typehashes = [self.1.reducer_typehash()];
-            bindings.insert::<Option<u64>>(reducer_typehashes)?;
+            let reducer_specs = [self.1.reducer_spec()];
+            bindings.insert::<Option<ReducerSpec>>(reducer_specs)?;
             Ok(bindings)
         }
     }
@@ -867,11 +868,8 @@ mod tests {
             let mut bindings = Bindings::default();
             let ports = [self.field2.port_id(), self.field4.port_id()];
             bindings.insert(ports)?;
-            let reducer_typehashes = [
-                self.field2.reducer_typehash(),
-                self.field4.reducer_typehash(),
-            ];
-            bindings.insert::<Option<u64>>(reducer_typehashes)?;
+            let reducer_specs = [self.field2.reducer_spec(), self.field4.reducer_spec()];
+            bindings.insert::<Option<ReducerSpec>>(reducer_specs)?;
             Ok(bindings)
         }
     }
@@ -901,7 +899,9 @@ mod tests {
         expected
             .insert::<PortId>(&[port_id2.clone(), port_id4.clone()])
             .unwrap();
-        expected.insert::<Option<u64>>(&[None, None]).unwrap();
+        expected
+            .insert::<Option<ReducerSpec>>(&[None, None])
+            .unwrap();
 
         expected.push(&cast.rank).unwrap();
         assert_eq!(bindings, expected);

@@ -22,6 +22,7 @@ use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::PortId;
 use hyperactor::WorldId;
+use hyperactor::accum::ReducerSpec;
 use hyperactor::data::Serialized;
 use ndslice::Slice;
 use ndslice::selection::routing::RoutingFrame;
@@ -177,17 +178,17 @@ impl CommActor {
         // way, children actors will reply to this comm actor's ports, instead
         // of to the original ports provided by parent.
         let reply_ports = message.data().get::<PortId>()?;
-        let reducer_typehashes = message.data().get::<Option<u64>>()?;
+        let reducer_specs = message.data().get::<Option<ReducerSpec>>()?;
         anyhow::ensure!(
-            reply_ports.len() == reducer_typehashes.len(),
+            reply_ports.len() == reducer_specs.len(),
             "mismatched ports and their reducer typehashs"
         );
         if !reply_ports.is_empty() {
             let split_ports = reply_ports
                 .iter()
-                .zip(reducer_typehashes.iter())
+                .zip(reducer_specs.iter())
                 .map(|(p, r)| p.split(this, r.clone()))
-                .collect::<Vec<_>>();
+                .collect::<Result<Vec<_>>>()?;
             message.data_mut().replace::<PortId>(split_ports.iter())?;
 
             #[cfg(test)]
@@ -420,14 +421,14 @@ pub mod test_utils {
                         reply_to2.port_id(),
                     ];
                     bindings.insert::<PortId>(ports)?;
-                    let reducer_typehashes = [
+                    let reducer_specs = [
                         // Intentionally not visiting 0. As a result, this port
                         // will not be split.
-                        // reply_to0.reducer_typehash().clone(),
-                        reply_to1.reducer_typehash(),
-                        reply_to2.reducer_typehash(),
+                        // reply_to0.reducer_spec().clone(),
+                        reply_to1.reducer_spec(),
+                        reply_to2.reducer_spec(),
                     ];
-                    bindings.insert::<Option<u64>>(reducer_typehashes)?;
+                    bindings.insert::<Option<ReducerSpec>>(reducer_specs)?;
                     Ok(bindings)
                 }
             }
@@ -711,25 +712,21 @@ mod tests {
         reply_tos: Vec<(PortRef<u64>, PortRef<MyReply>)>,
     }
 
-    // Placeholder to make compiler happy.
-    #[derive(Debug, Clone, Serialize, Deserialize, Named)]
-    struct NonReducer;
-    impl CommReducer for NonReducer {
-        type Update = u64;
-
-        fn reduce(&self, _left: Self::Update, _right: Self::Update) -> Self::Update {
-            unimplemented!()
-        }
-    }
-
     struct NoneAccumulator;
 
     impl Accumulator for NoneAccumulator {
         type State = u64;
         type Update = u64;
-        type Reducer = NonReducer;
 
-        fn accumulate(&self, _state: &mut Self::State, _update: Self::Update) {
+        fn accumulate(
+            &self,
+            _state: &mut Self::State,
+            _update: Self::Update,
+        ) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+
+        fn reducer_spec(&self) -> Option<ReducerSpec> {
             unimplemented!()
         }
     }

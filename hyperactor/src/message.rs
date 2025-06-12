@@ -332,6 +332,7 @@ mod tests {
 
     use super::*;
     use crate::PortId;
+    use crate::accum::ReducerSpec;
 
     // Used to demonstrate a user defined reply type.
     #[derive(Debug, PartialEq, Serialize, Deserialize, Named)]
@@ -352,11 +353,8 @@ mod tests {
             let mut bindings = Bindings::default();
             let ports = [self.reply0.port_id(), self.reply1.port_id()];
             bindings.insert::<PortId>(ports)?;
-            let reducer_typehashes = [
-                self.reply0.reducer_typehash(),
-                self.reply1.reducer_typehash(),
-            ];
-            bindings.insert::<Option<u64>>(reducer_typehashes)?;
+            let reducer_specs = [self.reply0.reducer_spec(), self.reply1.reducer_spec()];
+            bindings.insert::<Option<ReducerSpec>>(reducer_specs)?;
             Ok(bindings)
         }
     }
@@ -373,7 +371,13 @@ mod tests {
     #[test]
     fn test_castable() {
         let original_port0 = PortRef::attest(id!(world[0].actor[0][123]));
-        let original_port1 = PortRef::attest_reducible(id!(world[1].actor1[0][456]), Some(123));
+        let original_port1 = PortRef::attest_reducible(
+            id!(world[1].actor1[0][456]),
+            Some(ReducerSpec {
+                typehash: 123,
+                builder_params: None,
+            }),
+        );
         let my_message = MyMessage {
             arg0: true,
             arg1: 42,
@@ -394,9 +398,12 @@ mod tests {
                         Serialized::serialize(original_port0.port_id()).unwrap(),
                         Serialized::serialize(original_port1.port_id()).unwrap(),
                     ],
-                    Option::<u64>::typehash() => vec![
-                        Serialized::serialize(&None::<u64>).unwrap(),
-                        Serialized::serialize(&Some(123u64)).unwrap(),
+                    Option::<ReducerSpec>::typehash() => vec![
+                        Serialized::serialize(&None::<ReducerSpec>).unwrap(),
+                        Serialized::serialize(&Some(ReducerSpec {
+                            typehash: 123,
+                            builder_params: None,
+                        })).unwrap(),
                     ],
                 }),
             }
@@ -416,9 +423,12 @@ mod tests {
                 Serialized::serialize(&new_port_id0).unwrap(),
                 Serialized::serialize(&new_port_id1).unwrap(),
             ],
-            Option::<u64>::typehash() => vec![
-                Serialized::serialize(&None::<u64>).unwrap(),
-                Serialized::serialize(&Some(123u64)).unwrap(),
+            Option::<ReducerSpec>::typehash() => vec![
+                Serialized::serialize(&None::<ReducerSpec>).unwrap(),
+                Serialized::serialize(&Some(ReducerSpec {
+                    typehash: 123,
+                    builder_params: None,
+                })).unwrap(),
             ],
         });
         assert_eq!(
