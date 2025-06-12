@@ -6,7 +6,6 @@
 
 # pyre-strict
 
-import importlib.resources
 import logging
 import os
 import random
@@ -14,7 +13,6 @@ import string
 import subprocess
 import tempfile
 import time
-from pathlib import Path
 from typing import (
     Callable,
     ContextManager as AbstractContextManager,
@@ -53,6 +51,7 @@ from monarch.common.messages import Dims
 from monarch.common.shape import NDSlice
 from monarch.controller.rust_backend.controller import RustController
 from monarch.rust_backend_mesh import MeshWorld
+from monarch.simulator.trace import upload_trace
 
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -113,6 +112,7 @@ def sim_mesh(
             bootstrap._simulator_client,
             f"mesh_{i}_worker",
         )
+
         dms.append(dm)
 
     return dms
@@ -141,6 +141,31 @@ class SimMesh(DeviceMesh, Generic[T]):
         super().__init__(client, processes, names, mesh_name)
         self.simulator_client: SimulatorClient = simulator_client
 
+        # restore Future.result and Future._set_result to their previous values
+        def create_exit(
+            dm: SimMesh[T],
+        ) -> Callable[[Optional[RemoteException | DeviceException | Exception]], None]:
+            def exit(
+                error: Optional[RemoteException | DeviceException | Exception] = None,
+            ) -> None:
+                dm.client.shutdown(True, error)
+                # pyre-ignore
+                Future.result = OriginalFutureWrapper.result
+                Future._set_result = OriginalFutureWrapper._set_result
+
+                records = dm.simulator_client.close()
+                trace_file_path = tempfile.mkdtemp(prefix="simulator_traces")
+                file_name = f"{trace_file_path}/trace.json"
+                with open(file_name, "w") as f:
+                    f.write(records)
+                upload_trace(file_name)
+
+            return exit
+
+        self.exit: Callable[
+            [Optional[RemoteException | DeviceException | Exception]], None
+        ] = create_exit(self)
+
     # monkey patch Future.result and Future._set_result to hook into set_training_script_state_{running,waiting}
     def activate(self) -> AbstractContextManager[DeviceMesh]:
         def sim_result(fut: Future[T], timeout: float | None = None) -> T:
@@ -156,16 +181,6 @@ class SimMesh(DeviceMesh, Generic[T]):
         Future._set_result = sim_set_result
 
         return super().activate()
-
-    # restore Future.result and Future._set_result to their previous values
-    def exit(
-        self,
-        error: Optional[RemoteException | DeviceException | Exception] = None,
-    ) -> None:
-        self.client.shutdown(True, error)
-        # pyre-ignore
-        Future.result = OriginalFutureWrapper._result
-        Future._set_result = OriginalFutureWrapper._set_result
 
 
 def _random_id(length: int = 14) -> str:
@@ -201,9 +216,11 @@ class Bootstrap:
 
         proxy_addr = proxy_addr or f"unix!@{_random_id()}-proxy"
         self.bootstrap_addr: str = f"sim!unix!@system,{proxy_addr}"
-        self.client_listen_addr: str = f"sim!unix!@client,{proxy_addr}"
+
+        client_proxy_addr = f"unix!@{_random_id()}-proxy"
+        self.client_listen_addr: str = f"sim!unix!@client,{client_proxy_addr}"
         self.client_bootstrap_addr: str = (
-            f"sim!unix!@client,{proxy_addr},unix!@system,{proxy_addr}"
+            f"sim!unix!@client,{client_proxy_addr},unix!@system,{proxy_addr}"
         )
         bootstrap_simulator_backend(self.bootstrap_addr, proxy_addr, world_size)
 

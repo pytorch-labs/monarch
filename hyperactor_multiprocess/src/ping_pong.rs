@@ -91,14 +91,14 @@ edges:
     dst: local!1
     metadata:
       latency: 1
-  - src: local!1
+  - src: local!2
     dst: local!3
     metadata:
       latency: 2
   - src: local!3
-    dst: local!1
+    dst: local!2
     metadata:
-      latency: 2
+      latency: 1
 "#;
         let simnet_config = NetworkConfig::from_yaml(simnet_config_yaml).unwrap();
         sim::update_config(simnet_config).await.unwrap();
@@ -108,14 +108,14 @@ edges:
         // deliver a message to the ping actor with TTL - 2. This will continue until the TTL reaches 0.
         // The ping actor will then send a message to the done channel to indicate that the game is over.
         let (done_tx, done_rx) = sys_mailbox.open_once_port();
-        let ping_pong_message = PingPongMessage(4, pong_actor_ref.clone(), done_tx.bind());
+        let ping_pong_message = PingPongMessage(50, pong_actor_ref.clone(), done_tx.bind());
         ping_actor_ref
             .send(&sys_mailbox, ping_pong_message)
             .unwrap();
 
         assert!(done_rx.recv().await.unwrap());
 
-        let records = sim::records().await.unwrap();
+        let records = simnet::simnet_handle().unwrap().close().await.unwrap();
         eprintln!(
             "records: {}",
             serde_json::to_string_pretty(&records).unwrap()

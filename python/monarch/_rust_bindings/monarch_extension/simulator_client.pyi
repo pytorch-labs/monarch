@@ -52,6 +52,12 @@ class SimulatorClient:
         """
         ...
 
+    def close(self) -> str:
+        """
+        Close the client and return perfetto traces of simulator events in JSON format.
+        """
+        ...
+
 def bootstrap_simulator_backend(
     system_addr: str, proxy_addr: str, world_size: int
 ) -> None:
