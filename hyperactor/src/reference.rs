@@ -785,6 +785,12 @@ impl<M: RemoteMessage> PortRef<M> {
         }
     }
 
+    /// The caller attests that the provided PortId can be
+    /// converted to a reachable, typed port reference.
+    pub fn attest_message_port(actor: &ActorId) -> Self {
+        PortRef::<M>::attest(actor.port_id(<M as Named>::port()))
+    }
+
     /// The typehash of this port's reducer, if any. Reducers
     /// may be used to coalesce messages sent to a port.
     pub fn reducer_typehash(&self) -> &Option<u64> {
