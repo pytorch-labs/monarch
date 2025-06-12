@@ -16,11 +16,6 @@ def set_manual_seed_remote(seed: int, process_idx: int = 0) -> None:
     torch.manual_seed(seed ^ process_idx)
 
 
-@remote(propagate=lambda: 0)
-def initial_seed_remote() -> int:
-    return torch.initial_seed()
-
-
 @remote(propagate=lambda: torch.zeros(1))
 def get_rng_state_remote() -> torch.Tensor:
     return torch.get_rng_state()
@@ -67,3 +62,7 @@ def get_rng_state_all_cuda_remote() -> list[torch.Tensor]:
 @remote(propagate="inspect")
 def set_rng_state_all_cuda_remote(states: list[torch.Tensor]) -> None:
     torch.cuda.set_rng_state_all(states)
+
+
+# initial_seed may sometimes return a uint64 which currenly can't be unwrapped by the framework
+# def initial_seed_remote() -> int: ...
