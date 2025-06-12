@@ -47,34 +47,20 @@ use crate::actor::RemoteActor;
 use crate::data::Serialized;
 use crate::intern_typename; // for macros
 
-/// A message `M` that is [`Unbind`] can be converted into an [`Unbound<M>`]
-/// containing the message along with a set of extracted parameters that can
-/// be independently manipulated, and then later reconstituted (rebound) into
-/// an `M`-typed message again.
+/// An object `T` that is [`Unbind`] can extract a set of parameters from itself,
+/// and store in [`Bindings`]. The extracted parameters in [`Bindings`] can be
+/// independently manipulated, and then later reconstituted (rebound) into
+/// a `T`-typed object again.
 pub trait Unbind: Sized {
-    /// Unbinds the message into an envelope [`Unbound<M>`] containing
-    /// the message along with extracted parameters that can are
-    /// independently accessible.
-    fn unbind(self) -> anyhow::Result<Unbound<Self>> {
-        let bindings = self.bindings()?;
-        Ok(Unbound {
-            message: self,
-            bindings,
-        })
-    }
-
-    /// Get the bindings of this message.
-    fn bindings(&self) -> anyhow::Result<Bindings>;
+    /// Extract parameters from itself and store them in bindings.
+    fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()>;
 }
 
-/// A message `M` that is [`Bind`] can bind a set of externally provided
-/// parameters into the message. It is intended to be used in conjunction
-/// with [`Unbind`] to extract portions of a message, manipulate these
-/// independently, and then reconstitute the message.
+/// An object `T` that is [`Bind`] can bind a set of externally provided
+/// parameters into itself.
 pub trait Bind: Sized {
-    /// Update itself with information contained in bindings, and return the
-    /// result.
-    fn bind(self, bindings: &Bindings) -> anyhow::Result<Self>;
+    /// Remove parameters from bindings, and use them to update itself.
+    fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()>;
 }
 
 /// This trait collects the necessary requirements for messages that are can be
@@ -109,6 +95,18 @@ impl Bindings {
         let ser = Serialized::serialize(value)?;
         self.0.entry(T::typehash()).or_default().push(ser);
         Ok(())
+    }
+
+    /// Removes the last pushed element of this type and returns it, or [`None`]
+    /// if it is empty.
+    pub fn pop<T: DeserializeOwned + Named>(&mut self) -> anyhow::Result<Option<T>> {
+        match self.0.get_mut(&T::typehash()) {
+            None => Ok(None),
+            Some(ser) => match ser.pop() {
+                None => Ok(None),
+                Some(v) => Ok(Some(v.deserialized()?)),
+            },
+        }
     }
 
     /// Get this type's values from the binding.
@@ -175,8 +173,23 @@ impl<M> Unbound<M> {
 
 impl<M: Bind> Unbound<M> {
     /// Bind its bindings to its message through [Bind], and return the result.
-    pub fn bind(self) -> anyhow::Result<M> {
-        self.message.bind(&self.bindings)
+    pub fn bind(mut self) -> anyhow::Result<M> {
+        self.message.bind(&mut self.bindings)?;
+        for (k, v) in self.bindings.0.iter() {
+            anyhow::ensure!(v.is_empty(), "type {} in binding is not empty", k);
+        }
+        Ok(self.message)
+    }
+}
+
+impl<M: Unbind> Unbound<M> {
+    /// Create an object from a typed message.
+    // Note: cannot implement TryFrom<T> due to conflict with core crate's blanket impl.
+    // More can be found in this issue: https://github.com/rust-lang/rust/issues/50133
+    pub fn try_from_message(message: M) -> anyhow::Result<Self> {
+        let mut bindings = Bindings::default();
+        message.unbind(&mut bindings)?;
+        Ok(Unbound { message, bindings })
     }
 }
 
@@ -200,7 +213,7 @@ impl ErasedUnbound {
     // Note: cannot implement TryFrom<T> due to conflict with core crate's blanket impl.
     // More can be found in this issue: https://github.com/rust-lang/rust/issues/50133
     pub fn try_from_message<T: Unbind + Serialize + Named>(msg: T) -> Result<Self, anyhow::Error> {
-        let unbound = msg.unbind()?;
+        let unbound = Unbound::try_from_message(msg)?;
         let serialized = Serialized::serialize(&unbound.message)?;
         Ok(Self {
             message: serialized,
@@ -289,20 +302,20 @@ impl<M: Named + 'static> Named for IndexedErasedUnbound<M> {
 macro_rules! impl_bind_unbind_basic {
     ($t:ty) => {
         impl Bind for $t {
-            fn bind(self, bindings: &Bindings) -> anyhow::Result<Self> {
+            fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
                 anyhow::ensure!(
                     bindings.0.is_empty(),
                     "bindings for {} should be empty, but got {:?}",
                     stringify!($t),
                     bindings
                 );
-                Ok(self)
+                Ok(())
             }
         }
 
         impl Unbind for $t {
-            fn bindings(&self) -> anyhow::Result<Bindings> {
-                Ok(Bindings::default())
+            fn unbind(&self, _bindings: &mut Bindings) -> anyhow::Result<()> {
+                Ok(())
             }
         }
     };
@@ -348,20 +361,19 @@ mod tests {
 
     // TODO(pzhang) add macro to auto-gen this implementation.
     impl Unbind for MyMessage {
-        fn bindings(&self) -> anyhow::Result<Bindings> {
-            let mut bindings = Bindings::default();
-            let ports = [self.reply0.port_id(), self.reply1.port_id()];
-            bindings.insert::<PortId>(ports)?;
-            Ok(bindings)
+        fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
+            self.reply0.unbind(bindings)?;
+            self.reply1.unbind(bindings)?;
+            Ok(())
         }
     }
 
     // TODO(pzhang) add macro to auto-gen this implementation.
     impl Bind for MyMessage {
-        fn bind(mut self, bindings: &Bindings) -> anyhow::Result<Self> {
-            let mut_ports = [self.reply0.port_id_mut(), self.reply1.port_id_mut()];
-            bindings.rebind::<PortId>(mut_ports.into_iter())?;
-            Ok(self)
+        fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
+            self.reply1.bind(bindings)?;
+            self.reply0.bind(bindings)?;
+            Ok(())
         }
     }
 

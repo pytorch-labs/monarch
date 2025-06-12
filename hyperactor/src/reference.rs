@@ -47,6 +47,9 @@ use crate::cap;
 use crate::data::Serialized;
 use crate::mailbox::MailboxSenderError;
 use crate::mailbox::MailboxSenderErrorKind;
+use crate::message::Bind;
+use crate::message::Bindings;
+use crate::message::Unbind;
 use crate::parse::Lexer;
 use crate::parse::ParseError;
 use crate::parse::Token;
@@ -852,6 +855,22 @@ impl<M: RemoteMessage> fmt::Display for PortRef<M> {
 impl<M: RemoteMessage> Named for PortRef<M> {
     fn typename() -> &'static str {
         crate::data::intern_typename!(Self, "hyperactor::mailbox::PortRef<{}>", M)
+    }
+}
+
+impl<M: RemoteMessage> Unbind for PortRef<M> {
+    fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
+        bindings.push::<PortId>(&self.port_id)
+    }
+}
+
+impl<M: RemoteMessage> Bind for PortRef<M> {
+    fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
+        let bound = bindings.pop::<PortId>()?.ok_or_else(|| {
+            anyhow::anyhow!("PortId requires a PortId binding, but none was found")
+        })?;
+        self.port_id = bound;
+        Ok(())
     }
 }
 
