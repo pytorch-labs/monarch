@@ -4,7 +4,9 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-def forward_to_tracing(message: str, file: str, lineno: int, level: int) -> None:
+import logging
+
+def forward_to_tracing(record: logging.LogRecord) -> None:
     """
     Log a message with the given metadata using the tracing system.
 
@@ -12,15 +14,17 @@ def forward_to_tracing(message: str, file: str, lineno: int, level: int) -> None
     preserving the original source location and log level.
 
     Args:
-    - message (str): The log message content.
-    - file (str): The file where the log message originated.
-    - lineno (int): The line number where the log message originated.
-    - level (int): The log level:
-        - 10: DEBUG
-        - 20: INFO
-        - 30: WARN
-        - 40: ERROR
-        - other values default to INFO
+    - record (logging.LogRecord): The log record containing message, file, lineno, and level information.
+      The function extracts:
+        - message: The log message content via record.getMessage()
+        - file: The filename via record.filename
+        - lineno: The line number via record.lineno
+        - level: The log level via record.levelno:
+            - 10: DEBUG
+            - 20: INFO
+            - 30: WARN
+            - 40: ERROR
+            - other values default to INFO
     """
     ...
 

@@ -525,7 +525,14 @@ class _Actor:
                     enter_span(
                         the_method.__module__, message.method, str(ctx.mailbox.actor_id)
                     )
-                    result = await the_method(self.instance, *args, **kwargs)
+                    try:
+                        result = await the_method(self.instance, *args, **kwargs)
+                    except Exception as e:
+                        logging.critical(
+                            "Unahndled exception in actor endpoint",
+                            exc_info=e,
+                        )
+                        raise e
                     exit_span()
                     return result
 

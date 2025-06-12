@@ -876,7 +876,6 @@ impl<A: Actor> Instance<A> {
         Ok(actor_handle)
     }
 
-    #[crate::instrument_infallible(fields(actor_id=tracing::field::display(self.self_id())))]
     async fn serve(mut self, mut actor: A) {
         let result = self.run_actor_tree(&mut actor).await;
 
