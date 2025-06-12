@@ -15,6 +15,7 @@ import inspect
 import itertools
 import logging
 import random
+import sys
 import traceback
 
 from dataclasses import dataclass
@@ -37,6 +38,7 @@ from typing import (
     ParamSpec,
     Tuple,
     Type,
+    TYPE_CHECKING,
     TypeVar,
 )
 
@@ -57,6 +59,10 @@ from monarch._rust_bindings.monarch_hyperactor.shape import Point as HyPoint, Sh
 
 from monarch.common.pickle_flatten import flatten, unflatten
 from monarch.common.shape import MeshTrait, NDSlice
+from monarch.pdb_wrapper import remote_breakpointhook
+
+if TYPE_CHECKING:
+    from monarch.debugger import DebugClient
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -622,6 +628,19 @@ class Actor(MeshTrait):
     def _new_with_shape(self, shape: Shape) -> "ActorMeshRef":
         raise NotImplementedError(
             "actor implementations are not meshes, but we can't convince the typechecker of it..."
+        )
+
+    @endpoint
+    async def _set_debug_client(self, client: "DebugClient") -> None:
+        point = MonarchContext.get().point
+        # For some reason, using a lambda instead of functools.partial
+        # confuses the pdb wrapper implementation.
+        sys.breakpointhook = functools.partial(  # pyre-ignore
+            remote_breakpointhook,
+            point.rank,
+            point.shape.coordinates(point.rank),
+            MonarchContext.get().mailbox.actor_id,
+            client,
         )
 
 

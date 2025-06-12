@@ -4,8 +4,11 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+import asyncio
 import operator
+import re
 from types import ModuleType
+from unittest.mock import AsyncMock, patch
 
 import monarch
 
@@ -20,7 +23,9 @@ from monarch.actor_mesh import (
     current_rank,
     current_size,
     endpoint,
+    MonarchContext,
 )
+from monarch.debugger import init_debugging
 
 from monarch.mesh_controller import spawn_tensor_engine
 
@@ -399,3 +404,143 @@ def test_tensor_engine() -> None:
     assert torch.allclose(torch.zeros(3, 4), f)
 
     dm.exit()
+
+
+def _debugee_actor_internal(rank):
+    if rank == 0:
+        breakpoint()  # noqa
+        rank += 1
+        return rank
+    elif rank == 1:
+        breakpoint()  # noqa
+        rank += 2
+        return rank
+    elif rank == 2:
+        breakpoint()  # noqa
+        rank += 3
+        raise ValueError("bad rank")
+    elif rank == 3:
+        breakpoint()  # noqa
+        rank += 4
+        return rank
+
+
+class DebugeeActor(Actor):
+    @endpoint
+    async def to_debug(self):
+        rank = MonarchContext.get().point.rank
+        return _debugee_actor_internal(rank)
+
+
+async def test_debug() -> None:
+    input_mock = AsyncMock()
+    input_mock.side_effect = [
+        "attach 1",
+        "n",
+        "n",
+        "n",
+        "n",
+        "detach",
+        "attach 1",
+        "detach",
+        "quit",
+        "cast 0,3 n",
+        "cast 0,3 n",
+        # Attaching to 0 and 3 ensures that when we call "list"
+        # the next time, their function/lineno info will be
+        # up-to-date.
+        "attach 0",
+        "detach",
+        "attach 3",
+        "detach",
+        "quit",
+        "attach 2",
+        "c",
+        "quit",
+        "continue",
+    ]
+
+    outputs = []
+
+    def _patch_output(msg):
+        nonlocal outputs
+        outputs.append(msg)
+
+    with patch("monarch.debugger._debugger_input", side_effect=input_mock), patch(
+        "monarch.debugger._debugger_output", new=_patch_output
+    ):
+        proc = await proc_mesh(hosts=2, gpus=2)
+        debugee = await proc.spawn("debugee", DebugeeActor)
+        debug_client = await init_debugging(debugee)
+
+        fut = debugee.to_debug.call()
+        await debug_client.wait_pending_session.call_one()
+        breakpoints = []
+        for i in range(10):
+            breakpoints = await debug_client.list.call_one()
+            if len(breakpoints) == 4:
+                break
+            await asyncio.sleep(1)
+            if i == 9:
+                raise RuntimeError("timed out waiting for breakpoints")
+
+        initial_linenos = {}
+        for i in range(len(breakpoints)):
+            rank, coords, _, _, function, lineno = breakpoints[i]
+            initial_linenos[rank] = lineno
+            assert rank == i
+            assert coords == {"hosts": rank % 2, "gpus": rank // 2}
+            assert function == "test_python_actors._debugee_actor_internal"
+            assert lineno == breakpoints[0][5] + 4 * rank
+
+        await debug_client.enter.call_one()
+
+        # Check that when detaching and re-attaching to a session, the last portion of the output is repeated
+        expected_last_output = [
+            r"--Return--",
+            r"\n",
+            r"> (/.*/)+test_python_actors.py\(\d+\)to_debug\(\)->3\n-> return _debugee_actor_internal\(rank\)",
+            r"\n",
+            r"\(Pdb\) ",
+        ]
+        output_len = len(expected_last_output)
+        assert outputs[-2 * output_len : -output_len] == outputs[-output_len:]
+        for real_output, expected_output in zip(
+            outputs[-output_len:], expected_last_output
+        ):
+            assert re.match(expected_output, real_output) is not None
+
+        breakpoints = await debug_client.list.call_one()
+        for i in range(len(breakpoints)):
+            if i == 1:
+                assert breakpoints[i][4] == "test_python_actors.to_debug"
+            else:
+                assert breakpoints[i][4] == "test_python_actors._debugee_actor_internal"
+                assert breakpoints[i][5] == initial_linenos[i]
+
+        await debug_client.enter.call_one()
+
+        breakpoints = await debug_client.list.call_one()
+        for i in range(len(breakpoints)):
+            if i == 1:
+                assert breakpoints[i][4] == "test_python_actors.to_debug"
+            elif i in (0, 3):
+                assert breakpoints[i][4] == "test_python_actors._debugee_actor_internal"
+                assert breakpoints[i][5] == initial_linenos[i] + 2
+            else:
+                assert breakpoints[i][4] == "test_python_actors._debugee_actor_internal"
+                assert breakpoints[i][5] == initial_linenos[i]
+
+        await debug_client.enter.call_one()
+
+        breakpoints = await debug_client.list.call_one()
+        assert len(breakpoints) == 3
+        for i, rank in enumerate((0, 1, 3)):
+            assert breakpoints[i][0] == rank
+
+        await debug_client.enter.call_one()
+        breakpoints = await debug_client.list.call_one()
+        assert len(breakpoints) == 0
+
+        with pytest.raises(monarch.actor_mesh.ActorError, match="ValueError: bad rank"):
+            await fut
