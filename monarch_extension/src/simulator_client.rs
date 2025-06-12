@@ -20,6 +20,7 @@ use hyperactor::simnet::OperationalMessage;
 use hyperactor::simnet::ProxyMessage;
 use hyperactor::simnet::SpawnMesh;
 use hyperactor::simnet::TrainingScriptState;
+use hyperactor::simnet::simnet_handle;
 use monarch_hyperactor::runtime::signal_safe_block_on;
 use monarch_simulator_lib::bootstrap::bootstrap;
 use pyo3::exceptions::PyRuntimeError;
@@ -124,6 +125,17 @@ impl SimulatorClient {
 
     fn set_training_script_state_waiting(&self) -> PyResult<()> {
         set_training_script_state(TrainingScriptState::Waiting, self.proxy_addr.clone())
+    }
+
+    fn close(&self, py: Python) -> PyResult<String> {
+        signal_safe_block_on(py, async move {
+            simnet_handle()
+                .unwrap()
+                .close()
+                .await
+                .map_err(|err| PyRuntimeError::new_err(err.to_string()))
+                .map(|s| s.to_string())
+        })?
     }
 }
 
