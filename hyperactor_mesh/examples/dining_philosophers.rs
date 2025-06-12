@@ -90,6 +90,8 @@ impl Unbind for PhilosopherMessage {
             Self::Start(port) => {
                 let ports = [port.port_id()];
                 bindings.insert(ports)?;
+                let reducer_typehashes = [port.reducer_typehash()];
+                bindings.insert::<Option<u64>>(reducer_typehashes)?;
             }
             Self::GrantChopstick(_) => {}
         }

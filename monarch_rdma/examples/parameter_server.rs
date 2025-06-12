@@ -339,6 +339,8 @@ impl Unbind for WorkerStep {
         let mut bindings = Bindings::default();
         let ports = [self.0.port_id()];
         bindings.insert(ports)?;
+        let reducer_typehashes = [self.0.reducer_typehash()];
+        bindings.insert::<Option<u64>>(reducer_typehashes)?;
         Ok(bindings)
     }
 }
@@ -364,6 +366,8 @@ impl Unbind for WorkerUpdate {
         let mut bindings = Bindings::default();
         let ports = [self.0.port_id()];
         bindings.insert(ports)?;
+        let reducer_typehashes = [self.0.reducer_typehash()];
+        bindings.insert::<Option<u64>>(reducer_typehashes)?;
         Ok(bindings)
     }
 }
