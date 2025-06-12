@@ -223,11 +223,6 @@ impl Event for MessageDeliveryEvent {
     }
 }
 
-/// Export the message delivery records of the simnet.
-pub async fn records() -> anyhow::Result<Option<Vec<simnet::SimulatorEventRecord>>, SimNetError> {
-    Ok(simnet_handle()?.records().await)
-}
-
 /// Bind a channel address to the simnet. It will register the address as a node in simnet,
 /// and configure default latencies between this node and all other existing nodes.
 pub async fn bind(addr: ChannelAddr) -> anyhow::Result<(), SimNetError> {
@@ -539,7 +534,7 @@ mod tests {
             assert_eq!(rx.recv().await.unwrap(), 123);
         }
 
-        let records = sim::records().await;
+        let records = sim::simnet_handle().unwrap().close().await.unwrap();
         eprintln!("records: {:#?}", records);
     }
 
@@ -768,7 +763,7 @@ mod tests {
             // Allow some time for simnet to run
             RealClock.sleep(tokio::time::Duration::from_secs(1)).await;
         }
-        let recs = records().await.unwrap().unwrap();
+        let recs = simnet::simnet_handle().unwrap().close().await.unwrap();
         assert_eq!(recs.len(), 2);
         let end_times = recs.iter().map(|rec| rec.end_at).collect::<Vec<_>>();
         // client message was delivered at "real" time = 5 seconds
