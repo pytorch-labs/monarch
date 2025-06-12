@@ -777,7 +777,7 @@ pub fn start(
         let config = config.clone();
         let pending_event_count = pending_event_count.clone();
         let stop_signal = stop_signal.clone();
-        tokio::task::spawn_blocking(move || {
+        tokio::spawn(async move {
             let mut net = SimNet {
                 config,
                 address_book,
@@ -789,7 +789,8 @@ pub fn start(
                 records,
                 pending_event_count,
             };
-            block_on(net.run(event_rx, training_script_state_rx, stop_signal));
+            net.run(event_rx, training_script_state_rx, stop_signal)
+                .await
         })
     };
     let join_handles = Arc::new(Mutex::new(vec![simnet_join_handle]));
@@ -936,6 +937,7 @@ impl SimNet {
                                     + training_script_waiting_time
                         })
                 {
+                    tokio::task::yield_now().await;
                     continue;
                 }
                 match (
