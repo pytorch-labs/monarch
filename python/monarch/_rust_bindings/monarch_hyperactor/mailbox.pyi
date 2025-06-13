@@ -110,7 +110,7 @@ class Mailbox:
         """Open a port to receive a single `PythonMessage` message."""
         ...
 
-    def post(self, dest: ActorId | PortId, message: PythonMessage) -> None:
+    def post(self, dest: ActorId, message: PythonMessage) -> None:
         """
         Post a message to the provided destination. If the destination is an actor id,
         the message is sent to the default handler for `PythonMessage` on the actor.
@@ -119,7 +119,7 @@ class Mailbox:
         ...
 
     def post_cast(
-        self, dest: ActorId | PortId, rank: int, shape: Shape, message: PythonMessage
+        self, dest: ActorId, rank: int, shape: Shape, message: PythonMessage
     ) -> None:
         """
         Post a message to the provided actor. It will be handled using the handle_cast

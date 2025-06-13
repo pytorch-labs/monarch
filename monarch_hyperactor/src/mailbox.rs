@@ -80,23 +80,8 @@ impl PyMailbox {
         ))
     }
 
-    pub(super) fn post<'py>(
-        &self,
-        py: Python<'py>,
-        dest: PyObject,
-        message: &PythonMessage,
-    ) -> PyResult<()> {
-        let port_id = if let Ok(actor_id) = dest.extract::<PyActorId>(py) {
-            // Messages to an actor gets sent to the message port for PythonMessage.
-            actor_id.inner.port_id(PythonMessage::port())
-        } else if let Ok(port_id) = dest.extract::<PyPortId>(py) {
-            port_id.inner.clone()
-        } else {
-            return Err(PyErr::new::<PyValueError, _>(
-                "dest must be either an actor id or a port id",
-            ));
-        };
-
+    pub(super) fn post(&self, dest: &PyActorId, message: &PythonMessage) -> PyResult<()> {
+        let port_id = dest.inner.port_id(PythonMessage::port());
         let message = Serialized::serialize(message).map_err(|err| {
             PyRuntimeError::new_err(format!(
                 "failed to serialize message ({:?}) to Serialized: {}",
@@ -110,7 +95,7 @@ impl PyMailbox {
 
     pub(super) fn post_cast(
         &self,
-        dest: PyActorId,
+        dest: &PyActorId,
         rank: usize,
         shape: &PyShape,
         message: &PythonMessage,
