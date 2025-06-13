@@ -30,5 +30,6 @@ anyhow = "1.0.95"
 async-trait = "0.1.86"
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 serde = { version = "1.0.185", features = ["derive", "rc"] }
+timed_test = { version = "0.0.0", path = "../timed_test" }
 tokio = { version = "1.37.0", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
