@@ -22,6 +22,7 @@ use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::PortId;
 use hyperactor::WorldId;
+use hyperactor::accum::ReducerSpec;
 use hyperactor::data::Serialized;
 use ndslice::Slice;
 use ndslice::selection::routing::RoutingFrame;
@@ -177,11 +178,17 @@ impl CommActor {
         // way, children actors will reply to this comm actor's ports, instead
         // of to the original ports provided by parent.
         let reply_ports = message.data().get::<PortId>()?;
+        let reducer_specs = message.data().get::<Option<ReducerSpec>>()?;
+        anyhow::ensure!(
+            reply_ports.len() == reducer_specs.len(),
+            "mismatched ports and their reducer typehashs"
+        );
         if !reply_ports.is_empty() {
             let split_ports = reply_ports
                 .iter()
-                .map(|p| p.split(this, message.reducer_typehash().clone()))
-                .collect::<Vec<_>>();
+                .zip(reducer_specs.iter())
+                .map(|(p, r)| p.split(this, r.clone()))
+                .collect::<Result<Vec<_>>>()?;
             message.data_mut().replace::<PortId>(split_ports.iter())?;
 
             #[cfg(test)]
@@ -413,7 +420,15 @@ pub mod test_utils {
                         reply_to1.port_id(),
                         reply_to2.port_id(),
                     ];
-                    bindings.insert::<PortId>(ports.into_iter())?;
+                    bindings.insert::<PortId>(ports)?;
+                    let reducer_specs = [
+                        // Intentionally not visiting 0. As a result, this port
+                        // will not be split.
+                        // reply_to0.reducer_spec().clone(),
+                        reply_to1.reducer_spec(),
+                        reply_to2.reducer_spec(),
+                    ];
+                    bindings.insert::<Option<ReducerSpec>>(reducer_specs)?;
                     Ok(bindings)
                 }
             }
@@ -504,6 +519,7 @@ mod tests {
     use hyperactor::accum::CommReducer;
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
+    use hyperactor::config;
     use hyperactor::mailbox::PortReceiver;
     use hyperactor::mailbox::open_port;
     use hyperactor::reference::Index;
@@ -696,25 +712,21 @@ mod tests {
         reply_tos: Vec<(PortRef<u64>, PortRef<MyReply>)>,
     }
 
-    // Placeholder to make compiler happy.
-    #[derive(Debug, Clone, Serialize, Deserialize, Named)]
-    struct NonReducer;
-    impl CommReducer for NonReducer {
-        type Update = u64;
-
-        fn reduce(&self, _left: Self::Update, _right: Self::Update) -> Self::Update {
-            unimplemented!()
-        }
-    }
-
     struct NoneAccumulator;
 
     impl Accumulator for NoneAccumulator {
         type State = u64;
         type Update = u64;
-        type Reducer = NonReducer;
 
-        fn accumulate(&self, _state: &mut Self::State, _update: Self::Update) {
+        fn accumulate(
+            &self,
+            _state: &mut Self::State,
+            _update: Self::Update,
+        ) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+
+        fn reducer_spec(&self) -> Option<ReducerSpec> {
             unimplemented!()
         }
     }
@@ -916,6 +928,12 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_cast_and_accum() -> Result<()> {
+        // Use temporary config for this test
+        let _guard = config::global::set_temp_config(config::Config {
+            split_max_buffer_size: 1,
+            ..Default::default()
+        });
+
         let MeshSetup {
             actor_mesh,
             mut reply1_rx,
