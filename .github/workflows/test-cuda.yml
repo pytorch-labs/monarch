@@ -1,0 +1,47 @@
+name: Test CUDA
+
+on:
+  workflow_call:
+    inputs:
+      artifact-name:
+        description: 'CUDA artifact name from build workflow'
+        required: true
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-gpu:
+    name: cuda12.6-py3.10-4xlarge
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - name: 4xlarge
+            runs-on: linux.g5.4xlarge.nvidia.gpu
+            torch-spec: '--pre torch --index-url https://download.pytorch.org/whl/nightly/cu126'
+            gpu-arch-type: "cuda"
+            gpu-arch-version: "12.6"
+    uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+    with:
+      timeout: 60
+      runner: ${{ matrix.runs-on }}
+      gpu-arch-type: ${{ matrix.gpu-arch-type }}
+      gpu-arch-version: ${{ matrix.gpu-arch-version }}
+      submodules: recursive
+      download-artifact: ${{ inputs.artifact-name }}
+      script: |
+        # Setup test environment
+        conda create -n venv python=3.10 -y
+        conda activate venv
+        export PATH=/opt/rh/devtoolset-10/root/usr/bin/:$PATH
+        python -m pip install --upgrade pip
+
+        # Install test dependencies
+        pip install -r python/tests/requirements.txt
+
+        # Run CUDA tests
+        LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip" -n auto
+        python python/tests/test_mock_cuda.py

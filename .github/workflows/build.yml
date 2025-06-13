@@ -1,0 +1,102 @@
+name: Build monarch
+
+on:
+  workflow_call:
+    outputs:
+      cuda-artifact:
+        description: "CUDA build artifact name"
+        value: ${{ jobs.build-cuda.outputs.artifact-name }}
+      cpu-artifact:
+        description: "CPU build artifact name"
+        value: ${{ jobs.build-cpu.outputs.artifact-name }}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-cuda:
+    name: Build CUDA (cuda12.6-py3.10)
+    outputs:
+      artifact-name: monarch-cuda-${{ github.sha }}
+    strategy:
+      matrix:
+        include:
+          - name: 4xlarge
+            runs-on: linux.g5.4xlarge.nvidia.gpu
+            gpu-arch-type: "cuda"
+            gpu-arch-version: "12.6"
+    uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+    with:
+      timeout: 30
+      runner: ${{ matrix.runs-on }}
+      gpu-arch-type: ${{ matrix.gpu-arch-type }}
+      gpu-arch-version: ${{ matrix.gpu-arch-version }}
+      submodules: recursive
+      upload-artifact: monarch-cuda-${{ github.sha }}
+      script: |
+        # Setup environment
+        conda create -n venv python=3.10 -y
+        conda activate venv
+        export PATH=/opt/rh/devtoolset-10/root/usr/bin/:$PATH
+        python -m pip install --upgrade pip
+
+        # Install system dependencies
+        dnf update -y
+        dnf install clang-devel libunwind libunwind-devel -y
+
+        # Install and setup Rust nightly
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        source $HOME/.cargo/env
+        rustup toolchain install nightly
+        rustup default nightly
+
+        # Install build dependencies
+        pip install -r build-requirements.txt
+
+        # Build and install remote process allocator binary
+        cargo install --path monarch_hyperactor
+
+        # Build and install monarch (CUDA version)
+        pip install --no-build-isolation .
+
+  build-cpu:
+    name: Build CPU
+    outputs:
+      artifact-name: monarch-cpu-${{ github.sha }}
+    strategy:
+      matrix:
+        include:
+          - name: 4xlarge
+            runs-on: linux.4xlarge
+    uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+    with:
+      timeout: 30
+      runner: ${{ matrix.runs-on }}
+      submodules: recursive
+      upload-artifact: monarch-cpu-${{ github.sha }}
+      script: |
+        # Setup environment
+        conda create -n venv python=3.10 -y
+        conda activate venv
+        export PATH=/opt/rh/devtoolset-10/root/usr/bin/:$PATH
+        python -m pip install --upgrade pip
+
+        # Install system dependencies
+        dnf update -y
+        dnf install clang-devel libunwind libunwind-devel -y
+
+        # Install and setup Rust nightly
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        source $HOME/.cargo/env
+        rustup toolchain install nightly
+        rustup default nightly
+
+        # Install build dependencies
+        pip install -r build-requirements.txt
+
+        # Build and install remote process allocator binary
+        cargo install --path monarch_hyperactor
+
+        # Build and install monarch (CPU version)
+        USE_TENSOR_ENGINE=0 pip install --no-build-isolation .
