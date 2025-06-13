@@ -284,14 +284,14 @@ pub enum AssignRankMessage {
 
 // TODO(pzhang) replace the boilerplate Bind/Unbind impls with a macro.
 impl Bind for AssignRankMessage {
-    fn bind(self, _bindings: &Bindings) -> anyhow::Result<Self> {
-        Ok(self)
+    fn bind(&mut self, _bindings: &mut Bindings) -> anyhow::Result<()> {
+        Ok(())
     }
 }
 
 impl Unbind for AssignRankMessage {
-    fn bindings(&self) -> anyhow::Result<Bindings> {
-        Ok(Bindings::default())
+    fn unbind(&self, _bindings: &mut Bindings) -> anyhow::Result<()> {
+        Ok(())
     }
 }
 
