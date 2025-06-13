@@ -53,7 +53,7 @@ use crate::channel;
 use crate::channel::ChannelAddr;
 use crate::channel::Rx;
 use crate::channel::sim::AddressProxyPair;
-use crate::channel::sim::MessageDeliveryEvent;
+use crate::channel::sim::MessageRecvEvent;
 use crate::clock::Clock;
 use crate::clock::RealClock;
 use crate::clock::SimClock;
@@ -86,7 +86,7 @@ type SimulatorTimeInstant = u64;
 /// The unit of execution for the simulator.
 /// Using handle(), simnet can schedule executions in the network.
 /// If you want to send a message for example, you would want to implement
-/// a MessageDeliveryEvent much on the lines expressed in simnet tests.
+/// a MessageSendEvent much on the lines expressed in simnet tests.
 /// You can also do other more advanced concepts such as node churn,
 /// or even simulate process spawns in a distributed system. For example,
 /// one can implement a SystemActorSimEvent in order to spawn a system
@@ -395,19 +395,6 @@ impl SimNetHandle {
         self.send_event_impl(event, false)
     }
 
-    /// Sends an event that already has a scheduled time onto the simnet's event loop
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SimNetError`.
-    pub(crate) fn send_scheduled_event(
-        &self,
-        ScheduledEvent { event, time }: ScheduledEvent,
-    ) -> Result<(), SimNetError> {
-        self.pending_event_count
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.event_tx
-            .send((event, true, Some(time)))
-            .map_err(|err| SimNetError::Closed(err.to_string()))
-    }
-
     /// Let the simnet know if the training script is running or waiting for the backend
     /// to return a future result.
     pub fn set_training_script_state(&self, state: TrainingScriptState) {
@@ -683,7 +670,7 @@ impl ProxyHandle {
                     if let Ok(Ok(msg)) = timeout(Duration::from_millis(100), rx.recv()).await {
                         let proxy_message: ProxyMessage = msg.deserialized().unwrap();
                         let event: Box<dyn Event> = match proxy_message.dest_addr {
-                            Some(dest_addr) => Box::new(MessageDeliveryEvent::new(
+                            Some(dest_addr) => Box::new(MessageRecvEvent::new(
                                 proxy_message.sender_addr,
                                 dest_addr,
                                 proxy_message.data,
@@ -1088,7 +1075,84 @@ mod tests {
     use crate::simnet::SimNetError;
 
     #[derive(Debug)]
-    struct MessageDeliveryEvent {
+    struct MessageSendEvent {
+        src_addr: SimAddr,
+        dest_addr: SimAddr,
+        data: Serialized,
+        duration_ms: u64,
+        dispatcher: Option<TestDispatcher>,
+        inflight_time_ms: u64,
+    }
+
+    #[async_trait]
+    impl Event for MessageSendEvent {
+        async fn handle(&self) -> Result<(), simnet::SimNetError> {
+            let inflight_time_ms = self.inflight_time_ms;
+            let event = Box::new(MessageRecvEvent {
+                src_addr: self.src_addr.clone(),
+                dest_addr: self.dest_addr.clone(),
+                data: self.data.clone(),
+                duration_ms: 0,
+                dispatcher: self.dispatcher.clone(),
+            });
+
+            tokio::task::spawn(async move {
+                SimClock
+                    .sleep(tokio::time::Duration::from_millis(inflight_time_ms))
+                    .await;
+
+                if let Ok(handle) = simnet_handle() {
+                    let _ = handle.send_event(event);
+                }
+            });
+            Ok(())
+        }
+        fn duration_ms(&self) -> u64 {
+            self.duration_ms
+        }
+
+        fn summary(&self) -> String {
+            format!(
+                "{} sending message to {}",
+                self.src_addr.addr().clone(),
+                self.dest_addr.addr().clone()
+            )
+        }
+
+        async fn read_simnet_config(&mut self, config: &Arc<Mutex<SimNetConfig>>) {
+            let edge = SimNetEdge {
+                src: self.src_addr.addr().clone(),
+                dst: self.dest_addr.addr().clone(),
+            };
+            self.inflight_time_ms = config
+                .lock()
+                .await
+                .topology
+                .get(&edge)
+                .map_or_else(|| 1, |v| v.latency.as_millis() as u64);
+        }
+    }
+
+    impl MessageSendEvent {
+        fn new(
+            src_addr: SimAddr,
+            dest_addr: SimAddr,
+            data: Serialized,
+            dispatcher: Option<TestDispatcher>,
+        ) -> Self {
+            Self {
+                src_addr,
+                dest_addr,
+                data,
+                duration_ms: 0,
+                dispatcher,
+                inflight_time_ms: 1,
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct MessageRecvEvent {
         src_addr: SimAddr,
         dest_addr: SimAddr,
         data: Serialized,
@@ -1097,7 +1161,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl Event for MessageDeliveryEvent {
+    impl Event for MessageRecvEvent {
         async fn handle(&self) -> Result<(), simnet::SimNetError> {
             if let Some(dispatcher) = &self.dispatcher {
                 dispatcher
@@ -1116,40 +1180,10 @@ mod tests {
 
         fn summary(&self) -> String {
             format!(
-                "Sending message from {} to {}",
+                "{} received message from {}",
+                self.dest_addr.addr().clone(),
                 self.src_addr.addr().clone(),
-                self.dest_addr.addr().clone()
             )
-        }
-
-        async fn read_simnet_config(&mut self, config: &Arc<Mutex<SimNetConfig>>) {
-            let edge = SimNetEdge {
-                src: self.src_addr.addr().clone(),
-                dst: self.dest_addr.addr().clone(),
-            };
-            self.duration_ms = config
-                .lock()
-                .await
-                .topology
-                .get(&edge)
-                .map_or_else(|| 1, |v| v.latency.as_millis() as u64);
-        }
-    }
-
-    impl MessageDeliveryEvent {
-        fn new(
-            src_addr: SimAddr,
-            dest_addr: SimAddr,
-            data: Serialized,
-            dispatcher: Option<TestDispatcher>,
-        ) -> Self {
-            Self {
-                src_addr,
-                dest_addr,
-                data,
-                duration_ms: 1,
-                dispatcher,
-            }
         }
     }
 
@@ -1238,7 +1272,7 @@ mod tests {
         let proxy_addr = ChannelAddr::any(channel::ChannelTransport::Unix);
         let alice = SimAddr::new(alice, proxy_addr.clone()).unwrap();
         let bob = SimAddr::new(bob, proxy_addr.clone()).unwrap();
-        let msg = Box::new(MessageDeliveryEvent::new(
+        let msg = Box::new(MessageSendEvent::new(
             alice,
             bob,
             Serialized::serialize(&"123".to_string()).unwrap(),
@@ -1251,13 +1285,27 @@ mod tests {
             .await
             .unwrap();
         let records = simnet_handle().unwrap().close().await;
-        let expected_record = SimulatorEventRecord {
-            summary: "Sending message from local!1 to local!2".to_string(),
-            start_at: 0,
-            end_at: latency.as_millis() as u64,
-        };
-        assert!(records.as_ref().unwrap().len() == 1);
-        assert_eq!(records.unwrap().first().unwrap(), &expected_record);
+        assert_eq!(records.as_ref().unwrap().len(), 3);
+        assert_eq!(
+            records.unwrap(),
+            vec![
+                SimulatorEventRecord {
+                    summary: "local!1 sending message to local!2".to_string(),
+                    start_at: 0,
+                    end_at: 0,
+                },
+                SimulatorEventRecord {
+                    summary: "Sleeping for 1000 ms".to_string(),
+                    start_at: 0,
+                    end_at: 1000,
+                },
+                SimulatorEventRecord {
+                    summary: "local!2 received message from local!1".to_string(),
+                    start_at: 1000,
+                    end_at: 1000,
+                },
+            ]
+        );
     }
 
     #[tokio::test]
@@ -1294,7 +1342,7 @@ mod tests {
         for _ in 0..10 {
             simnet_handle()
                 .unwrap()
-                .send_event(Box::new(MessageDeliveryEvent::new(
+                .send_event(Box::new(MessageSendEvent::new(
                     alice.clone(),
                     bob.clone(),
                     Serialized::serialize(&"123".to_string()).unwrap(),
@@ -1310,15 +1358,20 @@ mod tests {
             .await
             .unwrap();
 
-        let records = simnet_handle().unwrap().close().await;
-        assert_eq!(records.as_ref().unwrap().len(), 10);
+        let records = simnet_handle()
+            .unwrap()
+            .close()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.summary.contains("received message"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(records.len(), 10,);
 
         // If debounce is successful, the simnet will not advance to the delivery of any of
         // the messages before all are received
-        assert_eq!(
-            records.unwrap().last().unwrap().end_at,
-            latency.as_millis() as u64
-        );
+        assert_eq!(records.last().unwrap().end_at, latency.as_millis() as u64);
     }
 
     #[tokio::test]
@@ -1351,19 +1404,19 @@ mod tests {
         let addr_1 = SimAddr::new(addresses[1].clone(), proxy_addr.clone()).unwrap();
         let addr_2 = SimAddr::new(addresses[2].clone(), proxy_addr.clone()).unwrap();
         let addr_3 = SimAddr::new(addresses[3].clone(), proxy_addr.clone()).unwrap();
-        let one = Box::new(MessageDeliveryEvent::new(
+        let one = Box::new(MessageSendEvent::new(
             addr_0.clone(),
             addr_1.clone(),
             messages[0].clone(),
             sender.clone(),
         ));
-        let two = Box::new(MessageDeliveryEvent::new(
+        let two = Box::new(MessageSendEvent::new(
             addr_2.clone(),
             addr_3.clone(),
             messages[1].clone(),
             sender.clone(),
         ));
-        let three = Box::new(MessageDeliveryEvent::new(
+        let three = Box::new(MessageSendEvent::new(
             addr_0.clone(),
             addr_1.clone(),
             messages[2].clone(),
@@ -1486,7 +1539,7 @@ edges:
         let records = simnet_handle().unwrap().close().await;
         assert!(records.as_ref().unwrap().len() == 1);
         let expected_record = SimulatorEventRecord {
-            summary: format!("Sending message from {} to {}", src, dst),
+            summary: format!("{} received message from {}", dst, src),
             start_at: 0,
             end_at: 1,
         };
