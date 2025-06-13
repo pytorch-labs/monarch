@@ -516,7 +516,6 @@ mod tests {
     use hyperactor::PortRef;
     use hyperactor::accum;
     use hyperactor::accum::Accumulator;
-    use hyperactor::accum::CommReducer;
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
     use hyperactor::config;

@@ -19,6 +19,7 @@ use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::PortId;
+use hyperactor::accum::ReducerSpec;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::IndexedErasedUnbound;
@@ -167,11 +168,11 @@ impl PickledMessageClientActor {
 }
 
 #[pyclass(frozen, module = "monarch._rust_bindings.monarch_hyperactor.actor")]
-#[derive(Clone, Serialize, Deserialize, Named, PartialEq)]
+#[derive(Default, Clone, Serialize, Deserialize, Named, PartialEq)]
 pub struct PythonMessage {
-    method: String,
-    message: ByteBuf,
-    response_port: Option<PortId>,
+    pub(crate) method: String,
+    pub(crate) message: ByteBuf,
+    response_port: Option<(PortId, Option<ReducerSpec>)>,
     rank_in_response: bool,
 }
 
@@ -190,8 +191,9 @@ impl std::fmt::Debug for PythonMessage {
 impl Unbind for PythonMessage {
     fn bindings(&self) -> anyhow::Result<Bindings> {
         let mut bindings = Bindings::default();
-        if let Some(response_port) = &self.response_port {
-            bindings.push(response_port)?;
+        if let Some((response_port, reducer_spec)) = &self.response_port {
+            bindings.push::<PortId>(response_port)?;
+            bindings.push::<Option<ReducerSpec>>(reducer_spec)?;
         }
         Ok(bindings)
     }
@@ -200,7 +202,7 @@ impl Unbind for PythonMessage {
 impl Bind for PythonMessage {
     fn bind(mut self, bindings: &Bindings) -> anyhow::Result<Self> {
         if let Some(response_port) = &mut self.response_port {
-            bindings.rebind::<PortId>([response_port].into_iter())?;
+            bindings.rebind::<PortId>([&mut response_port.0].into_iter())?;
         }
         Ok(self)
     }
@@ -213,13 +215,16 @@ impl PythonMessage {
     fn new(
         method: String,
         message: Vec<u8>,
-        response_port: Option<crate::mailbox::PyPortId>,
+        response_port: Option<(
+            crate::mailbox::PyPortId,
+            Option<crate::mailbox::PyReducerSpec>,
+        )>,
         rank_in_response: bool,
     ) -> Self {
         Self {
             method,
             message: ByteBuf::from(message),
-            response_port: response_port.map(Into::into),
+            response_port: response_port.map(|(p, r)| (p.into(), r.map(Into::into))),
             rank_in_response,
         }
     }
@@ -236,7 +241,7 @@ impl PythonMessage {
 
     #[getter]
     fn response_port(&self) -> Option<crate::mailbox::PyPortId> {
-        self.response_port.clone().map(Into::into)
+        self.response_port.as_ref().map(|(p, _)| p.clone().into())
     }
 
     #[getter]
@@ -511,19 +516,35 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
 
 #[cfg(test)]
 mod tests {
+    use hyperactor::data::Serialized;
     use hyperactor::id;
+    use hyperactor::message::ErasedUnbound;
 
     use super::*;
 
     #[test]
     fn test_python_message_bind_unbind() {
+        let reducer_spec = ReducerSpec {
+            typehash: 123,
+            builder_params: Some(Serialized::serialize(&"abcdefg12345".to_string()).unwrap()),
+        };
         let message = PythonMessage {
             method: "test".to_string(),
             message: ByteBuf::from(vec![1, 2, 3]),
-            response_port: Some(id!(world[0].client[0][123])),
+            response_port: Some((id!(world[0].client[0][123]), Some(reducer_spec.clone()))),
             rank_in_response: false,
         };
         {
+            let erased = ErasedUnbound::try_from_message(message.clone()).unwrap();
+            assert_eq!(
+                erased.get::<PortId>().unwrap(),
+                vec![id!(world[0].client[0][123])],
+            );
+            assert_eq!(
+                erased.get::<Option<ReducerSpec>>().unwrap(),
+                vec![Some(reducer_spec)],
+            );
+
             let unbound = message.clone().unbind().unwrap();
             assert_eq!(message, unbound.bind().unwrap());
         }
@@ -533,6 +554,10 @@ mod tests {
             ..message
         };
         {
+            let erased = ErasedUnbound::try_from_message(no_port_message.clone()).unwrap();
+            assert_eq!(erased.get::<PortId>().unwrap(), vec![]);
+            assert_eq!(erased.get::<Option<ReducerSpec>>().unwrap(), vec![]);
+
             let unbound = no_port_message.clone().unbind().unwrap();
             assert_eq!(no_port_message, unbound.bind().unwrap());
         }
