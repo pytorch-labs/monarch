@@ -201,9 +201,11 @@ class Bootstrap:
 
         proxy_addr = proxy_addr or f"unix!@{_random_id()}-proxy"
         self.bootstrap_addr: str = f"sim!unix!@system,{proxy_addr}"
-        self.client_listen_addr: str = f"sim!unix!@client,{proxy_addr}"
+
+        client_proxy_addr = f"unix!@{_random_id()}-proxy"
+        self.client_listen_addr: str = f"sim!unix!@client,{client_proxy_addr}"
         self.client_bootstrap_addr: str = (
-            f"sim!unix!@client,{proxy_addr},unix!@system,{proxy_addr}"
+            f"sim!unix!@client,{client_proxy_addr},unix!@system,{proxy_addr}"
         )
         bootstrap_simulator_backend(self.bootstrap_addr, proxy_addr, world_size)
 
