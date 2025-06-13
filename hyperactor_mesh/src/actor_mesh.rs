@@ -72,7 +72,6 @@ pub trait ActorMesh: Mesh {
             self.proc_mesh().client().actor_id().clone(),
             DestinationPort::new::<Self::Actor, Cast<M>>(self.name().to_string()),
             message,
-            None, // TODO: reducer typehash
         )?;
 
         // Sub-set the selection to the selection that represents the mesh's view
@@ -420,6 +419,8 @@ pub(crate) mod test_util {
             let mut bindings = Bindings::default();
             let ports = [self.1.port_id()];
             bindings.insert(ports)?;
+            let reducer_typehashes = [self.1.reducer_typehash()];
+            bindings.insert::<Option<u64>>(reducer_typehashes)?;
             Ok(bindings)
         }
     }
@@ -472,6 +473,8 @@ pub(crate) mod test_util {
             let mut bindings = Bindings::default();
             let ports = [self.1.port_id()];
             bindings.insert(ports)?;
+            let reducer_typehashes = [self.1.reducer_typehash()];
+            bindings.insert::<Option<u64>>(reducer_typehashes)?;
             Ok(bindings)
         }
     }
@@ -541,6 +544,7 @@ pub(crate) mod test_util {
 mod tests {
 
     use hyperactor::ActorId;
+    use hyperactor::PortId;
     use hyperactor::PortRef;
     use hyperactor::ProcId;
     use hyperactor::WorldId;
@@ -954,6 +958,11 @@ mod tests {
             let mut bindings = Bindings::default();
             let ports = [self.field2.port_id(), self.field4.port_id()];
             bindings.insert(ports)?;
+            let reducer_typehashes = [
+                self.field2.reducer_typehash(),
+                self.field4.reducer_typehash(),
+            ];
+            bindings.insert::<Option<u64>>(reducer_typehashes)?;
             Ok(bindings)
         }
     }
@@ -981,8 +990,10 @@ mod tests {
         let bindings = cast.bindings().unwrap();
         let mut expected = Bindings::default();
         expected
-            .insert(&[port_id2.clone(), port_id4.clone()])
+            .insert::<PortId>(&[port_id2.clone(), port_id4.clone()])
             .unwrap();
+        expected.insert::<Option<u64>>(&[None, None]).unwrap();
+
         expected.push(&cast.rank).unwrap();
         assert_eq!(bindings, expected);
 

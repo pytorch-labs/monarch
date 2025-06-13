@@ -47,8 +47,6 @@ pub struct CastMessageEnvelope {
     dest_port: DestinationPort,
     /// The serialized message.
     data: ErasedUnbound,
-    /// typehash of the reducer used to accumulate the message in split ports.
-    pub reducer_typehash: Option<u64>,
 }
 
 impl CastMessageEnvelope {
@@ -57,14 +55,12 @@ impl CastMessageEnvelope {
         sender: ActorId,
         dest_port: DestinationPort,
         message: T,
-        reducer_typehash: Option<u64>,
     ) -> Result<Self, anyhow::Error> {
         let data = ErasedUnbound::try_from_message(message)?;
         Ok(Self {
             sender,
             dest_port,
             data,
-            reducer_typehash,
         })
     }
 
@@ -76,7 +72,6 @@ impl CastMessageEnvelope {
             sender,
             dest_port,
             data: ErasedUnbound::new(data),
-            reducer_typehash: None,
         }
     }
 
@@ -90,10 +85,6 @@ impl CastMessageEnvelope {
 
     pub(crate) fn data_mut(&mut self) -> &mut ErasedUnbound {
         &mut self.data
-    }
-
-    pub(crate) fn reducer_typehash(&self) -> &Option<u64> {
-        &self.reducer_typehash
     }
 }
 
