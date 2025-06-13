@@ -23,6 +23,7 @@ use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::message::Unbind;
+use hyperactor::reference::PortRefEnum;
 use hyperactor_mesh::actor_mesh::Cast;
 use monarch_types::PickledPyObject;
 use monarch_types::SerializablePyErr;
@@ -40,6 +41,7 @@ use tokio::sync::Mutex;
 use tokio::sync::oneshot;
 
 use crate::mailbox::PyMailbox;
+use crate::mailbox::PyPortRefEnum;
 use crate::proc::InstanceWrapper;
 use crate::proc::PyActorId;
 use crate::proc::PyProc;
@@ -171,7 +173,7 @@ impl PickledMessageClientActor {
 pub struct PythonMessage {
     method: String,
     message: ByteBuf,
-    response_port: Option<PortId>,
+    response_port: Option<PortRefEnum<PythonMessage>>,
     rank_in_response: bool,
 }
 
@@ -189,22 +191,13 @@ impl std::fmt::Debug for PythonMessage {
 
 impl Unbind for PythonMessage {
     fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        if let Some(response_port) = &self.response_port {
-            bindings.push_back::<PortId>(response_port)?;
-        }
-        Ok(())
+        self.response_port.unbind(bindings)
     }
 }
 
 impl Bind for PythonMessage {
     fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        if let Some(response_port) = &mut self.response_port {
-            let bound = bindings.pop_front::<PortId>()?.ok_or_else(|| {
-                anyhow::anyhow!("PortId requires a PortId binding, but none was found")
-            })?;
-            *response_port = bound;
-        }
-        Ok(())
+        self.response_port.bind(bindings)
     }
 }
 
@@ -215,15 +208,17 @@ impl PythonMessage {
     fn new(
         method: String,
         message: Vec<u8>,
-        response_port: Option<crate::mailbox::PyPortId>,
+        response_port: Option<PyPortRefEnum>,
         rank_in_response: bool,
-    ) -> Self {
-        Self {
+    ) -> PyResult<Self> {
+        let p: Option<PortRefEnum<PythonMessage>> =
+            response_port.map(|port| port.try_into()).transpose()?;
+        Ok(Self {
             method,
             message: ByteBuf::from(message),
-            response_port: response_port.map(Into::into),
+            response_port: p,
             rank_in_response,
-        }
+        })
     }
 
     #[getter]
@@ -237,7 +232,7 @@ impl PythonMessage {
     }
 
     #[getter]
-    fn response_port(&self) -> Option<crate::mailbox::PyPortId> {
+    fn response_port(&self) -> Option<PyPortRefEnum> {
         self.response_port.clone().map(Into::into)
     }
 
@@ -513,6 +508,7 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
 
 #[cfg(test)]
 mod tests {
+    use hyperactor::PortRef;
     use hyperactor::id;
     use hyperactor::message::Unbound;
 
@@ -520,10 +516,11 @@ mod tests {
 
     #[test]
     fn test_python_message_bind_unbind() {
+        let port_ref = PortRef::<PythonMessage>::attest(id!(world[0].client[0][123]));
         let message = PythonMessage {
             method: "test".to_string(),
             message: ByteBuf::from(vec![1, 2, 3]),
-            response_port: Some(id!(world[0].client[0][123])),
+            response_port: Some(port_ref.into()),
             rank_in_response: false,
         };
         {

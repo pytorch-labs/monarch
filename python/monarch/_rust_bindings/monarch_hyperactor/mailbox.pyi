@@ -54,9 +54,20 @@ class PortHandle:
     def send(self, message: PythonMessage) -> None:
         """Send a message to the port's receiver."""
 
-    def bind(self) -> PortId:
-        """Bind this port. The returned port ID can be used to reach the port externally."""
+    def bind(self) -> PortRef:
+        """Bind this port. The returned port ref can be used to reach the port externally."""
         ...
+
+@final
+class PortRef:
+    """
+    A reference to a remote port over which PythonMessages can be sent.
+    """
+
+    def send(self, mailbox: Mailbox, message: PythonMessage) -> None:
+        """Send a single message to the port's receiver."""
+        ...
+    def __str__(self) -> str: ...
 
 @final
 class PortReceiver:
@@ -80,9 +91,20 @@ class OncePortHandle:
         """Send a single message to the port's receiver."""
         ...
 
-    def bind(self) -> PortId:
+    def bind(self) -> OncePortRef:
         """Bind this port. The returned port ID can be used to reach the port externally."""
         ...
+
+@final
+class OncePortRef:
+    """
+    A reference to a remote once port over which a single PythonMessages can be sent.
+    """
+
+    def send(self, mailbox: Mailbox, message: PythonMessage) -> None:
+        """Send a single message to the port's receiver."""
+        ...
+    def __str__(self) -> str: ...
 
 @final
 class OncePortReceiver:

@@ -10,7 +10,11 @@ import abc
 
 from typing import final, List, Protocol
 
-from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox, PortId
+from monarch._rust_bindings.monarch_hyperactor.mailbox import (
+    Mailbox,
+    OncePortRef,
+    PortRef,
+)
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId, Proc, Serialized
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape
 
@@ -103,7 +107,7 @@ class PythonMessage:
         self,
         method: str,
         message: bytes,
-        response_port: PortId | None = None,
+        response_port: PortRef | OncePortRef | None = None,
         rank_in_response: bool = False,
     ) -> None: ...
     @property
@@ -117,7 +121,7 @@ class PythonMessage:
         ...
 
     @property
-    def response_port(self) -> PortId | None:
+    def response_port(self) -> PortRef | OncePortRef | None:
         """The response port."""
         ...
 

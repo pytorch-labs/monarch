@@ -282,6 +282,24 @@ impl_bind_unbind_basic!(isize);
 impl_bind_unbind_basic!(usize);
 impl_bind_unbind_basic!(String);
 
+impl<T: Unbind> Unbind for Option<T> {
+    fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
+        match self {
+            Some(t) => t.unbind(bindings),
+            None => Ok(()),
+        }
+    }
+}
+
+impl<T: Bind> Bind for Option<T> {
+    fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
+        match self {
+            Some(t) => t.bind(bindings),
+            None => Ok(()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use hyperactor::PortRef;

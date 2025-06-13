@@ -755,7 +755,7 @@ impl fmt::Display for PortId {
 /// PortRefs will be serialized.
 #[derive(Debug, Serialize, Deserialize, Derivative)]
 #[derivative(PartialEq, Eq, PartialOrd, Hash, Ord)]
-pub struct PortRef<M: RemoteMessage> {
+pub struct PortRef<M> {
     port_id: PortId,
     #[derivative(
         PartialEq = "ignore",
@@ -842,7 +842,7 @@ impl<M: RemoteMessage> PortRef<M> {
     }
 }
 
-impl<M: RemoteMessage> Clone for PortRef<M> {
+impl<M> Clone for PortRef<M> {
     fn clone(&self) -> Self {
         Self {
             port_id: self.port_id.clone(),
@@ -884,7 +884,7 @@ impl<M: RemoteMessage> Bind for PortRef<M> {
 /// and may be passed to remote actors, which can then use it to send
 /// a message to this port.
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
-pub struct OncePortRef<M: RemoteMessage> {
+pub struct OncePortRef<M> {
     port_id: PortId,
     phantom: PhantomData<M>,
 }
@@ -922,7 +922,7 @@ impl<M: RemoteMessage> OncePortRef<M> {
     }
 }
 
-impl<M: RemoteMessage> Clone for OncePortRef<M> {
+impl<M> Clone for OncePortRef<M> {
     fn clone(&self) -> Self {
         Self {
             port_id: self.port_id.clone(),
@@ -940,6 +940,48 @@ impl<M: RemoteMessage> fmt::Display for OncePortRef<M> {
 impl<M: RemoteMessage> Named for OncePortRef<M> {
     fn typename() -> &'static str {
         crate::data::intern_typename!(Self, "hyperactor::mailbox::OncePortRef<{}>", M)
+    }
+}
+
+// We do not split PortRef, because it can only receive a single response, and
+// there is no meaningful performance gain to make that response going through
+// comm actors.
+impl<M: RemoteMessage> Unbind for OncePortRef<M> {
+    fn unbind(&self, _bindings: &mut Bindings) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+impl<M: RemoteMessage> Bind for OncePortRef<M> {
+    fn bind(&mut self, _bindings: &mut Bindings) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+/// A enum of two types of port references.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, derive_more::From)]
+pub enum PortRefEnum<M> {
+    /// PortRef
+    Unbounded(PortRef<M>),
+    /// OncePortRef
+    Once(OncePortRef<M>),
+}
+
+impl<M: RemoteMessage> Unbind for PortRefEnum<M> {
+    fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
+        match self {
+            PortRefEnum::Unbounded(port_ref) => port_ref.unbind(bindings),
+            PortRefEnum::Once(once_port_ref) => once_port_ref.unbind(bindings),
+        }
+    }
+}
+
+impl<M: RemoteMessage> Bind for PortRefEnum<M> {
+    fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
+        match self {
+            PortRefEnum::Unbounded(port_ref) => port_ref.bind(bindings),
+            PortRefEnum::Once(once_port_ref) => once_port_ref.bind(bindings),
+        }
     }
 }
 

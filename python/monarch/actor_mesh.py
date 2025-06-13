@@ -51,8 +51,9 @@ from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     Mailbox,
     OncePortReceiver,
-    PortId,
+    OncePortRef,
     PortReceiver as HyPortReceiver,
+    PortRef,
 )
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.shape import Point as HyPoint, Shape
@@ -263,7 +264,9 @@ class Endpoint(Generic[P, R]):
 
         Load balanced RPC-style entrypoint for request/response messaging.
         """
-        p, r = port(self, once=True)
+        p: PortRef | OncePortRef
+        r: PortReceiver[R]
+        (p, r) = port(self, once=True)
         # pyre-ignore
         send(self, args, kwargs, port=p, selection="choose")
         return r.recv()
@@ -276,7 +279,7 @@ class Endpoint(Generic[P, R]):
         return self.choose(*args, **kwargs)
 
     def call(self, *args: P.args, **kwargs: P.kwargs) -> "Future[ValueMesh[R]]":
-        p: PortId
+        p: PortRef | OncePortRef
         r: PortReceiver[R]
         p, r = port(self)
         # pyre-ignore
@@ -375,7 +378,7 @@ def send(
     endpoint: Endpoint[P, R],
     args: Tuple[Any, ...],
     kwargs: Dict[str, Any],
-    port: "Optional[PortId]" = None,
+    port: "Optional[PortRef | OncePortRef]" = None,
     selection: Selection = "all",
     rank_in_response: bool = False,
 ) -> None:
@@ -409,16 +412,18 @@ def endpoint(
 
 
 class Port:
-    def __init__(self, port: PortId, mailbox: Mailbox, rank_in_response: bool) -> None:
-        self._port = port
+    def __init__(
+        self, port_ref: PortRef | OncePortRef, mailbox: Mailbox, rank_in_response: bool
+    ) -> None:
+        self._port_ref = port_ref
         self._mailbox = mailbox
         self._rank_in_response = rank_in_response
 
     def send(self, method: str, obj: object) -> None:
         if self._rank_in_response:
             obj = (MonarchContext.get().point.rank, obj)
-        self._mailbox.post(
-            self._port,
+        self._port_ref.send(
+            self._mailbox,
             PythonMessage(method, _pickle(obj), None),
         )
 
@@ -428,12 +433,12 @@ class Port:
 # and handles concerns is different.
 def port(
     endpoint: Endpoint[P, R], once: bool = False
-) -> Tuple["PortId", "PortReceiver[R]"]:
+) -> Tuple["PortRef | OncePortRef", "PortReceiver[R]"]:
     handle, receiver = (
         endpoint._mailbox.open_once_port() if once else endpoint._mailbox.open_port()
     )
-    port_id: PortId = handle.bind()
-    return port_id, PortReceiver(endpoint._mailbox, receiver)
+    port_ref: PortRef | OncePortRef = handle.bind()
+    return port_ref, PortReceiver(endpoint._mailbox, receiver)
 
 
 class PortReceiver(Generic[R]):
