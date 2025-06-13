@@ -11,7 +11,7 @@ import time
 import traceback
 from collections import deque
 from logging import Logger
-from typing import List, NamedTuple, Optional, Union
+from typing import List, NamedTuple, Optional, TYPE_CHECKING, Union
 
 import torch.utils._python_dispatch
 
@@ -24,7 +24,13 @@ from monarch._rust_bindings.monarch_extension.mesh_controller import _Controller
 from monarch._rust_bindings.monarch_hyperactor.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
     ActorId,
 )
-from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyProcMesh
+
+if TYPE_CHECKING:
+    from monarch._rust_bindings.monarch_hyperactor.proc_mesh import (
+        ProcMesh as HyProcMesh,
+    )
+    from monarch.proc_mesh import ProcMesh
+
 from monarch._rust_bindings.monarch_hyperactor.shape import Point
 
 from monarch._rust_bindings.monarch_messages.debugger import DebuggerAction
@@ -33,7 +39,6 @@ from monarch.common.controller_api import LogMessage, MessageResult
 from monarch.common.device_mesh import DeviceMesh, no_mesh
 from monarch.common.invocation import DeviceException, RemoteException
 from monarch.controller.debugger import read as debugger_read, write as debugger_write
-from monarch.proc_mesh import ProcMesh
 from monarch.rust_local_mesh import _get_worker_exec_info
 from pyre_extensions import none_throws
 
@@ -41,7 +46,7 @@ logger: Logger = logging.getLogger(__name__)
 
 
 class Controller(_Controller):
-    def __init__(self, workers: HyProcMesh) -> None:
+    def __init__(self, workers: "HyProcMesh") -> None:
         super().__init__()
         # Buffer for messages unrelated to debugging that are received while a
         # debugger session is active.
@@ -250,7 +255,7 @@ class MeshClient(Client):
         self.inner.drain_and_stop()
 
 
-def spawn_tensor_engine(proc_mesh: ProcMesh) -> DeviceMesh:
+def spawn_tensor_engine(proc_mesh: "ProcMesh") -> DeviceMesh:
     # This argument to Controller
     # is currently only used for debug printing. It should be fixed to
     # report the proc ID instead of the rank it currently does.

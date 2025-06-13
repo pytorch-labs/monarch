@@ -44,6 +44,9 @@ class MeshTrait(ABC):
     @abstractmethod
     def _labels(self) -> Tuple[str, ...]: ...
 
+    # mesh trait guarentees that its own calls to _new_with_shape
+    # will only ever select a shape that is a subspace of the
+    # current _ndslice.
     @abstractmethod
     def _new_with_shape(self, shape: Shape) -> Self: ...
 

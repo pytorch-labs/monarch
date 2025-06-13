@@ -7,8 +7,22 @@
 # pyre-strict
 
 import sys
+from contextlib import AbstractContextManager
 
-from typing import Any, cast, List, Optional, Type, TypeVar
+from typing import (
+    Any,
+    cast,
+    Dict,
+    List,
+    Optional,
+    Sequence,
+    Type,
+    TYPE_CHECKING,
+    TypeVar,
+)
+
+if TYPE_CHECKING:
+    import torch
 
 import monarch
 from monarch import ActorFuture as Future
@@ -24,7 +38,9 @@ from monarch._rust_bindings.monarch_hyperactor.shape import Shape, Slice
 from monarch.actor_mesh import _Actor, _ActorMeshRefImpl, Actor, ActorMeshRef
 
 from monarch.common._device_utils import _local_device_count
+from monarch.common.device_mesh import DeviceMesh
 from monarch.common.shape import MeshTrait
+from monarch.mesh_controller import spawn_tensor_engine
 from monarch.rdma import RDMAManager
 
 T = TypeVar("T")
@@ -45,25 +61,43 @@ def _allocate_blocking(alloc: Alloc) -> "ProcMesh":
 
 
 class ProcMesh(MeshTrait):
-    def __init__(self, hy_proc_mesh: HyProcMesh) -> None:
+    def __init__(
+        self,
+        hy_proc_mesh: HyProcMesh,
+        _mock_shape: Optional[Shape] = None,
+        _device_mesh: Optional[DeviceMesh] = None,
+    ) -> None:
         self._proc_mesh = hy_proc_mesh
+        self._mock_shape: Optional[Shape] = None
         self._mailbox: Mailbox = self._proc_mesh.client
-        self._rdma_manager: RDMAManager = self._spawn_blocking(
-            "rdma_manager", RDMAManager
-        )
+        self._rdma_manager: Optional[RDMAManager] = None
+        self._maybe_device_mesh: Optional[DeviceMesh] = _device_mesh
+        if _mock_shape is None:
+            self._rdma_manager = self._spawn_blocking("rdma_manager", RDMAManager)
+
+    @property
+    def _shape(self) -> Shape:
+        return self._proc_mesh.shape if self._mock_shape is None else self._mock_shape
 
     @property
     def _ndslice(self) -> Slice:
-        return self._proc_mesh.shape.ndslice
+        return self._shape.ndslice
 
     @property
     def _labels(self) -> List[str]:
-        return self._proc_mesh.shape.labels
+        return self._shape.labels
 
     def _new_with_shape(self, shape: Shape) -> "ProcMesh":
-        raise NotImplementedError("ProcMesh slicing is not implemeted yet.")
+        device_mesh = (
+            None
+            if self._device_mesh is None
+            else self._device_mesh._new_with_shape(shape)
+        )
+        return ProcMesh(self._proc_mesh, _mock_shape=shape, _device_mesh=device_mesh)
 
     def spawn(self, name: str, Class: Type[T], *args: Any, **kwargs: Any) -> Future[T]:
+        if self._mock_shape is not None:
+            raise NotImplementedError("NYI: spawn on slice of a proc mesh.")
         return Future(
             lambda: self._spawn_nonblocking(name, Class, *args, **kwargs),
             lambda: self._spawn_blocking(name, Class, *args, **kwargs),
@@ -119,6 +153,26 @@ class ProcMesh(MeshTrait):
         # doing `ActorMeshRef(Class, actor_handle)` but not calling _create.
         service._create(args, kwargs)
         return cast(T, service)
+
+    @property
+    def _device_mesh(self) -> "DeviceMesh":
+        if self._maybe_device_mesh is None:
+            if self._mock_shape is not None:
+                raise NotImplementedError(
+                    "NYI: activating a proc mesh must first happen on the root proc_mesh until we fix spawning on submeshes."
+                )
+            self._maybe_device_mesh = spawn_tensor_engine(self)
+        return self._maybe_device_mesh
+
+    # pyre-ignore
+    def activate(self) -> AbstractContextManager:
+        return self._device_mesh.activate()
+
+    def rank_tensor(self, dim: str | Sequence[str]) -> "torch.Tensor":
+        return self._device_mesh.rank(dim)
+
+    def rank_tensors(self) -> Dict[str, "torch.Tensor"]:
+        return self._device_mesh.ranks
 
 
 async def local_proc_mesh_nonblocking(

@@ -390,10 +390,13 @@ def test_rust_binding_modules_correct() -> None:
     check(bindings, "monarch._rust_bindings")
 
 
-@pytest.mark.skipif(
+two_gpu = pytest.mark.skipif(
     torch.cuda.device_count() < 2,
     reason="Not enough GPUs, this test requires at least 2 GPUs",
 )
+
+
+@two_gpu
 def test_tensor_engine() -> None:
     pm = proc_mesh(gpus=2).get()
 
@@ -549,3 +552,20 @@ async def test_debug() -> None:
 
         with pytest.raises(monarch.actor_mesh.ActorError, match="ValueError: bad rank"):
             await fut
+
+
+@two_gpu
+def test_proc_mesh_tensor_engine() -> None:
+    pm = proc_mesh(gpus=2).get()
+    with pm.activate():
+        f = 10 * pm.rank_tensor("gpus").cuda()
+        a = monarch.inspect(f, hosts=0, gpus=0)
+        b = monarch.inspect(f, hosts=0, gpus=1)
+
+    one = pm.slice(gpus=1)
+    with one.activate():
+        sliced_b = monarch.slice_mesh(f, gpus=1).to_mesh(one)
+        c = monarch.inspect(sliced_b * 10)
+    assert a == 0
+    assert b == 10
+    assert c == 100
