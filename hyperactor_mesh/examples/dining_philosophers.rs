@@ -18,6 +18,7 @@ use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::PortRef;
+use hyperactor::accum::ReducerSpec;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::IndexedErasedUnbound;
@@ -90,8 +91,8 @@ impl Unbind for PhilosopherMessage {
             Self::Start(port) => {
                 let ports = [port.port_id()];
                 bindings.insert(ports)?;
-                let reducer_typehashes = [port.reducer_typehash()];
-                bindings.insert::<Option<u64>>(reducer_typehashes)?;
+                let reducer_specs = [port.reducer_spec()];
+                bindings.insert::<Option<ReducerSpec>>(reducer_specs)?;
             }
             Self::GrantChopstick(_) => {}
         }

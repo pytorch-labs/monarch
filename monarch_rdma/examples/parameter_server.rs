@@ -63,6 +63,7 @@ use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::OncePortRef;
 use hyperactor::PortRef;
+use hyperactor::accum::ReducerSpec;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::IndexedErasedUnbound;
@@ -339,8 +340,8 @@ impl Unbind for WorkerStep {
         let mut bindings = Bindings::default();
         let ports = [self.0.port_id()];
         bindings.insert(ports)?;
-        let reducer_typehashes = [self.0.reducer_typehash()];
-        bindings.insert::<Option<u64>>(reducer_typehashes)?;
+        let reducer_specs = [self.0.reducer_spec()];
+        bindings.insert::<Option<ReducerSpec>>(reducer_specs)?;
         Ok(bindings)
     }
 }
@@ -366,8 +367,8 @@ impl Unbind for WorkerUpdate {
         let mut bindings = Bindings::default();
         let ports = [self.0.port_id()];
         bindings.insert(ports)?;
-        let reducer_typehashes = [self.0.reducer_typehash()];
-        bindings.insert::<Option<u64>>(reducer_typehashes)?;
+        let reducer_specs = [self.0.reducer_spec()];
+        bindings.insert::<Option<ReducerSpec>>(reducer_specs)?;
         Ok(bindings)
     }
 }
