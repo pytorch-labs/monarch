@@ -23,6 +23,7 @@ cityhasher = "0.1.0"
 crc32fast = "1.4"
 dashmap = { version = "5.5.3", features = ["rayon", "serde"] }
 derivative = "2.2"
+derive_more = { version = "1.0.0", features = ["full"] }
 dns-lookup = "1.0"
 enum-as-inner = "0.6.0"
 erased-serde = "0.3.27"

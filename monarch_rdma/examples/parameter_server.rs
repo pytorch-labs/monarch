@@ -150,14 +150,14 @@ struct Log;
 
 // TODO(pzhang) replace the boilerplate Bind/Unbind impls with a macro.
 impl Bind for Log {
-    fn bind(self, _bindings: &Bindings) -> anyhow::Result<Self> {
-        Ok(self)
+    fn bind(&mut self, _bindings: &mut Bindings) -> anyhow::Result<()> {
+        Ok(())
     }
 }
 
 impl Unbind for Log {
-    fn bindings(&self) -> anyhow::Result<Bindings> {
-        Ok(Bindings::default())
+    fn unbind(&self, _bindings: &mut Bindings) -> anyhow::Result<()> {
+        Ok(())
     }
 }
 
@@ -307,14 +307,14 @@ pub struct WorkerInit(
 
 // TODO(pzhang) replace the boilerplate Bind/Unbind impls with a macro.
 impl Bind for WorkerInit {
-    fn bind(self, _bindings: &Bindings) -> anyhow::Result<Self> {
-        Ok(self)
+    fn bind(&mut self, _bindings: &mut Bindings) -> anyhow::Result<()> {
+        Ok(())
     }
 }
 
 impl Unbind for WorkerInit {
-    fn bindings(&self) -> anyhow::Result<Bindings> {
-        Ok(Bindings::default())
+    fn unbind(&self, _bindings: &mut Bindings) -> anyhow::Result<()> {
+        Ok(())
     }
 }
 
@@ -327,19 +327,14 @@ pub struct WorkerStep(PortRef<bool>);
 
 // TODO(pzhang) replace the boilerplate Bind/Unbind impls with a macro.
 impl Bind for WorkerStep {
-    fn bind(mut self, bindings: &Bindings) -> anyhow::Result<Self> {
-        let mut_ports = [self.0.port_id_mut()];
-        bindings.rebind(mut_ports.into_iter())?;
-        Ok(self)
+    fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
+        self.0.bind(bindings)
     }
 }
 
 impl Unbind for WorkerStep {
-    fn bindings(&self) -> anyhow::Result<Bindings> {
-        let mut bindings = Bindings::default();
-        let ports = [self.0.port_id()];
-        bindings.insert(ports)?;
-        Ok(bindings)
+    fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
+        self.0.unbind(bindings)
     }
 }
 
@@ -352,19 +347,14 @@ pub struct WorkerUpdate(PortRef<bool>);
 
 // TODO(pzhang) replace the boilerplate Bind/Unbind impls with a macro.
 impl Bind for WorkerUpdate {
-    fn bind(mut self, bindings: &Bindings) -> anyhow::Result<Self> {
-        let mut_ports = [self.0.port_id_mut()];
-        bindings.rebind(mut_ports.into_iter())?;
-        Ok(self)
+    fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
+        self.0.bind(bindings)
     }
 }
 
 impl Unbind for WorkerUpdate {
-    fn bindings(&self) -> anyhow::Result<Bindings> {
-        let mut bindings = Bindings::default();
-        let ports = [self.0.port_id()];
-        bindings.insert(ports)?;
-        Ok(bindings)
+    fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
+        self.0.unbind(bindings)
     }
 }
 
