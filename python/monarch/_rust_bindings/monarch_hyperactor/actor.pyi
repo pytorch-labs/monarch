@@ -8,9 +8,13 @@
 
 import abc
 
-from typing import final, List, Protocol
+from typing import final, List, Protocol, Tuple
 
-from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox, PortId
+from monarch._rust_bindings.monarch_hyperactor.mailbox import (
+    Mailbox,
+    PortId,
+    ReducerSpec,
+)
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId, Proc, Serialized
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape
 
@@ -103,7 +107,7 @@ class PythonMessage:
         self,
         method: str,
         message: bytes,
-        response_port: PortId | None = None,
+        response_port: Tuple[PortId, ReducerSpec | None] | None = None,
         rank_in_response: bool = False,
     ) -> None: ...
     @property

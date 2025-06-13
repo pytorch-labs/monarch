@@ -6,7 +6,7 @@
 
 # pyre-strict
 
-from typing import final
+from typing import final, Generic, Protocol, Tuple
 
 from monarch._rust_bindings.monarch_hyperactor.actor import PythonMessage
 
@@ -54,7 +54,8 @@ class PortHandle:
     def send(self, message: PythonMessage) -> None:
         """Send a message to the port's receiver."""
 
-    def bind(self) -> PortId:
+    # TODO(pzhang) Add PythonPortRef and use that as the return type.
+    def bind(self) -> Tuple[PortId, ReducerSpec | None]:
         """Bind this port. The returned port ID can be used to reach the port externally."""
         ...
 
@@ -110,6 +111,12 @@ class Mailbox:
         """Open a port to receive a single `PythonMessage` message."""
         ...
 
+    def open_accum_port(
+        self, accumulator: Accumulator
+    ) -> tuple[PortHandle, PortReceiver]:
+        """Open a accum port."""
+        ...
+
     def post(self, dest: ActorId | PortId, message: PythonMessage) -> None:
         """
         Post a message to the provided destination. If the destination is an actor id,
@@ -129,3 +136,24 @@ class Mailbox:
 
     @property
     def actor_id(self) -> ActorId: ...
+
+@final
+class ReducerSpec:
+    """
+    Serializable information needed to build a comm reducer, which is used in
+    accumulation.
+    """
+
+    pass
+
+class Accumulator(Protocol):
+    def __call__(
+        self, state: PythonMessage, update: PythonMessage
+    ) -> PythonMessage: ...
+    @property
+    def initial_state(self) -> PythonMessage: ...
+    @property
+    def reducer(self) -> Reducer | None: ...
+
+class Reducer(Protocol):
+    def __call__(self, left: PythonMessage, right: PythonMessage) -> PythonMessage: ...

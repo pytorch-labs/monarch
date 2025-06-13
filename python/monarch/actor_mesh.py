@@ -386,7 +386,10 @@ def send(
     """
     endpoint._signature.bind(None, *args, **kwargs)
     message = PythonMessage(
-        endpoint._name, _pickle((args, kwargs)), port, rank_in_response
+        endpoint._name,
+        _pickle((args, kwargs)),
+        (port, None) if port is not None else None,
+        rank_in_response,
     )
     endpoint._actor_mesh.cast(message, selection)
 
@@ -429,10 +432,14 @@ class Port:
 def port(
     endpoint: Endpoint[P, R], once: bool = False
 ) -> Tuple["PortId", "PortReceiver[R]"]:
-    handle, receiver = (
-        endpoint._mailbox.open_once_port() if once else endpoint._mailbox.open_port()
-    )
-    port_id: PortId = handle.bind()
+    port_id: PortId
+    if once:
+        handle, receiver = endpoint._mailbox.open_once_port()
+        port_id = handle.bind()
+    else:
+        handle, receiver = endpoint._mailbox.open_port()
+        port_id, _ = handle.bind()
+
     return port_id, PortReceiver(endpoint._mailbox, receiver)
 
 
