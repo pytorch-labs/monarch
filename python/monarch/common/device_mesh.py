@@ -244,24 +244,24 @@ class DeviceMesh(Referenceable, MeshTrait):
     def rotate(self, **kwargs: Dict[str, int]):
         raise NotImplementedError()
 
-    def rank(self, dims: Union[str, Sequence[str]]) -> int:
+    def rank(self, dims: Union[str, Sequence[str]]) -> torch.Tensor:
         self.define_remotely()
         if isinstance(dims, str):
             if dims not in self.names:
                 raise KeyError(f"{self} does not have dimension {repr(dims)}")
             return _remote(
-                "monarch.worker.worker._rank",
+                _rank,
                 propagate=lambda _self, _dims: torch.full((), 0, dtype=torch.long),
             )(self, dims)
 
-        combined_rank = 0
+        combined_rank: Any = 0
         for dim in dims:
             combined_rank *= self.size(dim)
             combined_rank += self.rank(dim)
         return combined_rank
 
     @property
-    def ranks(self) -> dict[str, int]:
+    def ranks(self) -> dict[str, torch.Tensor]:
         return {dim: self.rank(dim) for dim in self.names}
 
     def process_idx(self):
@@ -334,6 +334,10 @@ class _ActiveMesh(TorchDispatchMode):
         return _remote(func, propagate=func)(*args, **kwargs)
 
 
+def _rank(mesh, dim):
+    return torch.full((), mesh.dims[dim].rank, dtype=torch.long)
+
+
 @contextmanager
 def _dispatch():
     global _dispatch_enabled
@@ -401,7 +405,7 @@ def to_mesh(
 
 def slice_mesh(
     tensors: Any,
-    **kwargs: Dict[str, Union[int, slice]],
+    **kwargs: Union[int, slice],
 ) -> Any:
     """
     Performs the slice_mesh operation for each tensor in tensors.

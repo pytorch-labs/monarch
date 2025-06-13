@@ -7,17 +7,20 @@
 # pyre-unsafe
 import itertools
 import traceback
+import typing
 import warnings
 from collections import defaultdict
 from typing import (
     Any,
     Callable,
+    cast,
     Dict,
     Iterable,
     List,
     Literal,
     NamedTuple,
     Optional,
+    runtime_checkable,
     Sequence,
     TYPE_CHECKING,
     TypeVar,
@@ -35,7 +38,8 @@ from .base_tensor import BaseTensor
 from .borrows import StorageAliases
 
 if TYPE_CHECKING:
-    from .device_mesh import DeviceMesh
+    from monarch.common.device_mesh import DeviceMesh
+
 from .fake import fake_call
 from .function import Propagator, ResolvableFunction
 from .invocation import Invocation
@@ -50,6 +54,12 @@ _valid_reduce = Literal[
 ]
 
 T = TypeVar("T")
+
+
+@runtime_checkable
+class HasDeviceMesh(typing.Protocol):
+    @property
+    def _device_mesh(self) -> "DeviceMesh": ...
 
 
 class DropLocation(NamedTuple):
@@ -167,7 +177,11 @@ class Tensor(Referenceable, BaseTensor):
             self._on_first_use(self)
             self._on_first_use = None
 
-    def to_mesh(self, mesh: "DeviceMesh", stream: Optional["Stream"] = None):
+    def to_mesh(
+        self,
+        mesh: Union["DeviceMesh", "HasDeviceMesh"],
+        stream: Optional["Stream"] = None,
+    ):
         """
         Move data between one device mesh and another. Sizes of named dimensions must match.
         If mesh has dimensions that self.mesh does not, it will broadcast to those dimensions.
@@ -177,6 +191,8 @@ class Tensor(Referenceable, BaseTensor):
             t.slice_mesh(batch=0).to_mesh(t.mesh)
 
         """
+        if isinstance(mesh, HasDeviceMesh):
+            mesh = mesh._device_mesh
         return MeshSliceTensor(self, self.mesh).to_mesh(mesh, stream)
 
     def reduce_(
@@ -344,7 +360,7 @@ class Tensor(Referenceable, BaseTensor):
         )
         return r
 
-    def slice_mesh(self, **kwargs: Dict[str, Union[int, slice]]) -> "MeshSliceTensor":
+    def slice_mesh(self, **kwargs: Union[int, slice]) -> "MeshSliceTensor":
         # technically a slice of a device mesh and a device mesh are not same thing
         # because a device mesh also has caches for doing collectives.
         # but this is an easy way to create a MeshSliceTensor until we optimize
@@ -368,8 +384,13 @@ class MeshSliceTensor:
         self.slicing = slicing
 
     def to_mesh(
-        self, mesh: "DeviceMesh", stream: Optional["Stream"] = None
+        self,
+        mesh: Union["DeviceMesh", "HasDeviceMesh"],
+        stream: Optional["Stream"] = None,
     ) -> "Tensor":
+        if isinstance(mesh, HasDeviceMesh):
+            mesh = mesh._device_mesh
+
         if stream is None:
             stream = self.tensor.stream
 
