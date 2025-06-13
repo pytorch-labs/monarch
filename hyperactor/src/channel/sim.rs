@@ -15,19 +15,24 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use dashmap::DashMap;
+use rand::RngCore;
 use regex::Regex;
 use tokio::sync::Mutex;
 
 use super::*;
+use crate::ActorId;
 use crate::channel;
 use crate::clock::Clock;
 use crate::clock::RealClock;
 use crate::clock::SimClock;
 use crate::data::Serialized;
+use crate::id;
 use crate::mailbox::MessageEnvelope;
 use crate::simnet;
 use crate::simnet::Dispatcher;
 use crate::simnet::Event;
+use crate::simnet::PerfettoFlow;
+use crate::simnet::PerfettoTrace;
 use crate::simnet::SimNetConfig;
 use crate::simnet::SimNetEdge;
 use crate::simnet::SimNetError;
@@ -149,6 +154,29 @@ impl fmt::Display for SimAddr {
     }
 }
 
+fn parse_message(input: &str) -> String {
+    let open_brace_pos = match input.find('{') {
+        Some(pos) => pos,
+        None => return input.to_string(),
+    };
+
+    let first_part = input[..open_brace_pos].to_string();
+
+    let start_quote_pos = match input[open_brace_pos + 1..].find('"') {
+        Some(pos) => pos + open_brace_pos + 1,
+        None => return input.to_string(),
+    };
+
+    let end_quote_pos = match input[start_quote_pos + 1..].find('"') {
+        Some(pos) => pos + start_quote_pos + 1,
+        None => return input.to_string(),
+    };
+
+    let second_part = input[start_quote_pos + 1..end_quote_pos].to_string();
+
+    format!("{}::{}", first_part, second_part)
+}
+
 /// Message Event that can be passed around in the simnet.
 #[derive(Debug)]
 pub(crate) struct MessageSendEvent {
@@ -157,6 +185,11 @@ pub(crate) struct MessageSendEvent {
     data: Serialized,
     duration_ms: u64,
     inflight_time_ms: u64,
+    // Used to match a pair of send/recv events.
+    id: String,
+    sender_actor: ActorId,
+    dest_actor: ActorId,
+    message_type: String,
 }
 
 impl MessageSendEvent {
@@ -166,12 +199,33 @@ impl MessageSendEvent {
         dest_addr: AddressProxyPair,
         data: Serialized,
     ) -> Self {
+        let (sender_actor, dest_actor, message_type) =
+            if let Ok(envelope) = data.deserialized::<MessageEnvelope>() {
+                let msg_string = envelope.data().to_string();
+                let parsed = parse_message(&msg_string);
+                (
+                    envelope.sender().clone(),
+                    envelope.dest().actor_id().clone(),
+                    parsed,
+                )
+            } else {
+                (
+                    id!(unknown[0].unknown),
+                    id!(unknown[0].unknown),
+                    "unknown".to_string(),
+                )
+            };
+
         Self {
             src_addr,
             dest_addr,
             data,
             duration_ms: 1,
             inflight_time_ms: 1,
+            id: format!("0x{}", random_hex_str()),
+            sender_actor,
+            dest_actor,
+            message_type,
         }
     }
 }
@@ -184,6 +238,7 @@ impl Event for MessageSendEvent {
             self.src_addr.clone(),
             self.dest_addr.clone(),
             self.data.clone(),
+            Some(self.id.clone()),
         ));
 
         tokio::task::spawn(async move {
@@ -203,16 +258,6 @@ impl Event for MessageSendEvent {
         self.duration_ms
     }
 
-    fn summary(&self) -> String {
-        format!(
-            "{} sending message to to {}",
-            self.src_addr
-                .as_ref()
-                .map_or("unknown".to_string(), |addr| addr.address.to_string()),
-            self.dest_addr.address.clone()
-        )
-    }
-
     async fn read_simnet_config(&mut self, topology: &Arc<Mutex<SimNetConfig>>) {
         if let Some(src_addr) = &self.src_addr {
             let edge = SimNetEdge {
@@ -227,6 +272,19 @@ impl Event for MessageSendEvent {
                 .map_or_else(|| 1, |v| v.latency.as_millis() as u64);
         }
     }
+
+    fn to_perfetto(&self, start: u64, _end: u64) -> Option<PerfettoTrace> {
+        Some(PerfettoTrace {
+            name: format!("send {}", self.message_type),
+            cat: "message".to_string(),
+            ph: "X".to_string(),
+            ts: start * 1000,
+            dur: 1000,
+            actor_id: self.sender_actor.clone(),
+            bind_id: Some(self.id.clone()),
+            flow: Some(PerfettoFlow::Out),
+        })
+    }
 }
 
 /// Message Recv Event that can be passed around in the simnet.
@@ -236,6 +294,11 @@ pub(crate) struct MessageRecvEvent {
     dest_addr: AddressProxyPair,
     data: Serialized,
     duration_ms: u64,
+    // Used to match a pair of send/recv events.
+    id: Option<String>,
+    sender_actor: ActorId,
+    dest_actor: ActorId,
+    message_type: String,
 }
 
 impl MessageRecvEvent {
@@ -244,12 +307,34 @@ impl MessageRecvEvent {
         src_addr: Option<AddressProxyPair>,
         dest_addr: AddressProxyPair,
         data: Serialized,
+        bind_id: Option<String>,
     ) -> Self {
+        let (sender_actor, dest_actor, message_type) =
+            if let Ok(envelope) = data.deserialized::<MessageEnvelope>() {
+                let msg_string = envelope.data().to_string();
+                let parsed = parse_message(&msg_string);
+                (
+                    envelope.sender().clone(),
+                    envelope.dest().actor_id().clone(),
+                    parsed,
+                )
+            } else {
+                (
+                    id!(unknown[0].unknown),
+                    id!(unknown[0].unknown),
+                    "unknown".to_string(),
+                )
+            };
+
         Self {
             src_addr,
             dest_addr,
             data,
             duration_ms: 1,
+            id: bind_id,
+            sender_actor,
+            dest_actor,
+            message_type,
         }
     }
 }
@@ -272,15 +357,27 @@ impl Event for MessageRecvEvent {
         self.duration_ms
     }
 
-    fn summary(&self) -> String {
-        format!(
-            "{} received message from {}",
-            self.dest_addr.address.clone(),
-            self.src_addr
-                .as_ref()
-                .map_or("unknown".to_string(), |addr| addr.address.to_string()),
-        )
+    fn to_perfetto(&self, start: u64, _end: u64) -> Option<PerfettoTrace> {
+        Some(PerfettoTrace {
+            name: format!("recv {}", self.message_type),
+            cat: "message".to_string(),
+            ph: "X".to_string(),
+            ts: start * 1000,
+            dur: 1000,
+            actor_id: self.dest_actor.clone(),
+            bind_id: self.id.clone(),
+            flow: Some(PerfettoFlow::In),
+        })
     }
+}
+
+fn random_hex_str() -> String {
+    let mut bytes = vec![0u8; 10 / 2];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    bytes
+        .into_iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<String>()
 }
 
 /// Bind a channel address to the simnet. It will register the address as a node in simnet,
@@ -441,6 +538,7 @@ impl<M: RemoteMessage> Tx<M> for SimTx<M> {
                         self.src_addr.clone(),
                         self.dst_addr.clone(),
                         data,
+                        None,
                     ));
                     let recv_time = RealClock.now();
 
@@ -724,7 +822,16 @@ mod tests {
             tokio::task::yield_now().await;
         }
         let recs = simnet::simnet_handle().unwrap().close().await.unwrap();
+        let recs = recs
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["ph"] != "M")
+            .collect::<Vec<_>>();
         // client message was delivered at "real" time = 5 seconds
-        assert_eq!(recs.first().map(|rec| rec.end_at).unwrap(), 5000);
+        assert_eq!(
+            recs.first().map(|rec| rec["ts"].as_u64().unwrap()).unwrap(),
+            5000 * 1000
+        );
     }
 }

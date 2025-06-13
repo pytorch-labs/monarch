@@ -13,6 +13,7 @@
 //! testing and development of message distribution techniques.
 
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::Arc;
@@ -48,6 +49,7 @@ use crate::ActorId;
 use crate::Mailbox;
 use crate::Named;
 use crate::OncePortRef;
+use crate::ProcId;
 use crate::WorldId;
 use crate::channel;
 use crate::channel::ChannelAddr;
@@ -115,8 +117,10 @@ pub trait Event: Send + Sync + Debug {
     /// Read the simnet config and update self accordingly.
     async fn read_simnet_config(&mut self, _topology: &Arc<Mutex<SimNetConfig>>) {}
 
-    /// A user-friendly summary of the event
-    fn summary(&self) -> String;
+    /// The event as a Perfetto trace.
+    fn to_perfetto(&self, _start: u64, _end: u64) -> Option<PerfettoTrace> {
+        None
+    }
 }
 
 /// This is a simple event that is used to join a node to the network.
@@ -139,10 +143,6 @@ impl Event for NodeJoinEvent {
 
     fn duration_ms(&self) -> u64 {
         0
-    }
-
-    fn summary(&self) -> String {
-        "Node join".into()
     }
 }
 
@@ -180,10 +180,6 @@ impl Event for SleepEvent {
     fn duration_ms(&self) -> u64 {
         self.duration_ms
     }
-
-    fn summary(&self) -> String {
-        format!("Sleeping for {} ms", self.duration_ms)
-    }
 }
 
 #[derive(Debug)]
@@ -212,19 +208,20 @@ impl Event for TorchOpEvent {
     }
 
     fn duration_ms(&self) -> u64 {
-        100
+        2
     }
 
-    fn summary(&self) -> String {
-        let kwargs_string = if self.kwargs_string.is_empty() {
-            "".to_string()
-        } else {
-            format!(", {}", self.kwargs_string)
-        };
-        format!(
-            "[{}] Torch Op: {}({}{})",
-            self.worker_actor_id, self.op, self.args_string, kwargs_string
-        )
+    fn to_perfetto(&self, start: u64, end: u64) -> Option<PerfettoTrace> {
+        Some(PerfettoTrace {
+            name: self.op.clone(),
+            cat: "compute".to_string(),
+            ph: "X".to_string(),
+            ts: start * 1000,
+            dur: (end - start) * 1000,
+            actor_id: self.worker_actor_id.clone(),
+            bind_id: None,
+            flow: None,
+        })
     }
 }
 
@@ -353,7 +350,7 @@ pub enum TrainingScriptState {
 
 /// A handle to a running [`SimNet`] instance.
 pub struct SimNetHandle {
-    join_handle: Mutex<Option<JoinHandle<Vec<SimulatorEventRecord>>>>,
+    join_handle: Mutex<Option<JoinHandle<Vec<serde_json::Value>>>>,
     event_tx: UnboundedSender<(Box<dyn Event>, bool, Option<SimulatorTimeInstant>)>,
     config: Arc<Mutex<SimNetConfig>>,
     pending_event_count: Arc<AtomicUsize>,
@@ -419,18 +416,20 @@ impl SimNetHandle {
 
     /// Close the simulator, processing pending messages before
     /// completing the returned future.
-    pub async fn close(&self) -> Result<Vec<SimulatorEventRecord>, JoinError> {
+    pub async fn close(&self) -> Result<serde_json::Value, JoinError> {
         // Stop the proxy if there is one.
         self.proxy_handle.stop().await?;
         // Signal the simnet loop to stop
         self.stop_signal.store(true, Ordering::SeqCst);
 
         let mut guard = self.join_handle.lock().await;
-        if let Some(handle) = guard.take() {
+        let records = if let Some(handle) = guard.take() {
             handle.await
         } else {
             Ok(vec![])
-        }
+        }?;
+
+        Ok(serde_json::Value::Array(records))
     }
 
     /// Update the network configuration to SimNet.
@@ -540,6 +539,62 @@ impl SimOperation {
     }
 }
 
+/// Represents the direction of a flow in a Perfetto trace
+pub enum PerfettoFlow {
+    /// Indicates an incoming flow to a trace event
+    /// Adds the field `"flow_in": true` when converting to JSON
+    In,
+    /// Indicates an outgoing flow from a trace event
+    /// Adds the field `"flow_out": true` when converting to JSON
+    Out,
+}
+
+/// Represents a trace event in the Perfetto tracing format
+pub struct PerfettoTrace {
+    /// The name of the trace event
+    pub name: String,
+    /// The category of the trace event
+    pub cat: String,
+    /// The phase of the trace event (e.g., "X" for complete events)
+    pub ph: String,
+    /// The timestamp of the trace event in microseconds
+    pub ts: u64,
+    /// The duration of the trace event in microseconds
+    pub dur: u64,
+    /// The actor ID associated with this trace event
+    /// When converting to JSON this will be resolved to the appropriate
+    /// `pid` and `tid`
+    pub actor_id: ActorId,
+    /// Optional binding ID for connecting related trace events
+    pub bind_id: Option<String>,
+    /// Optional flow direction for flow events
+    pub flow: Option<PerfettoFlow>,
+}
+
+impl PerfettoTrace {
+    fn to_json(&self, pid: usize, tid: usize) -> serde_json::Value {
+        let mut json = serde_json::json!({
+            "name": self.name,
+            "cat": self.cat,
+            "ph": self.ph,
+            "ts": self.ts,
+            "dur": self.dur,
+            "pid": pid,
+            "tid": tid,
+        });
+        if let Some(flow) = &self.flow {
+            match flow {
+                PerfettoFlow::In => json["flow_in"] = serde_json::Value::Bool(true),
+                PerfettoFlow::Out => json["flow_out"] = serde_json::Value::Bool(true),
+            }
+        }
+        if let Some(bind_id) = &self.bind_id {
+            json["bind_id"] = serde_json::Value::String(bind_id.to_string());
+        }
+        json
+    }
+}
+
 #[async_trait]
 impl Event for SimOperation {
     async fn handle(&self) -> Result<(), SimNetError> {
@@ -550,10 +605,6 @@ impl Event for SimOperation {
 
     fn duration_ms(&self) -> u64 {
         0
-    }
-
-    fn summary(&self) -> String {
-        format!("SimOperation: {:?}", self.operational_message)
     }
 }
 
@@ -632,9 +683,11 @@ pub struct SimNet {
     address_book: DashSet<ChannelAddr>,
     state: State,
     max_latency: Duration,
-    records: Vec<SimulatorEventRecord>,
+    records: Vec<serde_json::Value>,
     // number of events that has been received but not yet processed.
     pending_event_count: Arc<AtomicUsize>,
+    pids: HashMap<ProcId, usize>,
+    tids: HashMap<ActorId, usize>,
 }
 
 /// A proxy to bridge external nodes and the SimNet.
@@ -674,6 +727,7 @@ impl ProxyHandle {
                                 proxy_message.sender_addr,
                                 dest_addr,
                                 proxy_message.data,
+                                None,
                             )),
                             None => {
                                 let operational_message: OperationalMessage =
@@ -767,6 +821,8 @@ pub fn start(
                 max_latency: Duration::from_millis(max_duration_ms),
                 records: Vec::new(),
                 pending_event_count,
+                pids: HashMap::new(),
+                tids: HashMap::new(),
             };
             net.run(event_rx, training_script_state_rx, stop_signal)
                 .await
@@ -846,14 +902,26 @@ impl SimNet {
 
     /// Schedule the event into the network.
     fn schedule_event(&mut self, scheduled_event: ScheduledEvent, advanceable: bool) {
-        let start_at = SimClock.millis_since_start(SimClock.now());
-        let end_at = scheduled_event.time;
+        if let Some(trace) = scheduled_event.event.to_perfetto(
+            SimClock.millis_since_start(SimClock.now()),
+            scheduled_event.time,
+        ) {
+            let (next_pid, next_tid) = (self.pids.len(), self.tids.len());
 
-        self.records.push(SimulatorEventRecord {
-            summary: scheduled_event.event.summary(),
-            start_at,
-            end_at,
-        });
+            let pid = self
+                .pids
+                .entry(trace.actor_id.proc_id().clone())
+                .or_insert_with(|| next_pid)
+                .clone();
+
+            let tid = self
+                .tids
+                .entry(trace.actor_id.clone())
+                .or_insert_with(|| next_tid)
+                .clone();
+
+            self.records.push(trace.to_json(pid, tid));
+        }
 
         if advanceable {
             self.state
@@ -870,6 +938,32 @@ impl SimNet {
         }
     }
 
+    fn make_metadata_traces(&self) -> Vec<serde_json::Value> {
+        let mut metadata_traces = vec![];
+        for (proc_id, pid) in self.pids.iter() {
+            metadata_traces.push(serde_json::json!({
+                "ph": "M",
+                "name": "process_name",
+                "pid": pid,
+                "args": {
+                    "name": proc_id.to_string(),
+                }
+            }))
+        }
+        for (actor_id, tid) in self.tids.iter() {
+            metadata_traces.push(serde_json::json!({
+                "ph": "M",
+                "name": "thread_name",
+                "pid": self.pids.get(actor_id.proc_id()).unwrap_or(&0),
+                "tid": tid,
+                "args": {
+                    "name": actor_id.to_string(),
+                }
+            }))
+        }
+        metadata_traces
+    }
+
     /// Run the simulation. This will dispatch all the messages in the network.
     /// And wait for new ones.
     async fn run(
@@ -877,7 +971,7 @@ impl SimNet {
         mut event_rx: UnboundedReceiver<(Box<dyn Event>, bool, Option<SimulatorTimeInstant>)>,
         training_script_state_rx: tokio::sync::watch::Receiver<TrainingScriptState>,
         stop_signal: Arc<AtomicBool>,
-    ) -> Vec<SimulatorEventRecord> {
+    ) -> Vec<serde_json::Value> {
         // The simulated number of milliseconds the training script
         // has spent waiting for the backend to resolve a future
         let mut training_script_waiting_time: u64 = 0;
@@ -886,7 +980,8 @@ impl SimNet {
         'outer: loop {
             // Check if we should stop
             if stop_signal.load(Ordering::SeqCst) {
-                break 'outer self.records.clone();
+                let metadata = self.make_metadata_traces();
+                break 'outer self.records.drain(..).chain(metadata).collect::<Vec<_>>();
             }
 
             while let Ok((event, advanceable, time)) = event_rx.try_recv() {
@@ -987,7 +1082,8 @@ impl SimNet {
                     self.pending_event_count
                         .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
                     if scheduled_event.event.handle_network(self).await.is_err() {
-                        break 'outer self.records.clone(); //TODO
+                        let metadata = self.make_metadata_traces();
+                        break 'outer self.records.drain(..).chain(metadata).collect::<Vec<_>>();
                     }
                 }
             }
@@ -1014,17 +1110,6 @@ where
 {
     let s = String::deserialize(deserializer)?;
     s.parse().map_err(serde::de::Error::custom)
-}
-
-/// DeliveryRecord is a structure to bookkeep the message events.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct SimulatorEventRecord {
-    /// Event dependent summary for user
-    pub summary: String,
-    /// The time at which the message delivery was started.
-    pub start_at: SimulatorTimeInstant,
-    /// The time at which the message was delivered to the receiver.
-    pub end_at: SimulatorTimeInstant,
 }
 
 /// A configuration for the network topology.
@@ -1111,14 +1196,6 @@ mod tests {
             self.duration_ms
         }
 
-        fn summary(&self) -> String {
-            format!(
-                "{} sending message to {}",
-                self.src_addr.addr().clone(),
-                self.dest_addr.addr().clone()
-            )
-        }
-
         async fn read_simnet_config(&mut self, config: &Arc<Mutex<SimNetConfig>>) {
             let edge = SimNetEdge {
                 src: self.src_addr.addr().clone(),
@@ -1130,6 +1207,23 @@ mod tests {
                 .topology
                 .get(&edge)
                 .map_or_else(|| 1, |v| v.latency.as_millis() as u64);
+        }
+
+        fn to_perfetto(&self, start: u64, _end: u64) -> Option<PerfettoTrace> {
+            Some(PerfettoTrace {
+                name: format!(
+                    "{} sending message to {}",
+                    self.src_addr.addr(),
+                    self.dest_addr.addr(),
+                ),
+                cat: "message".to_string(),
+                ph: "X".to_string(),
+                ts: start * 1000,
+                dur: self.duration_ms,
+                actor_id: id!(unknown[0].unknown),
+                bind_id: None,
+                flow: None,
+            })
         }
     }
 
@@ -1177,13 +1271,21 @@ mod tests {
         fn duration_ms(&self) -> u64 {
             self.duration_ms
         }
-
-        fn summary(&self) -> String {
-            format!(
-                "{} received message from {}",
-                self.dest_addr.addr().clone(),
-                self.src_addr.addr().clone(),
-            )
+        fn to_perfetto(&self, start: u64, end: u64) -> Option<PerfettoTrace> {
+            Some(PerfettoTrace {
+                name: format!(
+                    "{} received message from {}",
+                    self.dest_addr.addr(),
+                    self.src_addr.addr(),
+                ),
+                cat: "message".to_string(),
+                ph: "X".to_string(),
+                ts: start * 1000,
+                dur: self.duration_ms,
+                actor_id: id!(unknown[0].unknown),
+                bind_id: None,
+                flow: None,
+            })
         }
     }
 
@@ -1284,28 +1386,24 @@ mod tests {
             .flush(Duration::from_secs(30))
             .await
             .unwrap();
-        let records = simnet_handle().unwrap().close().await;
-        assert_eq!(records.as_ref().unwrap().len(), 3);
-        assert_eq!(
-            records.unwrap(),
-            vec![
-                SimulatorEventRecord {
-                    summary: "local!1 sending message to local!2".to_string(),
-                    start_at: 0,
-                    end_at: 0,
-                },
-                SimulatorEventRecord {
-                    summary: "Sleeping for 1000 ms".to_string(),
-                    start_at: 0,
-                    end_at: 1000,
-                },
-                SimulatorEventRecord {
-                    summary: "local!2 received message from local!1".to_string(),
-                    start_at: 1000,
-                    end_at: 1000,
-                },
-            ]
-        );
+        let records = simnet_handle().unwrap().close().await.unwrap();
+        let records = records
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["ph"] != "M")
+            .collect::<Vec<_>>();
+        let expected_record = serde_json::json!({
+            "cat": "message",
+            "dur": 0,
+            "name": "local!2 received message from local!1".to_string(),
+            "ph": "X",
+            "pid": 0,
+            "tid": 0,
+            "ts": 1000 * 1000,
+        });
+        assert!(records.len() == 2, "{:?}", records);
+        assert_eq!(*records.last().unwrap(), &expected_record);
     }
 
     #[tokio::test]
@@ -1358,20 +1456,22 @@ mod tests {
             .await
             .unwrap();
 
-        let records = simnet_handle()
+        let records = simnet_handle().unwrap().close().await.unwrap();
+        let records = records
+            .as_array()
             .unwrap()
-            .close()
-            .await
-            .unwrap()
-            .into_iter()
-            .filter(|r| r.summary.contains("received message"))
+            .iter()
+            .filter(|r| r["ph"] != "M" && r["name"].as_str().unwrap().contains("received"))
             .collect::<Vec<_>>();
-
-        assert_eq!(records.len(), 10,);
+        assert_eq!(records.len(), 10);
 
         // If debounce is successful, the simnet will not advance to the delivery of any of
         // the messages before all are received
-        assert_eq!(records.last().unwrap().end_at, latency.as_millis() as u64);
+        let last_record = records.last().unwrap();
+        assert_eq!(
+            last_record["ts"].as_u64().unwrap() + last_record["dur"].as_u64().unwrap(),
+            latency.as_micros() as u64,
+        );
     }
 
     #[tokio::test]
@@ -1536,14 +1636,25 @@ edges:
             .flush(Duration::from_millis(1000))
             .await
             .unwrap();
-        let records = simnet_handle().unwrap().close().await;
-        assert!(records.as_ref().unwrap().len() == 1);
-        let expected_record = SimulatorEventRecord {
-            summary: format!("{} received message from {}", dst, src),
-            start_at: 0,
-            end_at: 1,
-        };
-        assert_eq!(records.unwrap().first().unwrap(), &expected_record);
+        let records = simnet_handle().unwrap().close().await.unwrap();
+        let records = records
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["ph"] != "M")
+            .collect::<Vec<_>>();
+        assert!(records.len() == 1);
+        let expected_record = serde_json::json!({
+            "cat": "message",
+            "dur": 1000,
+            "flow_in": true,
+            "name": "recv unknown".to_string(),
+            "ph": "X",
+            "pid": 0,
+            "tid": 0,
+            "ts": 0,
+        });
+        assert_eq!(**records.first().unwrap(), expected_record);
     }
 
     #[cfg(target_os = "linux")]
@@ -1646,15 +1757,22 @@ edges:
             .flush(Duration::from_millis(1000))
             .await
             .unwrap();
-        let records = simnet_handle().unwrap().close().await;
-        let expected_record = SimulatorEventRecord {
-            summary:
-                "[mesh_0_worker[0].worker_0[0]] Torch Op: torch.ops.aten.ones.default(1, 2, a=2)"
-                    .to_string(),
-            start_at: 0,
-            end_at: 100,
-        };
-        assert!(records.as_ref().unwrap().len() == 1);
-        assert_eq!(records.unwrap().first().unwrap(), &expected_record);
+        let records = simnet_handle().unwrap().close().await.unwrap();
+        let records = records
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["ph"] != "M")
+            .collect::<Vec<_>>();
+        let expected_record = serde_json::json!({
+            "cat": "compute",
+            "dur": 2000,
+            "name": "torch.ops.aten.ones.default",
+            "ph":"X",
+            "pid":0,"tid":0,
+            "ts": 0,
+        });
+        assert!(records.len() == 1);
+        assert_eq!(*records.first().unwrap(), &expected_record);
     }
 }
