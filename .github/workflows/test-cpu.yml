@@ -1,0 +1,41 @@
+name: Test CPU
+
+on:
+  workflow_call:
+    inputs:
+      artifact-name:
+        description: 'CPU artifact name from build workflow'
+        required: true
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-cpu:
+    name: CPU Tests (USE_TENSOR_ENGINE=0)
+    strategy:
+      matrix:
+        include:
+          - name: 4xlarge
+            runs-on: linux.4xlarge
+    uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+    with:
+      timeout: 60
+      runner: ${{ matrix.runs-on }}
+      submodules: recursive
+      download-artifact: ${{ inputs.artifact-name }}
+      script: |
+        # Setup test environment
+        conda create -n venv python=3.10 -y
+        conda activate venv
+        export PATH=/opt/rh/devtoolset-10/root/usr/bin/:$PATH
+
+        # Set CPU-only environment
+        export USE_TENSOR_ENGINE=0
+
+        # Currently a no-op.
+        # Tests requiring tensor engine / GPU need to be identified and flagged to skip.
+        # We will just ensure monarch can be imported successfully.
+        python -c "import monarch; print('Monarch imported successfully')"
