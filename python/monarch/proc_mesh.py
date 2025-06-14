@@ -6,6 +6,7 @@
 
 # pyre-strict
 
+import inspect
 import sys
 
 from typing import Any, cast, List, Optional, Type, TypeVar
@@ -21,7 +22,14 @@ from monarch._rust_bindings.hyperactor_extension.alloc import (  # @manual=//mon
 from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyProcMesh
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape, Slice
-from monarch.actor_mesh import _Actor, _ActorMeshRefImpl, Actor, ActorMeshRef
+from monarch.actor_mesh import (
+    _Actor,
+    _ActorMeshRefImpl,
+    _AsyncActor,
+    Actor,
+    ActorMeshRef,
+    EndpointProperty,
+)
 
 from monarch.common._device_utils import _local_device_count
 from monarch.common.shape import MeshTrait
@@ -83,8 +91,16 @@ class ProcMesh(MeshTrait):
             raise ValueError(
                 f"{Class} must subclass monarch.service.Actor to spawn it."
             )
+        is_async = False
+        for attr_name in dir(Class):
+            attr_value = getattr(Class, attr_name, None)
+            if isinstance(attr_value, EndpointProperty):
+                if inspect.iscoroutinefunction(attr_value._method):
+                    is_async = True
+                    break
 
-        actor_mesh = self._proc_mesh.spawn_blocking(name, _Actor)
+        actor_cls = _AsyncActor if is_async else _Actor
+        actor_mesh = self._proc_mesh.spawn_blocking(name, actor_cls)
         service = ActorMeshRef(
             Class,
             _ActorMeshRefImpl.from_hyperactor_mesh(self._mailbox, actor_mesh),
@@ -108,8 +124,16 @@ class ProcMesh(MeshTrait):
             raise ValueError(
                 f"{Class} must subclass monarch.service.Actor to spawn it."
             )
+        is_async = False
+        for attr_name in dir(Class):
+            attr_value = getattr(Class, attr_name, None)
+            if isinstance(attr_value, EndpointProperty):
+                if inspect.iscoroutinefunction(attr_value._method):
+                    is_async = True
+                    break
 
-        actor_mesh = await self._proc_mesh.spawn_nonblocking(name, _Actor)
+        actor_cls = _AsyncActor if is_async else _Actor
+        actor_mesh = self._proc_mesh.spawn_blocking(name, actor_cls)
         service = ActorMeshRef(
             Class,
             _ActorMeshRefImpl.from_hyperactor_mesh(self._mailbox, actor_mesh),
