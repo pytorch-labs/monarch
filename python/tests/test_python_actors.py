@@ -434,6 +434,7 @@ def _debugee_actor_internal(rank):
 class DebugeeActor(Actor):
     @endpoint
     async def to_debug(self):
+        print("calling to_debug")
         rank = MonarchContext.get().point.rank
         return _debugee_actor_internal(rank)
 
@@ -479,10 +480,14 @@ async def test_debug() -> None:
         debugee = await proc.spawn("debugee", DebugeeActor)
         debug_client = await init_debugging(debugee)
 
+        print("suo 1")
         fut = debugee.to_debug.call()
+        print("suo 2")
         await debug_client.wait_pending_session.call_one()
+        print("suo 3")
         breakpoints = []
         for i in range(10):
+            print("suo loop", i)
             breakpoints = await debug_client.list.call_one()
             if len(breakpoints) == 4:
                 break
@@ -581,13 +586,63 @@ async def test_actor_tls() -> None:
     pm = await proc_mesh(gpus=1)
     am = await pm.spawn("tls", TLSActor)
     await am.increment.call_one()
-    # TODO(suo): TLS is NOT preserved across async/sync endpoints, because currently
-    # we run async endpoints on a different thread than sync ones.
-    # Will fix this in a followup diff.
-
-    # await am.increment_async.call_one()
+    await am.increment_async.call_one()
     await am.increment.call_one()
-    # await am.increment_async.call_one()
+    await am.increment_async.call_one()
 
-    assert 2 == await am.get.call_one()
-    # assert 4 == await am.get_async.call_one()
+    assert 4 == await am.get.call_one()
+    assert 4 == await am.get_async.call_one()
+
+
+class TLSActorFullSync(Actor):
+    """An actor that manages thread-local state."""
+
+    def __init__(self):
+        self.local = threading.local()
+        self.local.value = 0
+
+    @endpoint
+    def increment(self):
+        self.local.value += 1
+
+    @endpoint
+    def get(self):
+        return self.local.value
+
+
+async def test_actor_tls_full_sync() -> None:
+    """Test that thread-local state is respected."""
+    pm = await proc_mesh(gpus=1)
+    am = await pm.spawn("tls", TLSActorFullSync)
+    await am.increment.call_one()
+    await am.increment.call_one()
+    await am.increment.call_one()
+    await am.increment.call_one()
+
+    assert 4 == await am.get.call_one()
+
+
+class AsyncActor(Actor):
+    def __init__(self):
+        self.should_exit = False
+
+    @endpoint
+    async def sleep(self) -> None:
+        while True and not self.should_exit:
+            await asyncio.sleep(1)
+
+    @endpoint
+    async def no_more(self) -> None:
+        self.should_exit = True
+
+
+@pytest.mark.timeout(15)
+async def test_async_concurrency():
+    """Test that async endpoints will be processed concurrently."""
+    pm = await proc_mesh(gpus=1)
+    am = await pm.spawn("async", AsyncActor)
+    fut = am.sleep.call()
+    # This call should go through and exit the sleep loop, as long as we are
+    # actually concurrently processing messages.
+    await am.no_more.call()
+    await fut
