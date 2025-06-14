@@ -119,6 +119,27 @@ pub trait RewriteRule {
     fn rewrite(&self, node: NormalizedSelection) -> NormalizedSelection;
 }
 
+impl<R1: RewriteRule, R2: RewriteRule> RewriteRule for (R1, R2) {
+    fn rewrite(&self, node: NormalizedSelection) -> NormalizedSelection {
+        self.1.rewrite(self.0.rewrite(node))
+    }
+}
+
+/// Extension trait for composing rewrite rules in a fluent style.
+///
+/// This trait provides a `then` method that allows chaining rewrite
+/// rules together, creating a pipeline where rules are applied
+/// left-to-right.
+pub trait RewriteRuleExt: RewriteRule + Sized {
+    /// Chains this rule with another rule, creating a composite rule
+    /// that applies `self` first, then `other`.
+    fn then<R: RewriteRule>(self, other: R) -> (Self, R) {
+        (self, other)
+    }
+}
+
+impl<T: RewriteRule> RewriteRuleExt for T {}
+
 impl From<NormalizedSelection> for Selection {
     /// Converts the normalized form back into a standard `Selection`.
     ///
@@ -204,6 +225,53 @@ impl RewriteRule for IdentityRules {
     }
 }
 
+/// A normalization rule that flattens nested unions and
+/// intersections.
+#[derive(Default)]
+pub struct FlatteningRules;
+
+impl RewriteRule for FlatteningRules {
+    // Flattening rewrites:
+    //
+    // - Union(a, Union(b, c))               → Union(a, b, c)           // flatten nested unions
+    // - Intersection(a, Intersection(b, c)) → Intersection(a, b, c)    // flatten nested intersections
+    fn rewrite(&self, node: NormalizedSelection) -> NormalizedSelection {
+        use NormalizedSelection::*;
+
+        match node {
+            Union(set) => {
+                let mut flattened = BTreeSet::new();
+                for item in set {
+                    match item {
+                        Union(inner_set) => {
+                            flattened.extend(inner_set);
+                        }
+                        other => {
+                            flattened.insert(other);
+                        }
+                    }
+                }
+                Union(flattened)
+            }
+            Intersection(set) => {
+                let mut flattened = BTreeSet::new();
+                for item in set {
+                    match item {
+                        Intersection(inner_set) => {
+                            flattened.extend(inner_set);
+                        }
+                        other => {
+                            flattened.insert(other);
+                        }
+                    }
+                }
+                Intersection(flattened)
+            }
+            _ => node,
+        }
+    }
+}
+
 impl NormalizedSelection {
     pub fn rewrite_bottom_up(self, rule: &impl RewriteRule) -> Self {
         let mapped = self.trav(|child| child.rewrite_bottom_up(rule));
@@ -260,5 +328,71 @@ mod tests {
         let expected = true_();
 
         assert_structurally_eq!(&normed.into(), &expected);
+    }
+
+    #[test]
+    fn test_union_flattening() {
+        use NormalizedSelection::*;
+
+        // Create Union(a, Union(b, c)) manually
+        let inner_union = {
+            let mut set = BTreeSet::new();
+            set.insert(All(Box::new(True))); // represents 'b'
+            set.insert(Any(Box::new(True))); // represents 'c'
+            Union(set)
+        };
+
+        let outer_union = {
+            let mut set = BTreeSet::new();
+            set.insert(First(Box::new(True))); // represents 'a'
+            set.insert(inner_union);
+            Union(set)
+        };
+
+        let rule = FlatteningRules;
+        let result = rule.rewrite(outer_union);
+
+        // Should be flattened to Union(a, b, c)
+        if let Union(set) = result {
+            assert_eq!(set.len(), 3);
+            assert!(set.contains(&First(Box::new(True))));
+            assert!(set.contains(&All(Box::new(True))));
+            assert!(set.contains(&Any(Box::new(True))));
+        } else {
+            panic!("Expected Union, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn test_intersection_flattening() {
+        use NormalizedSelection::*;
+
+        // Create Intersection(a, Intersection(b, c)) manually
+        let inner_intersection = {
+            let mut set = BTreeSet::new();
+            set.insert(All(Box::new(True))); // represents 'b'
+            set.insert(Any(Box::new(True))); // represents 'c'
+            Intersection(set)
+        };
+
+        let outer_intersection = {
+            let mut set = BTreeSet::new();
+            set.insert(First(Box::new(True))); // represents 'a'
+            set.insert(inner_intersection);
+            Intersection(set)
+        };
+
+        let rule = FlatteningRules;
+        let result = rule.rewrite(outer_intersection);
+
+        // Should be flattened to Intersection(a, b, c)
+        if let Intersection(set) = result {
+            assert_eq!(set.len(), 3);
+            assert!(set.contains(&First(Box::new(True))));
+            assert!(set.contains(&All(Box::new(True))));
+            assert!(set.contains(&Any(Box::new(True))));
+        } else {
+            panic!("Expected Intersection, got {:?}", result);
+        }
     }
 }
