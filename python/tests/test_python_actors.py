@@ -29,7 +29,12 @@ from monarch.actor_mesh import (
 )
 from monarch.debugger import init_debugging
 
-from monarch.mesh_controller import spawn_tensor_engine
+from monarch._rust_bindings import has_tensor_engine
+
+if has_tensor_engine():
+    from monarch.mesh_controller import spawn_tensor_engine
+else:
+    spawn_tensor_engine = None
 
 from monarch.proc_mesh import local_proc_mesh, proc_mesh
 from monarch.rdma import RDMABuffer
@@ -114,6 +119,10 @@ class ParameterClient(Actor):
         return self.buffer
 
 
+@pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason="CUDA not available",
+)
 async def test_proc_mesh_rdma():
     proc = await proc_mesh(gpus=1)
     server = await proc.spawn("server", ParameterServer)
@@ -282,6 +291,10 @@ class GeneratorActor(Actor):
         ), f"{torch.sum(self.generator.weight.data)=}, {self.step=}"
 
 
+@pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason="CUDA not available",
+)
 async def test_gpu_trainer_generator():
     trainer_proc = await proc_mesh(gpus=1)
     gen_proc = await proc_mesh(gpus=1)
@@ -311,6 +324,10 @@ async def test_sync_actor():
     assert r == 5
 
 
+@pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason="CUDA not available",
+)
 def test_gpu_trainer_generator_sync() -> None:
     trainer_proc = proc_mesh(gpus=1).get()
     gen_proc = proc_mesh(gpus=1).get()
@@ -391,6 +408,10 @@ def test_rust_binding_modules_correct() -> None:
     check(bindings, "monarch._rust_bindings")
 
 
+@pytest.mark.skipif(
+    not has_tensor_engine(),
+    reason="Tensor engine not available",
+)
 @pytest.mark.skipif(
     torch.cuda.device_count() < 2,
     reason="Not enough GPUs, this test requires at least 2 GPUs",
