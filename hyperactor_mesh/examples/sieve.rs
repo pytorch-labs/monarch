@@ -1,0 +1,142 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+//! Based on the "Parallel Sieve of Eratosthenes" described by Leroy
+//! and Didier in ["UNIX System Programming in
+//! OCaml"](https://ocaml.github.io/ocamlunix/ocamlunix.pdf).
+//! Implements a [Sieve of
+//! Eratosthenes](https://en.wikipedia.org/wiki/Sieve_of_Eratosthenes)
+//! using dynamically spawned actors to filter candidates
+//! concurrently.
+use std::process::ExitCode;
+
+use anyhow::Result;
+use async_trait::async_trait;
+use hyperactor::Actor;
+use hyperactor::ActorRef;
+use hyperactor::Handler;
+use hyperactor::Instance;
+use hyperactor::Named;
+use hyperactor::PortRef;
+use hyperactor_mesh::Mesh;
+use hyperactor_mesh::ProcMesh;
+use hyperactor_mesh::alloc::AllocSpec;
+use hyperactor_mesh::alloc::Allocator;
+use hyperactor_mesh::alloc::LocalAllocator;
+use hyperactor_mesh::shape;
+use serde::Deserialize;
+use serde::Serialize;
+
+/// Candidate number submitted to the sieve.
+///
+/// Sent into the actor chain to test `number` for primality. If found
+/// to be prime, reported via `prime_collector`.
+#[derive(Debug, Serialize, Deserialize, Named)]
+pub struct NextNumber {
+    /// Candidate number to test.
+    pub number: u64,
+    /// Port for reporting discovered primes.
+    pub prime_collector: PortRef<u64>,
+}
+
+/// Parameters for spawning a `SieveActor`.
+///
+/// Carries the prime value this actor filters.
+#[derive(Debug, Named, Serialize, Deserialize, Clone)]
+pub struct SieveParams {
+    /// Prime number assigned to this actor.
+    pub prime: u64,
+}
+
+/// Actor representing one sieve filter.
+///
+/// Filters candidates divisible by `prime`. Forwards survivors to
+/// `next`. Spawns a new child when a new prime is discovered.
+#[derive(Debug)]
+#[hyperactor::export_spawn(NextNumber)]
+pub struct SieveActor {
+    /// Prime used for filtering.
+    prime: u64,
+    /// Next actor in the sieve chain.
+    next: Option<ActorRef<SieveActor>>,
+}
+
+#[async_trait]
+impl Handler<NextNumber> for SieveActor {
+    async fn handle(&mut self, this: &Instance<Self>, msg: NextNumber) -> Result<()> {
+        if msg.number % self.prime != 0 {
+            match &self.next {
+                Some(next) => {
+                    next.send(this, msg)?;
+                }
+                None => {
+                    msg.prime_collector.send(this, msg.number)?;
+                    let child = SieveActor::spawn(this, SieveParams { prime: msg.number }).await?;
+                    let child_ref = child.bind();
+                    self.next = Some(child_ref);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Actor for SieveActor {
+    type Params = SieveParams;
+
+    /// Creates a sieve actor for `prime`.
+    async fn new(params: Self::Params) -> Result<Self> {
+        Ok(Self {
+            prime: params.prime,
+            next: None,
+        })
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<ExitCode> {
+    let alloc = LocalAllocator
+        .allocate(AllocSpec {
+            shape: shape! { replica = 1 },
+            constraints: Default::default(),
+        })
+        .await?;
+
+    let mesh = ProcMesh::allocate(alloc).await?;
+
+    let sieve_params = SieveParams { prime: 2 };
+    let sieve_mesh = mesh.spawn::<SieveActor>("sieve", &sieve_params).await?;
+    let sieve_head = sieve_mesh.get(0).unwrap();
+
+    let mut primes = vec![2];
+    let mut candidate = 3;
+
+    let (prime_collector_tx, mut prime_collector_rx) = mesh.client().open_port();
+    let prime_collector_ref = prime_collector_tx.bind();
+
+    while primes.len() < 100 {
+        sieve_head.send(
+            mesh.client(),
+            NextNumber {
+                number: candidate,
+                prime_collector: prime_collector_ref.clone(),
+            },
+        )?;
+        while let Ok(Some(prime)) = prime_collector_rx.try_recv() {
+            primes.push(prime);
+        }
+        candidate += 1;
+    }
+
+    while let Ok(Some(_)) = prime_collector_rx.try_recv() {}
+
+    primes.sort();
+    println!("Primes : {:?}", primes);
+    Ok(ExitCode::SUCCESS)
+}
