@@ -4,6 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+import asyncio
 import ctypes
 import sys
 
@@ -11,7 +12,7 @@ import click
 
 from monarch._rust_bindings.monarch_extension.panic import panicking_function
 
-from monarch.actor_mesh import Actor, endpoint
+from monarch.actor_mesh import Actor, endpoint, send
 from monarch.proc_mesh import proc_mesh
 
 
@@ -34,6 +35,12 @@ class ErrorActor(Actor):
     async def cause_panic(self) -> None:
         """Endpoint that calls a Rust function that panics."""
         panicking_function()
+
+    @endpoint
+    async def await_then_error(self) -> None:
+        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.1)
+        raise RuntimeError("oh noez")
 
 
 class ErrorActorSync(Actor):
@@ -144,6 +151,29 @@ def error_bootstrap():
     sys.stdout.flush()
 
     proc_mesh(gpus=4, env={"MONARCH_ERROR_DURING_BOOTSTRAP_FOR_TESTING": "1"}).get()
+
+
+async def _error_unomonitored():
+    print("I actually ran")
+    sys.stdout.flush()
+
+    proc = await proc_mesh(gpus=1)
+    actor = await proc.spawn("error_actor", ErrorActor)
+
+    # fire and forget
+    send(actor.await_then_error, (), {}, None, "all")
+
+    # Wait. Eventually a supervision event will get propagated and the process
+    # will exit.
+    #
+    # If an event is not delivered, the test will time out before this sleep
+    # finishes.
+    await asyncio.sleep(300)
+
+
+@main.command("error-unmonitored")
+def error_unmonitored():
+    asyncio.run(_error_unomonitored())
 
 
 if __name__ == "__main__":
