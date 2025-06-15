@@ -34,7 +34,7 @@ use serde::Serialize;
 /// This struct holds various parameters required to establish and manage an RDMA connection.
 /// It includes settings for the RDMA device, queue pair attributes, and other connection-specific
 /// parameters.
-#[derive(Debug, Named, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Named, Clone, Serialize, Deserialize)]
 pub struct IbverbsConfig {
     /// `device` - The RDMA device to use for the connection.
     pub device: RdmaDevice,
@@ -53,7 +53,7 @@ pub struct IbverbsConfig {
     /// `max_recv_sge` - The maximum number of scatter/gather elements in a receive work request.
     pub max_recv_sge: u32,
     /// `path_mtu` - The path MTU (Maximum Transmission Unit) for the connection.
-    pub path_mtu: ffi::ibv_mtu,
+    pub path_mtu: u32,
     /// `retry_cnt` - The number of retry attempts for a connection request.
     pub retry_cnt: u8,
     /// `rnr_retry` - The number of retry attempts for a receiver not ready (RNR) condition.
@@ -141,7 +141,7 @@ impl std::fmt::Display for IbverbsConfig {
 ///     println!("Firmware version: {}", device.fw_ver());
 /// }
 /// ```
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RdmaDevice {
     /// `name` - The name of the RDMA device (e.g., "mlx5_0").
     name: String,
@@ -257,7 +257,7 @@ impl Default for RdmaDevice {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RdmaPort {
     /// `port_num` - The physical port number on the device.
     port_num: u8,
@@ -557,8 +557,10 @@ pub fn ibverbs_supported() -> bool {
 /// RDMA operations are in progress.
 #[derive(Debug, PartialEq, Eq, std::hash::Hash, Serialize, Deserialize, Clone)]
 pub struct RdmaMemoryRegionView {
-    addr: usize,
-    size: usize,
+    pub addr: usize,
+    pub size: usize,
+    pub lkey: u32,
+    pub rkey: u32,
 }
 
 // SAFETY: RdmaMemoryRegionView can be safely sent between threads because it only
@@ -580,35 +582,13 @@ unsafe impl Sync for RdmaMemoryRegionView {}
 
 impl RdmaMemoryRegionView {
     /// Creates a new `RdmaMemoryRegionView` with the given address and size.
-    pub fn new(addr: usize, size: usize) -> Self {
-        Self { addr, size }
-    }
-
-    /// Creates a new `RdmaMemoryRegionView` from a boxed slice.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure that the memory pointed to by the boxed slice remains valid
-    /// for the lifetime of the `RdmaMemoryRegionView`.
-    pub fn from_boxed_slice(buffer: &[u8]) -> Self {
-        let addr = buffer.as_ptr() as usize;
-        let size = buffer.len();
-        Self { addr, size }
-    }
-
-    /// Returns the memory buffer's address.
-    pub fn addr(&self) -> usize {
-        self.addr
-    }
-
-    /// Returns the size of the memory buffer in bytes.
-    pub fn len(&self) -> usize {
-        self.size
-    }
-
-    /// Returns true if the memory buffer is empty (size is 0).
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
+    pub fn new(addr: usize, size: usize, lkey: u32, rkey: u32) -> Self {
+        Self {
+            addr,
+            size,
+            lkey,
+            rkey,
+        }
     }
 }
 
@@ -819,14 +799,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn test_rdma_memory_region_view() {
-        let buffer = vec![0u8; 1024].into_boxed_slice();
-        let mr = RdmaMemoryRegionView::from_boxed_slice(&buffer);
-        assert_eq!(mr.len(), 1024);
-        assert_eq!(mr.addr(), buffer.as_ptr() as usize);
     }
 
     #[test]
