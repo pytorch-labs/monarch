@@ -6,7 +6,6 @@
 
 # pyre-unsafe
 
-import asyncio
 import collections
 import contextvars
 import functools
@@ -27,9 +26,7 @@ from typing import (
     Callable,
     cast,
     Concatenate,
-    Coroutine,
     Dict,
-    Generator,
     Generic,
     Iterable,
     List,
@@ -97,39 +94,6 @@ class MonarchContext:
 _context: contextvars.ContextVar[MonarchContext] = contextvars.ContextVar(
     "monarch.actor_mesh._context"
 )
-
-
-# this was implemented in python 3.12 as an argument to task
-# but I have to backport to 3.10/3.11.
-def create_eager_task(coro: Awaitable[None]) -> asyncio.Future:
-    iter = coro.__await__()
-    try:
-        first_yield = next(iter)
-        return asyncio.create_task(RestOfCoroutine(first_yield, iter).run())
-    except StopIteration as e:
-        t = asyncio.Future()
-        t.set_result(e.value)
-        return t
-
-
-class RestOfCoroutine(Generic[T1, T2]):
-    def __init__(self, first_yield: T1, iter: Generator[T2, None, T2]) -> None:
-        self.first_yield: T1 | None = first_yield
-        self.iter: Generator[T2, None, T2] = iter
-
-    def __await__(self) -> Generator[T1, None, T1] | Generator[T2, None, T2]:
-        first_yield = self.first_yield
-        assert first_yield is not None
-        yield first_yield
-        self.first_yield = None
-        while True:
-            try:
-                yield next(self.iter)
-            except StopIteration as e:
-                return e.value
-
-    async def run(self) -> T1 | T2:
-        return await self
 
 
 T = TypeVar("T")
@@ -285,7 +249,7 @@ class Endpoint(Generic[P, R]):
         async def process() -> ValueMesh[R]:
             results: List[R] = [None] * len(self._actor_mesh)  # pyre-fixme[9]
             for _ in range(len(self._actor_mesh)):
-                rank, value = await r.recv()  # pyre-fixme[23]
+                rank, value = await r.recv()
                 results[rank] = value
             call_shape = Shape(
                 self._actor_mesh._shape.labels,
@@ -293,7 +257,18 @@ class Endpoint(Generic[P, R]):
             )
             return ValueMesh(call_shape, results)
 
-        return Future(process)
+        def process_blocking() -> ValueMesh[R]:
+            results: List[R] = [None] * len(self._actor_mesh)  # pyre-fixme[9]
+            for _ in range(len(self._actor_mesh)):
+                rank, value = r.recv().get()
+                results[rank] = value
+            call_shape = Shape(
+                self._actor_mesh._shape.labels,
+                NDSlice.new_row_major(self._actor_mesh._shape.ndslice.sizes),
+            )
+            return ValueMesh(call_shape, results)
+
+        return Future(process, process_blocking)
 
     async def stream(self, *args: P.args, **kwargs: P.kwargs) -> AsyncGenerator[R, R]:
         """
@@ -461,8 +436,10 @@ class PortReceiver(Generic[R]):
         return self._process(self._receiver.blocking_recv())
 
     def _process(self, msg: PythonMessage) -> R:
+        print("processing response,")
         # TODO: Try to do something more structured than a cast here
         payload = cast(R, _unpickle(msg.message, self._mailbox))
+        print(f"{payload=}")
         if msg.method == "result":
             return payload
         else:
@@ -485,15 +462,27 @@ singleton_shape = Shape([], NDSlice(offset=0, sizes=[], strides=[]))
 
 
 class _Actor:
+    """
+    This is the message handling implementation of a Python actor.
+
+    The layering goes:
+        Rust `PythonActor` -> `_Actor` -> user-provided `Actor` instance
+
+    Messages are received from the Rust backend, and forwarded to the `handle`
+    methods on this class.
+
+    This class wraps the actual `Actor` instance provided by the user, and
+    routes messages to it, managing argument serialization/deserialization and
+    error handling.
+
+    Messages will be processed in order, on a dedicated thread for this actor.
+    """
+
     def __init__(self) -> None:
         self.instance: object | None = None
-        self.active_requests: asyncio.Queue[asyncio.Future[object]] = asyncio.Queue()
-        self.complete_task: asyncio.Task | None = None
 
-    def handle(
-        self, mailbox: Mailbox, message: PythonMessage, panic_flag: PanicFlag
-    ) -> Optional[Coroutine[Any, Any, Any]]:
-        return self.handle_cast(mailbox, 0, singleton_shape, message, panic_flag)
+    def handle(self, mailbox: Mailbox, message: PythonMessage) -> None:
+        return self.handle_cast(mailbox, 0, singleton_shape, message)
 
     def handle_cast(
         self,
@@ -501,8 +490,7 @@ class _Actor:
         rank: int,
         shape: Shape,
         message: PythonMessage,
-        panic_flag: PanicFlag,
-    ) -> Optional[Coroutine[Any, Any, Any]]:
+    ) -> None:
         port = (
             Port(message.response_port, mailbox, rank)
             if message.response_port
@@ -519,18 +507,71 @@ class _Actor:
                 Class, *args = args
                 self.instance = Class(*args, **kwargs)
                 return None
-            else:
-                the_method = getattr(self.instance, message.method)._method
 
-                if not inspect.iscoroutinefunction(the_method):
-                    enter_span(
-                        the_method.__module__, message.method, str(ctx.mailbox.actor_id)
-                    )
-                    result = the_method(self.instance, *args, **kwargs)
-                    exit_span()
-                    if port is not None:
-                        port.send("result", result)
-                    return None
+            the_method = getattr(self.instance, message.method)._method
+
+            enter_span(the_method.__module__, message.method, str(ctx.mailbox.actor_id))
+            result = the_method(self.instance, *args, **kwargs)
+            exit_span()
+            if port is not None:
+                port.send("result", result)
+        except Exception as e:
+            traceback.print_exc()
+            s = ActorError(e)
+
+            # The exception is delivered to exactly one of:
+            # (1) our caller, (2) our supervisor
+            if port is not None:
+                port.send("exception", s)
+            else:
+                raise s from None
+
+
+class _AsyncActor:
+    """
+    An async version of `_Actor`.
+
+    Messages will be processed in order, but the `handle` methods will be
+    enqueued as background tasks. Thus, if an async endpoint `await`s, the
+    scheduler may concurrently process another message.
+    """
+
+    def __init__(self) -> None:
+        self.instance: object | None = None
+
+    async def handle(
+        self, mailbox: Mailbox, message: PythonMessage, panic_flag: PanicFlag
+    ) -> None:
+        return await self.handle_cast(mailbox, 0, singleton_shape, message, panic_flag)
+
+    async def handle_cast(
+        self,
+        mailbox: Mailbox,
+        rank: int,
+        shape: Shape,
+        message: PythonMessage,
+        panic_flag: PanicFlag,
+    ) -> None:
+        port = (
+            Port(message.response_port, mailbox, rank)
+            if message.response_port
+            else None
+        )
+        try:
+            ctx: MonarchContext = MonarchContext(
+                mailbox, mailbox.actor_id.proc_id, Point(rank, shape)
+            )
+            _context.set(ctx)
+
+            args, kwargs = _unpickle(message.message, mailbox)
+            if message.method == "__init__":
+                Class, *args = args
+                self.instance = Class(*args, **kwargs)
+                return None
+
+            the_method = getattr(self.instance, message.method)._method
+
+            if inspect.iscoroutinefunction(the_method):
 
                 async def instrumented():
                     enter_span(
@@ -547,39 +588,14 @@ class _Actor:
                     exit_span()
                     return result
 
-                return self.run_async(
-                    ctx,
-                    self.run_task(port, instrumented(), panic_flag),
-                )
-        except Exception as e:
-            traceback.print_exc()
-            s = ActorError(e)
-
-            # The exception is delivered to exactly one of:
-            # (1) our caller, (2) our supervisor
-            if port is not None:
-                port.send("exception", s)
+                result = await instrumented()
             else:
-                raise s from None
+                enter_span(
+                    the_method.__module__, message.method, str(ctx.mailbox.actor_id)
+                )
+                result = the_method(self.instance, *args, **kwargs)
+                exit_span()
 
-    async def run_async(
-        self,
-        ctx: MonarchContext,
-        coroutine: Awaitable[None],
-    ) -> None:
-        _context.set(ctx)
-        if self.complete_task is None:
-            self.complete_task = asyncio.create_task(self._complete())
-        await self.active_requests.put(create_eager_task(coroutine))
-
-    async def run_task(
-        self,
-        port: Port | None,
-        coroutine: Awaitable[Any],
-        panic_flag: PanicFlag,
-    ) -> None:
-        try:
-            result = await coroutine
             if port is not None:
                 port.send("result", result)
         except Exception as e:
@@ -602,11 +618,6 @@ class _Actor:
                 # The channel might be closed if the Rust side has already detected the error
                 pass
             raise
-
-    async def _complete(self) -> None:
-        while True:
-            task = await self.active_requests.get()
-            await task
 
 
 def _is_mailbox(x: object) -> bool:
@@ -648,8 +659,9 @@ class Actor(MeshTrait):
             "actor implementations are not meshes, but we can't convince the typechecker of it..."
         )
 
-    @endpoint
-    async def _set_debug_client(self, client: "DebugClient") -> None:
+    @endpoint  # pyre-ignore
+    def _set_debug_client(self, client: "DebugClient") -> None:
+        print("calling _set_debug_client")
         point = MonarchContext.get().point
         # For some reason, using a lambda instead of functools.partial
         # confuses the pdb wrapper implementation.
