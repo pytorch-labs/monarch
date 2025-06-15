@@ -16,7 +16,7 @@ import monarch
 
 import pytest
 
-import torch
+from monarch._rust_bindings import has_tensor_engine
 
 from monarch.actor_mesh import (
     Accumulator,
@@ -29,15 +29,12 @@ from monarch.actor_mesh import (
 )
 from monarch.debugger import init_debugging
 
-from monarch._rust_bindings import has_tensor_engine
-
 if has_tensor_engine():
     from monarch.mesh_controller import spawn_tensor_engine
-else:
-    spawn_tensor_engine = None
+    import torch
+    from monarch.rdma import RDMABuffer
 
 from monarch.proc_mesh import local_proc_mesh, proc_mesh
-from monarch.rdma import RDMABuffer
 
 
 class Counter(Actor):
@@ -65,7 +62,7 @@ class ParameterServer(Actor):
         self.grad_buffer = torch.rand(10, 10)
 
     @endpoint
-    async def grad_handle(self) -> RDMABuffer:
+    async def grad_handle(self) -> "RDMABuffer":
         byte_tensor = self.grad_buffer.view(torch.uint8).flatten()
         return RDMABuffer(byte_tensor)
 
@@ -74,7 +71,7 @@ class ParameterServer(Actor):
         self.params += 0.01 * self.grad_buffer
 
     @endpoint
-    async def get_grad_buffer(self) -> torch.Tensor:
+    async def get_grad_buffer(self) -> "torch.Tensor":
         # just used for testing
         return self.grad_buffer
 
@@ -120,7 +117,7 @@ class ParameterClient(Actor):
 
 
 @pytest.mark.skipif(
-    not torch.cuda.is_available(),
+    not (has_tensor_engine() and torch.cuda.is_available()),
     reason="CUDA not available",
 )
 async def test_proc_mesh_rdma():
@@ -292,7 +289,7 @@ class GeneratorActor(Actor):
 
 
 @pytest.mark.skipif(
-    not torch.cuda.is_available(),
+    not (has_tensor_engine() and torch.cuda.is_available()),
     reason="CUDA not available",
 )
 async def test_gpu_trainer_generator():
@@ -325,7 +322,7 @@ async def test_sync_actor():
 
 
 @pytest.mark.skipif(
-    not torch.cuda.is_available(),
+    not (has_tensor_engine() and torch.cuda.is_available()),
     reason="CUDA not available",
 )
 def test_gpu_trainer_generator_sync() -> None:
@@ -409,11 +406,7 @@ def test_rust_binding_modules_correct() -> None:
 
 
 @pytest.mark.skipif(
-    not has_tensor_engine(),
-    reason="Tensor engine not available",
-)
-@pytest.mark.skipif(
-    torch.cuda.device_count() < 2,
+    not (has_tensor_engine() and torch.cuda.device_count() >= 2),
     reason="Not enough GPUs, this test requires at least 2 GPUs",
 )
 def test_tensor_engine() -> None:

@@ -25,7 +25,10 @@ from monarch.actor_mesh import _Actor, _ActorMeshRefImpl, Actor, ActorMeshRef
 
 from monarch.common._device_utils import _local_device_count
 from monarch.common.shape import MeshTrait
-from monarch.rdma import RDMAManager
+from monarch._rust_bindings import has_tensor_engine
+
+if has_tensor_engine():
+    from monarch.rdma import RDMAManager
 
 T = TypeVar("T")
 try:
@@ -48,9 +51,10 @@ class ProcMesh(MeshTrait):
     def __init__(self, hy_proc_mesh: HyProcMesh) -> None:
         self._proc_mesh = hy_proc_mesh
         self._mailbox: Mailbox = self._proc_mesh.client
-        self._rdma_manager: RDMAManager = self._spawn_blocking(
-            "rdma_manager", RDMAManager
-        )
+        if has_tensor_engine():
+            self._rdma_manager: RDMAManager = self._spawn_blocking(
+                "rdma_manager", RDMAManager
+            )
 
     @property
     def _ndslice(self) -> Slice:

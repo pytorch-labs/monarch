@@ -13,6 +13,11 @@ from collections import deque
 from logging import Logger
 from typing import List, NamedTuple, Optional, Union
 
+from monarch._rust_bindings import has_tensor_engine
+
+if not has_tensor_engine():
+    raise ImportError("Tensor engine is not enabled, this module requires it.")
+
 import torch.utils._python_dispatch
 
 from monarch import NDSlice

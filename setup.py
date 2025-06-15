@@ -10,71 +10,10 @@ import shutil
 import subprocess
 import sysconfig
 
-import torch
-
 from setuptools import Command, find_packages, setup
-
 from setuptools_rust import Binding, RustExtension
-from torch.utils.cpp_extension import (
-    BuildExtension,
-    CppExtension,
-    CUDA_HOME,
-    include_paths as torch_include_paths,
-    TORCH_LIB_PATH,
-)
 
-USE_CUDA = CUDA_HOME is not None
 USE_TENSOR_ENGINE = os.environ.get("USE_TENSOR_ENGINE", "1") == "1"
-
-monarch_cpp_src = ["python/monarch/common/init.cpp"]
-
-if USE_CUDA:
-    monarch_cpp_src.append("python/monarch/common/mock_cuda.cpp")
-
-common_C = CppExtension(
-    "monarch.common._C",
-    monarch_cpp_src,
-    extra_compile_args=["-g", "-O3"],
-    libraries=["dl"],
-    include_dirs=[
-        os.path.dirname(os.path.abspath(__file__)),
-        sysconfig.get_config_var("INCLUDEDIR"),
-    ],
-)
-
-
-controller_C = CppExtension(
-    "monarch.gradient._gradient_generator",
-    ["python/monarch/gradient/_gradient_generator.cpp"],
-    extra_compile_args=["-g", "-O3"],
-    include_dirs=[
-        os.path.dirname(os.path.abspath(__file__)),
-        sysconfig.get_config_var("INCLUDEDIR"),
-    ],
-)
-
-ENABLE_MSG_LOGGING = (
-    "--cfg=enable_hyperactor_message_logging"
-    if os.environ.get("ENABLE_MESSAGE_LOGGING")
-    else ""
-)
-
-os.environ.update(
-    {
-        "CXXFLAGS": f"-D_GLIBCXX_USE_CXX11_ABI={int(torch._C._GLIBCXX_USE_CXX11_ABI)}",
-        "RUSTFLAGS": " ".join(["-Zthreads=16", ENABLE_MSG_LOGGING]),
-        "LIBTORCH_LIB": TORCH_LIB_PATH,
-        "LIBTORCH_INCLUDE": ":".join(torch_include_paths()),
-        "_GLIBCXX_USE_CXX11_ABI": str(int(torch._C._GLIBCXX_USE_CXX11_ABI)),
-        "TORCH_SYS_USE_PYTORCH_APIS": "0",
-    }
-)
-if USE_CUDA:
-    os.environ.update(
-        {
-            "CUDA_HOME": CUDA_HOME,
-        }
-    )
 
 
 class Clean(Command):
@@ -113,8 +52,87 @@ class Clean(Command):
         subprocess.run(["cargo", "clean"])
 
 
-with open("requirements.txt") as f:
-    reqs = f.read()
+
+ENABLE_MSG_LOGGING = (
+    "--cfg=enable_hyperactor_message_logging"
+    if os.environ.get("ENABLE_MESSAGE_LOGGING")
+    else ""
+)
+
+# Set environment variables for build
+env_vars = {
+    "RUSTFLAGS": " ".join(["-Zthreads=16", ENABLE_MSG_LOGGING]),
+    "TORCH_SYS_USE_PYTORCH_APIS": "0",
+}
+
+# C++ extensions and torch setup (only when tensor engine is enabled)
+ext_modules = []
+cmdclass = {"clean": Clean}
+
+# Load base requirements
+with open("requirements-base.txt") as f:
+    reqs = f.read().strip().split("\n")
+
+
+if USE_TENSOR_ENGINE:
+    import torch
+    from torch.utils.cpp_extension import (
+        BuildExtension,
+        CppExtension,
+        CUDA_HOME,
+        include_paths as torch_include_paths,
+        TORCH_LIB_PATH,
+    )
+
+    USE_CUDA = CUDA_HOME is not None
+
+    monarch_cpp_src = ["python/monarch/common/init.cpp"]
+    if USE_CUDA:
+        monarch_cpp_src.append("python/monarch/common/mock_cuda.cpp")
+
+    common_C = CppExtension(
+        "monarch.common._C",
+        monarch_cpp_src,
+        extra_compile_args=["-g", "-O3"],
+        libraries=["dl"],
+        include_dirs=[
+            os.path.dirname(os.path.abspath(__file__)),
+            sysconfig.get_config_var("INCLUDEDIR"),
+        ],
+    )
+
+    controller_C = CppExtension(
+        "monarch.gradient._gradient_generator",
+        ["python/monarch/gradient/_gradient_generator.cpp"],
+        extra_compile_args=["-g", "-O3"],
+        include_dirs=[
+            os.path.dirname(os.path.abspath(__file__)),
+            sysconfig.get_config_var("INCLUDEDIR"),
+        ],
+    )
+
+    ext_modules = [controller_C, common_C]
+    cmdclass["build_ext"] = BuildExtension.with_options(no_python_abi_suffix=True)
+
+    glibcxx_abi = int(torch._C._GLIBCXX_USE_CXX11_ABI)
+    env_vars.update({
+        "CXXFLAGS": f"-D_GLIBCXX_USE_CXX11_ABI={glibcxx_abi}",
+        "LIBTORCH_LIB": TORCH_LIB_PATH,
+        "LIBTORCH_INCLUDE": ":".join(torch_include_paths()),
+        "_GLIBCXX_USE_CXX11_ABI": str(glibcxx_abi),
+    })
+
+    if USE_CUDA:
+        env_vars["CUDA_HOME"] = CUDA_HOME
+
+    with open("requirements-tensor.txt") as f:
+        tensor_reqs = f.read().strip().split("\n")
+    reqs.extend(tensor_reqs)
+
+reqs = "\n".join(reqs)
+
+os.environ.update(env_vars)
+
 
 with open("README.md", encoding="utf8") as f:
     readme = f.read()
@@ -159,10 +177,7 @@ setup(
     description="Monarch: Single controller library",
     long_description=readme,
     long_description_content_type="text/markdown",
-    ext_modules=[
-        controller_C,
-        common_C,
-    ],
+    ext_modules=ext_modules,
     entry_points={
         "console_scripts": [
             "monarch=monarch.tools.cli:main",
@@ -170,8 +185,5 @@ setup(
         ],
     },
     rust_extensions=rust_extensions,
-    cmdclass={
-        "build_ext": BuildExtension.with_options(no_python_abi_suffix=True),
-        "clean": Clean,
-    },
+    cmdclass=cmdclass,
 )

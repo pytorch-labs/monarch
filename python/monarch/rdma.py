@@ -9,6 +9,11 @@ import ctypes
 from dataclasses import dataclass
 from typing import cast, Dict, Optional, Tuple
 
+from monarch._rust_bindings import has_tensor_engine
+
+if not has_tensor_engine():
+    raise ImportError("Tensor engine is not enabled, this module requires it.")
+
 import torch
 
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
