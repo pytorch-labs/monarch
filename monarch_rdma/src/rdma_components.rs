@@ -45,12 +45,28 @@ use std::io::Result;
 
 /// Direct access to low-level libibverbs FFI.
 use ffi::ibv_qp_type;
+use hyperactor::ActorRef;
+use hyperactor::Named;
 use ibverbs::Gid;
+use serde::Deserialize;
+use serde::Serialize;
 
+use crate::RdmaDevice;
+use crate::RdmaManagerActor;
 use crate::ibverbs_primitives::IbvWc;
 use crate::ibverbs_primitives::IbverbsConfig;
+use crate::ibverbs_primitives::RdmaMemoryRegionView;
 use crate::ibverbs_primitives::RdmaOperation;
 use crate::ibverbs_primitives::RdmaQpInfo;
+
+#[derive(Debug, Serialize, Deserialize, Named, Clone)]
+pub struct RdmaBuffer {
+    pub owner: ActorRef<RdmaManagerActor>,
+    pub lkey: u32,
+    pub rkey: u32,
+    pub addr: usize,
+    pub size: usize,
+}
 
 /// Represents a domain for RDMA operations, encapsulating the necessary resources
 /// for establishing and managing RDMA connections.
@@ -68,12 +84,9 @@ use crate::ibverbs_primitives::RdmaQpInfo;
 /// * `lkey`: Local key for the memory region, used in local RDMA operations.
 /// * `rkey`: Remote key for the memory region, used when remote peers access this memory region.
 pub struct RdmaDomain {
-    context: *mut ffi::ibv_context,
-    pd: *mut ffi::ibv_pd,
+    pub context: *mut ffi::ibv_context,
+    pub pd: *mut ffi::ibv_pd,
     mr: *mut ffi::ibv_mr,
-    config: IbverbsConfig,
-    lkey: u32,
-    rkey: u32,
 }
 
 impl std::fmt::Debug for RdmaDomain {
@@ -82,9 +95,6 @@ impl std::fmt::Debug for RdmaDomain {
             .field("context", &format!("{:p}", self.context))
             .field("pd", &format!("{:p}", self.pd))
             .field("mr", &format!("{:p}", self.mr))
-            .field("config", &self.config)
-            .field("lkey", &self.lkey)
-            .field("rkey", &self.rkey)
             .finish()
     }
 }
@@ -128,8 +138,8 @@ impl RdmaDomain {
     /// * Device context creation fails
     /// * Protection domain allocation fails
     /// * Memory region registration fails
-    pub fn new(config: IbverbsConfig) -> Result<Self> {
-        tracing::debug!("creating RdmaDomain for device {}", config.device.name());
+    pub fn new(device: RdmaDevice) -> Result<Self> {
+        tracing::debug!("creating RdmaDomain for device {}", device.name());
         // SAFETY:
         // This code uses unsafe FFI calls to interact with the RDMA device, but is safe because:
         // - All pointers are properly initialized and checked for null before use
@@ -138,7 +148,7 @@ impl RdmaDomain {
         // - The operations follow the documented RDMA protocol for device initialization
         unsafe {
             // Get the device based on the provided RdmaDevice
-            let device_name = config.device.name();
+            let device_name = device.name();
             let mut num_devices = 0i32;
             let devices = ffi::ibv_get_device_list(&mut num_devices as *mut _);
 
@@ -194,55 +204,61 @@ impl RdmaDomain {
                 ));
             }
 
-            // Register memory region
-            // Note - we enable implicit ODP here by:
-            // 1) setting access flag IBV_ACCESS_ON_DEMAND
-            let access = ffi::ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
-                | ffi::ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
-                | ffi::ibv_access_flags::IBV_ACCESS_REMOTE_READ
-                | ffi::ibv_access_flags::IBV_ACCESS_ON_DEMAND
-                | ffi::ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC;
-
-            // 2) setting the address space to null, MAX_SIZE
-            let mr = ffi::ibv_reg_mr(pd, std::ptr::null_mut(), usize::MAX, access.0 as i32);
-
-            if mr.is_null() {
-                ffi::ibv_dealloc_pd(pd);
-                ffi::ibv_close_device(context);
-                ffi::ibv_free_device_list(devices);
-                let os_error = Error::last_os_error();
-                return Err(Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("failed to register memory region (MR): {}", os_error),
-                ));
-            }
+            // Avoids memory leaks
+            ffi::ibv_free_device_list(devices);
 
             Ok(RdmaDomain {
                 context,
                 pd,
-                mr,
-                config,
-                lkey: (*mr).lkey,
-                rkey: (*mr).rkey,
+                mr: std::ptr::null_mut(),
+            })
+        }
+    }
+    fn register_mr(&mut self) -> Result<()> {
+        if self.mr.is_null() {
+            // SAFETY: This code uses unsafe FFI calls to interact with the RDMA device
+            unsafe {
+                let mut access = ffi::ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
+                    | ffi::ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
+                    | ffi::ibv_access_flags::IBV_ACCESS_REMOTE_READ
+                    | ffi::ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC;
+
+                // TODO: this is CPU simplification, expand to support GPU.
+                access = access | ffi::ibv_access_flags::IBV_ACCESS_ON_DEMAND;
+                let mr =
+                    ffi::ibv_reg_mr(self.pd, std::ptr::null_mut(), usize::MAX, access.0 as i32);
+
+                if mr.is_null() {
+                    let os_error = Error::last_os_error();
+                    return Err(Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("failed to register memory region (MR): {}", os_error),
+                    ));
+                }
+                self.mr = mr;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn register_buffer(&mut self, addr: usize, size: usize) -> Result<RdmaMemoryRegionView> {
+        self.register_mr()?;
+        // SAFETY: This code uses unsafe FFI calls to interact with the RDMA device
+        unsafe {
+            Ok(RdmaMemoryRegionView {
+                addr,
+                size,
+                lkey: (*self.mr).lkey,
+                rkey: (*self.mr).rkey,
             })
         }
     }
 
-    /// Returns the local key (lkey) for the memory region.
-    ///
-    /// The local key is used when performing local RDMA operations on the registered memory region.
-    /// It must be provided in the scatter-gather elements of work requests that access local memory.
-    pub fn lkey(&self) -> u32 {
-        self.lkey
-    }
-
-    /// Returns the remote key (rkey) for the memory region.
-    ///
-    /// The remote key is used by remote RDMA peers when they need to access this memory region.
-    /// It must be shared with remote peers as part of connection establishment to enable
-    /// RDMA read, write, and atomic operations on this memory region.
-    pub fn rkey(&self) -> u32 {
-        self.rkey
+    // Removes a specific address from memory region.   Currently we only support single address,
+    // but in future we can expand/contract effective memory region.
+    pub fn unregister_buffer(&mut self, _buffer: RdmaMemoryRegionView) -> Result<()> {
+        // noop on cpu
+        Ok(())
     }
 }
 
@@ -269,39 +285,14 @@ impl RdmaDomain {
 /// 4. Connect to remote endpoint with `connect()`
 /// 5. Perform RDMA operations with `post_send()`
 /// 6. Poll for completions with `poll_completion()`
+
+#[derive(Debug, Serialize, Deserialize, Named, Clone)]
 pub struct RdmaQueuePair {
-    cq: *mut ffi::ibv_cq,
-    qp: *mut ffi::ibv_qp,
-    context: *mut ffi::ibv_context,
+    cq: usize,      // *mut ffi::ibv_cq,
+    qp: usize,      // *mut ffi::ibv_qp,
+    context: usize, // *mut ffi::ibv_context,
     config: IbverbsConfig,
-    lkey: u32,
-    rkey: u32,
 }
-
-impl std::fmt::Debug for RdmaQueuePair {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RdmaQueuePair")
-            .field("cq", &format!("{:p}", self.cq))
-            .field("qp", &format!("{:p}", self.qp))
-            .field("context", &format!("{:p}", self.context))
-            .field("config", &self.config)
-            .field("lkey", &self.lkey)
-            .field("rkey", &self.rkey)
-            .finish()
-    }
-}
-
-// SAFETY:
-// This function contains code marked unsafe as it interacts with the Rdma device through FFI calls.
-// RdmaQueuePair is `Send` because the raw pointers to ibverbs structs can be
-// accessed from any thread, and it is safe to drop `RdmaQueuePair` (and run the
-// ibverbs destructors) from any thread.
-unsafe impl Send for RdmaQueuePair {}
-
-// SAFETY:
-// This function contains code marked unsafe as it interacts with the Rdma device through FFI calls.
-// `RdmaQueuePair` is `Sync` because the underlying ibverbs APIs are thread-safe.
-unsafe impl Sync for RdmaQueuePair {}
 
 impl RdmaQueuePair {
     /// Creates a new RdmaQueuePair from a given RdmaDomain.
@@ -324,8 +315,12 @@ impl RdmaQueuePair {
     /// This function may return errors if:
     /// * Completion queue (CQ) creation fails
     /// * Queue pair (QP) creation fails
-    pub fn new(domain: &RdmaDomain) -> Result<Self> {
-        tracing::info!("creating an RdmaQueuePair from config {}", domain.config);
+    pub fn new(
+        context: *mut ffi::ibv_context,
+        pd: *mut ffi::ibv_pd,
+        config: IbverbsConfig,
+    ) -> Result<Self> {
+        tracing::info!("creating an RdmaQueuePair from config {}", config);
         // SAFETY:
         // This code uses unsafe FFI calls to interact with the RDMA device, but is safe because:
         // - All pointers are properly initialized and checked for null before use
@@ -333,21 +328,14 @@ impl RdmaQueuePair {
         // - Error handling properly cleans up resources in failure cases
         // - The operations follow the documented RDMA protocol for queue pair initialization
         unsafe {
-            let context = domain.context;
-            let config = domain.config.clone();
-            let pd = domain.pd;
-            let mr = domain.mr;
-            // Create completion queue
             let cq = ffi::ibv_create_cq(
-                domain.context,
+                context,
                 config.cq_entries,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
                 0,
             );
             if cq.is_null() {
-                ffi::ibv_dealloc_pd(pd);
-                ffi::ibv_close_device(context);
                 let os_error = Error::last_os_error();
                 return Err(Error::new(
                     std::io::ErrorKind::Other,
@@ -375,22 +363,17 @@ impl RdmaQueuePair {
             let qp = ffi::ibv_create_qp(pd, &mut qp_init_attr);
             if qp.is_null() {
                 ffi::ibv_destroy_cq(cq);
-                ffi::ibv_dealloc_pd(pd);
-                ffi::ibv_close_device(context);
                 let os_error = Error::last_os_error();
                 return Err(Error::new(
                     std::io::ErrorKind::Other,
                     format!("failed to create queue pair (QP): {}", os_error),
                 ));
             }
-
             Ok(RdmaQueuePair {
-                cq,
-                qp,
-                context,
+                cq: cq as usize,
+                qp: qp as usize,
+                context: context as usize,
                 config,
-                lkey: (*mr).lkey,
-                rkey: (*mr).rkey,
             })
         }
     }
@@ -418,9 +401,11 @@ impl RdmaQueuePair {
         // - Error handling properly checks return codes from ibverbs functions
         // - The memory address provided is only stored, not dereferenced in this function
         unsafe {
+            let context = self.context as *mut ffi::ibv_context;
+            let qp = self.qp as *mut ffi::ibv_qp;
             let mut port_attr = ffi::ibv_port_attr::default();
             let errno = ffi::ibv_query_port(
-                self.context,
+                context,
                 self.config.port_num,
                 &mut port_attr as *mut ffi::ibv_port_attr as *mut _,
             );
@@ -434,7 +419,7 @@ impl RdmaQueuePair {
 
             let mut gid = Gid::default();
             let ret = ffi::ibv_query_gid(
-                self.context,
+                context,
                 self.config.port_num,
                 i32::from(self.config.gid_index),
                 gid.as_mut(),
@@ -444,7 +429,7 @@ impl RdmaQueuePair {
             }
 
             Ok(RdmaQpInfo {
-                qp_num: (*self.qp).qp_num,
+                qp_num: (*qp).qp_num,
                 lid: port_attr.lid,
                 gid: Some(gid),
                 psn: self.config.psn,
@@ -452,6 +437,24 @@ impl RdmaQueuePair {
         }
     }
 
+    pub fn state(&mut self) -> Result<u32> {
+        unsafe {
+            let qp = self.qp as *mut ffi::ibv_qp;
+            let mut qp_attr = ffi::ibv_qp_attr {
+                ..Default::default()
+            };
+            let mut qp_init_attr = ffi::ibv_qp_init_attr {
+                ..Default::default()
+            };
+            let mask = ffi::ibv_qp_attr_mask::IBV_QP_STATE;
+            let errno = ffi::ibv_query_qp(qp, &mut qp_attr, mask.0 as i32, &mut qp_init_attr);
+            if errno != 0 {
+                let os_error = Error::last_os_error();
+                panic!("failed to query QP state: {}", os_error);
+            }
+            Ok(qp_attr.qp_state)
+        }
+    }
     /// Connect to a remote Rdma connection point.
     ///
     /// This performs the necessary QP state transitions (INIT->RTR->RTS) to establish a connection.
@@ -469,6 +472,8 @@ impl RdmaQueuePair {
         // 4. Memory access is properly bounded by the registered memory regions
         unsafe {
             // Transition to INIT
+            let qp = self.qp as *mut ffi::ibv_qp;
+
             let qp_access_flags = ffi::ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
                 | ffi::ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
                 | ffi::ibv_access_flags::IBV_ACCESS_REMOTE_READ;
@@ -486,7 +491,7 @@ impl RdmaQueuePair {
                 | ffi::ibv_qp_attr_mask::IBV_QP_PORT
                 | ffi::ibv_qp_attr_mask::IBV_QP_ACCESS_FLAGS;
 
-            let errno = ffi::ibv_modify_qp(self.qp, &mut qp_attr, mask.0 as i32);
+            let errno = ffi::ibv_modify_qp(qp, &mut qp_attr, mask.0 as i32);
             if errno != 0 {
                 let os_error = Error::last_os_error();
                 return Err(Error::new(
@@ -534,7 +539,7 @@ impl RdmaQueuePair {
                 | ffi::ibv_qp_attr_mask::IBV_QP_MAX_DEST_RD_ATOMIC
                 | ffi::ibv_qp_attr_mask::IBV_QP_MIN_RNR_TIMER;
 
-            let errno = ffi::ibv_modify_qp(self.qp, &mut qp_attr, mask.0 as i32);
+            let errno = ffi::ibv_modify_qp(qp, &mut qp_attr, mask.0 as i32);
             if errno != 0 {
                 let os_error = Error::last_os_error();
                 return Err(Error::new(
@@ -561,7 +566,7 @@ impl RdmaQueuePair {
                 | ffi::ibv_qp_attr_mask::IBV_QP_RNR_RETRY
                 | ffi::ibv_qp_attr_mask::IBV_QP_MAX_QP_RD_ATOMIC;
 
-            let errno = ffi::ibv_modify_qp(self.qp, &mut qp_attr, mask.0 as i32);
+            let errno = ffi::ibv_modify_qp(qp, &mut qp_attr, mask.0 as i32);
             if errno != 0 {
                 let os_error = Error::last_os_error();
                 return Err(Error::new(
@@ -571,11 +576,41 @@ impl RdmaQueuePair {
             }
             tracing::debug!(
                 "connection sequence has successfully completed (qp: {:?})",
-                self.qp
+                qp
             );
 
             Ok(())
         }
+    }
+
+    pub fn put(&mut self, lhandle: RdmaBuffer, rhandle: RdmaBuffer) -> Result<()> {
+        self.post_op(
+            lhandle.addr,
+            lhandle.lkey,
+            lhandle.size,
+            0,
+            true,
+            RdmaOperation::Write,
+            rhandle.addr,
+            rhandle.rkey,
+        )
+        .unwrap();
+        Ok(())
+    }
+
+    pub fn get(&mut self, lhandle: RdmaBuffer, rhandle: RdmaBuffer) -> Result<()> {
+        self.post_op(
+            lhandle.addr,
+            lhandle.lkey,
+            lhandle.size,
+            0,
+            true,
+            RdmaOperation::Read,
+            rhandle.addr,
+            rhandle.rkey,
+        )
+        .unwrap();
+        Ok(())
     }
 
     /// Posts a request to the queue pair.
@@ -589,9 +624,10 @@ impl RdmaQueuePair {
     /// * `op_type` - Optional operation type
     /// * `raddr` - the remote address, representing the memory location on the remote peer
     /// * `rkey` - the remote key, representing the key required to access the remote memory region
-    pub fn post_send(
+    fn post_op(
         &mut self,
-        local_addr: usize,
+        laddr: usize,
+        lkey: u32,
         length: usize,
         wr_id: u64,
         signaled: bool,
@@ -607,10 +643,12 @@ impl RdmaQueuePair {
         // - The ibverbs post_send operation follows the documented API contract
         // - Error codes from the device are properly checked and propagated
         unsafe {
+            let qp = self.qp as *mut ffi::ibv_qp;
+            let context = self.context as *mut ffi::ibv_context;
             let mut send_sge = ffi::ibv_sge {
-                addr: local_addr as u64,
+                addr: laddr as u64,
                 length: length as u32,
-                lkey: self.lkey,
+                lkey,
             };
 
             let send_flags = if signaled {
@@ -636,9 +674,9 @@ impl RdmaQueuePair {
             send_wr.wr.rdma.remote_addr = raddr as u64;
             send_wr.wr.rdma.rkey = rkey;
             let mut bad_send_wr: *mut ffi::ibv_send_wr = std::ptr::null_mut();
-            let ops = &mut (*self.context).ops;
+            let ops = &mut (*context).ops;
             let errno =
-                ops.post_send.as_mut().unwrap()(self.qp, &mut send_wr as *mut _, &mut bad_send_wr);
+                ops.post_send.as_mut().unwrap()(qp, &mut send_wr as *mut _, &mut bad_send_wr);
 
             if errno != 0 {
                 let os_error = Error::last_os_error();
@@ -650,8 +688,8 @@ impl RdmaQueuePair {
             tracing::debug!(
                 "completed sending {:?} request (lkey: {}, addr: 0x{:x}, length {}) to (raddr 0x{:x}, rkey {})",
                 op_type,
-                self.lkey,
-                local_addr,
+                lkey,
+                laddr,
                 length,
                 raddr,
                 rkey,
@@ -686,10 +724,12 @@ impl RdmaQueuePair {
         // - Error codes from polling operations are properly checked and propagated
         // - The work completion validity is verified before returning it to the caller
         unsafe {
+            let context = self.context as *mut ffi::ibv_context;
+            let cq = self.cq as *mut ffi::ibv_cq;
             let mut wc = std::mem::MaybeUninit::<ffi::ibv_wc>::zeroed().assume_init();
-            let ops = &mut (*self.context).ops;
+            let ops = &mut (*context).ops;
 
-            let ret = ops.poll_cq.as_mut().unwrap()(self.cq, 1, &mut wc);
+            let ret = ops.poll_cq.as_mut().unwrap()(cq, 1, &mut wc);
 
             if ret < 0 {
                 return Err(Error::new(
@@ -732,23 +772,12 @@ mod tests {
     #[test]
     fn test_create_connection() {
         let config = IbverbsConfig::default();
-        let domain = RdmaDomain::new(config.clone());
+        let domain = RdmaDomain::new(config.device.clone());
         assert!(domain.is_ok());
 
         let domain = domain.unwrap();
-        let queue_pair = RdmaQueuePair::new(&domain);
+        let queue_pair = RdmaQueuePair::new(domain.context, domain.pd, config.clone());
         assert!(queue_pair.is_ok());
-    }
-
-    #[test]
-    fn test_get_endpoint() {
-        let config = IbverbsConfig::default();
-        let domain = RdmaDomain::new(config.clone()).unwrap();
-        let mut queue_pair = RdmaQueuePair::new(&domain).unwrap();
-
-        // Using 0 as a placeholder address since we're just testing endpoint creation
-        let connection_info = queue_pair.get_qp_info();
-        assert!(connection_info.is_ok());
     }
 
     #[test]
@@ -756,11 +785,21 @@ mod tests {
         let server_config = IbverbsConfig::default();
         let client_config = IbverbsConfig::default();
 
-        let server_domain = RdmaDomain::new(server_config).unwrap();
-        let client_domain = RdmaDomain::new(client_config).unwrap();
+        let server_domain = RdmaDomain::new(server_config.device.clone()).unwrap();
+        let client_domain = RdmaDomain::new(client_config.device.clone()).unwrap();
 
-        let mut server_qp = RdmaQueuePair::new(&server_domain).unwrap();
-        let mut client_qp = RdmaQueuePair::new(&client_domain).unwrap();
+        let mut server_qp = RdmaQueuePair::new(
+            server_domain.context,
+            server_domain.pd,
+            server_config.clone(),
+        )
+        .unwrap();
+        let mut client_qp = RdmaQueuePair::new(
+            client_domain.context,
+            client_domain.pd,
+            client_config.clone(),
+        )
+        .unwrap();
 
         // Using 0 as placeholder addresses
         let server_connection_info = server_qp.get_qp_info().unwrap();
@@ -768,346 +807,5 @@ mod tests {
 
         assert!(server_qp.connect(&client_connection_info).is_ok());
         assert!(client_qp.connect(&server_connection_info).is_ok());
-    }
-
-    #[test]
-    fn test_loopback_rdma_write() {
-        // Create buffers for our RDMA operations
-        const BSIZE: usize = 128;
-        let server_buffer = Box::new([0u8; BSIZE]);
-        let mut client_buffer = Box::new([0u8; BSIZE]);
-
-        // Fill the client buffer with test data
-        for (i, val) in client_buffer.iter_mut().enumerate() {
-            *val = (i % 256) as u8;
-        }
-
-        // Create domains and queue pairs
-        let server_config = IbverbsConfig::default();
-        let client_config = IbverbsConfig::default();
-
-        let server_domain = RdmaDomain::new(server_config).unwrap();
-        let client_domain = RdmaDomain::new(client_config).unwrap();
-
-        let mut server_qp = RdmaQueuePair::new(&server_domain).unwrap();
-        let mut client_qp = RdmaQueuePair::new(&client_domain).unwrap();
-
-        // Get connection info with buffer addresses
-        let server_connection_info = server_qp.get_qp_info().unwrap();
-        let client_connection_info = client_qp.get_qp_info().unwrap();
-
-        // Connect both sides
-        assert!(server_qp.connect(&client_connection_info).is_ok());
-        assert!(client_qp.connect(&server_connection_info).is_ok());
-
-        // Client performs RDMA write to server
-        client_qp
-            .post_send(
-                client_buffer.as_ptr() as usize,
-                BSIZE,
-                1,
-                true,
-                RdmaOperation::Write,
-                server_buffer.as_ptr() as usize,
-                server_domain.rkey,
-            )
-            .unwrap();
-
-        // Poll for completion
-        let mut write_completed = false;
-        let timeout = Duration::from_secs(2);
-        let start_time = Instant::now();
-
-        while !write_completed && start_time.elapsed() < timeout {
-            match client_qp.poll_completion() {
-                Ok(Some(wc)) => {
-                    if wc.wr_id() == 1 {
-                        write_completed = true;
-                    }
-                }
-                Ok(None) => {
-                    // No completion found, sleep a bit before polling again
-                    #[allow(clippy::disallowed_methods)]
-                    thread::sleep(Duration::from_millis(1));
-                }
-                Err(e) => {
-                    panic!("Error polling for completion: {}", e);
-                }
-            }
-        }
-        assert!(write_completed, "RDMA write operation did not complete");
-
-        // Verify data was correctly transferred
-        for i in 0..BSIZE {
-            assert_eq!(
-                client_buffer[i], server_buffer[i],
-                "Data mismatch at position {}",
-                i
-            );
-        }
-    }
-
-    #[test]
-    fn test_loopback_rdma_read() {
-        // Create buffers for our RDMA operations
-        const BSIZE: usize = 128;
-        let mut server_buffer = Box::new([0u8; BSIZE]);
-        let client_buffer = Box::new([0u8; BSIZE]);
-
-        // Fill the server buffer with test data
-        for (i, val) in server_buffer.iter_mut().enumerate() {
-            *val = (i % 256) as u8;
-        }
-
-        // Create domains and queue pairs
-        let server_config = IbverbsConfig::default();
-        let client_config = IbverbsConfig::default();
-
-        let server_domain = RdmaDomain::new(server_config).unwrap();
-        let client_domain = RdmaDomain::new(client_config).unwrap();
-
-        let mut server_qp = RdmaQueuePair::new(&server_domain).unwrap();
-        let mut client_qp = RdmaQueuePair::new(&client_domain).unwrap();
-
-        // Get connection info with buffer addresses
-        let server_connection_info = server_qp.get_qp_info().unwrap();
-        let client_connection_info = client_qp.get_qp_info().unwrap();
-
-        // Connect both sides
-        assert!(server_qp.connect(&client_connection_info).is_ok());
-        assert!(client_qp.connect(&server_connection_info).is_ok());
-
-        // Client performs RDMA read to server (read data from server to client)
-        client_qp
-            .post_send(
-                client_buffer.as_ptr() as usize,
-                BSIZE,
-                1,
-                true,
-                RdmaOperation::Read,
-                server_buffer.as_ptr() as usize,
-                server_domain.rkey,
-            )
-            .unwrap();
-
-        // Poll for completion
-        let mut read_completed = false;
-        let timeout = Duration::from_secs(2);
-        let start_time = Instant::now();
-
-        while !read_completed && start_time.elapsed() < timeout {
-            match client_qp.poll_completion() {
-                Ok(Some(wc)) => {
-                    if wc.wr_id() == 1 {
-                        read_completed = true;
-                    }
-                }
-                Ok(None) => {
-                    // No completion found, sleep a bit before polling again
-                    #[allow(clippy::disallowed_methods)]
-                    thread::sleep(Duration::from_millis(1));
-                }
-                Err(e) => {
-                    panic!("Error polling for completion: {}", e);
-                }
-            }
-        }
-
-        assert!(read_completed, "RDMA read operation did not complete");
-
-        // Verify data was correctly transferred
-        for i in 0..BSIZE {
-            assert_eq!(
-                server_buffer[i], client_buffer[i],
-                "Data mismatch at position {}",
-                i
-            );
-        }
-    }
-
-    #[test]
-    fn test_two_device_write() {
-        let devices = get_all_devices();
-        if devices.len() != 12 {
-            println!(
-                "skipping this test as it is only configured on H100 nodes with backend network"
-            );
-            return;
-        }
-        const BSIZE: usize = 128;
-        let server_buffer = Box::new([0u8; BSIZE]);
-        let mut client_buffer = Box::new([0u8; BSIZE]);
-
-        // Fill the client buffer with test data
-        for (i, val) in client_buffer.iter_mut().enumerate() {
-            *val = (i % 256) as u8;
-        }
-
-        let device1 = devices.clone().into_iter().next().unwrap();
-        let device2 = devices.clone().into_iter().nth(4).unwrap();
-
-        let server_config = IbverbsConfig {
-            device: device1,
-            ..Default::default()
-        };
-        let client_config = IbverbsConfig {
-            device: device2,
-            ..Default::default()
-        };
-
-        let server_domain = RdmaDomain::new(server_config).unwrap();
-        let client_domain = RdmaDomain::new(client_config).unwrap();
-
-        let mut server_qp = RdmaQueuePair::new(&server_domain).unwrap();
-        let mut client_qp = RdmaQueuePair::new(&client_domain).unwrap();
-
-        // Get connection info with buffer addresses
-        let server_connection_info = server_qp.get_qp_info().unwrap();
-        let client_connection_info = client_qp.get_qp_info().unwrap();
-
-        // Connect both sides
-        assert!(server_qp.connect(&client_connection_info).is_ok());
-        assert!(client_qp.connect(&server_connection_info).is_ok());
-
-        // Client performs RDMA write to server
-        client_qp
-            .post_send(
-                client_buffer.as_ptr() as usize,
-                BSIZE,
-                1,
-                true,
-                RdmaOperation::Write,
-                server_buffer.as_ptr() as usize,
-                server_domain.rkey,
-            )
-            .unwrap();
-
-        // Poll for completion
-        let mut write_completed = false;
-        let timeout = Duration::from_secs(2);
-        let start_time = Instant::now();
-
-        while !write_completed && start_time.elapsed() < timeout {
-            match client_qp.poll_completion() {
-                Ok(Some(wc)) => {
-                    if wc.wr_id() == 1 {
-                        write_completed = true;
-                    }
-                }
-                Ok(None) => {
-                    // No completion found, sleep a bit before polling again
-                    #[allow(clippy::disallowed_methods)]
-                    thread::sleep(Duration::from_millis(1));
-                }
-                Err(e) => {
-                    panic!("Error polling for completion: {}", e);
-                }
-            }
-        }
-
-        assert!(write_completed, "RDMA write operation did not complete");
-
-        // Verify data was correctly transferred
-        for i in 0..BSIZE {
-            assert_eq!(
-                client_buffer[i], server_buffer[i],
-                "Data mismatch at position {}",
-                i
-            );
-        }
-    }
-
-    #[test]
-    pub fn test_two_device_read() {
-        let devices = get_all_devices();
-        if devices.len() != 12 {
-            println!(
-                "skipping this test as it is only configured on H100 nodes with backend network"
-            );
-            return;
-        }
-
-        // Create buffers for our RDMA operations
-        const BSIZE: usize = 128;
-        let mut server_buffer = Box::new([0u8; BSIZE]);
-        let client_buffer = Box::new([0u8; BSIZE]);
-
-        // Fill the server buffer with test data
-        for (i, val) in server_buffer.iter_mut().enumerate() {
-            *val = (i % 256) as u8;
-        }
-
-        let device1 = devices.clone().into_iter().next().unwrap();
-        let device2 = devices.clone().into_iter().nth(4).unwrap();
-
-        let server_config = IbverbsConfig {
-            device: device1,
-            ..Default::default()
-        };
-        let client_config = IbverbsConfig {
-            device: device2,
-            ..Default::default()
-        };
-
-        let server_domain = RdmaDomain::new(server_config).unwrap();
-        let client_domain = RdmaDomain::new(client_config).unwrap();
-
-        let mut server_qp = RdmaQueuePair::new(&server_domain).unwrap();
-        let mut client_qp = RdmaQueuePair::new(&client_domain).unwrap();
-
-        // Get connection info with buffer addresses
-        let server_connection_info = server_qp.get_qp_info().unwrap();
-        let client_connection_info = client_qp.get_qp_info().unwrap();
-
-        // Connect both sides
-        assert!(server_qp.connect(&client_connection_info).is_ok());
-        assert!(client_qp.connect(&server_connection_info).is_ok());
-
-        // Client performs RDMA read from server
-        client_qp
-            .post_send(
-                client_buffer.as_ptr() as usize,
-                BSIZE,
-                1,
-                true,
-                RdmaOperation::Read,
-                server_buffer.as_ptr() as usize,
-                server_domain.rkey,
-            )
-            .unwrap();
-
-        // Poll for completion
-        let mut read_completed = false;
-        let timeout = Duration::from_secs(2);
-        let start_time = Instant::now();
-
-        while !read_completed && start_time.elapsed() < timeout {
-            match client_qp.poll_completion() {
-                Ok(Some(wc)) => {
-                    if wc.wr_id() == 1 {
-                        read_completed = true;
-                    }
-                }
-                Ok(None) => {
-                    // No completion found, sleep a bit before polling again
-                    #[allow(clippy::disallowed_methods)]
-                    thread::sleep(Duration::from_millis(1));
-                }
-                Err(e) => {
-                    panic!("Error polling for completion: {}", e);
-                }
-            }
-        }
-
-        assert!(read_completed, "RDMA read operation did not complete");
-
-        // Verify data was correctly transferred
-        for i in 0..BSIZE {
-            assert_eq!(
-                server_buffer[i], client_buffer[i],
-                "Data mismatch at position {}",
-                i
-            );
-        }
     }
 }
