@@ -19,19 +19,15 @@ use regex::Regex;
 use tokio::sync::Mutex;
 
 use super::*;
-use crate::PortId;
 use crate::channel;
 use crate::clock::Clock;
 use crate::clock::RealClock;
 use crate::clock::SimClock;
 use crate::data::Serialized;
-use crate::id;
 use crate::mailbox::MessageEnvelope;
 use crate::simnet;
 use crate::simnet::Dispatcher;
 use crate::simnet::Event;
-use crate::simnet::ProxyMessage;
-use crate::simnet::ScheduledEvent;
 use crate::simnet::SimNetConfig;
 use crate::simnet::SimNetEdge;
 use crate::simnet::SimNetError;
@@ -41,7 +37,6 @@ lazy_static! {
     static ref SENDER: SimDispatcher = SimDispatcher::default();
 }
 static SIM_LINK_BUF_SIZE: usize = 256;
-static CLIENT_ADDRESS: &str = "unix!@client";
 
 #[derive(
     Clone,
@@ -156,15 +151,16 @@ impl fmt::Display for SimAddr {
 
 /// Message Event that can be passed around in the simnet.
 #[derive(Debug)]
-pub(crate) struct MessageDeliveryEvent {
+pub(crate) struct MessageSendEvent {
     src_addr: Option<AddressProxyPair>,
     dest_addr: AddressProxyPair,
     data: Serialized,
     duration_ms: u64,
+    inflight_time_ms: u64,
 }
 
-impl MessageDeliveryEvent {
-    /// Creates a new MessageDeliveryEvent.
+impl MessageSendEvent {
+    /// Creates a new MessageSendEvent.
     pub fn new(
         src_addr: Option<AddressProxyPair>,
         dest_addr: AddressProxyPair,
@@ -174,13 +170,92 @@ impl MessageDeliveryEvent {
             src_addr,
             dest_addr,
             data,
-            duration_ms: 100,
+            duration_ms: 1,
+            inflight_time_ms: 1,
         }
     }
 }
 
 #[async_trait]
-impl Event for MessageDeliveryEvent {
+impl Event for MessageSendEvent {
+    async fn handle(&self) -> Result<(), SimNetError> {
+        let inflight_time_ms = self.inflight_time_ms;
+        let event = Box::new(MessageRecvEvent::new(
+            self.src_addr.clone(),
+            self.dest_addr.clone(),
+            self.data.clone(),
+        ));
+
+        tokio::task::spawn(async move {
+            SimClock
+                .sleep(tokio::time::Duration::from_millis(inflight_time_ms))
+                .await;
+
+            if let Ok(handle) = simnet_handle() {
+                let _ = handle.send_event(event);
+            }
+        });
+
+        Ok(())
+    }
+
+    fn duration_ms(&self) -> u64 {
+        self.duration_ms
+    }
+
+    fn summary(&self) -> String {
+        format!(
+            "{} sending message to to {}",
+            self.src_addr
+                .as_ref()
+                .map_or("unknown".to_string(), |addr| addr.address.to_string()),
+            self.dest_addr.address.clone()
+        )
+    }
+
+    async fn read_simnet_config(&mut self, topology: &Arc<Mutex<SimNetConfig>>) {
+        if let Some(src_addr) = &self.src_addr {
+            let edge = SimNetEdge {
+                src: src_addr.address.clone(),
+                dst: self.dest_addr.address.clone(),
+            };
+            self.inflight_time_ms = topology
+                .lock()
+                .await
+                .topology
+                .get(&edge)
+                .map_or_else(|| 1, |v| v.latency.as_millis() as u64);
+        }
+    }
+}
+
+/// Message Recv Event that can be passed around in the simnet.
+#[derive(Debug)]
+pub(crate) struct MessageRecvEvent {
+    src_addr: Option<AddressProxyPair>,
+    dest_addr: AddressProxyPair,
+    data: Serialized,
+    duration_ms: u64,
+}
+
+impl MessageRecvEvent {
+    /// Creates a new MessageRecvEvent.
+    pub fn new(
+        src_addr: Option<AddressProxyPair>,
+        dest_addr: AddressProxyPair,
+        data: Serialized,
+    ) -> Self {
+        Self {
+            src_addr,
+            dest_addr,
+            data,
+            duration_ms: 1,
+        }
+    }
+}
+
+#[async_trait]
+impl Event for MessageRecvEvent {
     async fn handle(&self) -> Result<(), SimNetError> {
         // Send the message to the correct receiver.
         SENDER
@@ -199,27 +274,12 @@ impl Event for MessageDeliveryEvent {
 
     fn summary(&self) -> String {
         format!(
-            "Sending message from {} to {}",
+            "{} received message from {}",
+            self.dest_addr.address.clone(),
             self.src_addr
                 .as_ref()
                 .map_or("unknown".to_string(), |addr| addr.address.to_string()),
-            self.dest_addr.address.clone()
         )
-    }
-
-    async fn read_simnet_config(&mut self, topology: &Arc<Mutex<SimNetConfig>>) {
-        if let Some(src_addr) = &self.src_addr {
-            let edge = SimNetEdge {
-                src: src_addr.address.clone(),
-                dst: self.dest_addr.address.clone(),
-            };
-            self.duration_ms = topology
-                .lock()
-                .await
-                .topology
-                .get(&edge)
-                .map_or_else(|| 1, |v| v.latency.as_millis() as u64);
-        }
     }
 }
 
@@ -324,31 +384,10 @@ fn is_external_addr(addr: &AddressProxyPair) -> anyhow::Result<bool, SimNetError
 impl Dispatcher<AddressProxyPair> for SimDispatcher {
     async fn send(
         &self,
-        src_addr: Option<AddressProxyPair>,
+        _src_addr: Option<AddressProxyPair>,
         addr: AddressProxyPair,
         data: Serialized,
     ) -> Result<(), SimNetError> {
-        if is_external_addr(&addr)? {
-            let dst_proxy = addr.proxy.clone();
-            let sender = self
-                .sender_cache
-                .entry(dst_proxy.clone())
-                .or_insert_with(|| create_egress_sender(dst_proxy.clone()).unwrap());
-            let forward_message = ProxyMessage::new(src_addr.clone(), Some(addr.clone()), data);
-            let serialized_forward_message = match Serialized::serialize(&forward_message) {
-                Ok(data) => data,
-                Err(err) => return Err(SimNetError::InvalidArg(err.to_string())),
-            };
-            // Here we use mailbox to deliver the ForwardMessage. But it's higher level than
-            // the simnet. So there are unused placeholder here which is not ideal.
-            let port_id_placeholder = PortId(id!(unused_world[0].unused_actor), 0);
-            let message =
-                MessageEnvelope::new_unknown(port_id_placeholder, serialized_forward_message);
-            return sender
-                .try_post(message, oneshot::channel().0)
-                .map_err(|err| SimNetError::InvalidNode(addr.address.to_string(), err.into()));
-        }
-
         self.dispatchers
             .get(&addr.address)
             .ok_or_else(|| {
@@ -397,16 +436,24 @@ impl<M: RemoteMessage> Tx<M> for SimTx<M> {
         };
         match simnet_handle() {
             Ok(handle) => match &self.src_addr {
-                Some(src_addr) if src_addr.address.to_string() == CLIENT_ADDRESS => handle
-                    .send_scheduled_event(ScheduledEvent {
-                        event: Box::new(MessageDeliveryEvent::new(
-                            self.src_addr.clone(),
-                            self.dst_addr.clone(),
-                            data,
-                        )),
-                        time: SimClock.millis_since_start(RealClock.now()),
-                    }),
-                _ => handle.send_event(Box::new(MessageDeliveryEvent::new(
+                Some(src_addr) if src_addr.proxy != *handle.proxy_addr() => {
+                    let event = Box::new(MessageRecvEvent::new(
+                        self.src_addr.clone(),
+                        self.dst_addr.clone(),
+                        data,
+                    ));
+                    let recv_time = RealClock.now();
+
+                    tokio::task::spawn(async move {
+                        SimClock.sleep_until(recv_time).await;
+
+                        if let Ok(handle) = simnet_handle() {
+                            let _ = handle.send_event(event);
+                        }
+                    });
+                    Ok(())
+                }
+                _ => handle.send_event(Box::new(MessageSendEvent::new(
                     self.src_addr.clone(),
                     self.dst_addr.clone(),
                     data,
@@ -488,10 +535,13 @@ mod tests {
     use std::iter::zip;
 
     use super::*;
+    use crate::PortId;
     use crate::clock::Clock;
     use crate::clock::RealClock;
     use crate::clock::SimClock;
+    use crate::id;
     use crate::simnet::NetworkConfig;
+    use crate::simnet::ProxyMessage;
     use crate::simnet::start;
 
     #[tokio::test]
@@ -536,80 +586,6 @@ mod tests {
 
         let records = sim::simnet_handle().unwrap().close().await.unwrap();
         eprintln!("records: {:#?}", records);
-    }
-
-    #[tokio::test]
-    async fn test_send_egress_message() {
-        let proxy = ChannelAddr::any(ChannelTransport::Unix);
-        start(
-            ChannelAddr::any(ChannelTransport::Unix),
-            proxy.clone(),
-            1000,
-        )
-        .unwrap();
-
-        // Serve an external proxy channel to receive the egress message.
-        let egress_addr = ChannelAddr::any(ChannelTransport::Unix);
-        let dispatcher = SimDispatcher::default();
-        let (_, mut rx) = channel::serve::<MessageEnvelope>(egress_addr.clone())
-            .await
-            .unwrap();
-        // just a random port ID
-        let port_id = PortId(id!(test[0].actor0), 0);
-        let msg = MessageEnvelope::new_unknown(
-            port_id.clone(),
-            Serialized::serialize(&"hola".to_string()).unwrap(),
-        );
-        // The sim addr we want simnet to send message to, it should have the egress_addr
-        // as the proxy address of dst.
-        let src_addr = AddressProxyPair {
-            address: "unix!@src".parse::<ChannelAddr>().unwrap(),
-            proxy: "unix!@proxy".parse::<ChannelAddr>().unwrap(),
-        };
-        let egress_addr = AddressProxyPair {
-            address: "unix!@dst".parse::<ChannelAddr>().unwrap(),
-            proxy: egress_addr,
-        };
-        let serialized_msg = Serialized::serialize(&msg).unwrap();
-        dispatcher
-            .send(
-                Some(src_addr.clone()),
-                egress_addr.clone(),
-                serialized_msg.clone(),
-            )
-            .await
-            .unwrap();
-        let received_msg = rx.recv().await.unwrap();
-        let actual_forward_msg: ProxyMessage = received_msg.deserialized().unwrap();
-        let expected_forward_msg = ProxyMessage::new(
-            Some(src_addr.clone()),
-            Some(egress_addr.clone()),
-            serialized_msg,
-        );
-
-        assert_eq!(actual_forward_msg, expected_forward_msg);
-
-        // Sending the message again should work by using the cached sender.
-        // But it's impl detail, not verified here. We just verify that it
-        // can send a different message.
-        let msg = MessageEnvelope::new_unknown(
-            port_id,
-            Serialized::serialize(&"ciao".to_string()).unwrap(),
-        );
-        let serialized_msg = Serialized::serialize(&msg).unwrap();
-        dispatcher
-            .send(
-                Some(src_addr.clone()),
-                egress_addr.clone(),
-                serialized_msg.clone(),
-            )
-            .await
-            .unwrap();
-        let received_msg = rx.recv().await.unwrap();
-        let actual_forward_msg: ProxyMessage = received_msg.deserialized().unwrap();
-        let expected_forward_msg =
-            ProxyMessage::new(Some(src_addr), Some(egress_addr), serialized_msg);
-        assert_eq!(actual_forward_msg, expected_forward_msg);
     }
 
     #[tokio::test]
@@ -698,8 +674,15 @@ mod tests {
             // Messages have not been receive since 10 seconds have not elapsed
             assert!(rx.rx.try_recv().is_err());
         }
-        // Advance "real" time by 100 seconds
-        tokio::time::advance(tokio::time::Duration::from_secs(100)).await;
+        tokio::time::advance(
+            // Advance "real" time by 1 ms for send time
+            tokio::time::Duration::from_millis(1)
+            // Advance "real" time by 100 seconds for inflight time
+            + tokio::time::Duration::from_secs(100)
+            // Advance "real" time by 1 ms for recv time
+            + tokio::time::Duration::from_millis(1),
+        )
+        .await;
         {
             // Allow some time for simnet to run
             tokio::task::yield_now().await;
@@ -718,21 +701,11 @@ mod tests {
             1000,
         )
         .unwrap();
-        let controller_to_dst = SimAddr::new_with_src(
-            AddressProxyPair {
-                address: "unix!@controller".parse::<ChannelAddr>().unwrap(),
-                proxy: proxy_addr.clone(),
-            },
-            "unix!@dst".parse::<ChannelAddr>().unwrap(),
-            proxy_addr.clone(),
-        )
-        .unwrap();
-        let controller_tx = sim::dial::<()>(controller_to_dst.clone()).unwrap();
 
         let client_to_dst = SimAddr::new_with_src(
             AddressProxyPair {
-                address: "unix!@client".parse::<ChannelAddr>().unwrap(),
-                proxy: proxy_addr.clone(),
+                address: ChannelAddr::any(ChannelTransport::Unix),
+                proxy: ChannelAddr::any(ChannelTransport::Unix),
             },
             "unix!@dst".parse::<ChannelAddr>().unwrap(),
             proxy_addr.clone(),
@@ -740,35 +713,18 @@ mod tests {
         .unwrap();
         let client_tx = sim::dial::<()>(client_to_dst).unwrap();
 
-        // 1 second of latency
-        let simnet_config_yaml = r#"
-        edges:
-        - src: unix!@controller
-          dst: unix!@dst
-          metadata:
-            latency: 1
-        "#;
-        update_config(NetworkConfig::from_yaml(simnet_config_yaml).unwrap())
-            .await
-            .unwrap();
-
         assert_eq!(SimClock.millis_since_start(RealClock.now()), 0);
         // Fast forward real time to 5 seconds
         tokio::time::advance(tokio::time::Duration::from_secs(5)).await;
         {
             // Send client message
             client_tx.try_post((), oneshot::channel().0).unwrap();
-            // Send system message
-            controller_tx.try_post((), oneshot::channel().0).unwrap();
+            tokio::time::advance(tokio::time::Duration::from_millis(1)).await;
             // Allow some time for simnet to run
-            RealClock.sleep(tokio::time::Duration::from_secs(1)).await;
+            tokio::task::yield_now().await;
         }
         let recs = simnet::simnet_handle().unwrap().close().await.unwrap();
-        assert_eq!(recs.len(), 2);
-        let end_times = recs.iter().map(|rec| rec.end_at).collect::<Vec<_>>();
         // client message was delivered at "real" time = 5 seconds
-        assert!(end_times.contains(&5000));
-        // system message was delivered at simulated time = 1 second
-        assert!(end_times.contains(&1000));
+        assert_eq!(recs.first().map(|rec| rec.end_at).unwrap(), 5000);
     }
 }
