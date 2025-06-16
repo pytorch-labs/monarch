@@ -62,7 +62,7 @@ pub fn get_bytes_from_write_action(
     action: DebuggerAction,
 ) -> PyResult<Bound<'_, PyBytes>> {
     if let DebuggerAction::Write { bytes } = action {
-        Ok(PyBytes::new_bound(py, &bytes))
+        Ok(PyBytes::new(py, &bytes))
     } else {
         Err(PyRuntimeError::new_err(format!(
             "Cannot extract bytes from non-write debugger action {:?}",
@@ -115,7 +115,7 @@ impl PdbActor {
             )?;
         match result {
             Ok(Some(DebuggerMessage::Action { action })) => Ok(action.into_py(py)),
-            Ok(None) => Ok(PyNone::get_bound(py).into_py(py)),
+            Ok(None) => Ok(PyNone::get(py).into_py(py)),
             Err(err) => Err(PyRuntimeError::new_err(err.to_string())),
         }
     }

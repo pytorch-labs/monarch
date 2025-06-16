@@ -54,7 +54,7 @@ impl PyShape {
         self.inner
             .coordinates(rank)
             .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))
-            .and_then(|x| PyDict::from_sequence_bound(x.to_object(py).bind(py)))
+            .and_then(|x| PyDict::from_sequence(x.to_object(py).bind(py)))
     }
 
     #[pyo3(signature = (**kwargs))]
@@ -92,7 +92,7 @@ impl PyShape {
     ) -> PyResult<(Bound<'py, PyAny>, (Bound<'py, PyBytes>,))> {
         let bytes = bincode::serialize(&slf.borrow().inner)
             .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
-        let py_bytes = PyBytes::new_bound(slf.py(), &bytes);
+        let py_bytes = PyBytes::new(slf.py(), &bytes);
         Ok((slf.getattr("from_bytes")?, (py_bytes,)))
     }
 

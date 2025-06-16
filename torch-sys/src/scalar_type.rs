@@ -64,7 +64,7 @@ mod tests {
         let scalar_type = ScalarType::Float;
         let converted_type = Python::with_gil(|py| {
             // import torch to ensure torch.dtype types are registered
-            py.import_bound("torch").unwrap();
+            py.import("torch").unwrap();
             let obj = scalar_type.into_py(py);
             obj.extract::<ScalarType>(py).unwrap()
         });
@@ -75,11 +75,7 @@ mod tests {
     fn from_py() {
         pyo3::prepare_freethreaded_python();
         let scalar_type = Python::with_gil(|py| {
-            let obj = py
-                .import_bound("torch")
-                .unwrap()
-                .getattr("float32")
-                .unwrap();
+            let obj = py.import("torch").unwrap().getattr("float32").unwrap();
             obj.extract::<ScalarType>().unwrap()
         });
         assert_eq!(scalar_type, ScalarType::Float);

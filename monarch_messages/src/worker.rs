@@ -161,14 +161,14 @@ impl Ref {
         Ok(self.id)
     }
 
-    fn __getnewargs_ex__<'py>(&self, py: Python<'py>) -> Bound<'py, PyTuple> {
-        let kwargs = PyDict::new_bound(py);
+    fn __getnewargs_ex__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        let kwargs = PyDict::new(py);
         kwargs.set_item("id", self.id).unwrap();
 
-        PyTuple::new_bound(
+        PyTuple::new(
             py,
             vec![
-                PyTuple::empty_bound(py).unbind().into_any(),
+                PyTuple::empty(py).unbind().into_any(),
                 kwargs.unbind().into_any(),
             ],
         )
@@ -242,7 +242,7 @@ impl FunctionPath {
                 self.path
             )
         })?;
-        let module = PyModule::import_bound(py, module_fqn)?;
+        let module = PyModule::import(py, module_fqn)?;
         let mut function = module.getattr(function_name)?;
         if function.hasattr("_remote_impl")? {
             function = function.getattr("_remote_impl")?;
@@ -283,9 +283,9 @@ impl Cloudpickle {
     }
 
     pub fn resolve<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let module = PyModule::import_bound(py, "cloudpickle")?;
+        let module = PyModule::import(py, "cloudpickle")?;
         let loads = module.getattr("loads")?;
-        loads.call1((PyBytes::new_bound(py, &self.bytes),))
+        loads.call1((PyBytes::new(py, &self.bytes),))
     }
 }
 
@@ -447,8 +447,8 @@ impl Factory {
     }
 
     #[getter]
-    fn size<'a>(&self, py: Python<'a>) -> Bound<'a, PyTuple> {
-        PyTuple::new_bound(py, self.size.iter())
+    fn size<'a>(&self, py: Python<'a>) -> PyResult<Bound<'a, PyTuple>> {
+        PyTuple::new(py, self.size.iter())
     }
 
     #[getter]

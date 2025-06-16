@@ -45,14 +45,14 @@ where
     for<'a> &'a T: TryIntoPyObject<PyAny>,
 {
     fn try_to_object<'a>(self, py: Python<'a>) -> PyResult<Bound<'a, PyTuple>> {
-        Ok(PyTuple::new_bound(
+        PyTuple::new(
             py,
             self.iter()
                 // SAFETY: Safety requirements are propagated via the `unsafe`
                 // tag on this method.
                 .map(|v| v.try_to_object(py))
                 .collect::<Result<Vec<_>, _>>()?,
-        ))
+        )
     }
 }
 
@@ -67,7 +67,7 @@ where
         for (key, val) in self {
             elems.push((key.to_object(py), val.try_to_object(py)?));
         }
-        PyDict::from_sequence_bound(&PyList::new_bound(py, elems))
+        PyDict::from_sequence(&PyList::new(py, elems)?.into_any())
     }
 }
 
@@ -77,14 +77,14 @@ where
     for<'a> &'a T: TryIntoPyObjectUnsafe<PyAny>,
 {
     unsafe fn try_to_object_unsafe<'a>(self, py: Python<'a>) -> PyResult<Bound<'a, PyTuple>> {
-        Ok(PyTuple::new_bound(
+        PyTuple::new(
             py,
             self.iter()
                 // SAFETY: Safety requirements are propagated via the `unsafe`
                 // tag on this method.
                 .map(|v| unsafe { v.try_to_object_unsafe(py) })
                 .collect::<Result<Vec<_>, _>>()?,
-        ))
+        )
     }
 }
 
@@ -104,7 +104,7 @@ where
                 unsafe { val.try_to_object_unsafe(py) }?,
             ));
         }
-        PyDict::from_sequence_bound(&PyList::new_bound(py, elems))
+        PyDict::from_sequence(&PyList::new(py, elems)?.into_any())
     }
 }
 
@@ -118,16 +118,16 @@ impl SerializablePyErr {
     pub fn from(py: Python, err: &PyErr) -> Self {
         // first construct the full traceback including any python frames that were used
         // to invoke where we currently are. This is pre-pended to the traceback of the
-        // currently unwinded frames (err.traceback_bound())
-        let inspect = py.import_bound("inspect").unwrap();
-        let types = py.import_bound("types").unwrap();
+        // currently unwinded frames (err.traceback())
+        let inspect = py.import("inspect").unwrap();
+        let types = py.import("types").unwrap();
         let traceback_type = types.getattr("TracebackType").unwrap();
-        let traceback = py.import_bound("traceback").unwrap();
+        let traceback = py.import("traceback").unwrap();
 
         let mut f = inspect
             .call_method0("currentframe")
-            .unwrap_or(PyNone::get_bound(py).to_owned().into_any());
-        let mut tb: Bound<'_, PyAny> = err.traceback_bound(py).to_object(py).into_bound(py);
+            .unwrap_or(PyNone::get(py).to_owned().into_any());
+        let mut tb: Bound<'_, PyAny> = err.traceback(py).to_object(py).into_bound(py);
         while !f.is_none() {
             let lasti = f.getattr("f_lasti").unwrap();
             let lineno = f.getattr("f_lineno").unwrap();
@@ -139,7 +139,7 @@ impl SerializablePyErr {
         let traceback_exception = traceback.getattr("TracebackException").unwrap();
 
         let tb = traceback_exception
-            .call1((err.get_type_bound(py), err.value_bound(py), tb))
+            .call1((err.get_type(py), err.value(py), tb))
             .unwrap();
 
         let message: String = tb
@@ -147,7 +147,7 @@ impl SerializablePyErr {
             .unwrap()
             .call0()
             .unwrap()
-            .iter()
+            .try_iter()
             .unwrap()
             .map(|x| -> String { x.unwrap().extract().unwrap() })
             .collect::<Vec<String>>()
@@ -179,6 +179,7 @@ where
 #[cfg(test)]
 mod tests {
     use pyo3::Python;
+    use pyo3::ffi::c_str;
     use pyo3::indoc::indoc;
     use pyo3::prelude::*;
     use timed_test::async_timed_test;
@@ -189,9 +190,9 @@ mod tests {
     async fn test_serializable_py_err() {
         pyo3::prepare_freethreaded_python();
         let _unused = Python::with_gil(|py| {
-            let module = PyModule::from_code_bound(
+            let module = PyModule::from_code(
                 py,
-                indoc! {r#"
+                c_str!(indoc! {r#"
                         def func1():
                             raise Exception("test")
 
@@ -200,9 +201,9 @@ mod tests {
 
                         def func3():
                             func2()
-                    "#},
-                "test_helpers.py",
-                "test_helpers",
+                    "#}),
+                c_str!("test_helpers.py"),
+                c_str!("test_helpers"),
             )?;
 
             let err = SerializablePyErr::from(py, &module.call_method0("func3").unwrap_err());

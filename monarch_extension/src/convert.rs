@@ -46,7 +46,7 @@ struct MessageParser<'a> {
 fn create_function(obj: Bound<'_, PyAny>) -> PyResult<ResolvableFunction> {
     let cloudpickle = obj
         .py()
-        .import_bound("monarch.common.function")?
+        .import("monarch.common.function")?
         .getattr("ResolvableFromCloudpickle")?;
     if obj.is_instance(&cloudpickle)? {
         Ok(ResolvableFunction::Cloudpickle(Cloudpickle::new(
@@ -97,17 +97,17 @@ impl<'a> MessageParser<'a> {
         let tree_flatten = self
             .current
             .py()
-            .import_bound("torch.utils._pytree")?
+            .import("torch.utils._pytree")?
             .getattr("tree_flatten")?;
         let output_tuple: (Bound<'a, PyAny>, Bound<'a, PyAny>) =
             tree_flatten.call1((self.attr(name)?,))?.extract()?;
         let referenceable = self
             .current
             .py()
-            .import_bound("monarch.common.reference")?
+            .import("monarch.common.reference")?
             .getattr("Referenceable")?;
         let mut flat: Vec<Option<Ref>> = vec![];
-        for x in output_tuple.0.iter()? {
+        for x in output_tuple.0.try_iter()? {
             let v: Bound<'a, PyAny> = x?;
             if v.is_instance(&referenceable)? {
                 flat.push(Some(create_ref(v)?));
@@ -119,12 +119,10 @@ impl<'a> MessageParser<'a> {
         Ok(flat)
     }
     #[allow(non_snake_case)]
-
     fn parseRef(&self, name: &str) -> PyResult<Ref> {
         create_ref(self.attr(name)?)
     }
     #[allow(non_snake_case)]
-
     fn parseOptionalRef(&self, name: &str) -> PyResult<Option<Ref>> {
         let obj = self.attr(name)?;
         if obj.is_none() {
@@ -141,7 +139,7 @@ impl<'a> MessageParser<'a> {
     #[allow(non_snake_case)]
     fn parseRefList(&self, name: &str) -> PyResult<Vec<Ref>> {
         self.attr(name)?
-            .iter()?
+            .try_iter()?
             .map(|x| {
                 let v = x?;
                 let vr: PyResult<u64> = v.extract();
@@ -159,7 +157,6 @@ impl<'a> MessageParser<'a> {
         create_function(self.attr(name)?)
     }
     #[allow(non_snake_case)]
-
     fn parseOptionalFunction(&self, name: &str) -> PyResult<Option<ResolvableFunction>> {
         let f = self.attr(name)?;
         if f.is_none() {
@@ -179,7 +176,7 @@ impl<'a> MessageParser<'a> {
     }
     #[allow(non_snake_case)]
     fn parseWorkerMessageList(&self, name: &str) -> PyResult<Vec<WorkerMessage>> {
-        self.attr(name)?.iter()?.map(|x| convert(x?)).collect()
+        self.attr(name)?.try_iter()?.map(|x| convert(x?)).collect()
     }
     fn parse_error_reason(&self, name: &str) -> PyResult<Option<(Option<ActorId>, String)>> {
         let err = self.attr(name)?;
@@ -203,7 +200,7 @@ static CONVERT_MAP: OnceLock<HashMap<u64, FnType>> = OnceLock::new();
 
 fn create_map(py: Python) -> HashMap<u64, FnType> {
     let messages = py
-        .import_bound("monarch.common.messages")
+        .import("monarch.common.messages")
         .expect("import monarch.common.messages");
     let mut m: HashMap<u64, FnType> = HashMap::new();
     let key = |name: &str| {

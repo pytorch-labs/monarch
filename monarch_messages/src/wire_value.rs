@@ -154,7 +154,7 @@ impl TryIntoPyObjectUnsafe<PyAny> for WireValue {
             WireValue::Layout(val) => val.into_py(py).into_bound(py),
             WireValue::ScalarType(val) => val.into_py(py).into_bound(py),
             WireValue::MemoryFormat(val) => val.into_py(py).into_bound(py),
-            WireValue::None(()) => PyNone::get_bound(py).to_owned().into_any(),
+            WireValue::None(()) => PyNone::get(py).to_owned().into_any(),
             WireValue::PyObject(val) => val.unpickle(py)?,
             // SAFETY: WireValue is only used for serde between client and worker.
             // This function is used to access the args / kwargs of a function call
@@ -306,6 +306,7 @@ mod tests {
     use paste::paste;
     use pyo3::IntoPy;
     use pyo3::Python;
+    use pyo3::ffi::c_str;
     use pyo3::types::PyDict;
     use torch_sys::DeviceType;
     use torch_sys::ScalarType;
@@ -313,27 +314,29 @@ mod tests {
     use super::*;
     use crate::worker::Ref;
 
-    const MOCK_REFERNCABLE_MODULE: &str = r#"
+    const MOCK_REFERNCABLE_MODULE: &std::ffi::CStr = c_str!(
+        r#"
 class Referencable:
     def __init__(self, ref: int):
         self.ref = ref
 
     def __monarch_ref__(self):
         return self.ref
-"#;
+"#
+    );
 
     fn setup() -> Result<()> {
         pyo3::prepare_freethreaded_python();
         // We need to load torch to initialize some internal structures used by
         // the FFI funcs we use to convert ivalues to/from py objects.
-        Python::with_gil(|py| py.run_bound("import torch", None, None))?;
+        Python::with_gil(|py| py.run(c_str!("import torch"), None, None))?;
         Ok(())
     }
 
     fn create_py_object() -> PyObject {
         pyo3::prepare_freethreaded_python();
         Python::with_gil(|py| {
-            let dict = PyDict::new_bound(py);
+            let dict = PyDict::new(py);
             dict.set_item("foo", "bar").unwrap();
             dict.into_any().clone().unbind()
         })
@@ -358,7 +361,7 @@ class Referencable:
                 fn test_wire_value_from_py_none() -> Result<()> {
                     setup()?;
                     Python::with_gil(|py| {
-                        let obj: PyObject = PyNone::get_bound(py).into_py(py);
+                        let obj: PyObject = PyNone::get(py).into_py(py);
                         let actual = obj.extract::<WireValue>(py)?;
                         assert_matches!(actual, WireValue::None(_));
                         anyhow::Ok(())
@@ -369,7 +372,7 @@ class Referencable:
                 fn test_wire_value_from_py_empty_list() -> Result<()> {
                     setup()?;
                     Python::with_gil(|py| {
-                        let obj: PyObject = PyList::empty_bound(py).into_any().unbind();
+                        let obj: PyObject = PyList::empty(py).into_any().unbind();
                         let actual = obj.extract::<WireValue>(py)?;
                         match actual {
                             WireValue::IntList(list) if list.len() == 0 => (),
@@ -383,11 +386,11 @@ class Referencable:
                 fn test_wire_value_from_py_referencable_class() -> Result<()> {
                     setup()?;
                     Python::with_gil(|py| {
-                        let referencable = PyModule::from_code_bound(
+                        let referencable = PyModule::from_code(
                             py,
                             MOCK_REFERNCABLE_MODULE,
-                            "referencable.py",
-                            "referencable",
+                            c_str!("referencable.py"),
+                            c_str!("referencable"),
                         )?;
                         let ref_ = referencable.getattr("Referencable")?.call1((1,))?.unbind();
                         let actual = ref_.extract::<WireValue>(py)?;

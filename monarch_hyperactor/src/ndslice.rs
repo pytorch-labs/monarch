@@ -120,7 +120,7 @@ impl PySlice {
                     );
                     i += step;
                 }
-                Ok(PyTuple::new_bound(py, result).into_py(py))
+                Ok(PyTuple::new(py, result)?.into_py(py))
             }
         }
     }
@@ -133,16 +133,16 @@ impl PySlice {
         self.inner.len()
     }
 
-    fn __getnewargs_ex__<'py>(&self, py: Python<'py>) -> Bound<'py, PyTuple> {
-        let kwargs = PyDict::new_bound(py);
+    fn __getnewargs_ex__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        let kwargs = PyDict::new(py);
         kwargs.set_item("offset", self.inner.offset()).unwrap();
         kwargs.set_item("sizes", self.inner.sizes()).unwrap();
         kwargs.set_item("strides", self.inner.strides()).unwrap();
 
-        PyTuple::new_bound(
+        PyTuple::new(
             py,
             vec![
-                PyTuple::empty_bound(py).unbind().into_any(),
+                PyTuple::empty(py).unbind().into_any(),
                 kwargs.unbind().into_any(),
             ],
         )
@@ -166,7 +166,7 @@ impl PySlice {
     #[staticmethod]
     fn from_list(py: Python<'_>, ranks: Vec<usize>) -> PyResult<PyObject> {
         if ranks.is_empty() {
-            return Ok(PyList::empty_bound(py).unbind().into_any());
+            return Ok(PyList::empty(py).unbind().into_any());
         }
         let mut ranks = ranks;
         ranks.sort();

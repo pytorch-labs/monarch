@@ -125,7 +125,7 @@ impl PyProc {
             .collect::<Vec<_>>();
         // TODO: i don't think returning this list is of much use for
         // anything?
-        Ok(PyList::new_bound(py, aborted_actors))
+        PyList::new(py, aborted_actors)
     }
 
     #[pyo3(signature = (actor, name=None))]

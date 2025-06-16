@@ -21,7 +21,7 @@ impl PickledPyObject {
     pub fn pickle<'py>(obj: &Bound<'py, PyAny>) -> PyResult<Self> {
         let bytes = obj
             .py()
-            .import_bound("pickle")?
+            .import("pickle")?
             .call_method1("dumps", (obj,))?
             .downcast_into::<PyBytes>()?
             .as_bytes()
@@ -30,7 +30,7 @@ impl PickledPyObject {
     }
 
     pub fn unpickle<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        py.import_bound("pickle")?
+        py.import("pickle")?
             .call_method1("loads", (self.0.as_slice(),))
     }
 }

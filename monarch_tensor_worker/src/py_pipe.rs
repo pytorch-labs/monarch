@@ -82,10 +82,7 @@ pub fn run_py_pipe(
                 .map(|a| a.try_to_object(py))
                 .collect::<Result<Vec<_>, _>>()?,
         );
-        func.call(
-            PyTuple::new_bound(py, py_args),
-            Some(&kwargs.try_to_object(py)?),
-        )?;
+        func.call(PyTuple::new(py, py_args)?, Some(&kwargs.try_to_object(py)?))?;
         Ok(())
     })
 }
@@ -99,6 +96,7 @@ mod tests {
     use futures::try_join;
     use indoc::indoc;
     use pyo3::Python;
+    use pyo3::ffi::c_str;
     use pyo3::types::PyModule;
     use timed_test::async_timed_test;
     use torch_sys::RValue;
@@ -113,19 +111,19 @@ mod tests {
         pyo3::prepare_freethreaded_python();
         // We need to load torch to initialize some internal structures used by
         // the FFI funcs we use to convert ivalues to/from py objects.
-        Python::with_gil(|py| py.run_bound("import torch", None, None))?;
+        Python::with_gil(|py| py.run(c_str!("import torch"), None, None))?;
 
         // Create the Python function that runs as the pipe handler.
         Python::with_gil(|py| {
-            let _mod = PyModule::from_code_bound(
+            let _mod = PyModule::from_code(
                 py,
-                indoc! {r#"
+                c_str!(indoc! {r#"
                     def func(pipe):
                         val = pipe.recv()
                         pipe.send(val)
-                "#},
-                "test_helpers.py",
-                "test_helpers",
+                "#}),
+                c_str!("test_helpers.py"),
+                c_str!("test_helpers"),
             )?;
             anyhow::Ok(())
         })?;

@@ -187,10 +187,10 @@ impl _Controller {
     ) -> PyResult<()> {
         let failures = self.history.add_invocation(
             seq.into(),
-            uses.iter()?
+            uses.try_iter()?
                 .map(|x| Ref::from_py_object(&x?))
                 .collect::<PyResult<Vec<Ref>>>()?,
-            defs.iter()?
+            defs.try_iter()?
                 .map(|x| Ref::from_py_object(&x?))
                 .collect::<PyResult<Vec<Ref>>>()?,
         );

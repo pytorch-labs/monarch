@@ -1265,7 +1265,7 @@ fn wire_values_to_args(py: Python<'_>, args: Vec<WireValue>) -> PyResult<PyObjec
             }
         })
         .collect::<Result<Vec<_>, PyErr>>()?;
-    Ok(PyTuple::new_bound(py, py_ags).to_object(py))
+    Ok(PyTuple::new(py, py_ags)?.into())
 }
 
 fn wire_values_to_kwargs(py: Python<'_>, kwargs: HashMap<String, WireValue>) -> PyResult<PyObject> {
@@ -1378,7 +1378,7 @@ pub(crate) fn worker_message_to_py(py: Python<'_>, message: &WorkerMessage) -> P
 /// during packaging.
 #[pyfunction]
 fn worker_main(py: Python<'_>) -> PyResult<()> {
-    let argv: Vec<String> = py.import_bound("sys")?.getattr("argv")?.extract()?;
+    let argv: Vec<String> = py.import("sys")?.getattr("argv")?.extract()?;
     Python::allow_threads(py, move || {
         let args = BinaryArgs::parse_from(argv);
 

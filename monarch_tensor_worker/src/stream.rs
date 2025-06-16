@@ -1446,8 +1446,7 @@ impl StreamMessageHandler for StreamActor {
                                                 rvalue.try_to_object_unsafe(py)
                                             })
                                             .collect::<Result<Vec<_>, _>>()?;
-                                        PyTuple::new_bound(py, &py_rvalues)
-                                            .extract::<PyTree<RValue>>()
+                                        PyTuple::new(py, &py_rvalues)?.extract::<PyTree<RValue>>()
                                     })()
                                     .map_err(SerializablePyErr::from_fn(py))?)
                                 })

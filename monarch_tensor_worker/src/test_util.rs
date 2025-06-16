@@ -10,6 +10,7 @@ use std::io::IsTerminal;
 
 use anyhow::Result;
 use pyo3::Python;
+use pyo3::ffi::c_str;
 use tracing_subscriber::fmt::format::FmtSpan;
 
 pub fn test_setup() -> Result<()> {
@@ -48,7 +49,7 @@ pub fn test_setup() -> Result<()> {
 
     // We need to load torch to initialize some internal structures used by
     // the FFI funcs we use to convert ivalues to/from py objects.
-    Python::with_gil(|py| py.run_bound("import torch", None, None))?;
+    Python::with_gil(|py| py.run(c_str!("import torch"), None, None))?;
 
     Ok(())
 }

@@ -1537,27 +1537,24 @@ mod tests {
             .unwrap();
         let (split_arg, sort_list, mesh_ref, dim, layout, none, scalar, device, memory_format) =
             Python::with_gil(|py| {
-                let split_arg: PickledPyObject = PyString::new_bound(py, "/fbs/fbc/foo/bar")
+                let split_arg: PickledPyObject = PyString::new(py, "/fbs/fbc/foo/bar")
                     .into_any()
                     .try_into()?;
-                let sort_list: PickledPyObject = PyList::new_bound(py, [65, 34, 79, 1, 5])
-                    .into_any()
-                    .try_into()?;
+                let sort_list: PickledPyObject =
+                    PyList::new(py, [65, 34, 79, 1, 5])?.into_any().try_into()?;
                 let mesh_ref: PickledPyObject =
                     Ref { id: 5 }.into_py(py).into_bound(py).try_into()?;
-                let dim: PickledPyObject = PyString::new_bound(py, "x").into_any().try_into()?;
-                let layout: PickledPyObject =
-                    py.import_bound("torch")?.getattr("strided")?.try_into()?;
+                let dim: PickledPyObject = PyString::new(py, "x").into_any().try_into()?;
+                let layout: PickledPyObject = py.import("torch")?.getattr("strided")?.try_into()?;
                 let none: PickledPyObject = py.None().into_any().into_bound(py).try_into()?;
-                let scalar: PickledPyObject =
-                    py.import_bound("torch")?.getattr("float32")?.try_into()?;
+                let scalar: PickledPyObject = py.import("torch")?.getattr("float32")?.try_into()?;
                 let device: PickledPyObject = py
-                    .import_bound("torch")?
+                    .import("torch")?
                     .getattr("device")?
                     .call1(("cuda:1",))?
                     .try_into()?;
                 let memory_format: PickledPyObject = py
-                    .import_bound("torch")?
+                    .import("torch")?
                     .getattr("contiguous_format")?
                     .try_into()?;
                 PyResult::Ok((
@@ -2225,7 +2222,7 @@ mod tests {
             PickledPyObject,
         ) = Python::with_gil(|py| {
             PyResult::Ok((
-                PyList::new_bound(py, [2, 3]).into_any().try_into()?,
+                PyList::new(py, [2, 3])?.into_any().try_into()?,
                 Ref { id: 2 }.into_py(py).into_bound(py).try_into()?,
                 Ref { id: 4 }.into_py(py).into_bound(py).try_into()?,
             ))

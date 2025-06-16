@@ -459,9 +459,9 @@ mod tests {
         let args_info =
             crate::call_op::get_schema_args_info("aten::_foreach_add_", "Tensor").unwrap();
         let (list, tensor, tensor_1, tensor_1_err) = Python::with_gil(|py| {
-            let list = pyo3::types::PyList::empty_bound(py).into_any();
+            let list = pyo3::types::PyList::empty(py).into_any();
             let none = py.None().into_bound(py);
-            let one = PyFloat::new_bound(py, 1.0).into_any();
+            let one = PyFloat::new(py, 1.0).into_any();
             (
                 IValue::from_py_object_with_type(
                     list,
@@ -508,7 +508,7 @@ mod tests {
                             // We need to load torch to initialize some internal
                             // structures used by the FFI funcs we use to convert
                             // ivalues to/from py objects.
-                            Python::with_gil(|py| py.run_bound("import torch", None, None)).unwrap();
+                            Python::with_gil(|py| py.run(pyo3::ffi::c_str!("import torch"), None, None)).unwrap();
                             let original = IValue::from($input);
                             // SAFETY: `TryIntoPyObject` consumes the value, so
                             // we clone here to use for the `assert_eq` at end.
@@ -557,7 +557,7 @@ mod tests {
                             // We need to load torch to initialize some internal
                             // structures used by the FFI funcs we use to convert
                             // ivalues to/from py objects.
-                            Python::with_gil(|py| py.run_bound("import torch", None, None)).unwrap();
+                            Python::with_gil(|py| py.run(pyo3::ffi::c_str!("import torch"), None, None)).unwrap();
                             let original = IValue::from($input);
                             let converted: IValue = bincode::deserialize(&bincode::serialize(&original).unwrap()).unwrap();
                             assert!(ivalues_equal_with_tensor_equal(original, converted));

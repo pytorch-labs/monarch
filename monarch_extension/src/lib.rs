@@ -42,11 +42,11 @@ fn get_or_add_new_module<'py>(
         if let Some(submodule) = submodule {
             current_module = submodule.extract()?;
         } else {
-            let new_module = PyModule::new_bound(current_module.py(), part)?;
+            let new_module = PyModule::new(current_module.py(), part)?;
             current_module.add_submodule(&new_module)?;
             current_module
                 .py()
-                .import_bound("sys")?
+                .import("sys")?
                 .getattr("modules")?
                 .set_item(
                     format!("monarch._rust_bindings.{}", parts.join(".")),

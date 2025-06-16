@@ -86,7 +86,7 @@ impl PickledMessage {
 
     #[getter]
     fn message<'a>(&self, py: Python<'a>) -> Bound<'a, PyBytes> {
-        PyBytes::new_bound(py, self.message.as_ref())
+        PyBytes::new(py, self.message.as_ref())
     }
 
     fn serialize(&self) -> PyResult<PySerialized> {
@@ -144,7 +144,7 @@ impl PickledMessageClientActor {
             .into_iter()
             .map(|message| message.into_py(py))
             .collect::<Vec<PyObject>>();
-        Ok(PyList::new_bound(py, messages))
+        PyList::new(py, messages)
     }
 
     fn world_status<'py>(&mut self, py: Python<'py>) -> PyResult<PyObject> {
@@ -154,7 +154,7 @@ impl PickledMessageClientActor {
             instance.lock().await.world_status(Default::default()).await
         })??;
         Python::with_gil(|py| {
-            let py_dict = PyDict::new_bound(py);
+            let py_dict = PyDict::new(py);
             for (world, status) in worlds {
                 py_dict.set_item(world.to_string(), status.to_string())?;
             }
@@ -234,7 +234,7 @@ impl PythonMessage {
 
     #[getter]
     fn message<'a>(&self, py: Python<'a>) -> Bound<'a, PyBytes> {
-        PyBytes::new_bound(py, self.message.as_ref())
+        PyBytes::new(py, self.message.as_ref())
     }
 
     #[getter]
@@ -351,7 +351,7 @@ fn get_task_locals(py: Python) -> &'static pyo3_async_runtimes::TaskLocals {
             let (tx, rx) = std::sync::mpsc::channel();
             let _ = std::thread::spawn(move || {
                 Python::with_gil(|py| {
-                    let asyncio = Python::import_bound(py, "asyncio").unwrap();
+                    let asyncio = Python::import(py, "asyncio").unwrap();
                     let event_loop = asyncio.call_method0("new_event_loop").unwrap();
                     asyncio
                         .call_method1("set_event_loop", (event_loop.clone(),))
@@ -466,7 +466,7 @@ impl Handler<PythonMessage> for PythonActor {
                 inner: this.mailbox_for_py().clone(),
             };
             let awaitable = tokio::task::block_in_place(|| {
-                self.actor.call_method_bound(
+                self.actor.call_method(
                     py,
                     "handle",
                     (
@@ -519,7 +519,7 @@ impl Handler<Cast<PythonMessage>> for PythonActor {
             };
 
             let awaitable = tokio::task::block_in_place(|| {
-                self.actor.call_method_bound(
+                self.actor.call_method(
                     py,
                     "handle_cast",
                     (

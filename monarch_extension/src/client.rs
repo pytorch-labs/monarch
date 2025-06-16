@@ -98,7 +98,7 @@ impl WorkerResponse {
     fn result(&self, py: Python<'_>) -> PyResult<PyObject> {
         if let Some(result) = &self.result {
             if result.is_err() {
-                Ok(PyNone::get_bound(py).into_py(py))
+                Ok(PyNone::get(py).into_py(py))
             } else {
                 // TODO: Use better shared error class
                 let rvalue = result
@@ -113,15 +113,15 @@ impl WorkerResponse {
                 Ok(unsafe { rvalue.try_to_object_unsafe(py)?.unbind() })
             }
         } else {
-            Ok(PyNone::get_bound(py).into_py(py))
+            Ok(PyNone::get(py).into_py(py))
         }
     }
 
     fn exception(&self, py: Python<'_>) -> PyResult<PyObject> {
         match self.result.as_ref() {
-            Some(Ok(_)) => Ok(PyNone::get_bound(py).into_py(py)),
+            Some(Ok(_)) => Ok(PyNone::get(py).into_py(py)),
             Some(Err(exc)) => Ok(PyException::exception_to_py(py, exc)?),
-            None => Ok(PyNone::get_bound(py).into_py(py)),
+            None => Ok(PyNone::get(py).into_py(py)),
         }
     }
 
@@ -145,13 +145,19 @@ pub struct PyWorldState {
 #[pymethods]
 impl PyWorldState {
     #[getter]
-    fn labels(self_: PyRef<Self>, py: Python) -> PyObject {
-        self_.inner.labels.clone().into_py_dict_bound(py).into()
+    fn labels(self_: PyRef<Self>, py: Python) -> PyResult<PyObject> {
+        Ok(self_
+            .inner
+            .labels
+            .clone()
+            .into_py_dict(py)?
+            .into_any()
+            .unbind())
     }
 
     #[getter]
     fn procs(self_: PyRef<Self>, py: Python) -> PyResult<PyObject> {
-        let proc_dict = PyDict::new_bound(py);
+        let proc_dict = PyDict::new(py);
         for (proc_id, proc_info) in self_.inner.procs.clone() {
             proc_dict.set_item(proc_id.to_string(), PyProcInfo::from(proc_info).into_py(py))?;
         }
@@ -203,23 +209,25 @@ impl PySystemSnapshotFilter {
     }
 
     #[getter]
-    fn world_labels(self_: PyRef<Self>, py: Python) -> PyObject {
-        self_
+    fn world_labels(self_: PyRef<Self>, py: Python) -> PyResult<PyObject> {
+        Ok(self_
             .inner
             .world_labels
             .clone()
-            .into_py_dict_bound(py)
-            .into()
+            .into_py_dict(py)?
+            .into_any()
+            .unbind())
     }
 
     #[getter]
-    fn proc_labels(self_: PyRef<Self>, py: Python) -> PyObject {
-        self_
+    fn proc_labels(self_: PyRef<Self>, py: Python) -> PyResult<PyObject> {
+        Ok(self_
             .inner
             .proc_labels
             .clone()
-            .into_py_dict_bound(py)
-            .into()
+            .into_py_dict(py)?
+            .into_any()
+            .unbind())
     }
 }
 
@@ -668,7 +676,7 @@ impl ClientActor {
                     action,
                 }
                 .into_py(py)),
-                Ok(None) => Ok(PyNone::get_bound(py).into_py(py)),
+                Ok(None) => Ok(PyNone::get(py).into_py(py)),
                 Err(err) => {
                     if let Some(ControllerError::Failed(controller_id, err_msg)) =
                         err.downcast_ref::<ControllerError>()
@@ -726,7 +734,7 @@ impl ClientActor {
                 .into_py(py),
             })
             .collect::<Vec<PyObject>>();
-        Ok(PyList::new_bound(py, messages))
+        PyList::new(py, messages)
     }
 
     /// Get the status of all the worlds from the system.
@@ -748,7 +756,7 @@ impl ClientActor {
                 .await
         })??;
         Python::with_gil(|py| {
-            let py_dict = PyDict::new_bound(py);
+            let py_dict = PyDict::new(py);
             for (world, status) in worlds {
                 py_dict.set_item(world.to_string(), status.to_string())?;
             }
@@ -782,7 +790,7 @@ impl ClientActor {
 
         // Convert the snapshot to a Python dictionary
         let result: PyResult<PyObject> = Python::with_gil(|py| {
-            let worlds_dict = PyDict::new_bound(py);
+            let worlds_dict = PyDict::new(py);
             for (world, status) in snapshot.worlds {
                 worlds_dict.set_item(
                     world.to_string(),
