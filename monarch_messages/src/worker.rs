@@ -307,12 +307,16 @@ pub enum ResolvableFunction {
     FunctionPath(FunctionPath),
 }
 
-impl IntoPy<PyObject> for ResolvableFunction {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        match self {
-            Self::Cloudpickle(func) => func.into_py(py),
-            Self::FunctionPath(func) => func.into_py(py),
-        }
+impl<'py> IntoPyObject<'py> for ResolvableFunction {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        Ok(match self {
+            Self::Cloudpickle(func) => func.into_pyobject(py)?.into_any(),
+            Self::FunctionPath(func) => func.into_pyobject(py)?.into_any(),
+        })
     }
 }
 

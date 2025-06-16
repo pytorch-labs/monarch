@@ -12,5 +12,5 @@ async-trait = "0.1.86"
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }
 ndslice = { version = "0.0.0", path = "../ndslice" }
-pyo3 = { version = "0.22.6", features = ["anyhow"] }
+pyo3 = { version = "0.24", features = ["anyhow"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }

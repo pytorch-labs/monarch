@@ -17,7 +17,7 @@ derive_more = { version = "1.0.0", features = ["full"] }
 monarch_types = { version = "0.0.0", path = "../monarch_types" }
 nccl-sys = { path = "../nccl-sys", optional = true }
 paste = "1.0.14"
-pyo3 = { version = "0.22.6", features = ["anyhow"] }
+pyo3 = { version = "0.24", features = ["anyhow"] }
 regex = "1.11.1"
 serde = { version = "1.0.185", features = ["derive", "rc"] }
 thiserror = "2.0.12"

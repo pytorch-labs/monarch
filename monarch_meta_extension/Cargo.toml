@@ -19,6 +19,6 @@ fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rus
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_extension = { version = "0.0.0", path = "../hyperactor_extension" }
 hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }
-pyo3 = { version = "0.22.6", features = ["anyhow"] }
-pyo3-async-runtimes = { git = "https://github.com/PyO3/pyo3-async-runtimes", rev = "f6bb9b471a5b7765dd770af36e83f26802459621", features = ["attributes", "tokio-runtime"] }
+pyo3 = { version = "0.24", features = ["anyhow"] }
+pyo3-async-runtimes = { git = "https://github.com/PyO3/pyo3-async-runtimes", rev = "c5a3746f110b4d246556b0f6c29f5f555919eee3", features = ["attributes", "tokio-runtime"] }
 tokio = { version = "1.45.0", features = ["full", "test-util", "tracing"] }

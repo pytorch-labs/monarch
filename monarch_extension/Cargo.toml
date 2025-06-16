@@ -28,7 +28,7 @@ monarch_tensor_worker = { version = "0.0.0", path = "../monarch_tensor_worker", 
 monarch_types = { version = "0.0.0", path = "../monarch_types" }
 nccl-sys = { path = "../nccl-sys", optional = true }
 ndslice = { version = "0.0.0", path = "../ndslice" }
-pyo3 = { version = "0.22.6", features = ["anyhow"] }
+pyo3 = { version = "0.24", features = ["anyhow"] }
 tokio = { version = "1.45.0", features = ["full", "test-util", "tracing"] }
 torch-sys = { version = "0.0.0", path = "../torch-sys", optional = true }
 torch-sys-cuda = { version = "0.0.0", path = "../torch-sys-cuda", optional = true }

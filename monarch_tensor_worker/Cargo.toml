@@ -25,7 +25,7 @@ monarch_types = { version = "0.0.0", path = "../monarch_types" }
 ndslice = { version = "0.0.0", path = "../ndslice" }
 nix = { version = "0.29.0", features = ["dir", "event", "hostname", "inotify", "ioctl", "mman", "mount", "net", "poll", "ptrace", "reboot", "resource", "sched", "signal", "term", "time", "user", "zerocopy"] }
 parking_lot = { version = "0.12.1", features = ["send_guard"] }
-pyo3 = { version = "0.22.6", features = ["anyhow"] }
+pyo3 = { version = "0.24", features = ["anyhow"] }
 serde = { version = "1.0.185", features = ["derive", "rc"] }
 serde_json = { version = "1.0.140", features = ["float_roundtrip", "unbounded_depth"] }
 sorted-vec = "0.8.3"

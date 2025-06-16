@@ -21,7 +21,7 @@ use crate::pipe::Pipe;
 /// Wrapper around `Pipe` to make it usable in Python.
 #[pyclass]
 pub struct PyPipe {
-    pipe: Box<dyn Pipe<PyTree<RValue>> + Send>,
+    pipe: Box<dyn Pipe<PyTree<RValue>> + Send + Sync>,
     #[pyo3(get)]
     ranks: HashMap<String, usize>,
     #[pyo3(get)]
@@ -31,7 +31,7 @@ pub struct PyPipe {
 
 impl PyPipe {
     pub fn new(
-        pipe: Box<dyn Pipe<PyTree<RValue>> + Send>,
+        pipe: Box<dyn Pipe<PyTree<RValue>> + Send + Sync>,
         ranks: HashMap<String, usize>,
         sizes: HashMap<String, usize>,
         allow_unsafe_obj_conversion: bool,

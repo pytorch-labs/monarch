@@ -181,7 +181,7 @@ impl<T: std::fmt::Debug + Write + Sync + Send> WriteDebug for T {}
 
 pub struct StreamPipe {
     writer: Box<dyn WriteDebug>,
-    channel_reader: ::std::sync::mpsc::Receiver<Vec<u8>>,
+    channel_reader: std::sync::Arc<std::sync::Mutex<::std::sync::mpsc::Receiver<Vec<u8>>>>,
 }
 
 impl StreamPipe {
@@ -224,7 +224,7 @@ impl StreamPipe {
 
         StreamPipe {
             writer: Box::new(writer),
-            channel_reader,
+            channel_reader: std::sync::Arc::new(std::sync::Mutex::new(channel_reader)),
         }
     }
 }
@@ -240,7 +240,12 @@ impl<T: Serialize + DeserializeOwned> Pipe<T> for StreamPipe {
     }
 
     fn recv(&mut self) -> Result<T> {
-        let buf = self.channel_reader.recv().expect("recv failed");
+        let buf = self
+            .channel_reader
+            .lock()
+            .unwrap()
+            .recv()
+            .expect("recv failed");
         Ok(bincode::deserialize(&buf)?)
     }
 }
