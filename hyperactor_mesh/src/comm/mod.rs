@@ -20,9 +20,9 @@ use hyperactor::ActorRef;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Named;
-use hyperactor::PortId;
 use hyperactor::WorldId;
 use hyperactor::data::Serialized;
+use hyperactor::reference::UnboundPort;
 use ndslice::Slice;
 use ndslice::selection::routing::RoutingFrame;
 use serde::Deserialize;
@@ -176,16 +176,17 @@ impl CommActor {
         // Split ports, if any, and update message with new ports. In this
         // way, children actors will reply to this comm actor's ports, instead
         // of to the original ports provided by parent.
-        let reducer_typehash = message.reducer_typehash().clone();
-        message.data_mut().visit_mut::<PortId>(|p| {
-            let split = p.split(this, reducer_typehash.clone());
+        message
+            .data_mut()
+            .visit_mut::<UnboundPort>(|UnboundPort(port_id, reducer_typehash)| {
+                let split = port_id.split(this, reducer_typehash.clone());
 
-            #[cfg(test)]
-            tests::collect_split_port(p, &split, deliver_here);
+                #[cfg(test)]
+                tests::collect_split_port(port_id, &split, deliver_here);
 
-            *p = split;
-            Ok(())
-        })?;
+                *port_id = split;
+                Ok(())
+            })?;
 
         // Deliver message here, if necessary.
         if deliver_here {
@@ -494,6 +495,7 @@ mod tests {
     use hyperactor::accum::CommReducer;
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
+    use hyperactor::config;
     use hyperactor::mailbox::PortReceiver;
     use hyperactor::mailbox::open_port;
     use hyperactor::reference::Index;
@@ -904,6 +906,10 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_cast_and_accum() -> Result<()> {
+        let config = config::global::lock();
+        // Use temporary config for this test
+        let _guard1 = config.override_key(config::SPLIT_MAX_BUFFER_SIZE, 1);
+
         let MeshSetup {
             actor_mesh,
             mut reply1_rx,
