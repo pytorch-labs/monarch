@@ -16,6 +16,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+use crate as hyperactor; // for macros
 use crate::Named;
 use crate::data::Serialized;
 use crate::intern_typename;
@@ -28,16 +29,21 @@ pub trait Accumulator {
     /// The type of the updates sent to the accumulator. Updates will be
     /// accumulated into type [Self::State].
     type Update;
-    /// The type of the comm reducer used by this accumulator.
-    type Reducer: CommReducer<Update = Self::Update> + Named;
 
     /// Accumulate an update into the current state.
-    fn accumulate(&self, state: &mut Self::State, update: Self::Update);
+    fn accumulate(&self, state: &mut Self::State, update: Self::Update) -> anyhow::Result<()>;
 
+    /// The specification used to build the reducer.
+    fn reducer_spec(&self) -> Option<ReducerSpec>;
+}
+
+/// Serializable information needed to build a comm reducer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
+pub struct ReducerSpec {
     /// The typehash of the underlying [Self::Reducer] type.
-    fn reducer_typehash(&self) -> u64 {
-        <Self::Reducer as Named>::typehash()
-    }
+    pub typehash: u64,
+    /// The parameters used to build the reducer.
+    pub builder_params: Option<Serialized>,
 }
 
 /// Commutative reducer for an accumulator. This is used to coallesce updates.
@@ -50,11 +56,11 @@ pub trait CommReducer {
     type Update;
 
     /// Reduce 2 updates into a single update.
-    fn reduce(&self, left: Self::Update, right: Self::Update) -> Self::Update;
+    fn reduce(&self, left: Self::Update, right: Self::Update) -> anyhow::Result<Self::Update>;
 }
 
 /// Type erased version of [CommReducer].
-pub(crate) trait ErasedCommReducer {
+pub trait ErasedCommReducer {
     /// Reduce 2 updates into a single update.
     fn reduce_erased(&self, left: &Serialized, right: &Serialized) -> anyhow::Result<Serialized>;
 
@@ -97,7 +103,7 @@ where
     fn reduce_erased(&self, left: &Serialized, right: &Serialized) -> anyhow::Result<Serialized> {
         let left = left.deserialized::<T>()?;
         let right = right.deserialized::<T>()?;
-        let result = self.reduce(left, right);
+        let result = self.reduce(left, right)?;
         Ok(Serialized::serialize(&result)?)
     }
 
@@ -106,52 +112,90 @@ where
     }
 }
 
-// Register factory instead of ErasedCommReducer trait object because the
-// object could have internal state, and cannot be shared.
-struct ReducerFactory(fn() -> Box<dyn ErasedCommReducer + Sync + Send + 'static>);
+/// A factory for [`ErasedCommReducer`]s. This is used to register a
+/// [`ErasedCommReducer`] type. We cannot register [`ErasedCommReducer`] trait
+/// object directly because the object could have internal state, and cannot be
+/// shared.
+pub struct ReducerFactory {
+    /// Return the typehash of the [`ErasedCommReducer`] type built by this
+    /// factory.
+    pub typehash_f: fn() -> u64,
+    /// The builder function to build the [`ErasedCommReducer`] type.
+    pub builder_f: fn(
+        Option<Serialized>,
+    ) -> anyhow::Result<Box<dyn ErasedCommReducer + Sync + Send + 'static>>,
+}
 
 inventory::collect!(ReducerFactory);
 
 inventory::submit! {
-    ReducerFactory(|| Box::new(SumReducer::<i64>(PhantomData)))
+    ReducerFactory {
+        typehash_f: <SumReducer<i64> as Named>::typehash,
+        builder_f: |_| Ok(Box::new(SumReducer::<i64>(PhantomData))),
+    }
 }
 inventory::submit! {
-    ReducerFactory(|| Box::new(SumReducer::<u64>(PhantomData)))
+    ReducerFactory {
+        typehash_f: <SumReducer<u64> as Named>::typehash,
+        builder_f: |_| Ok(Box::new(SumReducer::<u64>(PhantomData))),
+    }
 }
 inventory::submit! {
-    ReducerFactory(|| Box::new(MaxReducer::<i64>(PhantomData)))
+    ReducerFactory {
+        typehash_f: <MaxReducer::<i64> as Named>::typehash,
+        builder_f: |_| Ok(Box::new(MaxReducer::<i64>(PhantomData))),
+    }
 }
 inventory::submit! {
-    ReducerFactory(|| Box::new(MaxReducer::<u64>(PhantomData)))
+    ReducerFactory {
+        typehash_f: <MaxReducer::<u64> as Named>::typehash,
+        builder_f: |_| Ok(Box::new(MaxReducer::<u64>(PhantomData))),
+    }
 }
 inventory::submit! {
-    ReducerFactory(|| Box::new(MinReducer::<i64>(PhantomData)))
+    ReducerFactory {
+        typehash_f: <MinReducer::<i64> as Named>::typehash,
+        builder_f: |_| Ok(Box::new(MinReducer::<i64>(PhantomData))),
+    }
 }
 inventory::submit! {
-    ReducerFactory(|| Box::new(MinReducer::<u64>(PhantomData)))
+    ReducerFactory {
+        typehash_f: <MinReducer::<u64> as Named>::typehash,
+        builder_f: |_| Ok(Box::new(MinReducer::<u64>(PhantomData))),
+    }
 }
 inventory::submit! {
-    ReducerFactory(|| Box::new(WatermarkUpdateReducer::<i64>(PhantomData)))
+    ReducerFactory {
+        typehash_f: <WatermarkUpdateReducer::<i64> as Named>::typehash,
+        builder_f: |_| Ok(Box::new(WatermarkUpdateReducer::<i64>(PhantomData))),
+    }
 }
 inventory::submit! {
-    ReducerFactory(|| Box::new(WatermarkUpdateReducer::<u64>(PhantomData)))
+    ReducerFactory {
+        typehash_f: <WatermarkUpdateReducer::<u64> as Named>::typehash,
+        builder_f: |_| Ok(Box::new(WatermarkUpdateReducer::<u64>(PhantomData))),
+    }
 }
 
 /// Build a reducer object with the given typehash's [CommReducer] type, and
 /// return the type-erased version of it.
 pub(crate) fn resolve_reducer(
     typehash: u64,
-) -> Option<Box<dyn ErasedCommReducer + Sync + Send + 'static>> {
+    builder_params: Option<Serialized>,
+) -> anyhow::Result<Option<Box<dyn ErasedCommReducer + Sync + Send + 'static>>> {
     static FACTORY_MAP: OnceLock<HashMap<u64, &'static ReducerFactory>> = OnceLock::new();
     let factories = FACTORY_MAP.get_or_init(|| {
         let mut map = HashMap::new();
         for factory in inventory::iter::<ReducerFactory> {
-            map.insert(factory.0().typehash(), factory);
+            map.insert((factory.typehash_f)(), factory);
         }
         map
     });
 
-    factories.get(&typehash).map(|f| f.0())
+    factories
+        .get(&typehash)
+        .map(|f| (f.builder_f)(builder_params))
+        .transpose()
 }
 
 struct SumReducer<T>(PhantomData<T>);
@@ -159,8 +203,8 @@ struct SumReducer<T>(PhantomData<T>);
 impl<T: std::ops::Add<Output = T> + Copy + 'static> CommReducer for SumReducer<T> {
     type Update = T;
 
-    fn reduce(&self, left: T, right: T) -> T {
-        left + right
+    fn reduce(&self, left: T, right: T) -> anyhow::Result<T> {
+        Ok(left + right)
     }
 }
 
@@ -177,10 +221,17 @@ struct SumAccumulator<T>(PhantomData<T>);
 impl<T: std::ops::Add<Output = T> + Copy + Named + 'static> Accumulator for SumAccumulator<T> {
     type State = T;
     type Update = T;
-    type Reducer = SumReducer<T>;
 
-    fn accumulate(&self, state: &mut T, update: T) {
+    fn accumulate(&self, state: &mut T, update: T) -> anyhow::Result<()> {
         *state = *state + update;
+        Ok(())
+    }
+
+    fn reducer_spec(&self) -> Option<ReducerSpec> {
+        Some(ReducerSpec {
+            typehash: <SumReducer<T> as Named>::typehash(),
+            builder_params: None,
+        })
     }
 }
 
@@ -195,8 +246,8 @@ struct MaxReducer<T>(PhantomData<T>);
 impl<T: Ord> CommReducer for MaxReducer<T> {
     type Update = T;
 
-    fn reduce(&self, left: T, right: T) -> T {
-        std::cmp::max(left, right)
+    fn reduce(&self, left: T, right: T) -> anyhow::Result<T> {
+        Ok(std::cmp::max(left, right))
     }
 }
 
@@ -225,13 +276,20 @@ struct MaxAccumulator<T>(PhantomData<T>);
 impl<T: Ord + Copy + Named + 'static> Accumulator for MaxAccumulator<T> {
     type State = Max<T>;
     type Update = T;
-    type Reducer = MaxReducer<T>;
 
-    fn accumulate(&self, state: &mut Self::State, update: T) {
+    fn accumulate(&self, state: &mut Self::State, update: T) -> anyhow::Result<()> {
         match state.0.as_mut() {
             Some(s) => *s = std::cmp::max(*s, update),
             None => *state = Max(Some(update)),
         }
+        Ok(())
+    }
+
+    fn reducer_spec(&self) -> Option<ReducerSpec> {
+        Some(ReducerSpec {
+            typehash: <MaxReducer<T> as Named>::typehash(),
+            builder_params: None,
+        })
     }
 }
 
@@ -246,8 +304,8 @@ struct MinReducer<T>(PhantomData<T>);
 impl<T: Ord> CommReducer for MinReducer<T> {
     type Update = T;
 
-    fn reduce(&self, left: T, right: T) -> T {
-        std::cmp::min(left, right)
+    fn reduce(&self, left: T, right: T) -> anyhow::Result<T> {
+        Ok(std::cmp::min(left, right))
     }
 }
 
@@ -276,13 +334,20 @@ struct MinAccumulator<T>(PhantomData<T>);
 impl<T: Ord + Copy + Named + 'static> Accumulator for MinAccumulator<T> {
     type State = Min<T>;
     type Update = T;
-    type Reducer = MinReducer<T>;
 
-    fn accumulate(&self, state: &mut Min<T>, update: T) {
+    fn accumulate(&self, state: &mut Min<T>, update: T) -> anyhow::Result<()> {
         match state.0.as_mut() {
             Some(s) => *s = std::cmp::min(*s, update),
             None => *state = Min(Some(update)),
         }
+        Ok(())
+    }
+
+    fn reducer_spec(&self) -> Option<ReducerSpec> {
+        Some(ReducerSpec {
+            typehash: <MinReducer<T> as Named>::typehash(),
+            builder_params: None,
+        })
     }
 }
 
@@ -341,8 +406,8 @@ struct WatermarkUpdateReducer<T>(PhantomData<T>);
 impl<T: PartialEq> CommReducer for WatermarkUpdateReducer<T> {
     type Update = WatermarkUpdate<T>;
 
-    fn reduce(&self, left: Self::Update, right: Self::Update) -> Self::Update {
-        WatermarkUpdate::merge(left, right)
+    fn reduce(&self, left: Self::Update, right: Self::Update) -> anyhow::Result<Self::Update> {
+        Ok(WatermarkUpdate::merge(left, right))
     }
 }
 
@@ -357,12 +422,19 @@ struct LowWatermarkUpdateAccumulator<T>(PhantomData<T>);
 impl<T: Ord + Copy + Named + 'static> Accumulator for LowWatermarkUpdateAccumulator<T> {
     type State = WatermarkUpdate<T>;
     type Update = WatermarkUpdate<T>;
-    type Reducer = WatermarkUpdateReducer<T>;
 
-    fn accumulate(&self, state: &mut Self::State, update: Self::Update) {
+    fn accumulate(&self, state: &mut Self::State, update: Self::Update) -> anyhow::Result<()> {
         let current = std::mem::replace(&mut *state, WatermarkUpdate(HashMap::new()));
         // TODO(pzhang) optimize this and only iterate when there is a new state.
         *state = WatermarkUpdate::merge(current, update);
+        Ok(())
+    }
+
+    fn reducer_spec(&self) -> Option<ReducerSpec> {
+        Some(ReducerSpec {
+            typehash: <WatermarkUpdateReducer<T> as Named>::typehash(),
+            builder_params: None,
+        })
     }
 }
 
@@ -401,7 +473,8 @@ mod tests {
         {
             let typehash = <MaxReducer<u64> as Named>::typehash();
             assert_eq!(
-                resolve_reducer(typehash)
+                resolve_reducer(typehash, None)
+                    .unwrap()
                     .unwrap()
                     .reduce_updates(u64_numbers.clone())
                     .unwrap()
@@ -412,7 +485,8 @@ mod tests {
 
             let typehash = <MinReducer<u64> as Named>::typehash();
             assert_eq!(
-                resolve_reducer(typehash)
+                resolve_reducer(typehash, None)
+                    .unwrap()
                     .unwrap()
                     .reduce_updates(u64_numbers.clone())
                     .unwrap()
@@ -423,7 +497,8 @@ mod tests {
 
             let typehash = <SumReducer<u64> as Named>::typehash();
             assert_eq!(
-                resolve_reducer(typehash)
+                resolve_reducer(typehash, None)
+                    .unwrap()
                     .unwrap()
                     .reduce_updates(u64_numbers)
                     .unwrap()
@@ -436,7 +511,8 @@ mod tests {
         {
             let typehash = <MaxReducer<i64> as Named>::typehash();
             assert_eq!(
-                resolve_reducer(typehash)
+                resolve_reducer(typehash, None)
+                    .unwrap()
                     .unwrap()
                     .reduce_updates(i64_numbers.clone())
                     .unwrap()
@@ -447,7 +523,8 @@ mod tests {
 
             let typehash = <MinReducer<i64> as Named>::typehash();
             assert_eq!(
-                resolve_reducer(typehash)
+                resolve_reducer(typehash, None)
+                    .unwrap()
                     .unwrap()
                     .reduce_updates(i64_numbers.clone())
                     .unwrap()
@@ -458,7 +535,8 @@ mod tests {
 
             let typehash = <SumReducer<i64> as Named>::typehash();
             assert_eq!(
-                resolve_reducer(typehash)
+                resolve_reducer(typehash, None)
+                    .unwrap()
                     .unwrap()
                     .reduce_updates(i64_numbers)
                     .unwrap()
@@ -510,7 +588,8 @@ mod tests {
         ) {
             let typehash = <WatermarkUpdateReducer<i64> as Named>::typehash();
             assert_eq!(
-                resolve_reducer(typehash)
+                resolve_reducer(typehash, None)
+                    .unwrap()
                     .unwrap()
                     .reduce_updates(updates)
                     .unwrap()
@@ -543,29 +622,29 @@ mod tests {
     #[test]
     fn test_accum_reducer_numeric() {
         assert_eq!(
-            sum::<u64>().reducer_typehash(),
+            sum::<u64>().reducer_spec().unwrap().typehash,
             <SumReducer::<u64> as Named>::typehash(),
         );
         assert_eq!(
-            sum::<i64>().reducer_typehash(),
+            sum::<i64>().reducer_spec().unwrap().typehash,
             <SumReducer::<i64> as Named>::typehash(),
         );
 
         assert_eq!(
-            min::<u64>().reducer_typehash(),
+            min::<u64>().reducer_spec().unwrap().typehash,
             <MinReducer::<u64> as Named>::typehash(),
         );
         assert_eq!(
-            min::<i64>().reducer_typehash(),
+            min::<i64>().reducer_spec().unwrap().typehash,
             <MinReducer::<i64> as Named>::typehash(),
         );
 
         assert_eq!(
-            max::<u64>().reducer_typehash(),
+            max::<u64>().reducer_spec().unwrap().typehash,
             <MaxReducer::<u64> as Named>::typehash(),
         );
         assert_eq!(
-            max::<i64>().reducer_typehash(),
+            max::<i64>().reducer_spec().unwrap().typehash,
             <MaxReducer::<i64> as Named>::typehash(),
         );
     }
@@ -574,7 +653,7 @@ mod tests {
     fn test_accum_reducer_watermark() {
         fn verify<T: Ord + Copy + Named>() {
             assert_eq!(
-                low_watermark::<T>().reducer_typehash(),
+                low_watermark::<T>().reducer_spec().unwrap().typehash,
                 <WatermarkUpdateReducer::<T> as Named>::typehash(),
             );
         }
@@ -615,7 +694,9 @@ mod tests {
         ];
         let mut state = WatermarkUpdate(HashMap::new());
         for (rank, value, expected) in ranks_values_expectations {
-            accumulator.accumulate(&mut state, WatermarkUpdate::from((rank, value)));
+            accumulator
+                .accumulate(&mut state, WatermarkUpdate::from((rank, value)))
+                .unwrap();
             assert_eq!(state.get(), &expected, "rank is {rank}; value is {value}");
         }
     }

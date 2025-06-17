@@ -313,6 +313,7 @@ mod tests {
     use hyperactor::id;
 
     use super::*;
+    use crate::accum::ReducerSpec;
     use crate::reference::UnboundPort;
 
     // Used to demonstrate a user defined reply type.
@@ -349,7 +350,13 @@ mod tests {
     #[test]
     fn test_castable() {
         let original_port0 = PortRef::attest(id!(world[0].actor[0][123]));
-        let original_port1 = PortRef::attest_reducible(id!(world[1].actor1[0][456]), Some(123));
+        let original_port1 = PortRef::attest_reducible(
+            id!(world[1].actor1[0][456]),
+            Some(ReducerSpec {
+                typehash: 123,
+                builder_params: None,
+            }),
+        );
         let my_message = MyMessage {
             arg0: true,
             arg1: 42,
@@ -398,7 +405,13 @@ mod tests {
             .unwrap();
 
         let new_port0 = PortRef::<String>::attest(new_port_id0);
-        let new_port1 = PortRef::<MyReply>::attest_reducible(new_port_id1, Some(123));
+        let new_port1 = PortRef::<MyReply>::attest_reducible(
+            new_port_id1,
+            Some(ReducerSpec {
+                typehash: 123,
+                builder_params: None,
+            }),
+        );
         let new_bindings = Bindings(
             [
                 (
