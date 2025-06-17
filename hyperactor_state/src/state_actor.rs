@@ -40,9 +40,15 @@ pub struct StateActor {
 pub enum StateMessage {
     /// Send a batch of logs to the state actor.
     SetLogs { logs: Vec<GenericStateObject> },
-    /// Log subscription messages from client.
+    /// Log subscription messages from client. This message should be sent by the client actor to
+    /// inform the state actor to start sending logs to the client.
     SubscribeLogs {
         addr: ChannelAddr,
+        client_actor_ref: ActorRef<ClientActor>,
+    },
+    /// Unsubscribe the client from logs. This message should be sent by the client actor to inform
+    /// the state actor stop sending logs to the client.
+    UnsubscribeLogs {
         client_actor_ref: ActorRef<ClientActor>,
     },
 }
@@ -82,6 +88,15 @@ impl StateMessageHandler for StateActor {
             .insert(client_actor_ref, create_remote_client(addr).await?);
         Ok(())
     }
+
+    async fn unsubscribe_logs(
+        &mut self,
+        _this: &Instance<Self>,
+        client_actor_ref: ActorRef<ClientActor>,
+    ) -> Result<(), anyhow::Error> {
+        self.subscribers.remove(&client_actor_ref);
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -119,14 +134,22 @@ mod tests {
 
         let (_proc, remote_client) = create_remote_client(state_actor_addr).await.unwrap();
 
+        // 1. Subscribe to logs
         state_actor_ref
-            .subscribe_logs(&remote_client, client_actor_addr, client_actor_ref)
+            .subscribe_logs(
+                &remote_client,
+                client_actor_addr.clone(),
+                client_actor_ref.clone(),
+            )
             .await
             .unwrap();
+
+        // 2. Send logs and verify they are received
         state_actor_ref
             .set_logs(&remote_client, log_items(0, 10))
             .await
             .unwrap();
+
         // Collect received messages with timeout
         let mut fetched_logs = vec![];
         for _ in 0..10 {
@@ -146,5 +169,49 @@ mod tests {
         // Now test that no extra message is waiting
         let extra = tokio::time::timeout(Duration::from_millis(100), receiver.recv()).await;
         assert!(extra.is_err(), "expected no more messages");
+
+        // 3. Unsubscribe from logs
+        state_actor_ref
+            .unsubscribe_logs(&remote_client, client_actor_ref.clone())
+            .await
+            .unwrap();
+
+        // 4. Send more logs and verify they are not received
+        state_actor_ref
+            .set_logs(&remote_client, log_items(10, 20))
+            .await
+            .unwrap();
+
+        // Verify no messages are received after unsubscribing
+        let no_logs = tokio::time::timeout(Duration::from_millis(500), receiver.recv()).await;
+        assert!(no_logs.is_err(), "expected no messages after unsubscribing");
+
+        // 5. Subscribe again
+        state_actor_ref
+            .subscribe_logs(&remote_client, client_actor_addr, client_actor_ref)
+            .await
+            .unwrap();
+
+        // 6. Send logs and verify they are received again
+        state_actor_ref
+            .set_logs(&remote_client, log_items(20, 30))
+            .await
+            .unwrap();
+
+        // Collect received messages with timeout
+        let mut fetched_logs_after_resubscribe = vec![];
+        for _ in 0..10 {
+            // Timeout prevents hanging if a message is missing
+            let log = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+                .await
+                .expect("timed out waiting for message after resubscribing")
+                .expect("channel closed unexpectedly");
+
+            fetched_logs_after_resubscribe.push(log);
+        }
+
+        // Verify we received all expected logs after resubscribing
+        assert_eq!(fetched_logs_after_resubscribe.len(), 10);
+        assert_eq!(fetched_logs_after_resubscribe, log_items(20, 30));
     }
 }
