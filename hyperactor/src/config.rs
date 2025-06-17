@@ -43,6 +43,9 @@ declare_attrs! {
 
     /// Flag indicating if this is a managed subprocess
     pub attr IS_MANAGED_SUBPROCESS: bool = false;
+
+    /// Maximum number of supervision events that can be buffered by client handlers
+    pub attr MAX_SUPERVISION_EVENTS: usize = 10;
 }
 
 /// Load configuration from environment variables
