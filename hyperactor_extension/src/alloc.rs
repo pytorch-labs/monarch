@@ -49,6 +49,17 @@ impl PyAlloc {
     }
 }
 
+#[pymethods]
+impl PyAlloc {
+    fn __repr__(&self) -> PyResult<String> {
+        let data = self.inner.lock().unwrap();
+        match &*data {
+            None => Ok("Alloc(None)".to_string()),
+            Some(wrapper) => Ok(format!("Alloc({})", wrapper.shape())),
+        }
+    }
+}
+
 /// Internal wrapper to translate from a dyn Alloc to an impl Alloc. Used
 /// to support polymorphism in the Python bindings.
 pub struct PyAllocWrapper {

@@ -337,6 +337,9 @@ class ValueMesh(MeshTrait, Generic[R]):
     def __len__(self) -> int:
         return len(self._shape)
 
+    def __repr__(self) -> str:
+        return f"ValueMesh({self._shape})"
+
     @property
     def _ndslice(self) -> NDSlice:
         return self._shape.ndslice
@@ -701,6 +704,9 @@ class ActorMeshRef(MeshTrait):
             _ActorMeshRefImpl.from_actor_ref_with_shape(self._actor_mesh_ref, shape),
             self._mailbox,
         )
+
+    def __repr__(self) -> str:
+        return f"ActorMeshRef(class={self._class}, shape={self._actor_mesh_ref._shape})"
 
 
 class ActorError(Exception):

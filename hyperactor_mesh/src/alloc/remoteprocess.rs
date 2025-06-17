@@ -529,6 +529,7 @@ impl RemoteProcessAlloc {
             let watcher = WatchStream::new(tx_status);
             tx_watchers.push((watcher, host.id.clone()));
         }
+        assert!(!tx_watchers.is_empty());
         let tx = self.comm_watcher_tx.clone();
         tokio::spawn(async move {
             loop {
@@ -558,6 +559,10 @@ impl RemoteProcessAlloc {
                             break;
                         }
                         tx_watchers.remove(index);
+                        if tx_watchers.is_empty() {
+                            // All of the statuses have been closed, exit the loop.
+                            break;
+                        }
                     }
                 }
             }
@@ -579,6 +584,9 @@ impl RemoteProcessAlloc {
             .initialize_alloc()
             .await
             .context("alloc initializer error")?;
+        if hosts.is_empty() {
+            anyhow::bail!("Initializer returned empty list of hosts");
+        }
         // prepare a list of host names in this allocation to be sent
         // to remote allocators.
         let hostnames: Vec<_> = hosts.iter().map(|e| e.hostname.clone()).collect();
