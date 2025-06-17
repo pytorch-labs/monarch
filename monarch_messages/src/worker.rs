@@ -845,14 +845,14 @@ pub enum WorkerMessage {
 // WorkerMessage currently has no accumulation reply port.
 // TODO(pzhang) add macro to auto implement these traits.
 impl Unbind for WorkerMessage {
-    fn bindings(&self) -> anyhow::Result<Bindings> {
-        Ok(Bindings::default())
+    fn unbind(&self, _bindings: &mut Bindings) -> anyhow::Result<()> {
+        Ok(())
     }
 }
 
 impl Bind for WorkerMessage {
-    fn bind(self, _bindings: &Bindings) -> anyhow::Result<Self> {
-        Ok(self)
+    fn bind(&mut self, _bindings: &mut Bindings) -> anyhow::Result<()> {
+        Ok(())
     }
 }
 

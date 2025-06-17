@@ -192,21 +192,23 @@ impl std::fmt::Debug for PythonMessage {
 }
 
 impl Unbind for PythonMessage {
-    fn bindings(&self) -> anyhow::Result<Bindings> {
-        let mut bindings = Bindings::default();
+    fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
         if let Some(response_port) = &self.response_port {
-            bindings.push(response_port)?;
+            bindings.push_back::<PortId>(response_port)?;
         }
-        Ok(bindings)
+        Ok(())
     }
 }
 
 impl Bind for PythonMessage {
-    fn bind(mut self, bindings: &Bindings) -> anyhow::Result<Self> {
+    fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
         if let Some(response_port) = &mut self.response_port {
-            bindings.rebind::<PortId>([response_port].into_iter())?;
+            let bound = bindings.pop_front::<PortId>()?.ok_or_else(|| {
+                anyhow::anyhow!("PortId requires a PortId binding, but none was found")
+            })?;
+            *response_port = bound;
         }
-        Ok(self)
+        Ok(())
     }
 }
 
@@ -569,6 +571,7 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
 #[cfg(test)]
 mod tests {
     use hyperactor::id;
+    use hyperactor::message::Unbound;
 
     use super::*;
 
@@ -581,7 +584,7 @@ mod tests {
             rank: None,
         };
         {
-            let unbound = message.clone().unbind().unwrap();
+            let unbound = Unbound::try_from_message(message.clone()).unwrap();
             assert_eq!(message, unbound.bind().unwrap());
         }
 
@@ -590,7 +593,7 @@ mod tests {
             ..message
         };
         {
-            let unbound = no_port_message.clone().unbind().unwrap();
+            let unbound = Unbound::try_from_message(no_port_message.clone()).unwrap();
             assert_eq!(no_port_message, unbound.bind().unwrap());
         }
     }

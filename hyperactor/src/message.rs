@@ -30,7 +30,7 @@
 //! trait is defined, which collects requirements for message types using
 //! multicast.
 
-use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::marker::PhantomData;
 
 use serde::Deserialize;
@@ -47,34 +47,20 @@ use crate::actor::RemoteActor;
 use crate::data::Serialized;
 use crate::intern_typename; // for macros
 
-/// A message `M` that is [`Unbind`] can be converted into an [`Unbound<M>`]
-/// containing the message along with a set of extracted parameters that can
-/// be independently manipulated, and then later reconstituted (rebound) into
-/// an `M`-typed message again.
+/// An object `T` that is [`Unbind`] can extract a set of parameters from itself,
+/// and store in [`Bindings`]. The extracted parameters in [`Bindings`] can be
+/// independently manipulated, and then later reconstituted (rebound) into
+/// a `T`-typed object again.
 pub trait Unbind: Sized {
-    /// Unbinds the message into an envelope [`Unbound<M>`] containing
-    /// the message along with extracted parameters that can are
-    /// independently accessible.
-    fn unbind(self) -> anyhow::Result<Unbound<Self>> {
-        let bindings = self.bindings()?;
-        Ok(Unbound {
-            message: self,
-            bindings,
-        })
-    }
-
-    /// Get the bindings of this message.
-    fn bindings(&self) -> anyhow::Result<Bindings>;
+    /// Extract parameters from itself and store them in bindings.
+    fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()>;
 }
 
-/// A message `M` that is [`Bind`] can bind a set of externally provided
-/// parameters into the message. It is intended to be used in conjunction
-/// with [`Unbind`] to extract portions of a message, manipulate these
-/// independently, and then reconstitute the message.
+/// An object `T` that is [`Bind`] can bind a set of externally provided
+/// parameters into itself.
 pub trait Bind: Sized {
-    /// Update itself with information contained in bindings, and return the
-    /// result.
-    fn bind(self, bindings: &Bindings) -> anyhow::Result<Self>;
+    /// Remove parameters from bindings, and use them to update itself.
+    fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()>;
 }
 
 /// This trait collects the necessary requirements for messages that are can be
@@ -85,77 +71,49 @@ impl<T: RemoteMessage + Bind + Unbind> Castable for T {}
 /// Information extracted from a message through [Unbind], which can be merged
 /// back to the message through [Bind].
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Bindings(HashMap<u64, Vec<Serialized>>);
+pub struct Bindings(VecDeque<(u64, Serialized)>);
 
 impl Bindings {
-    /// Inserts values into the binding.
-    /// If the binding did not have this type present, None is returned.
-    /// If the binding already had this type, replace the old values with new
-    /// values, and the old value is returned.
-    pub fn insert<T: Serialize + Named>(
-        &mut self,
-        values: impl IntoIterator<Item = &T>,
-    ) -> anyhow::Result<Option<Vec<Serialized>>> {
-        let ser = values
-            .into_iter()
-            .map(|v| Serialized::serialize(v))
-            .collect::<Result<Vec<Serialized>, _>>()?;
-        Ok(self.0.insert(T::typehash(), ser))
-    }
-
-    /// Appends an element to the back of its type's corresponding vector in the
-    /// binding.
-    pub fn push<T: Serialize + Named>(&mut self, value: &T) -> anyhow::Result<()> {
+    /// Push a value into this bindings.
+    pub fn push_back<T: Serialize + Named>(&mut self, value: &T) -> anyhow::Result<()> {
         let ser = Serialized::serialize(value)?;
-        self.0.entry(T::typehash()).or_default().push(ser);
+        self.0.push_back((T::typehash(), ser));
         Ok(())
     }
 
-    /// Get this type's values from the binding.
-    /// If the binding did not have this type present, empty Vec is returned.
-    pub fn get<T: DeserializeOwned + Named>(&self) -> anyhow::Result<Vec<T>> {
-        match self.0.get(&T::typehash()) {
-            None => Ok(vec![]),
-            Some(ser) => {
-                let deser = ser
-                    .iter()
-                    .map(|v| v.deserialized::<T>())
-                    .collect::<Result<Vec<T>, _>>()?;
-                Ok(deser)
+    /// Removes the first pushed element in this bindings, deserialize it into
+    /// type T, and return it. Return [`None`] if this bindings is empty.
+    /// If the type of the first pushed element does not match T, an error is
+    /// returned.
+    pub fn pop_front<T: DeserializeOwned + Named>(&mut self) -> anyhow::Result<Option<T>> {
+        match self.0.pop_front() {
+            None => Ok(None),
+            Some((t, v)) => {
+                if t != T::typehash() {
+                    anyhow::bail!(
+                        "type mismatch: expected {} with hash {}, found {} in binding",
+                        T::typename(),
+                        T::typehash(),
+                        t,
+                    );
+                }
+                Ok(Some(v.deserialized::<T>()?))
             }
         }
     }
 
-    /// Rebind all values of type `T`. The input iterator must exactly match the
-    /// number of `T`-typed values in the binding.
-    pub fn rebind<T: DeserializeOwned + Named>(
-        &self,
-        mut_refs: impl ExactSizeIterator<Item = &mut T>,
+    fn visit_mut<T: Serialize + DeserializeOwned + Named>(
+        &mut self,
+        mut f: impl FnMut(&mut T) -> anyhow::Result<()>,
     ) -> anyhow::Result<()> {
-        let bound_values = self.get::<T>()?;
-        anyhow::ensure!(
-            bound_values.len() == mut_refs.len(),
-            "the length of type {} in binding is {}, which is different from the length of \
-            references it binds to {}.",
-            T::typename(),
-            bound_values.len(),
-            mut_refs.len(),
-        );
-
-        for (p_ref, p) in mut_refs.zip(bound_values.into_iter()) {
-            *p_ref = p;
+        for v in self.0.iter_mut() {
+            if v.0 == T::typehash() {
+                let mut t = v.1.deserialized::<T>()?;
+                f(&mut t)?;
+                v.1 = Serialized::serialize(&t)?;
+            }
         }
         Ok(())
-    }
-
-    /// Returns true if the binding contains no values of type `T`.
-    pub fn is_empty<T: Named>(&self) -> bool {
-        self.0.get(&T::typehash()).is_none_or(Vec::is_empty)
-    }
-
-    /// Returns the number of values of type `T` in the binding.
-    pub fn len<T: Named>(&self) -> usize {
-        self.0.get(&T::typehash()).map_or(0, Vec::len)
     }
 }
 
@@ -175,8 +133,25 @@ impl<M> Unbound<M> {
 
 impl<M: Bind> Unbound<M> {
     /// Bind its bindings to its message through [Bind], and return the result.
-    pub fn bind(self) -> anyhow::Result<M> {
-        self.message.bind(&self.bindings)
+    pub fn bind(mut self) -> anyhow::Result<M> {
+        self.message.bind(&mut self.bindings)?;
+        anyhow::ensure!(
+            self.bindings.0.is_empty(),
+            "there are still {} elements left in bindings",
+            self.bindings.0.len()
+        );
+        Ok(self.message)
+    }
+}
+
+impl<M: Unbind> Unbound<M> {
+    /// Create an object from a typed message.
+    // Note: cannot implement TryFrom<T> due to conflict with core crate's blanket impl.
+    // More can be found in this issue: https://github.com/rust-lang/rust/issues/50133
+    pub fn try_from_message(message: M) -> anyhow::Result<Self> {
+        let mut bindings = Bindings::default();
+        message.unbind(&mut bindings)?;
+        Ok(Unbound { message, bindings })
     }
 }
 
@@ -200,7 +175,7 @@ impl ErasedUnbound {
     // Note: cannot implement TryFrom<T> due to conflict with core crate's blanket impl.
     // More can be found in this issue: https://github.com/rust-lang/rust/issues/50133
     pub fn try_from_message<T: Unbind + Serialize + Named>(msg: T) -> Result<Self, anyhow::Error> {
-        let unbound = msg.unbind()?;
+        let unbound = Unbound::try_from_message(msg)?;
         let serialized = Serialized::serialize(&unbound.message)?;
         Ok(Self {
             message: serialized,
@@ -208,30 +183,13 @@ impl ErasedUnbound {
         })
     }
 
-    /// Get ports inside bindings.
-    pub fn get<T: DeserializeOwned + Named>(&self) -> anyhow::Result<Vec<T>> {
-        self.bindings.get()
-    }
-
-    /// Update ports inside bindings.
-    pub fn replace<T: Serialize + Named>(
+    /// Use the provided function to update values inside bindings in the same
+    /// order as they were pushed into bindings.
+    pub fn visit_mut<T: Serialize + DeserializeOwned + Named>(
         &mut self,
-        new_values: impl ExactSizeIterator<Item = &T>,
+        f: impl FnMut(&mut T) -> anyhow::Result<()>,
     ) -> anyhow::Result<()> {
-        anyhow::ensure!(self.bindings.len::<T>() == new_values.len());
-        self.bindings.insert(new_values)?;
-        Ok(())
-    }
-
-    /// Replace all `T`-typed values in the binding with `new_value`.
-    pub fn maybe_replace<T: Serialize + Named>(&mut self, new_value: &T) -> anyhow::Result<bool> {
-        let n = self.bindings.len::<T>();
-        if n == 0 {
-            return Ok(false);
-        }
-
-        self.bindings.insert(vec![new_value; n])?;
-        Ok(true)
+        self.bindings.visit_mut(f)
     }
 
     fn downcast<M: DeserializeOwned>(self) -> anyhow::Result<Unbound<M>> {
@@ -289,20 +247,20 @@ impl<M: Named + 'static> Named for IndexedErasedUnbound<M> {
 macro_rules! impl_bind_unbind_basic {
     ($t:ty) => {
         impl Bind for $t {
-            fn bind(self, bindings: &Bindings) -> anyhow::Result<Self> {
+            fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
                 anyhow::ensure!(
                     bindings.0.is_empty(),
-                    "bindings for {} should be empty, but got {:?}",
+                    "bindings for {} should be empty, but found {} elements left",
                     stringify!($t),
-                    bindings
+                    bindings.0.len(),
                 );
-                Ok(self)
+                Ok(())
             }
         }
 
         impl Unbind for $t {
-            fn bindings(&self) -> anyhow::Result<Bindings> {
-                Ok(Bindings::default())
+            fn unbind(&self, _bindings: &mut Bindings) -> anyhow::Result<()> {
+                Ok(())
             }
         }
     };
@@ -328,7 +286,6 @@ impl_bind_unbind_basic!(String);
 mod tests {
     use hyperactor::PortRef;
     use hyperactor::id;
-    use maplit::hashmap;
 
     use super::*;
     use crate::PortId;
@@ -348,20 +305,19 @@ mod tests {
 
     // TODO(pzhang) add macro to auto-gen this implementation.
     impl Unbind for MyMessage {
-        fn bindings(&self) -> anyhow::Result<Bindings> {
-            let mut bindings = Bindings::default();
-            let ports = [self.reply0.port_id(), self.reply1.port_id()];
-            bindings.insert::<PortId>(ports)?;
-            Ok(bindings)
+        fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
+            self.reply0.unbind(bindings)?;
+            self.reply1.unbind(bindings)?;
+            Ok(())
         }
     }
 
     // TODO(pzhang) add macro to auto-gen this implementation.
     impl Bind for MyMessage {
-        fn bind(mut self, bindings: &Bindings) -> anyhow::Result<Self> {
-            let mut_ports = [self.reply0.port_id_mut(), self.reply1.port_id_mut()];
-            bindings.rebind::<PortId>(mut_ports.into_iter())?;
-            Ok(self)
+        fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
+            self.reply0.bind(bindings)?;
+            self.reply1.bind(bindings)?;
+            Ok(())
         }
     }
 
@@ -384,12 +340,20 @@ mod tests {
             erased,
             ErasedUnbound {
                 message: serialized_my_message.clone(),
-                bindings: Bindings(hashmap! {
-                    PortId::typehash() => vec![
-                        Serialized::serialize(original_port0.port_id()).unwrap(),
-                        Serialized::serialize(original_port1.port_id()).unwrap(),
-                    ],
-                }),
+                bindings: Bindings(
+                    [
+                        (
+                            PortId::typehash(),
+                            Serialized::serialize(original_port0.port_id()).unwrap()
+                        ),
+                        (
+                            PortId::typehash(),
+                            Serialized::serialize(original_port1.port_id()).unwrap()
+                        ),
+                    ]
+                    .into_iter()
+                    .collect()
+                ),
             }
         );
 
@@ -399,15 +363,27 @@ mod tests {
         let new_port_id1 = id!(world[1].comm[0][257]);
         assert_ne!(&new_port_id1, original_port1.port_id());
 
+        let mut new_ports = vec![&new_port_id0, &new_port_id1].into_iter();
         erased
-            .replace::<PortId>(vec![&new_port_id0, &new_port_id1].into_iter())
+            .visit_mut::<PortId>(|p| {
+                *p = new_ports.next().unwrap().clone();
+                Ok(())
+            })
             .unwrap();
-        let new_bindings = Bindings(hashmap! {
-            PortId::typehash() => vec![
-                Serialized::serialize(&new_port_id0).unwrap(),
-                Serialized::serialize(&new_port_id1).unwrap(),
-            ],
-        });
+        let new_bindings = Bindings(
+            [
+                (
+                    PortId::typehash(),
+                    Serialized::serialize(&new_port_id0).unwrap(),
+                ),
+                (
+                    PortId::typehash(),
+                    Serialized::serialize(&new_port_id1).unwrap(),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
         assert_eq!(
             erased,
             ErasedUnbound {

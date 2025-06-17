@@ -310,18 +310,21 @@ pub struct Cast<M> {
 }
 
 impl<M: Unbind> Unbind for Cast<M> {
-    fn bindings(&self) -> anyhow::Result<Bindings> {
-        let mut bindings = self.message.bindings()?;
-        bindings.push(&self.rank)?;
-        Ok(bindings)
+    fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
+        self.message.unbind(bindings)?;
+        bindings.push_back::<CastRank>(&self.rank)?;
+        Ok(())
     }
 }
 
 impl<M: Bind> Bind for Cast<M> {
-    fn bind(mut self, bindings: &Bindings) -> anyhow::Result<Self> {
-        self.message = self.message.bind(bindings)?;
-        bindings.rebind([&mut self.rank].into_iter())?;
-        Ok(self)
+    fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
+        self.message.bind(bindings)?;
+        let bound = bindings.pop_front::<CastRank>()?.ok_or_else(|| {
+            anyhow::anyhow!("Cast requires a CastRank binding, but none was found")
+        })?;
+        self.rank = bound;
+        Ok(())
     }
 }
 
@@ -408,19 +411,14 @@ pub(crate) mod test_util {
 
     // TODO(pzhang) replace the boilerplate Bind/Unbind impls with a macro.
     impl Bind for GetRank {
-        fn bind(mut self, bindings: &Bindings) -> anyhow::Result<Self> {
-            let mut_ports = [self.1.port_id_mut()];
-            bindings.rebind(mut_ports.into_iter())?;
-            Ok(self)
+        fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
+            self.1.bind(bindings)
         }
     }
 
     impl Unbind for GetRank {
-        fn bindings(&self) -> anyhow::Result<Bindings> {
-            let mut bindings = Bindings::default();
-            let ports = [self.1.port_id()];
-            bindings.insert(ports)?;
-            Ok(bindings)
+        fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
+            self.1.unbind(bindings)
         }
     }
 
@@ -460,19 +458,14 @@ pub(crate) mod test_util {
 
     // TODO(pzhang) replace the boilerplate Bind/Unbind impls with a macro.
     impl Bind for Echo {
-        fn bind(mut self, bindings: &Bindings) -> anyhow::Result<Self> {
-            let mut_ports = [self.1.port_id_mut()];
-            bindings.rebind(mut_ports.into_iter())?;
-            Ok(self)
+        fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
+            self.1.bind(bindings)
         }
     }
 
     impl Unbind for Echo {
-        fn bindings(&self) -> anyhow::Result<Bindings> {
-            let mut bindings = Bindings::default();
-            let ports = [self.1.port_id()];
-            bindings.insert(ports)?;
-            Ok(bindings)
+        fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
+            self.1.unbind(bindings)
         }
     }
 
@@ -494,14 +487,14 @@ pub(crate) mod test_util {
 
     // TODO(pzhang) replace the boilerplate Bind/Unbind impls with a macro.
     impl Bind for Error {
-        fn bind(self, _bindings: &Bindings) -> anyhow::Result<Self> {
-            Ok(self)
+        fn bind(&mut self, _bindings: &mut Bindings) -> anyhow::Result<()> {
+            Ok(())
         }
     }
 
     impl Unbind for Error {
-        fn bindings(&self) -> anyhow::Result<Bindings> {
-            Ok(Bindings::default())
+        fn unbind(&self, _bindings: &mut Bindings) -> anyhow::Result<()> {
+            Ok(())
         }
     }
 
@@ -994,19 +987,18 @@ mod tests {
 
     // TODO(pzhang) replace the boilerplate Bind/Unbind impls with a macro.
     impl Bind for MyNamedStruct {
-        fn bind(mut self, bindings: &Bindings) -> anyhow::Result<Self> {
-            let mut_ports = [self.field2.port_id_mut(), self.field4.port_id_mut()];
-            bindings.rebind(mut_ports.into_iter())?;
-            Ok(self)
+        fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
+            self.field2.bind(bindings)?;
+            self.field4.bind(bindings)?;
+            Ok(())
         }
     }
 
     impl Unbind for MyNamedStruct {
-        fn bindings(&self) -> anyhow::Result<Bindings> {
-            let mut bindings = Bindings::default();
-            let ports = [self.field2.port_id(), self.field4.port_id()];
-            bindings.insert(ports)?;
-            Ok(bindings)
+        fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
+            self.field2.unbind(bindings)?;
+            self.field4.unbind(bindings)?;
+            Ok(())
         }
     }
 
@@ -1023,19 +1015,19 @@ mod tests {
         };
 
         let rank = CastRank(3);
-        let cast = Cast {
+        let mut cast = Cast {
             rank: rank.clone(),
             shape: shape! { replica = 2, host = 4, gpu = 8 },
             message: message.clone(),
         };
 
         // Verify Unbind is implemented correctly.
-        let bindings = cast.bindings().unwrap();
+        let mut bindings = Bindings::default();
+        cast.unbind(&mut bindings).unwrap();
         let mut expected = Bindings::default();
-        expected
-            .insert(&[port_id2.clone(), port_id4.clone()])
-            .unwrap();
-        expected.push(&cast.rank).unwrap();
+        expected.push_back(&port_id2).unwrap();
+        expected.push_back(&port_id4).unwrap();
+        expected.push_back(&cast.rank).unwrap();
         assert_eq!(bindings, expected);
 
         // Verify Bind is implemented correctly.
@@ -1047,13 +1039,12 @@ mod tests {
         assert_ne!(port_id4, new_port_id4);
         assert_ne!(new_port_id2, new_port_id4);
         let mut new_bindings = Bindings::default();
-        new_bindings
-            .insert(&[new_port_id2.clone(), new_port_id4.clone()])
-            .unwrap();
-        new_bindings.push(&new_rank).unwrap();
-        let new_cast = cast.bind(&new_bindings).unwrap();
+        new_bindings.push_back(&new_port_id2).unwrap();
+        new_bindings.push_back(&new_port_id4).unwrap();
+        new_bindings.push_back(&new_rank).unwrap();
+        cast.bind(&mut new_bindings).unwrap();
         assert_eq!(
-            new_cast.message,
+            cast.message,
             MyNamedStruct {
                 field0: 0,
                 field1: "hello".to_string(),
@@ -1062,6 +1053,6 @@ mod tests {
                 field4: PortRef::attest(new_port_id4.clone()),
             },
         );
-        assert_eq!(new_cast.rank.0, new_rank.0);
+        assert_eq!(cast.rank.0, new_rank.0);
     }
 }

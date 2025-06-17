@@ -176,23 +176,23 @@ impl CommActor {
         // Split ports, if any, and update message with new ports. In this
         // way, children actors will reply to this comm actor's ports, instead
         // of to the original ports provided by parent.
-        let reply_ports = message.data().get::<PortId>()?;
-        if !reply_ports.is_empty() {
-            let split_ports = reply_ports
-                .iter()
-                .map(|p| p.split(this, message.reducer_typehash().clone()))
-                .collect::<Vec<_>>();
-            message.data_mut().replace::<PortId>(split_ports.iter())?;
+        let reducer_typehash = message.reducer_typehash().clone();
+        message.data_mut().visit_mut::<PortId>(|p| {
+            let split = p.split(this, reducer_typehash.clone());
 
             #[cfg(test)]
-            tests::collect_split_ports(&reply_ports, &split_ports, deliver_here);
-        }
+            tests::collect_split_port(p, &split, deliver_here);
+
+            *p = split;
+            Ok(())
+        })?;
 
         // Deliver message here, if necessary.
         if deliver_here {
-            message
-                .data_mut()
-                .maybe_replace(&CastRank(mode.self_rank(this.self_id())))?;
+            message.data_mut().visit_mut::<CastRank>(|r| {
+                *r = CastRank(mode.self_rank(this.self_id()));
+                Ok(())
+            })?;
             // TODO(pzhang) split reply ports so children can reply to this comm
             // actor instead of parent.
             this.post(
@@ -365,7 +365,6 @@ pub mod test_utils {
     use hyperactor::Handler;
     use hyperactor::Instance;
     use hyperactor::Named;
-    use hyperactor::PortId;
     use hyperactor::PortRef;
     use hyperactor::message::Bind;
     use hyperactor::message::Bindings;
@@ -397,47 +396,38 @@ pub mod test_utils {
 
     // TODO(pzhang) add macro to auto implement these traits.
     impl Unbind for TestMessage {
-        fn bindings(&self) -> anyhow::Result<Bindings> {
+        fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
             match &self {
-                TestMessage::Forward(_) => Ok(Bindings::default()),
+                TestMessage::Forward(_) => Ok(()),
                 TestMessage::CastAndReply {
                     reply_to1,
                     reply_to2,
                     ..
                 } => {
-                    let mut bindings = Bindings::default();
-                    let ports = [
-                        // Intentionally not visiting 0. As a result, this port
-                        // will not be split.
-                        // reply_to0.port_id().clone(),
-                        reply_to1.port_id(),
-                        reply_to2.port_id(),
-                    ];
-                    bindings.insert::<PortId>(ports.into_iter())?;
-                    Ok(bindings)
+                    // Intentionally not visiting 0. As a result, this port
+                    // will not be split.
+                    reply_to1.unbind(bindings)?;
+                    reply_to2.unbind(bindings)?;
+                    Ok(())
                 }
             }
         }
     }
 
     impl Bind for TestMessage {
-        fn bind(mut self, bindings: &Bindings) -> anyhow::Result<Self> {
-            match &mut self {
-                TestMessage::Forward(_) => Ok(self),
+        fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
+            match self {
+                TestMessage::Forward(_) => Ok(()),
                 TestMessage::CastAndReply {
                     reply_to1,
                     reply_to2,
                     ..
                 } => {
-                    let mut_ports = [
-                        // Intentionally not visiting 0. As a result, this port
-                        // will not be split.
-                        // reply_to0.port_id_mut(),
-                        reply_to1.port_id_mut(),
-                        reply_to2.port_id_mut(),
-                    ];
-                    bindings.rebind(mut_ports.into_iter())?;
-                    Ok(self)
+                    // Intentionally not visiting 0. As a result, this port
+                    // will not be split.
+                    reply_to1.bind(bindings)?;
+                    reply_to2.bind(bindings)?;
+                    Ok(())
                 }
             }
         }
@@ -544,17 +534,15 @@ mod tests {
 
     // Collect the relationships between original ports and split ports into
     // SPLIT_PORT_TREE. This is used by tests to verify that ports are split as expected.
-    pub(crate) fn collect_split_ports(original: &[PortId], split: &[PortId], deliver_here: bool) {
+    pub(crate) fn collect_split_port(original: &PortId, split: &PortId, deliver_here: bool) {
         let mutex = SPLIT_PORT_TREE.get_or_init(|| Mutex::new(vec![]));
         let mut tree = mutex.lock().unwrap();
 
-        for (o, s) in original.iter().zip(split.iter()) {
-            tree.deref_mut().push(Edge {
-                from: o.clone(),
-                to: s.clone(),
-                is_leaf: deliver_here,
-            });
-        }
+        tree.deref_mut().push(Edge {
+            from: original.clone(),
+            to: split.clone(),
+            is_leaf: deliver_here,
+        });
     }
 
     // A representation of a tree.
