@@ -321,7 +321,7 @@ impl ProcessAlloc {
         match cmd.spawn() {
             Err(err) => {
                 // Likely retry won't help here so fail permanently.
-                let message = format!("spawn {}: {}", index, err);
+                let message = format!("spawn index: {}, command: {:?}: {}", index, cmd, err);
                 tracing::error!(message);
                 self.failed = true;
                 Some(ProcState::Failed {
