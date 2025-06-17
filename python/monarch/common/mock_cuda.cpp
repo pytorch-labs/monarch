@@ -26,6 +26,7 @@
 #include <cstring>
 #include <mutex>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 

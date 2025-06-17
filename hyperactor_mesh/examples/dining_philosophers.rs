@@ -16,12 +16,14 @@ use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::Mailbox;
 use hyperactor::Named;
 use hyperactor::PortRef;
+use hyperactor::message::Bind;
+use hyperactor::message::Bindings;
 use hyperactor::message::IndexedErasedUnbound;
-use hyperactor_mesh::Mesh;
+use hyperactor::message::Unbind;
 use hyperactor_mesh::ProcMesh;
+use hyperactor_mesh::actor_mesh::ActorMesh;
 use hyperactor_mesh::actor_mesh::Cast;
 use hyperactor_mesh::alloc::AllocSpec;
 use hyperactor_mesh::alloc::Allocator;
@@ -29,6 +31,7 @@ use hyperactor_mesh::alloc::LocalAllocator;
 use hyperactor_mesh::selection::dsl::all;
 use hyperactor_mesh::selection::dsl::true_;
 use hyperactor_mesh::shape;
+use ndslice::selection::selection_from;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::OnceCell;
@@ -47,7 +50,6 @@ enum ChopstickStatus {
 #[hyperactor::export_spawn(
     Cast<PhilosopherMessage>,
     IndexedErasedUnbound<Cast<PhilosopherMessage>>,
-    PhilosopherMessage
 )]
 struct PhilosopherActor {
     /// Status of left and right chopsticks
@@ -65,7 +67,34 @@ struct PhilosopherActor {
 enum PhilosopherMessage {
     Start(PortRef<WaiterMessage>),
     GrantChopstick(usize),
-    Stop,
+}
+
+// TODO(pzhang) replace the boilerplate Bind/Unbind impls with a macro.
+impl Bind for PhilosopherMessage {
+    fn bind(mut self, bindings: &Bindings) -> anyhow::Result<Self> {
+        match &mut self {
+            Self::Start(port) => {
+                let mut_ports = [port.port_id_mut()];
+                bindings.rebind(mut_ports.into_iter())?;
+            }
+            Self::GrantChopstick(_) => {}
+        }
+        Ok(self)
+    }
+}
+
+impl Unbind for PhilosopherMessage {
+    fn bindings(&self) -> anyhow::Result<Bindings> {
+        let mut bindings = Bindings::default();
+        match self {
+            Self::Start(port) => {
+                let ports = [port.port_id()];
+                bindings.insert(ports)?;
+            }
+            Self::GrantChopstick(_) => {}
+        }
+        Ok(bindings)
+    }
 }
 
 /// Message from a philosopher to the waiter
@@ -146,30 +175,8 @@ impl Handler<Cast<PhilosopherMessage>> for PhilosopherActor {
                 self.waiter.set(waiter)?;
                 self.request_chopsticks(this).await?;
             }
-            _ => {
-                unreachable!("shouldn't be handled by Cast<PhilosopherMessage>")
-            }
-        }
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl Handler<PhilosopherMessage> for PhilosopherActor {
-    async fn handle(
-        &mut self,
-        this: &Instance<Self>,
-        message: PhilosopherMessage,
-    ) -> Result<(), anyhow::Error> {
-        match message {
-            PhilosopherMessage::Start(_) => {
-                unreachable!("should have been handled by Cast<PhilosopherMessage>")
-            }
             PhilosopherMessage::GrantChopstick(chopstick) => {
-                eprintln!(
-                    "philosopher {:?} granted chopstick {:?}",
-                    self.rank, chopstick
-                );
+                eprintln!("philosopher {} granted chopstick {}", self.rank, chopstick);
                 let (left, right) = self.chopstick_indices();
                 if left == chopstick {
                     self.chopsticks = (ChopstickStatus::Granted, self.chopsticks.1.clone());
@@ -179,35 +186,34 @@ impl Handler<PhilosopherMessage> for PhilosopherActor {
                     unreachable!("shouldn't be granted a chopstick that is not left or right");
                 }
                 if self.chopsticks == (ChopstickStatus::Granted, ChopstickStatus::Granted) {
-                    eprintln!("philosophor: {:?} starts dining", self.rank);
+                    eprintln!("philosopher {} starts dining", self.rank);
                     self.release_chopsticks(this).await?;
                     self.request_chopsticks(this).await?;
                 }
             }
-            _ => {}
         }
         Ok(())
     }
 }
 
-struct Waiter {
+struct Waiter<A> {
     /// A map from chopstick to the rank of the philosopher who holds it.
     chopstick_assignments: HashMap<usize, usize>,
     /// A map from chopstick to the rank of the philosopher who requested it.
     chopstick_requests: HashMap<usize, usize>,
-    /// A map from rank to the port of the philosopher.
-    ports: HashMap<usize, PortRef<PhilosopherMessage>>,
-    /// A mailbox to send messages to the philosophers.
-    client: Mailbox,
+    /// ActorMesh of the philosophers.
+    philosophers: A,
 }
 
-impl Waiter {
-    fn new(ports: HashMap<usize, PortRef<PhilosopherMessage>>, client: Mailbox) -> Self {
+impl<A> Waiter<A>
+where
+    A: ActorMesh<Actor = PhilosopherActor>,
+{
+    fn new(philosophers: A) -> Self {
         Self {
             chopstick_assignments: Default::default(),
             chopstick_requests: Default::default(),
-            ports,
-            client,
+            philosophers,
         }
     }
 
@@ -223,10 +229,10 @@ impl Waiter {
     fn handle_request_chopstick(&mut self, rank: usize, chopstick: usize) -> Result<()> {
         if self.is_chopstick_available(chopstick) {
             self.grant_chopstick(chopstick, rank);
-            self.ports
-                .get(&rank)
-                .ok_or(anyhow::anyhow!("rank not found {}", &rank))?
-                .send(&self.client, PhilosopherMessage::GrantChopstick(chopstick))?;
+            self.philosophers.cast(
+                selection_from(self.philosophers.shape(), &[("replica", rank..rank + 1)])?,
+                PhilosopherMessage::GrantChopstick(chopstick),
+            )?
         } else {
             self.chopstick_requests.insert(chopstick, rank);
         }
@@ -265,12 +271,7 @@ async fn main() -> Result<ExitCode> {
             PhilosopherMessage::Start(dining_message_handle.bind()),
         )
         .unwrap();
-    let mut actor_ports = HashMap::new();
-    for (rank, actor_ref) in actor_mesh.iter().enumerate() {
-        actor_ports.insert(rank, actor_ref.port());
-    }
-    let client = proc_mesh.client();
-    let mut waiter = Waiter::new(actor_ports, client.clone());
+    let mut waiter = Waiter::new(actor_mesh);
     while let Ok(message) = dining_message_rx.recv().await {
         eprintln!("waiter received message: {:?}", &message);
         match message {

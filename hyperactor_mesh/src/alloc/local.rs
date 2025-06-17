@@ -20,7 +20,6 @@ use hyperactor::WorldId;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
-use hyperactor::mailbox;
 use hyperactor::mailbox::MailboxServer;
 use hyperactor::mailbox::MailboxServerHandle;
 use hyperactor::proc::Proc;
@@ -75,6 +74,7 @@ pub struct LocalAlloc {
     todo_tx: mpsc::UnboundedSender<Action>,
     todo_rx: mpsc::UnboundedReceiver<Action>,
     stopped: bool,
+    failed: bool,
 }
 
 impl LocalAlloc {
@@ -93,11 +93,12 @@ impl LocalAlloc {
             todo_tx,
             todo_rx,
             stopped: false,
+            failed: false,
         }
     }
 
     /// A chaos monkey that can be used to stop procs at random.
-    pub(crate) fn chaos_monkey(&self) -> impl Fn(usize, ProcStopReason) {
+    pub(crate) fn chaos_monkey(&self) -> impl Fn(usize, ProcStopReason) + 'static {
         let todo_tx = self.todo_tx.clone();
         move |rank, reason| {
             todo_tx.send(Action::Stop(rank, reason)).unwrap();
@@ -105,7 +106,7 @@ impl LocalAlloc {
     }
 
     /// A function to shut down the alloc for testing purposes.
-    pub(crate) fn stopper(&self) -> impl Fn() {
+    pub(crate) fn stopper(&self) -> impl Fn() + 'static {
         let todo_tx = self.todo_tx.clone();
         let size = self.size();
         move || {
@@ -133,6 +134,11 @@ impl Alloc for LocalAlloc {
         if self.stopped {
             return None;
         }
+        if self.failed && !self.stopped {
+            // Failed alloc. Wait for stop().
+            futures::future::pending::<()>().await;
+            unreachable!("future::pending completed");
+        }
         let event = loop {
             if let state @ Some(_) = self.queue.pop_front() {
                 break state;
@@ -141,15 +147,22 @@ impl Alloc for LocalAlloc {
             match self.todo_rx.recv().await? {
                 Action::Start(rank) => {
                     let proc_id = ProcId(self.world_id.clone(), rank);
+                    let bspan = tracing::info_span!("mesh_agent_bootstrap");
                     let (proc, mesh_agent) = match MeshAgent::bootstrap(proc_id.clone()).await {
                         Ok(proc_and_agent) => proc_and_agent,
                         Err(err) => {
-                            tracing::error!("failed spawn mesh agent for {}: {}", rank, err);
+                            let message = format!("failed spawn mesh agent for {}: {}", rank, err);
+                            tracing::error!(message);
                             // It's unclear if this is actually recoverable in a practical sense,
                             // so we give up.
-                            break None;
+                            self.failed = true;
+                            break Some(ProcState::Failed {
+                                world_id: self.world_id.clone(),
+                                description: message,
+                            });
                         }
                     };
+                    drop(bspan);
 
                     let (addr, proc_rx) = loop {
                         match channel::serve(ChannelAddr::any(self.transport())).await {
@@ -167,9 +180,8 @@ impl Alloc for LocalAlloc {
                         }
                     };
 
-                    let handle = proc
-                        .clone()
-                        .serve(proc_rx, mailbox::monitored_return_handle());
+                    // Undeliverable messages get forwarded to the mesh agent.
+                    let handle = proc.clone().serve(proc_rx, mesh_agent.port());
 
                     self.procs.insert(
                         rank,
@@ -204,6 +216,10 @@ impl Alloc for LocalAlloc {
                     let Some(mut proc_to_stop) = self.procs.remove(&rank) else {
                         continue;
                     };
+
+                    // Stop serving the mailbox.
+                    proc_to_stop.handle.stop();
+
                     if let Err(err) = proc_to_stop
                         .proc
                         .destroy_and_wait(Duration::from_millis(10), None)

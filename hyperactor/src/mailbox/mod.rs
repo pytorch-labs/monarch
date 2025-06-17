@@ -116,6 +116,11 @@ use crate::reference::ActorId;
 use crate::reference::PortId;
 use crate::reference::Reference;
 
+mod undeliverable;
+/// For [`Undeliverable`], a message type for delivery failures.
+pub use undeliverable::Undeliverable;
+pub use undeliverable::UndeliverableMessageError;
+pub use undeliverable::monitored_return_handle; // TODO: Audit
 /// For [`MailboxAdminMessage`], a message type for mailbox administration.
 pub mod mailbox_admin_message;
 pub use mailbox_admin_message::MailboxAdminMessage;
@@ -124,56 +129,6 @@ pub use mailbox_admin_message::MailboxAdminMessageHandler;
 pub mod durable_mailbox_sender;
 pub use durable_mailbox_sender::log;
 use durable_mailbox_sender::log::*;
-
-// Port handle and receiver for undeliverable messages.
-fn new_undeliverable_port() -> (
-    PortHandle<Undeliverable<MessageEnvelope>>,
-    PortReceiver<Undeliverable<MessageEnvelope>>,
-) {
-    Mailbox::new_detached(hyperactor::id!(world[0].proc))
-        .open_port::<Undeliverable<MessageEnvelope>>()
-}
-// An undeliverable message port handle to be shared amongst multiple
-// producers. Messages sent here are forwarded to the undeliverable
-// mailbox sender.
-static MONITORED_RETURN_HANDLE: OnceLock<PortHandle<Undeliverable<MessageEnvelope>>> =
-    OnceLock::new();
-/// Accessor to the shared monitored undeliverable message port
-/// handle. Initialization spawns the undeliverable message port
-/// monitor that forwards incoming messages to the undeliverable
-/// mailbox sender.
-pub fn monitored_return_handle() -> PortHandle<Undeliverable<MessageEnvelope>> {
-    let return_handle = MONITORED_RETURN_HANDLE.get_or_init(|| {
-        let (return_handle, mut rx) = new_undeliverable_port();
-        // Don't reuse `return_handle` for `h`: else it will never get
-        // dropped and the task will never return.
-        let (h, _) = new_undeliverable_port();
-        super::init::RUNTIME.spawn(async move {
-            while let Ok(Undeliverable(mut envelope)) = rx.recv().await {
-                envelope.try_set_error(DeliveryError::BrokenLink(
-                    "message returned to undeliverable port".to_string(),
-                ));
-                UndeliverableMailboxSender.post(envelope, /*unused */ h.clone());
-            }
-        });
-        return_handle
-    });
-
-    return_handle.clone()
-}
-
-/// Returns a message envelope to its original sender.
-fn return_undeliverable(
-    return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
-    envelope: MessageEnvelope,
-) {
-    super::init::RUNTIME.spawn(async move {
-        let envelope_copy = envelope.clone();
-        if (return_handle.send(Undeliverable(envelope))).is_err() {
-            UndeliverableMailboxSender.post(envelope_copy, /*unsued*/ return_handle)
-        }
-    });
-}
 
 /// Message collects the necessary requirements for messages that are deposited
 /// into mailboxes.
@@ -291,7 +246,7 @@ impl MessageEnvelope {
 
     /// Tries to sets a delivery error for the message. If the error is already
     /// set, nothing is updated.
-    fn try_set_error(&mut self, error: DeliveryError) {
+    pub fn try_set_error(&mut self, error: DeliveryError) {
         if self.error.is_none() {
             self.error = Some(error);
         }
@@ -306,7 +261,7 @@ impl MessageEnvelope {
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
         self.try_set_error(error);
-        return_undeliverable(return_handle, self);
+        undeliverable::return_undeliverable(return_handle, self);
     }
 
     /// Get the error of why this message was undeliverable. None means this
@@ -594,19 +549,6 @@ impl std::error::Error for MailboxSenderError {
     }
 }
 
-/// An undeliverable `M`-typed message (in practice `M` is
-/// [MessageEnvelope]).
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-pub struct Undeliverable<M: Message>(pub M);
-
-/// For `M` a [RemoteMessage], `Undeliverable<M>` is a [Named]
-/// instance.
-impl<M: RemoteMessage> crate::data::Named for Undeliverable<M> {
-    fn typename() -> &'static str {
-        crate::data::intern_typename!(Self, "hyperactor::Undeliverable<{}>", M)
-    }
-}
-
 /// MailboxSenders can send messages through ports to mailboxes. It
 /// provides a unified interface for message delivery in the system.
 pub trait MailboxSender: Send + Sync + Debug + Any {
@@ -627,6 +569,7 @@ pub trait MailboxSender: Send + Sync + Debug + Any {
 /// for sending messages over ports.
 pub trait PortSender: MailboxSender {
     /// Deliver a message to the provided port.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     fn serialize_and_send<M: RemoteMessage>(
         &self,
         port: &PortRef<M>,
@@ -649,6 +592,7 @@ pub trait PortSender: MailboxSender {
 
     /// Deliver a message to a one-shot port, consuming the provided port,
     /// which is not reusable.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     fn serialize_and_send_once<M: RemoteMessage>(
         &self,
         once_port: OncePortRef<M>,
@@ -1284,16 +1228,10 @@ impl SplitPortBuffer {
     /// Push a new item to the buffer, and optionally return any items that should
     /// be flushed.
     fn push(&mut self, serialized: Serialized) -> Option<Vec<Serialized>> {
-        static HYPERACTOR_SPLIT_MAX_BUFFER_SIZE: OnceLock<usize> = OnceLock::new();
-        let limit = HYPERACTOR_SPLIT_MAX_BUFFER_SIZE.get_or_init(|| {
-            std::env::var("HYPERACTOR_SPLIT_MAX_BUFFER_SIZE")
-                .ok()
-                .and_then(|val| val.parse::<usize>().ok())
-                .unwrap_or(5)
-        });
+        let limit = crate::config::global::get(crate::config::SPLIT_MAX_BUFFER_SIZE);
 
         self.0.push(serialized);
-        if &self.0.len() >= limit {
+        if self.0.len() >= limit {
             Some(std::mem::take(&mut self.0))
         } else {
             None
@@ -1401,6 +1339,7 @@ impl<M: Message> PortHandle<M> {
     }
 
     /// Send a message to this port.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     pub fn send(&self, message: M) -> Result<(), MailboxSenderError> {
         self.sender.send(message).map_err(|err| {
             MailboxSenderError::new_unbound::<M>(
@@ -1465,6 +1404,7 @@ impl<M: Message> OncePortHandle<M> {
 
     /// Send a message to this port. The send operation will consume the
     /// port handle, as the port accepts at most one message.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     pub fn send(self, message: M) -> Result<(), MailboxSenderError> {
         let actor_id = self.mailbox.actor_id().clone();
         self.sender.send(message).map_err(|_| {
@@ -1528,6 +1468,7 @@ impl<M> PortReceiver<M> {
     /// Tries to receive the next value for this receiver.
     /// This function returns `Ok(None)` if the receiver is empty
     /// and returns a MailboxError if the receiver is disconnected.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxError`.
     pub fn try_recv(&mut self) -> Result<Option<M>, MailboxError> {
         let mut next = self.receiver.try_recv();
         // To coalesce, drain the mpsc queue and only keep the last one.
@@ -1657,6 +1598,7 @@ trait SerializedSender: Send + Sync {
     ///
     /// Send_serialized returns true whenever the port remains valid
     /// after the send operation.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SerializedSender`.
     fn send_serialized(&self, serialized: Serialized) -> Result<bool, SerializedSenderError>;
 }
 
@@ -1712,6 +1654,7 @@ impl<M: Message> UnboundedSender<M> {
         Self { sender, port_id }
     }
 
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     fn send(&self, message: M) -> Result<(), MailboxSenderError> {
         self.sender.send(message).map_err(|err| {
             MailboxSenderError::new_bound(self.port_id.clone(), MailboxSenderErrorKind::Other(err))
@@ -1776,6 +1719,7 @@ impl<M: Message> OnceSender<M> {
         }
     }
 
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     fn send_once(&self, message: M) -> Result<bool, MailboxSenderError> {
         // TODO: we should replace the sender on error
         match self.sender.lock().unwrap().take() {
@@ -2074,30 +2018,22 @@ pub struct DialMailboxRouter {
     // The default sender, to which messages for unknown recipients
     // are sent. (This is like a default route in a routing table.)
     default: BoxedMailboxSender,
-    /// The address a [`Proc`] is listening to when the [`DialMailboxRouter`]
-    /// is being used as the forwarder for that [`Proc`].
-    /// This will be used as the dialer when dialing an address
-    self_address: ChannelAddr,
 }
 
 impl DialMailboxRouter {
     /// Create a new [`DialMailboxRouter`] with an empty routing table.
-    pub fn new(self_address: ChannelAddr) -> Self {
-        Self::new_with_default(
-            self_address,
-            BoxedMailboxSender::new(UnroutableMailboxSender),
-        )
+    pub fn new() -> Self {
+        Self::new_with_default(BoxedMailboxSender::new(UnroutableMailboxSender))
     }
 
     /// Create a new [`DialMailboxRouter`] with an empty routing table,
     /// and a default sender. Any message with an unknown destination is
     /// dispatched on this default sender.
-    pub fn new_with_default(self_address: ChannelAddr, default: BoxedMailboxSender) -> Self {
+    pub fn new_with_default(default: BoxedMailboxSender) -> Self {
         Self {
             address_book: Arc::new(RwLock::new(BTreeMap::new())),
             sender_cache: Arc::new(DashMap::new()),
             default,
-            self_address,
         }
     }
 
@@ -2157,6 +2093,7 @@ impl DialMailboxRouter {
             })
     }
 
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     fn dial(
         &self,
         addr: &ChannelAddr,
@@ -2168,14 +2105,13 @@ impl DialMailboxRouter {
         match self.sender_cache.entry(addr.clone()) {
             Entry::Occupied(entry) => Ok(entry.get().clone()),
             Entry::Vacant(entry) => {
-                let tx = channel::dial_from_address(addr.clone(), self.self_address.clone())
-                    .map_err(|err| {
-                        MailboxSenderError::new_unbound_type(
-                            actor_id.clone(),
-                            MailboxSenderErrorKind::Channel(err),
-                            "unknown",
-                        )
-                    })?;
+                let tx = channel::dial(addr.clone()).map_err(|err| {
+                    MailboxSenderError::new_unbound_type(
+                        actor_id.clone(),
+                        MailboxSenderErrorKind::Channel(err),
+                        "unknown",
+                    )
+                })?;
                 let sender = MailboxClient::new(tx);
                 Ok(entry.insert(Arc::new(sender)).value().clone())
             }
@@ -2231,15 +2167,15 @@ mod tests {
     use std::time::Duration;
 
     use timed_test::async_timed_test;
-    use tracing::Level;
 
     use super::*;
     use crate::Actor;
     use crate::PortId;
     use crate::accum;
     use crate::channel::ChannelTransport;
-    use crate::channel::dial_from_address;
+    use crate::channel::dial;
     use crate::channel::serve;
+    use crate::channel::sim::AddressProxyPair;
     use crate::channel::sim::SimAddr;
     use crate::clock::Clock;
     use crate::clock::RealClock;
@@ -2248,7 +2184,7 @@ mod tests {
     use crate::proc::Proc;
     use crate::reference::ProcId;
     use crate::reference::WorldId;
-    use crate::test_utils::tracing::set_tracing_env_filter;
+    use crate::simnet;
 
     #[test]
     fn test_error() {
@@ -2441,15 +2377,30 @@ mod tests {
     #[tokio::test]
     async fn test_sim_client_server() {
         let proxy = ChannelAddr::any(channel::ChannelTransport::Unix);
-        let addr = ChannelAddr::Sim(
-            SimAddr::new("local!1".parse::<ChannelAddr>().unwrap(), proxy.clone()).unwrap(),
-        );
-        let dialer = ChannelAddr::Sim(
-            SimAddr::new("local!0".parse::<ChannelAddr>().unwrap(), proxy.clone()).unwrap(),
+        simnet::start(
+            ChannelAddr::any(ChannelTransport::Unix),
+            proxy.clone(),
+            1000,
+        )
+        .unwrap();
+        let dst_addr =
+            SimAddr::new("local!1".parse::<ChannelAddr>().unwrap(), proxy.clone()).unwrap();
+        let src_to_dst = ChannelAddr::Sim(
+            SimAddr::new_with_src(
+                AddressProxyPair {
+                    address: "local!0".parse::<ChannelAddr>().unwrap(),
+                    proxy: proxy.clone(),
+                },
+                dst_addr.addr().clone(),
+                dst_addr.proxy().clone(),
+            )
+            .unwrap(),
         );
 
-        let (_, rx) = serve::<MessageEnvelope>(addr.clone()).await.unwrap();
-        let tx = dial_from_address::<MessageEnvelope>(addr, dialer).unwrap();
+        let (_, rx) = serve::<MessageEnvelope>(ChannelAddr::Sim(dst_addr.clone()))
+            .await
+            .unwrap();
+        let tx = dial::<MessageEnvelope>(src_to_dst).unwrap();
         let mbox = Mailbox::new_detached(id!(test[0].actor0));
         let serve_handle = mbox.clone().serve(rx, monitored_return_handle());
         let client = MailboxClient::new(tx);
@@ -2497,7 +2448,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_dial_mailbox_router() {
-        let router = DialMailboxRouter::new(ChannelAddr::any(ChannelTransport::Unix));
+        let router = DialMailboxRouter::new();
 
         router.bind(id!(world0[0]).into(), "unix!@1".parse().unwrap());
         router.bind(id!(world1[0]).into(), "unix!@2".parse().unwrap());
@@ -2529,14 +2480,8 @@ mod tests {
         // We don't need to dial here, since we gain direct access to the
         // underlying routers.
         let root = MailboxRouter::new();
-        let world0_router = DialMailboxRouter::new_with_default(
-            ChannelAddr::any(ChannelTransport::Local),
-            root.boxed(),
-        );
-        let world1_router = DialMailboxRouter::new_with_default(
-            ChannelAddr::any(ChannelTransport::Local),
-            root.boxed(),
-        );
+        let world0_router = DialMailboxRouter::new_with_default(root.boxed());
+        let world1_router = DialMailboxRouter::new_with_default(root.boxed());
 
         root.bind(id!(world0).into(), world0_router.clone());
         root.bind(id!(world1).into(), world1_router.clone());
@@ -2652,7 +2597,6 @@ mod tests {
         use crate::test_utils::proc_supervison::ProcSupervisionCoordinator;
 
         let proc_forwarder = BoxedMailboxSender::new(DialMailboxRouter::new_with_default(
-            ChannelAddr::any(ChannelTransport::Local),
             BOXED_PANICKING_MAILBOX_SENDER.clone(),
         ));
         let proc_id = id!(quux[0]);
@@ -2689,7 +2633,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_detached_return_handle() {
-        let (return_handle, mut return_receiver) = new_undeliverable_port();
+        let (return_handle, mut return_receiver) =
+            crate::mailbox::undeliverable::new_undeliverable_port();
         // Simulate an undelivered message return.
         let envelope = MessageEnvelope::new(
             id!(foo[0].bar),
@@ -2962,8 +2907,8 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_split_port_id_sum_reducer() {
-        std::env::set_var("HYPERACTOR_SPLIT_MAX_BUFFER_SIZE", "1");
-        set_tracing_env_filter(Level::INFO);
+        let config = crate::config::global::lock();
+        let _config_guard = config.override_key(crate::config::SPLIT_MAX_BUFFER_SIZE, 1);
 
         let sum_accumulator = accum::sum::<u64>();
         let reducer_typehash = sum_accumulator.reducer_typehash();
@@ -2996,7 +2941,6 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_split_port_id_every_n_messages() {
-        set_tracing_env_filter(Level::INFO);
         let actor = Mailbox::new(
             id!(test[0].actor),
             BoxedMailboxSender::new(PanickingMailboxSender),

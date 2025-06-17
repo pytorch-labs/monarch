@@ -125,7 +125,7 @@ impl PyProc {
             .collect::<Vec<_>>();
         // TODO: i don't think returning this list is of much use for
         // anything?
-        Ok(PyList::new_bound(py, aborted_actors))
+        PyList::new(py, aborted_actors)
     }
 
     #[pyo3(signature = (actor, name=None))]
@@ -186,12 +186,10 @@ impl PyProc {
         } else {
             ChannelAddr::any(bootstrap_addr.transport())
         };
-        let chan = channel::dial_from_address(bootstrap_addr.clone(), listen_addr.clone())?;
+        let chan = channel::dial(bootstrap_addr.clone())?;
         let system_sender = BoxedMailboxSender::new(MailboxClient::new(chan));
-        let proc_forwarder = BoxedMailboxSender::new(DialMailboxRouter::new_with_default(
-            listen_addr.clone(),
-            system_sender,
-        ));
+        let proc_forwarder =
+            BoxedMailboxSender::new(DialMailboxRouter::new_with_default(system_sender));
         let proc = Proc::new_with_clock(
             proc_id.clone(),
             proc_forwarder,
@@ -267,6 +265,12 @@ pub struct PyActorId {
 impl From<ActorId> for PyActorId {
     fn from(actor_id: ActorId) -> Self {
         Self { inner: actor_id }
+    }
+}
+
+impl From<PyActorId> for ActorId {
+    fn from(val: PyActorId) -> Self {
+        val.inner
     }
 }
 

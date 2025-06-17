@@ -6,6 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#[allow(dead_code)]
 pub fn tracing_layer<
     S: tracing::Subscriber + for<'span> tracing_subscriber::registry::LookupSpan<'span>,
 >() -> Option<impl tracing_subscriber::Layer<S>> {
@@ -19,6 +20,7 @@ pub fn tracing_layer<
     }
 }
 
+#[allow(dead_code)]
 pub fn init_metrics() {
     #[cfg(fbcode_build)]
     {

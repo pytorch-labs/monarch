@@ -55,7 +55,16 @@ pub trait Unbind: Sized {
     /// Unbinds the message into an envelope [`Unbound<M>`] containing
     /// the message along with extracted parameters that can are
     /// independently accessible.
-    fn unbind(self) -> anyhow::Result<Unbound<Self>>;
+    fn unbind(self) -> anyhow::Result<Unbound<Self>> {
+        let bindings = self.bindings()?;
+        Ok(Unbound {
+            message: self,
+            bindings,
+        })
+    }
+
+    /// Get the bindings of this message.
+    fn bindings(&self) -> anyhow::Result<Bindings>;
 }
 
 /// A message `M` that is [`Bind`] can bind a set of externally provided
@@ -94,9 +103,16 @@ impl Bindings {
         Ok(self.0.insert(T::typehash(), ser))
     }
 
+    /// Appends an element to the back of its type's corresponding vector in the
+    /// binding.
+    pub fn push<T: Serialize + Named>(&mut self, value: &T) -> anyhow::Result<()> {
+        let ser = Serialized::serialize(value)?;
+        self.0.entry(T::typehash()).or_default().push(ser);
+        Ok(())
+    }
+
     /// Get this type's values from the binding.
     /// If the binding did not have this type present, empty Vec is returned.
-    #[allow(dead_code)]
     pub fn get<T: DeserializeOwned + Named>(&self) -> anyhow::Result<Vec<T>> {
         match self.0.get(&T::typehash()) {
             None => Ok(vec![]),
@@ -112,7 +128,6 @@ impl Bindings {
 
     /// Rebind all values of type `T`. The input iterator must exactly match the
     /// number of `T`-typed values in the binding.
-    #[allow(dead_code)]
     pub fn rebind<T: DeserializeOwned + Named>(
         &self,
         mut_refs: impl ExactSizeIterator<Item = &mut T>,
@@ -271,6 +286,44 @@ impl<M: Named + 'static> Named for IndexedErasedUnbound<M> {
     }
 }
 
+macro_rules! impl_bind_unbind_basic {
+    ($t:ty) => {
+        impl Bind for $t {
+            fn bind(self, bindings: &Bindings) -> anyhow::Result<Self> {
+                anyhow::ensure!(
+                    bindings.0.is_empty(),
+                    "bindings for {} should be empty, but got {:?}",
+                    stringify!($t),
+                    bindings
+                );
+                Ok(self)
+            }
+        }
+
+        impl Unbind for $t {
+            fn bindings(&self) -> anyhow::Result<Bindings> {
+                Ok(Bindings::default())
+            }
+        }
+    };
+}
+
+impl_bind_unbind_basic!(());
+impl_bind_unbind_basic!(bool);
+impl_bind_unbind_basic!(i8);
+impl_bind_unbind_basic!(u8);
+impl_bind_unbind_basic!(i16);
+impl_bind_unbind_basic!(u16);
+impl_bind_unbind_basic!(i32);
+impl_bind_unbind_basic!(u32);
+impl_bind_unbind_basic!(i64);
+impl_bind_unbind_basic!(u64);
+impl_bind_unbind_basic!(i128);
+impl_bind_unbind_basic!(u128);
+impl_bind_unbind_basic!(isize);
+impl_bind_unbind_basic!(usize);
+impl_bind_unbind_basic!(String);
+
 #[cfg(test)]
 mod tests {
     use hyperactor::PortRef;
@@ -295,14 +348,11 @@ mod tests {
 
     // TODO(pzhang) add macro to auto-gen this implementation.
     impl Unbind for MyMessage {
-        fn unbind(self) -> anyhow::Result<Unbound<Self>> {
+        fn bindings(&self) -> anyhow::Result<Bindings> {
             let mut bindings = Bindings::default();
             let ports = [self.reply0.port_id(), self.reply1.port_id()];
             bindings.insert::<PortId>(ports)?;
-            Ok(Unbound {
-                message: self,
-                bindings,
-            })
+            Ok(bindings)
         }
     }
 

@@ -151,6 +151,7 @@ impl Variant {
 
 /// Represents a message that can be sent to a handler, each message is associated with
 /// a variant.
+#[allow(clippy::large_enum_variant)]
 enum Message {
     /// A call message is a request-response message, the last argument is
     /// a [`hyperactor::OncePortRef`] or [`hyperactor::OncePortHandle`].

@@ -169,7 +169,7 @@ class RemoteFunctionsTestBase:
             num_hosts,
             gpu_per_host,
             activate,
-            rust=backend_type == BackendType.RS,
+            backend=str(backend_type),
         )
 
 

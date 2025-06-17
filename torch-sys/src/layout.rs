@@ -65,7 +65,7 @@ mod tests {
         let layout = Layout::Strided;
         let converted_type = Python::with_gil(|py| {
             // import torch to ensure torch.layout types are registered
-            py.import_bound("torch").unwrap();
+            py.import("torch").unwrap();
             let obj = layout.into_py(py);
             obj.extract::<Layout>(py).unwrap()
         });
@@ -76,11 +76,7 @@ mod tests {
     fn from_py() {
         pyo3::prepare_freethreaded_python();
         let layout = Python::with_gil(|py| {
-            let obj = py
-                .import_bound("torch")
-                .unwrap()
-                .getattr("strided")
-                .unwrap();
+            let obj = py.import("torch").unwrap().getattr("strided").unwrap();
             obj.extract::<Layout>().unwrap()
         });
         assert_eq!(layout, Layout::Strided);

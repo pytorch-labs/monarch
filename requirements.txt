@@ -4,3 +4,4 @@ requests
 numpy
 pyre-extensions
 cloudpickle
+torchx-nightly

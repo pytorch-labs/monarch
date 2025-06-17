@@ -246,7 +246,7 @@ mod tests {
         let tensor = test_make_tensor();
         let converted = Python::with_gil(|py| {
             // import torch to ensure torch.layout types are registered
-            py.import_bound("torch").unwrap();
+            py.import("torch").unwrap();
             let obj = deep_clone(&tensor).into_py(py);
             obj.extract::<Tensor>(py).unwrap()
         });

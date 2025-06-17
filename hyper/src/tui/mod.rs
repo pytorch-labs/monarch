@@ -6,4 +6,5 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#[cfg(fbcode_build)]
 pub mod top;

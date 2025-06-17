@@ -6,12 +6,9 @@
 
 # pyre-strict
 
-from typing import final, Optional, Protocol, Type
+from typing import final, Optional, Type
 
-from monarch._rust_bindings.monarch_hyperactor.actor import (
-    PythonActorHandle,
-    PythonMessage,
-)
+from monarch._rust_bindings.monarch_hyperactor.actor import Actor, PythonActorHandle
 from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
 
 def init_proc(
@@ -95,36 +92,6 @@ class ActorId:
 
         Arguments:
         - `actor_id_str`: String representation of the actor id.
-        """
-        ...
-
-class Actor(Protocol):
-    async def handle(self, mailbox: Mailbox, message: PythonMessage) -> None:
-        """
-        Handle a message from the mailbox.
-
-        Arguments:
-        - `mailbox`: The actor's mailbox.
-        - `message`: The message to handle.
-        """
-        ...
-
-    async def handle_cast(
-        self,
-        mailbox: Mailbox,
-        rank: int,
-        coordinates: list[tuple[str, int]],
-        message: PythonMessage,
-    ) -> None:
-        """
-        Handle a message casted to this actor, on a mesh in which this actor
-        has the given rank and coordinates.
-
-        Arguments:
-        - `mailbox`: The actor's mailbox.
-        - `rank`: The rank of the actor in the mesh.
-        - `coordinates`: The labeled coordinates of the actor in the mesh.
-        - `message`: The message to handle.
         """
         ...
 

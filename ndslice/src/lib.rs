@@ -50,3 +50,6 @@ pub use shape::ShapeError;
 /// Property-based generators for randomized test input.
 #[cfg(test)]
 pub mod strategy;
+
+/// Utilities.
+pub mod utils;

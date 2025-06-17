@@ -19,6 +19,7 @@ use std::hash::Hash;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::Weak;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
@@ -28,7 +29,6 @@ use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
-use tracing::Instrument;
 
 use crate as hyperactor; // for macros
 use crate::ActorRef;
@@ -46,6 +46,7 @@ use crate::mailbox::MailboxSenderError;
 use crate::mailbox::MessageEnvelope;
 use crate::mailbox::PortHandle;
 use crate::mailbox::Undeliverable;
+use crate::mailbox::UndeliverableMessageError;
 use crate::mailbox::log::MessageLogError;
 use crate::message::Castable;
 use crate::message::IndexedErasedUnbound;
@@ -53,6 +54,7 @@ use crate::proc::Instance;
 use crate::proc::InstanceCell;
 use crate::proc::Ports;
 use crate::proc::Proc;
+use crate::proc::WeakInstanceCell;
 use crate::reference::ActorId;
 use crate::reference::GangId;
 use crate::reference::Index;
@@ -107,12 +109,13 @@ pub trait Actor: Sized + Send + Sync + Debug + 'static {
     /// This method is used by the runtime to spawn the actor server. It can be
     /// used by actors that require customized runtime setups
     /// (e.g., dedicated actor threads), or want to use a custom tokio runtime.
+    #[hyperactor::instrument_infallible]
     fn spawn_server_task<F>(future: F) -> JoinHandle<F::Output>
     where
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        tokio::spawn(future.instrument(tracing::debug_span!("server_task").or_current()))
+        tokio::spawn(future)
     }
 
     /// Handle actor supervision event. Return `Ok(true)`` if the event is handled here.
@@ -131,23 +134,9 @@ pub trait Actor: Sized + Send + Sync + Debug + 'static {
         this: &Instance<Self>,
         Undeliverable(envelope): Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
-        let to = envelope.dest().clone();
-        let from = envelope.sender().clone();
+        assert_eq!(envelope.sender(), this.self_id());
 
-        // We don't expect returned messages we didn't send.
-        assert_eq!(from, *this.self_id());
-
-        // By this return, the default behavior is to exit this
-        // actor's message loop and transition the actor's state to
-        // `ActorStatus::Failed` with this error message.
-        Err(anyhow::anyhow!(format!(
-            "a message from {} to {} was undeliverable and returned: {:?}",
-            from,
-            to,
-            envelope
-                .error()
-                .map_or("None".to_string(), |e| format!("{:?}", e))
-        )))
+        anyhow::bail!(UndeliverableMessageError::delivery_failure(&envelope));
     }
 }
 
@@ -438,6 +427,9 @@ impl ActorStatus {
             Self::Failed(err) => Self::Failed(err.clone()),
         }
     }
+    fn span_string(&self) -> &'static str {
+        self.arm().unwrap_or_default()
+    }
 }
 
 impl fmt::Display for ActorStatus {
@@ -544,6 +536,7 @@ impl<A: Actor> ActorHandle<A> {
     }
 
     /// Signal the actor to drain its current messages and then stop.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ActorError`.
     pub fn drain_and_stop(&self) -> Result<(), ActorError> {
         self.cell.signal(Signal::DrainAndStop)
     }
@@ -555,6 +548,7 @@ impl<A: Actor> ActorHandle<A> {
 
     /// Send a message to the actor. Messages sent through the handle
     /// are always queued in process, and do not require serialization.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     pub fn send<M: Message>(&self, message: M) -> Result<(), MailboxSenderError>
     where
         A: Handler<M>,
@@ -574,6 +568,14 @@ impl<A: Actor> ActorHandle<A> {
     /// TODO: we shoudl also have a default binding(?)
     pub fn bind<R: Binds<A>>(&self) -> ActorRef<R> {
         self.cell.bind(self.ports.as_ref())
+    }
+
+    /// Downgrade this ActorHandle to a weak reference.
+    pub fn downgrade(&self) -> WeakActorHandle<A> {
+        WeakActorHandle {
+            cell: self.cell.downgrade(),
+            ports: Arc::downgrade(&self.ports),
+        }
     }
 }
 
@@ -605,6 +607,43 @@ impl<A: Actor> Debug for ActorHandle<A> {
 }
 
 impl<A: Actor> Clone for ActorHandle<A> {
+    fn clone(&self) -> Self {
+        Self {
+            cell: self.cell.clone(),
+            ports: self.ports.clone(),
+        }
+    }
+}
+
+/// A weak reference to an [`ActorHandle`]. This allows holding references to actors
+/// without preventing them from being garbage collected when all strong references
+/// are dropped.
+#[derive(Debug)]
+pub struct WeakActorHandle<A: Actor> {
+    cell: WeakInstanceCell,
+    ports: Weak<Ports<A>>,
+}
+
+impl<A: Actor> WeakActorHandle<A> {
+    /// Create a new weak actor handle that is never upgradeable.
+    pub fn new() -> Self {
+        Self {
+            cell: WeakInstanceCell::new(),
+            ports: Weak::new(),
+        }
+    }
+
+    /// Upgrade this weak actor handle to a strong reference, if possible.
+    /// Returns `Some(ActorHandle<A>)` if the actor is still alive, `None` otherwise.
+    pub fn upgrade(&self) -> Option<ActorHandle<A>> {
+        match (self.cell.upgrade(), self.ports.upgrade()) {
+            (Some(cell), Some(ports)) => Some(ActorHandle::new(cell, ports)),
+            _ => None,
+        }
+    }
+}
+
+impl<A: Actor> Clone for WeakActorHandle<A> {
     fn clone(&self) -> Self {
         Self {
             cell: self.cell.clone(),

@@ -30,39 +30,26 @@ def invoke_main():
     # behavior of std out as if it were a terminal.
     sys.stdout.reconfigure(line_buffering=True)
     global bootstrap_main
-    from monarch._rust_bindings.hyperactor_extension.telemetry import (  # @manual=//monarch/monarch_extension:monarch_extension  # @manual=//monarch/monarch_extension:monarch_extension
-        forward_to_tracing,
-    )
 
     # TODO: figure out what from worker_main.py we should reproduce here.
+    from monarch.telemetry import TracingForwarder
 
-    class TracingForwarder(logging.Handler):
-        def emit(self, record: logging.LogRecord) -> None:
-            try:
-                forward_to_tracing(
-                    record.getMessage(),
-                    record.filename or "",
-                    record.lineno or 0,
-                    record.levelno,
-                )
-            except AttributeError:
-                forward_to_tracing(
-                    record.__str__(),
-                    record.filename or "",
-                    record.lineno or 0,
-                    record.levelno,
-                )
+    if os.environ.get("MONARCH_ERROR_DURING_BOOTSTRAP_FOR_TESTING") == "1":
+        raise RuntimeError("Error during bootstrap for testing")
 
     # forward logs to rust tracing. Defaults to on.
     if os.environ.get("MONARCH_PYTHON_LOG_TRACING", "1") == "1":
-        logging.root.addHandler(TracingForwarder())
+        logging.root.addHandler(TracingForwarder(level=logging.DEBUG))
 
-    with (
-        importlib.resources.path("monarch", "py-spy") as pyspy,
-    ):
-        if pyspy.exists():
-            os.environ["PYSPY_BIN"] = str(pyspy)
-        # fallback to using local py-spy
+    try:
+        with (
+            importlib.resources.path("monarch", "py-spy") as pyspy,
+        ):
+            if pyspy.exists():
+                os.environ["PYSPY_BIN"] = str(pyspy)
+            # fallback to using local py-spy
+    except Exception as e:
+        logging.warning(f"Failed to set up py-spy: {e}")
 
     # Start an event loop for PythonActors to use.
     asyncio.run(main())

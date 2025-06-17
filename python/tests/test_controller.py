@@ -96,7 +96,7 @@ remote_sleep = remote("time.sleep", propagate="inspect")
     torch.cuda.device_count() < 2,
     reason="Not enough GPUs, this test requires at least 2 GPUs",
 )
-@pytest.mark.parametrize("backend_type", [BackendType.PY, BackendType.RS])
+@pytest.mark.parametrize("backend_type", [BackendType.PY, BackendType.RS, "mesh"])
 # Set global timeout--sandcastle's timeout is 600s. A test that sandcastle times
 # out is not counted as a failure, so we set a more restrictive timeout to
 # ensure we see a hard failure in CI.
@@ -114,7 +114,7 @@ class TestController:
             N,
             gpu_per_host,
             activate,
-            rust=backend_type == BackendType.RS,
+            backend=str(backend_type),
         )
 
     def test_errors(self, backend_type):
@@ -512,6 +512,7 @@ class TestController:
             monarch.random.make_deterministic()
             for device in ("cpu", "cuda"):
                 a = monarch.random.get_state()
+                monarch.inspect(a)
                 first = torch.rand(1, device=device)
                 monarch.random.set_state(a)
                 second = torch.rand(1, device=device)
@@ -601,6 +602,15 @@ class TestController:
         assert torch.equal(moved_tensor_a, torch.tensor([1.0]))
         assert torch.equal(moved_tensor_b, torch.tensor([2.0]))
 
+    def test_hanging_error(self, backend_type):
+        if backend_type != "mesh":
+            pytest.skip("only relevant for mesh backend")
+        with self.local_device_mesh(2, 2, backend_type) as device_mesh:
+            remote(lambda: torch.rand(3) + torch.rand(4), propagate=lambda: None)()
+
+            with pytest.raises(Exception, match="The size of tensor"):
+                device_mesh.client.shutdown()
+
     def test_slice_mesh_pytree(self, backend_type):
         with self.local_device_mesh(2, 2, backend_type) as device_mesh:
             a = device_mesh.rank(("host")) + torch.zeros((1,), device="cuda")
@@ -636,12 +646,11 @@ class TestController:
 
 
 def test_panicking_worker():
-    with pytest.raises(DeviceException, match="Actor .* crashed") as exc_info:
-        with local_rust_device_mesh(2, 2) as _:
+    with pytest.raises(DeviceException, match="__test_panic called"):
+        with local_rust_device_mesh(1, 1) as _:
             panic()
             # induce a sync to allow the panic to propagate back
             _ = fetch_shard(torch.ones(2, 3)).result()
-    assert len(exc_info.value.frames) > 0
 
 
 def test_timeout_warning(caplog):

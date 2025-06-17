@@ -68,11 +68,7 @@ mod linux {
             .expect("unable to register signal handler");
         }
 
-        if !crate::config::global::get()
-            .read()
-            .unwrap()
-            .is_managed_subprocess
-        {
+        if !crate::config::global::get(crate::config::IS_MANAGED_SUBPROCESS) {
             return;
         }
         super::RUNTIME.spawn(async {

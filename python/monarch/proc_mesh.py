@@ -4,9 +4,25 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-import sys
+# pyre-strict
 
-from typing import Any, cast, Optional, Type, TypeVar
+import sys
+from contextlib import AbstractContextManager
+
+from typing import (
+    Any,
+    cast,
+    Dict,
+    List,
+    Optional,
+    Sequence,
+    Type,
+    TYPE_CHECKING,
+    TypeVar,
+)
+
+if TYPE_CHECKING:
+    import torch
 
 import monarch
 from monarch import ActorFuture as Future
@@ -18,9 +34,13 @@ from monarch._rust_bindings.hyperactor_extension.alloc import (  # @manual=//mon
 )
 from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyProcMesh
+from monarch._rust_bindings.monarch_hyperactor.shape import Shape, Slice
+from monarch.actor_mesh import _Actor, _ActorMeshRefImpl, Actor, ActorMeshRef
 
-from monarch.python_local_mesh import _local_device_count
-from monarch.service import _Actor, Actor, ActorMeshRef, Service
+from monarch.common._device_utils import _local_device_count
+from monarch.common.device_mesh import DeviceMesh
+from monarch.common.shape import MeshTrait
+from monarch.mesh_controller import spawn_tensor_engine
 
 T = TypeVar("T")
 try:
@@ -39,12 +59,41 @@ def _allocate_blocking(alloc: Alloc) -> "ProcMesh":
     return ProcMesh(HyProcMesh.allocate_blocking(alloc))
 
 
-class ProcMesh:
-    def __init__(self, hy_proc_mesh: HyProcMesh) -> None:
+class ProcMesh(MeshTrait):
+    def __init__(
+        self,
+        hy_proc_mesh: HyProcMesh,
+        _mock_shape: Optional[Shape] = None,
+        _device_mesh: Optional[DeviceMesh] = None,
+    ) -> None:
         self._proc_mesh = hy_proc_mesh
+        self._mock_shape: Optional[Shape] = _mock_shape
         self._mailbox: Mailbox = self._proc_mesh.client
+        self._maybe_device_mesh: Optional[DeviceMesh] = _device_mesh
+
+    @property
+    def _shape(self) -> Shape:
+        return self._proc_mesh.shape if self._mock_shape is None else self._mock_shape
+
+    @property
+    def _ndslice(self) -> Slice:
+        return self._shape.ndslice
+
+    @property
+    def _labels(self) -> List[str]:
+        return self._shape.labels
+
+    def _new_with_shape(self, shape: Shape) -> "ProcMesh":
+        device_mesh = (
+            None
+            if self._device_mesh is None
+            else self._device_mesh._new_with_shape(shape)
+        )
+        return ProcMesh(self._proc_mesh, _mock_shape=shape, _device_mesh=device_mesh)
 
     def spawn(self, name: str, Class: Type[T], *args: Any, **kwargs: Any) -> Future[T]:
+        if self._mock_shape is not None:
+            raise NotImplementedError("NYI: spawn on slice of a proc mesh.")
         return Future(
             lambda: self._spawn_nonblocking(name, Class, *args, **kwargs),
             lambda: self._spawn_blocking(name, Class, *args, **kwargs),
@@ -66,13 +115,13 @@ class ProcMesh:
             )
 
         actor_mesh = self._proc_mesh.spawn_blocking(name, _Actor)
-        service = Service(
+        service = ActorMeshRef(
             Class,
-            ActorMeshRef.from_hyperactor_mesh(self._mailbox, actor_mesh),
+            _ActorMeshRefImpl.from_hyperactor_mesh(self._mailbox, actor_mesh),
             self._mailbox,
         )
-        # useful to have this separate, because eventually we can reconstitute Service objects across pickling by
-        # doing `Service(Class, actor_handle)` but not calling _create.
+        # useful to have this separate, because eventually we can reconstitute ActorMeshRef objects across pickling by
+        # doing `ActorMeshRef(Class, actor_handle)` but not calling _create.
         service._create(args, kwargs)
         return cast(T, service)
 
@@ -91,15 +140,35 @@ class ProcMesh:
             )
 
         actor_mesh = await self._proc_mesh.spawn_nonblocking(name, _Actor)
-        service = Service(
+        service = ActorMeshRef(
             Class,
-            ActorMeshRef.from_hyperactor_mesh(self._mailbox, actor_mesh),
+            _ActorMeshRefImpl.from_hyperactor_mesh(self._mailbox, actor_mesh),
             self._mailbox,
         )
-        # useful to have this separate, because eventually we can reconstitute Service objects across pickling by
-        # doing `Service(Class, actor_handle)` but not calling _create.
+        # useful to have this separate, because eventually we can reconstitute ActorMeshRef objects across pickling by
+        # doing `ActorMeshRef(Class, actor_handle)` but not calling _create.
         service._create(args, kwargs)
         return cast(T, service)
+
+    @property
+    def _device_mesh(self) -> "DeviceMesh":
+        if self._maybe_device_mesh is None:
+            if self._mock_shape is not None:
+                raise NotImplementedError(
+                    "NYI: activating a proc mesh must first happen on the root proc_mesh until we fix spawning on submeshes."
+                )
+            self._maybe_device_mesh = spawn_tensor_engine(self)
+        return self._maybe_device_mesh
+
+    # pyre-ignore
+    def activate(self) -> AbstractContextManager:
+        return self._device_mesh.activate()
+
+    def rank_tensor(self, dim: str | Sequence[str]) -> "torch.Tensor":
+        return self._device_mesh.rank(dim)
+
+    def rank_tensors(self) -> Dict[str, "torch.Tensor"]:
+        return self._device_mesh.ranks
 
 
 async def local_proc_mesh_nonblocking(

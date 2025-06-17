@@ -5,7 +5,7 @@ name = "hyperactor_telemetry"
 version = "0.0.0"
 authors = ["Meta"]
 edition = "2021"
-license = "BSD-3"
+license = "BSD-3-Clause"
 
 [dependencies]
 anyhow = "1.0.95"
@@ -25,7 +25,6 @@ tracing-appender = "0.2.3"
 tracing-core = { version = "0.1.33", features = ["valuable"] }
 tracing-glog = { version = "0.4.0", features = ["ansi", "tracing-log"] }
 tracing-subscriber = { version = "0.3.19", features = ["chrono", "env-filter", "json", "local-time", "parking_lot", "registry"] }
-valuable = { version = "0.1", features = ["derive"] }
 
 [features]
 default = []

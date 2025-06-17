@@ -89,7 +89,21 @@ impl_basic!(i128);
 impl_basic!(u128);
 impl_basic!(isize);
 impl_basic!(usize);
+impl_basic!(f32);
+impl_basic!(f64);
 impl_basic!(String);
+
+impl Named for &'static str {
+    fn typename() -> &'static str {
+        "&str"
+    }
+}
+
+impl Named for std::time::Duration {
+    fn typename() -> &'static str {
+        "std::time::Duration"
+    }
+}
 
 // A macro that implements type-keyed interning of typenames. This is useful
 // for implementing [`Named`] for generic types.

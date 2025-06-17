@@ -169,7 +169,11 @@ mod tests {
             assert!(result.is_ok());
 
             // Verify the outer task can get its own backtrace.
-            assert!(take_panic_backtrace().unwrap().contains("execute_panic"));
+            assert!(
+                take_panic_backtrace()
+                    .unwrap()
+                    .contains("test_nested_tasks")
+            );
         })
         .await;
     }

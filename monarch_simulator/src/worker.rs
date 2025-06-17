@@ -21,21 +21,21 @@ use hyperactor::ActorRef;
 use hyperactor::Instance;
 use hyperactor::Mailbox;
 use hyperactor::Named;
-use hyperactor::channel::sim::HANDLE;
 use hyperactor::data::Serialized;
 use hyperactor::forward;
 use hyperactor::id;
 use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::reference::ActorId;
 use hyperactor::simnet::TorchOpEvent;
+use hyperactor::simnet::simnet_handle;
 use monarch_messages::controller::ControllerActor;
 use monarch_messages::controller::ControllerMessageClient;
 use monarch_messages::controller::Seq;
 use monarch_messages::controller::WorkerError;
 use monarch_messages::wire_value::WireValue;
 use monarch_messages::worker::*;
+use monarch_tensor_worker::device_mesh::DeviceMesh;
 use monarch_types::PyTree;
-use monarch_worker::device_mesh::DeviceMesh;
 use ndslice::Slice;
 use serde::Deserialize;
 use serde::Serialize;
@@ -50,9 +50,9 @@ use torch_sys::Tensor;
 use torch_sys::TensorCell;
 use torch_sys::factory_empty;
 use torch_sys::factory_zeros;
-use torch_sys::nccl::NcclConfig;
-use torch_sys::nccl::ReduceOp;
-use torch_sys::nccl::UniqueId;
+use torch_sys_cuda::nccl::NcclConfig;
+use torch_sys_cuda::nccl::ReduceOp;
+use torch_sys_cuda::nccl::UniqueId;
 
 use crate::collective_coordinator::CollectiveResult;
 use crate::collective_coordinator::activate_mesh;
@@ -293,7 +293,7 @@ impl WorkerMessageHandler for WorkerActor {
         match &params.function.as_torch_op() {
             Some((op, _)) => {
                 self.call_torch_op(op, params.args, params.kwargs, this.self_id().clone())
-                    .await;
+                    .await?;
             }
             _ => {
                 let _ = self.call_python_fn(
@@ -679,7 +679,7 @@ impl WorkerActor {
         args: Vec<WireValue>,
         kwargs: HashMap<String, WireValue>,
         actor_id: ActorId,
-    ) {
+    ) -> Result<()> {
         let args_string = args
             .iter()
             .filter(|&wirevalue| wirevalue.is_ref())
@@ -700,7 +700,7 @@ impl WorkerActor {
         let mailbox = Mailbox::new_detached(id!(proc[0].proc).clone());
         let (tx, rx) = mailbox.open_once_port::<()>();
 
-        HANDLE
+        simnet_handle()?
             .send_event(TorchOpEvent::new(
                 op.to_string(),
                 tx.bind(),
@@ -712,6 +712,8 @@ impl WorkerActor {
             .unwrap();
 
         rx.recv().await.unwrap();
+
+        Ok(())
     }
 
     fn call_python_fn(
@@ -732,8 +734,11 @@ mod tests {
 
     use anyhow::Result;
     use futures::future::try_join_all;
+    use hyperactor::channel::ChannelAddr;
+    use hyperactor::channel::ChannelTransport;
     use hyperactor::id;
     use hyperactor::proc::Proc;
+    use hyperactor::simnet;
     use monarch_types::PyTree;
     use torch_sys::Layout;
     use torch_sys::RValue;
@@ -784,6 +789,12 @@ mod tests {
 
     #[tokio::test]
     async fn worker_reduce() -> Result<()> {
+        simnet::start(
+            "local!0".parse::<ChannelAddr>().unwrap(),
+            ChannelAddr::any(ChannelTransport::Unix),
+            1000,
+        )
+        .unwrap();
         let proc = Proc::local();
         //let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller")?;
         let client = proc.attach("client")?;

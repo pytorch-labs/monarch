@@ -7,7 +7,7 @@
 # pyre-unsafe
 from typing import Optional
 
-from monarch._rust_bindings.monarch_extension.worker import Ref
+from monarch._rust_bindings.monarch_extension.tensor_worker import Ref
 
 
 class Referenceable:

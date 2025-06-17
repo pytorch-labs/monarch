@@ -6,13 +6,12 @@
 
 # pyre-unsafe
 import os
-import re
 import subprocess
-from pathlib import Path
 from time import sleep
 from typing import Optional, TYPE_CHECKING
 
 import monarch_supervisor
+from monarch.common._device_utils import _local_device_count
 from monarch.common.fake import fake_call
 from monarch.common.invocation import DeviceException, RemoteException
 from monarch.world_mesh import world_mesh
@@ -70,15 +69,6 @@ class PythonLocalContext:
         self.ctx.shutdown()
         for host_manager in self.host_managers:
             host_manager.wait(timeout=10)
-
-
-def _local_device_count():
-    if "CUDA_VISIBLE_DEVICES" in os.environ:
-        return len(os.environ["CUDA_VISIBLE_DEVICES"].split(","))
-    dev_path = Path("/dev")
-    pattern = re.compile(r"nvidia\d+$")
-    nvidia_devices = [dev for dev in dev_path.iterdir() if pattern.match(dev.name)]
-    return len(nvidia_devices)
 
 
 def python_local_mesh(*, gpus: Optional[int] = None, hosts: int = 1) -> "DeviceMesh":

@@ -98,6 +98,7 @@ impl Allocator for ProcessAllocator {
             cmd: Arc::clone(&self.cmd),
             children: JoinSet::new(),
             running: true,
+            failed: false,
         })
     }
 }
@@ -116,6 +117,7 @@ pub struct ProcessAlloc {
     cmd: Arc<Mutex<Command>>,
     children: JoinSet<(usize, ProcStopReason)>,
     running: bool,
+    failed: bool,
 }
 
 #[derive(EnumAsInner)]
@@ -276,6 +278,11 @@ impl ProcessAlloc {
         })
     }
 
+    /// The "world name" assigned to this alloc.
+    pub(crate) fn name(&self) -> &ShortUuid {
+        &self.name
+    }
+
     fn index(&self, proc_id: &ProcId) -> Result<usize, anyhow::Error> {
         anyhow::ensure!(
             proc_id.world_name().parse::<ShortUuid>()? == self.name,
@@ -313,10 +320,14 @@ impl ProcessAlloc {
         tracing::debug!("Spawning process {:?}", cmd);
         match cmd.spawn() {
             Err(err) => {
-                // Should we proactively retry here, or do we always just
-                // wait for another event request?
-                tracing::error!("spawn {}: {}", index, err);
-                None
+                // Likely retry won't help here so fail permanently.
+                let message = format!("spawn {}: {}", index, err);
+                tracing::error!(message);
+                self.failed = true;
+                Some(ProcState::Failed {
+                    world_id: self.world_id.clone(),
+                    description: message,
+                })
             }
             Ok(mut process) => match self.ranks.assign(index) {
                 Err(_index) => {
@@ -352,7 +363,8 @@ impl Alloc for ProcessAlloc {
         }
 
         loop {
-            if self.running {
+            // Do no allocate new processes if we are in failed state.
+            if self.running && !self.failed {
                 if let state @ Some(_) = self.maybe_spawn().await {
                     return state;
                 }

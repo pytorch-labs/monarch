@@ -54,7 +54,7 @@ impl PyShape {
         self.inner
             .coordinates(rank)
             .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))
-            .and_then(|x| PyDict::from_sequence_bound(x.to_object(py).bind(py)))
+            .and_then(|x| PyDict::from_sequence(x.to_object(py).bind(py)))
     }
 
     #[pyo3(signature = (**kwargs))]
@@ -92,7 +92,7 @@ impl PyShape {
     ) -> PyResult<(Bound<'py, PyAny>, (Bound<'py, PyBytes>,))> {
         let bytes = bincode::serialize(&slf.borrow().inner)
             .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
-        let py_bytes = PyBytes::new_bound(slf.py(), &bytes);
+        let py_bytes = PyBytes::new(slf.py(), &bytes);
         Ok((slf.getattr("from_bytes")?, (py_bytes,)))
     }
 
@@ -100,8 +100,7 @@ impl PyShape {
         self.inner.slice().iter().collect()
     }
 
-    #[getter]
-    fn len(&self) -> usize {
+    fn __len__(&self) -> usize {
         self.inner.slice().len()
     }
 
@@ -124,7 +123,7 @@ impl From<Shape> for PyShape {
     frozen
 )]
 
-struct PyPoint {
+pub struct PyPoint {
     rank: usize,
     shape: Py<PyShape>,
 }
@@ -132,7 +131,7 @@ struct PyPoint {
 #[pymethods]
 impl PyPoint {
     #[new]
-    fn new(rank: usize, shape: Py<PyShape>) -> Self {
+    pub fn new(rank: usize, shape: Py<PyShape>) -> Self {
         PyPoint { rank, shape }
     }
     fn __getitem__(&self, py: Python, label: &str) -> PyResult<usize> {
@@ -151,8 +150,21 @@ impl PyPoint {
             )))
         }
     }
+
+    fn size(&self, py: Python<'_>, label: &str) -> PyResult<usize> {
+        let shape = &self.shape.bind(py).get().inner;
+        if let Some(index) = shape.labels().iter().position(|l| l == label) {
+            Ok(shape.slice().sizes()[index])
+        } else {
+            Err(PyErr::new::<PyValueError, _>(format!(
+                "Dimension '{}' not found",
+                label
+            )))
+        }
+    }
+
     fn __len__(&self, py: Python) -> usize {
-        self.shape.bind(py).get().len()
+        self.shape.bind(py).get().__len__()
     }
     fn __iter__<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         self.shape

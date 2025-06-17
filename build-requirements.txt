@@ -2,3 +2,4 @@ torch
 setuptools
 setuptools-rust
 wheel
+numpy

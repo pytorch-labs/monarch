@@ -61,7 +61,6 @@ use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::filter::Targets;
 use tracing_subscriber::fmt;
 
-use crate::env::Env;
 use crate::recorder::Recorder;
 
 // Need to keep this around so that the tracing subscriber doesn't drop the writer.
@@ -429,6 +428,7 @@ pub fn initialize_logging() {
 
     #[cfg(fbcode_build)]
     {
+        use crate::env::Env;
         fn is_layer_enabled(env_var: &str) -> bool {
             std::env::var(env_var).unwrap_or_default() != "1"
         }
@@ -453,7 +453,7 @@ pub fn initialize_logging() {
             tracing::debug!("logging already initialized for this process: {}", err);
         }
         let exec_id = env::execution_id();
-        tracing::info!(
+        tracing::debug!(
             target: "execution",
             execution_id = exec_id,
             environment = %Env::current(),

@@ -6,10 +6,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use std::fmt::Debug;
-use std::fmt::Error;
-use std::fmt::Formatter;
-
 use crate::IValue;
 use crate::backend::BoxedBackend;
 use crate::backend::BoxedWork;
@@ -188,7 +184,7 @@ pub(crate) mod ffi {
         /// section in your docblock, discussing how mutability/aliasing
         /// restrictions apply to your binding.
         ///////////////////////////////////////////////////////////////////////
-        include!("ATen/cuda/CUDAEvent.h");
+        // include!("ATen/cuda/CUDAEvent.h");
         include!("torch/csrc/distributed/c10d/Types.hpp");
         include!("monarch/torch-sys/src/bridge.h");
         #[namespace = "c10"]
@@ -452,72 +448,11 @@ pub(crate) mod ffi {
         fn stack(tensor: &[Tensor]) -> Tensor;
 
         fn is_alias(lhs: &Tensor, rhs: &Tensor) -> bool;
-
-        // CUDA Event APIs
-        #[namespace = "at::cuda"]
-        type CUDAEvent;
-        fn create_cuda_event(
-            enable_timing: bool,
-            blocking: bool,
-            interprocess: bool,
-        ) -> UniquePtr<CUDAEvent>;
-        fn record(self: Pin<&mut CUDAEvent>, stream: &CUDAStream);
-        fn block(self: Pin<&mut CUDAEvent>, stream: &CUDAStream);
-        fn query(self: &CUDAEvent) -> bool;
-        fn elapsed_time(self: &CUDAEvent, end_event: &CUDAEvent) -> f32;
-        fn synchronize(self: &CUDAEvent);
-
-        // CUDA Stream APIs
-        #[namespace = "c10::cuda"]
-        type CUDAStream;
-        #[namespace = ""]
-        type CUstream_st = nccl_sys::CUstream_st;
-        fn get_current_stream(device: i8) -> SharedPtr<CUDAStream>;
-        fn set_current_stream(stream: &CUDAStream);
-        fn create_stream(device: i8, priority: i32) -> SharedPtr<CUDAStream>;
-        fn query(self: &CUDAStream) -> bool;
-        fn synchronize(self: &CUDAStream);
-        fn device_index(self: &CUDAStream) -> i8;
-        fn stream(self: &CUDAStream) -> *mut CUstream_st;
-
-        // nccl helpers
-        #[namespace = ""]
-        type ncclConfig_t = nccl_sys::ncclConfig_t;
-        fn make_nccl_config() -> ncclConfig_t;
     }
 
     // Allow accessing `Tensor` from `CxxVector` in the `BoxedBackend` impl.
     impl CxxVector<Tensor> {}
 }
-
-// SAFETY: CUDAStream is thread safe
-unsafe impl Send for ffi::CUDAStream {}
-// SAFETY: see above
-unsafe impl Sync for ffi::CUDAStream {}
-
-impl Debug for ffi::CUDAStream {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
-        f.debug_struct("CUDAStream")
-            .field("device", &format!("{}", self.device_index()))
-            .field("stream", &format!("{:p}", self))
-            .finish()
-    }
-}
-
-impl Debug for ffi::CUDAEvent {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
-        f.debug_struct("CUDAEvent")
-            .field("ptr", &format!("{:p}", self))
-            .finish()
-    }
-}
-
-// SAFETY: CUDAEvent is thread safe. The comments on `c10::Event` say it isn't, but in
-// Rust we would consider it Sync because shared references are fine to access
-// across threads.
-unsafe impl Send for ffi::CUDAEvent {}
-// SAFETY: see above
-unsafe impl Sync for ffi::CUDAEvent {}
 
 unsafe extern "C" {
     pub(crate) fn cpp_decref(ptr: *mut std::ffi::c_void);

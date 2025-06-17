@@ -10,8 +10,9 @@ use std::sync::Arc;
 
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
-use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::Mesh;
+use hyperactor_mesh::RootActorMesh;
+use hyperactor_mesh::actor_mesh::ActorMesh;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 
@@ -26,7 +27,7 @@ use crate::shape::PyShape;
     module = "monarch._rust_bindings.monarch_hyperactor.actor_mesh"
 )]
 pub struct PythonActorMesh {
-    pub(super) inner: Arc<ActorMesh<'static, PythonActor>>,
+    pub(super) inner: Arc<RootActorMesh<'static, PythonActor>>,
     pub(super) client: PyMailbox,
 }
 

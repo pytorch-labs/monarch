@@ -10,7 +10,7 @@ import logging
 import tempfile
 import time
 from contextlib import contextmanager, ExitStack
-from typing import Callable, Generator, Optional
+from typing import Any, Callable, Dict, Generator, Literal, Optional
 
 import monarch_supervisor
 from monarch.common.client import Client
@@ -18,6 +18,8 @@ from monarch.common.device_mesh import DeviceMesh
 from monarch.common.invocation import DeviceException, RemoteException
 from monarch.common.shape import NDSlice
 from monarch.controller.backend import ProcessBackend
+from monarch.mesh_controller import spawn_tensor_engine
+from monarch.proc_mesh import proc_mesh, ProcMesh
 from monarch.python_local_mesh import PythonLocalContext
 from monarch.rust_local_mesh import (
     local_mesh,
@@ -50,6 +52,7 @@ class TestingContext:
         self.cleanup = ExitStack()
         self._py_process_cache = {}
         self._rust_process_cache = None
+        self._proc_mesh_cache: Dict[Any, ProcMesh] = {}
 
     @contextmanager
     def _get_context(self, num_hosts, gpu_per_host):
@@ -75,16 +78,14 @@ class TestingContext:
 
     @contextmanager
     def local_py_device_mesh(
-        self, num_hosts, gpu_per_host, activate=True
+        self,
+        num_hosts,
+        gpu_per_host,
     ) -> Generator[DeviceMesh, None, None]:
         ctx, hosts, processes = self._processes(num_hosts, gpu_per_host)
         dm = world_mesh(ctx, hosts, gpu_per_host, _processes=processes)
         try:
-            if activate:
-                with dm.activate():
-                    yield dm
-            else:
-                yield dm
+            yield dm
             dm.client.shutdown(destroy_pg=False)
         except Exception:
             # abnormal exit, so we just make sure we do not try to communicate in destructors,
@@ -97,7 +98,6 @@ class TestingContext:
         self,
         num_hosts,
         gpu_per_host,
-        activate: bool = True,
         controller_params=None,
     ) -> Generator[DeviceMesh, None, None]:
         # Create a new system and mesh for test.
@@ -115,11 +115,7 @@ class TestingContext:
             controller_params=controller_params,
         ) as dm:
             try:
-                if activate:
-                    with dm.activate():
-                        yield dm
-                else:
-                    yield dm
+                yield dm
                 dm.exit()
             except Exception:
                 dm.client._shutdown = True
@@ -130,20 +126,56 @@ class TestingContext:
                 dm.client.inner._actor.stop()
 
     @contextmanager
+    def local_engine_on_proc_mesh(
+        self,
+        num_hosts,
+        gpu_per_host,
+    ) -> Generator[DeviceMesh, None, None]:
+        key = (num_hosts, gpu_per_host)
+        if key not in self._proc_mesh_cache:
+            self._proc_mesh_cache[key] = proc_mesh(
+                hosts=num_hosts, gpus=gpu_per_host
+            ).get()
+
+        dm = spawn_tensor_engine(self._proc_mesh_cache[key])
+        dm = dm.rename(hosts="host", gpus="gpu")
+        try:
+            yield dm
+            dm.exit()
+        except Exception as e:
+            # abnormal exit, so we just make sure we do not try to communicate in destructors,
+            # but we do notn wait for workers to exit since we do not know what state they are in.
+            dm.client._shutdown = True
+            raise
+
+    @contextmanager
     def local_device_mesh(
-        self, num_hosts, gpu_per_host, activate=True, rust=False, controller_params=None
+        self,
+        num_hosts,
+        gpu_per_host,
+        activate=True,
+        backend: Literal["py", "rs", "mesh"] = "py",
+        controller_params=None,
     ) -> Generator[DeviceMesh, None, None]:
         start = time.time()
-        if rust:
+        if backend == "rs":
             generator = self.local_rust_device_mesh(
-                num_hosts, gpu_per_host, activate, controller_params=controller_params
+                num_hosts, gpu_per_host, controller_params=controller_params
             )
+        elif backend == "py":
+            generator = self.local_py_device_mesh(num_hosts, gpu_per_host)
+        elif backend == "mesh":
+            generator = self.local_engine_on_proc_mesh(num_hosts, gpu_per_host)
         else:
-            generator = self.local_py_device_mesh(num_hosts, gpu_per_host, activate)
+            raise ValueError(f"invalid backend: {backend}")
         with generator as dm:
             end = time.time()
             logging.info("initialized mesh in {:.2f}s".format(end - start))
-            yield dm
+            if activate:
+                with dm.activate():
+                    yield dm
+            else:
+                yield dm
             start = time.time()
         end = time.time()
         logging.info("shutdown mesh in {:.2f}s".format(end - start))

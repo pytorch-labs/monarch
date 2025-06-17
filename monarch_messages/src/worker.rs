@@ -28,7 +28,6 @@ use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::message::Unbind;
-use hyperactor::message::Unbound;
 use hyperactor::reference::ActorId;
 use monarch_types::SerializablePyErr;
 use ndslice::Slice;
@@ -45,9 +44,9 @@ use torch_sys::Device;
 use torch_sys::Layout;
 use torch_sys::ScalarType;
 use torch_sys::call_op::CallOpError;
-use torch_sys::nccl::NcclConfig;
-use torch_sys::nccl::ReduceOp;
-use torch_sys::nccl::UniqueId;
+use torch_sys_cuda::nccl::NcclConfig;
+use torch_sys_cuda::nccl::ReduceOp;
+use torch_sys_cuda::nccl::UniqueId;
 
 use crate::controller::ControllerActor;
 use crate::controller::Seq;
@@ -66,7 +65,10 @@ use crate::wire_value::WireValue;
     Ord,
     From
 )]
-#[pyo3::pyclass(frozen, module = "monarch._rust_bindings.monarch_extension.worker")]
+#[pyo3::pyclass(
+    frozen,
+    module = "monarch._rust_bindings.monarch_extension.tensor_worker"
+)]
 pub struct StreamRef {
     #[pyo3(get)]
     pub id: u64,
@@ -118,7 +120,10 @@ impl StreamRef {
     Ord,
     From
 )]
-#[pyo3::pyclass(frozen, module = "monarch._rust_bindings.monarch_extension.worker")]
+#[pyo3::pyclass(
+    frozen,
+    module = "monarch._rust_bindings.monarch_extension.tensor_worker"
+)]
 pub struct Ref {
     #[pyo3(get)]
     pub id: u64,
@@ -129,6 +134,11 @@ impl Ref {
     #[new]
     fn new(id: u64) -> Self {
         Self { id }
+    }
+
+    #[getter]
+    fn r#ref(&self) -> u64 {
+        self.id
     }
 
     fn __repr__(&self) -> String {
@@ -151,14 +161,14 @@ impl Ref {
         Ok(self.id)
     }
 
-    fn __getnewargs_ex__<'py>(&self, py: Python<'py>) -> Bound<'py, PyTuple> {
-        let kwargs = PyDict::new_bound(py);
+    fn __getnewargs_ex__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        let kwargs = PyDict::new(py);
         kwargs.set_item("id", self.id).unwrap();
 
-        PyTuple::new_bound(
+        PyTuple::new(
             py,
             vec![
-                PyTuple::empty_bound(py).unbind().into_any(),
+                PyTuple::empty(py).unbind().into_any(),
                 kwargs.unbind().into_any(),
             ],
         )
@@ -192,7 +202,10 @@ impl Display for Ref {
 /// global reference.
 // TODO: do some validation on the namespace/opname/overload
 #[derive(PartialEq, Serialize, Deserialize, Debug, Clone)]
-#[pyo3::pyclass(frozen, module = "monarch._rust_bindings.monarch_extension.worker")]
+#[pyo3::pyclass(
+    frozen,
+    module = "monarch._rust_bindings.monarch_extension.tensor_worker"
+)]
 pub struct FunctionPath {
     #[pyo3(get)]
     pub path: String,
@@ -214,7 +227,7 @@ impl<T: Into<String>> From<T> for FunctionPath {
 impl FunctionPath {
     #[new]
     #[pyo3(signature = (*, path))]
-    fn new(path: String) -> Self {
+    pub fn new(path: String) -> Self {
         Self { path }
     }
 
@@ -229,7 +242,7 @@ impl FunctionPath {
                 self.path
             )
         })?;
-        let module = PyModule::import_bound(py, module_fqn)?;
+        let module = PyModule::import(py, module_fqn)?;
         let mut function = module.getattr(function_name)?;
         if function.hasattr("_remote_impl")? {
             function = function.getattr("_remote_impl")?;
@@ -242,7 +255,10 @@ impl FunctionPath {
 /// global reference.
 // TODO: do some validation on the namespace/opname/overload
 #[derive(PartialEq, Serialize, Deserialize, Debug, Clone, From)]
-#[pyo3::pyclass(frozen, module = "monarch._rust_bindings.monarch_extension.worker")]
+#[pyo3::pyclass(
+    frozen,
+    module = "monarch._rust_bindings.monarch_extension.tensor_worker"
+)]
 pub struct Cloudpickle {
     #[serde(with = "serde_bytes")]
     bytes: Vec<u8>,
@@ -258,8 +274,8 @@ impl fmt::Display for Cloudpickle {
 impl Cloudpickle {
     #[new]
     #[pyo3(signature = (*, bytes))]
-    fn new(bytes: Vec<u8>) -> PyResult<Self> {
-        Ok(Self { bytes })
+    pub fn new(bytes: Vec<u8>) -> Self {
+        Self { bytes }
     }
 
     fn __repr__(&self) -> String {
@@ -267,9 +283,9 @@ impl Cloudpickle {
     }
 
     pub fn resolve<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let module = PyModule::import_bound(py, "cloudpickle")?;
+        let module = PyModule::import(py, "cloudpickle")?;
         let loads = module.getattr("loads")?;
-        loads.call1((PyBytes::new_bound(py, &self.bytes),))
+        loads.call1((PyBytes::new(py, &self.bytes),))
     }
 }
 
@@ -291,12 +307,16 @@ pub enum ResolvableFunction {
     FunctionPath(FunctionPath),
 }
 
-impl IntoPy<PyObject> for ResolvableFunction {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        match self {
-            Self::Cloudpickle(func) => func.into_py(py),
-            Self::FunctionPath(func) => func.into_py(py),
-        }
+impl<'py> IntoPyObject<'py> for ResolvableFunction {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        Ok(match self {
+            Self::Cloudpickle(func) => func.into_pyobject(py)?.into_any(),
+            Self::FunctionPath(func) => func.into_pyobject(py)?.into_any(),
+        })
     }
 }
 
@@ -383,7 +403,7 @@ pub enum Reduction {
 #[pyo3::pyclass(
     frozen,
     name = "TensorFactory",
-    module = "monarch._rust_bindings.monarch_extension.worker"
+    module = "monarch._rust_bindings.monarch_extension.tensor_worker"
 )]
 pub struct Factory {
     pub size: Vec<i64>,
@@ -415,9 +435,20 @@ impl Factory {
         })
     }
 
+    #[staticmethod]
+    pub fn from_py(obj: Bound<'_, PyAny>) -> PyResult<Self> {
+        Self::new(
+            obj.py(),
+            obj.getattr("size")?.extract()?,
+            obj.getattr("dtype")?.unbind(),
+            obj.getattr("layout")?.unbind(),
+            obj.getattr("device")?.unbind(),
+        )
+    }
+
     #[getter]
-    fn size<'a>(&self, py: Python<'a>) -> Bound<'a, PyTuple> {
-        PyTuple::new_bound(py, self.size.iter())
+    fn size<'a>(&self, py: Python<'a>) -> PyResult<Bound<'a, PyTuple>> {
+        PyTuple::new(py, self.size.iter())
     }
 
     #[getter]
@@ -438,7 +469,11 @@ impl Factory {
 
 /// Controls what CUDA stream an actor will use.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
-#[pyo3::pyclass(module = "monarch._rust_bindings.monarch_extension.worker", eq, eq_int)]
+#[pyo3::pyclass(
+    module = "monarch._rust_bindings.monarch_extension.tensor_worker",
+    eq,
+    eq_int
+)]
 pub enum StreamCreationMode {
     /// Use the default stream for the current device.
     UseDefaultStream,
@@ -810,8 +845,8 @@ pub enum WorkerMessage {
 // WorkerMessage currently has no accumulation reply port.
 // TODO(pzhang) add macro to auto implement these traits.
 impl Unbind for WorkerMessage {
-    fn unbind(self) -> anyhow::Result<Unbound<Self>> {
-        Ok(Unbound::new(self, Bindings::default()))
+    fn bindings(&self) -> anyhow::Result<Bindings> {
+        Ok(Bindings::default())
     }
 }
 

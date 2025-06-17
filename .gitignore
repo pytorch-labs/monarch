@@ -4,6 +4,7 @@ python/**/*.so
 python/**/*.json
 python/**/*.html
 python/**/*.pkl
+python/**/__pycache__
 python/monarch.egg-info/*
 *.egg
 build/*
@@ -15,3 +16,4 @@ python/monarch/monarch_controller
 
 # Rust stuff
 target/
+Cargo.lock

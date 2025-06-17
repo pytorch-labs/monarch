@@ -64,7 +64,7 @@ mod tests {
         let memory_format = MemoryFormat::Contiguous;
         let converted_type = Python::with_gil(|py| {
             // import torch to ensure torch.layout types are registered
-            py.import_bound("torch").unwrap();
+            py.import("torch").unwrap();
             let obj = memory_format.into_py(py);
             obj.extract::<MemoryFormat>(py).unwrap()
         });
@@ -76,7 +76,7 @@ mod tests {
         pyo3::prepare_freethreaded_python();
         let memory_format = Python::with_gil(|py| {
             let obj = py
-                .import_bound("torch")
+                .import("torch")
                 .unwrap()
                 .getattr("preserve_format")
                 .unwrap();

@@ -8,11 +8,10 @@
 
 //! This build script locates the PyTorch libraries and headers based on your
 //! current Python environment and makes them available to the cxx bridge for
-//! linking. It does the same for CUDA.
+//! linking. This version provides CPU-only PyTorch functionality.
 //!
 //! This script is not very general atm. Functionality that we would probably want:
 //! * Support for platforms other than linux.
-//! * Support for CPU only builds, HIP builds, etc.
 
 #![feature(exit_status_error)]
 
@@ -20,6 +19,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 
 use cxx_build::CFG;
+use pyo3_build_config::InterpreterConfig;
 
 // From: https://github.com/LaurentMazare/tch-rs/blob/main/torch-sys/build.rs
 const PYTHON_PRINT_PYTORCH_DETAILS: &str = r"
@@ -30,7 +30,6 @@ for include_path in cpp_extension.include_paths():
     print('LIBTORCH_INCLUDE:', include_path)
 for library_path in cpp_extension.library_paths():
     print('LIBTORCH_LIB:', library_path)
-print('CUDA_HOME:', cpp_extension.CUDA_HOME)
 ";
 
 const PYTHON_PRINT_INCLUDE_PATH: &str = r"
@@ -48,7 +47,6 @@ fn get_env_var_with_rerun(name: &str) -> Result<String, std::env::VarError> {
 fn main() {
     let mut libtorch_include_dirs: Vec<PathBuf> = vec![];
     let mut libtorch_lib_dir: Option<PathBuf> = None;
-    let mut cuda_home: Option<PathBuf> = None;
     let mut cxx11_abi = None;
     let python_interpreter = PathBuf::from("python");
 
@@ -82,9 +80,6 @@ fn main() {
             if let Some(path) = line.strip_prefix("LIBTORCH_LIB: ") {
                 libtorch_lib_dir = Some(PathBuf::from(path))
             }
-            if let Some(path) = line.strip_prefix("CUDA_HOME: ") {
-                cuda_home = Some(PathBuf::from(path))
-            }
         }
     } else {
         cxx11_abi = Some(get_env_var_with_rerun("_GLIBCXX_USE_CXX11_ABI").unwrap());
@@ -95,7 +90,6 @@ fn main() {
                 .map(|s| s.into()),
         );
         libtorch_lib_dir = Some(get_env_var_with_rerun("LIBTORCH_LIB").unwrap().into());
-        cuda_home = Some(get_env_var_with_rerun("CUDA_HOME").unwrap().into());
     }
 
     let mut python_include: Option<PathBuf> = None;
@@ -115,6 +109,32 @@ fn main() {
         }
         if let Some(path) = line.strip_prefix("PYTHON_LIB_DIR: ") {
             println!("cargo::rustc-link-search=native={}", path);
+        }
+    }
+
+    // Use PyO3's Python discovery to find the correct Python library paths
+    // This is more robust than hardcoding platform-specific paths
+    let mut python_lib_dir: Option<String> = None;
+    match InterpreterConfig::from_interpreter(&python_interpreter) {
+        Ok(python_config) => {
+            // Add Python library directory to search path
+            if let Some(lib_dir) = &python_config.lib_dir {
+                println!("cargo::rustc-link-search=native={}", lib_dir);
+                python_lib_dir = Some(lib_dir.clone());
+            }
+
+            // On some platforms, we may need to explicitly link against Python
+            // PyO3 handles the complexity of determining when this is needed
+            if let Some(lib_name) = python_config.lib_name {
+                println!("cargo::rustc-link-lib={}", lib_name);
+            }
+        }
+        Err(e) => {
+            println!(
+                "cargo::warning=Failed to get Python interpreter config: {}",
+                e
+            );
+            println!("cargo::warning=This may cause linking issues with Python libraries");
         }
     }
 
@@ -150,13 +170,12 @@ fn main() {
 
     println!("cargo::rerun-if-changed=src/torch.hpp");
 
-    // Include CUDA toolkit
-    libtorch_include_dirs.push(format!("{}/include", cuda_home.clone().unwrap().display()).into());
-
     // Prefix includes with `monarch` to maintain consistency with fbcode
     // folder structre
     CFG.include_prefix = "monarch/torch-sys";
-    cxx_build::bridge("src/bridge.rs")
+    let mut builder = cxx_build::bridge("src/bridge.rs");
+
+    builder
         .file("src/bridge.cpp")
         .std("c++20")
         .includes(&libtorch_include_dirs)
@@ -168,34 +187,35 @@ fn main() {
             "-Wl,-rpath={}",
             libtorch_lib_dir.clone().unwrap().display()
         ))
-        .flag(&format!("-D_GLIBCXX_USE_CXX11_ABI={}", cxx11_abi.unwrap()))
-        .compile("torch-sys");
+        .flag(&format!("-D_GLIBCXX_USE_CXX11_ABI={}", cxx11_abi.unwrap()));
+
+    builder.compile("torch-sys");
 
     // Link against the various torch libs
     println!(
         "cargo::rustc-link-search=native={}",
         libtorch_lib_dir.clone().unwrap().display()
     );
-    println!("cargo::rustc-link-lib=torch_cuda");
+
+    // Core PyTorch libraries (CPU-only)
     println!("cargo::rustc-link-lib=torch_cpu");
     println!("cargo::rustc-link-lib=torch");
     println!("cargo::rustc-link-lib=torch_python");
     println!("cargo::rustc-link-lib=c10");
-    println!("cargo::rustc-link-lib=c10_cuda");
+
+    // Set runtime paths
     println!(
         "cargo::rustc-link-arg=-Wl,-rpath,{}",
         libtorch_lib_dir.clone().unwrap().display()
     );
 
-    // Link against CUDA runtime libs
-    println!(
-        "cargo::rustc-link-search=native={}/lib64",
-        cuda_home.unwrap().display()
-    );
-    println!("cargo::rustc-link-lib=cudart");
+    // Add Python library directory to rpath for runtime linking
+    if let Some(python_lib_dir) = &python_lib_dir {
+        println!("cargo::rustc-link-arg=-Wl,-rpath,{}", python_lib_dir);
+    }
 
     // Set cargo metadata to inform dependent binaries about how to set their
-    // RPATH (see monarch_worker/build.rs for an example).
+    // RPATH (see monarch_tensor_worker/build.rs for an example).
     println!(
         "cargo::metadata=LIB_PATH={}",
         libtorch_lib_dir.clone().unwrap().display()

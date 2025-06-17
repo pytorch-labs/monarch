@@ -13,7 +13,6 @@ from monarch._testing import BackendType, TestingContext
 from monarch.builtins.random import (
     get_rng_state_all_cuda_remote,
     get_rng_state_remote,
-    initial_seed_remote,
     manual_seed_all_cuda_remote,
     manual_seed_cuda_remote,
     random_seed_remote,
@@ -44,7 +43,7 @@ class TestRandomFunctions:
             num_hosts,
             gpu_per_host,
             activate,
-            rust=backend_type == BackendType.RS,
+            backend=str(backend_type),
         )
 
     def test_set_manual_seed_remote(self, backend_type):
@@ -77,15 +76,6 @@ class TestRandomFunctions:
                 result = fetch_shard((t1, t2)).result()
                 with no_mesh.activate():
                     assert not torch.equal(result[0], result[1])
-
-    def test_initial_seed_remote(self, backend_type):
-        with self.local_device_mesh(1, 1, backend_type) as device_mesh:
-            with device_mesh.activate():
-                seed_value = initial_seed_remote()
-
-                result = fetch_shard(seed_value).result()
-                with no_mesh.activate():
-                    assert isinstance(result, int)
 
     def test_get_rng_state(self, backend_type):
         with self.local_device_mesh(1, 1, backend_type) as device_mesh:

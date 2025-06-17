@@ -401,7 +401,7 @@ mod tests {
         let expected: DeviceType = DeviceType::CUDA;
         let actual = Python::with_gil(|py| {
             // import torch to ensure torch.dtype types are registered
-            py.import_bound("torch")?;
+            py.import("torch")?;
             let obj = expected.clone().into_py(py);
             obj.extract::<DeviceType>(py)
         })?;
@@ -415,7 +415,7 @@ mod tests {
         let expected: DeviceIndex = 3.into();
         let actual = Python::with_gil(|py| {
             // import torch to ensure torch.dtype types are registered
-            py.import_bound("torch")?;
+            py.import("torch")?;
             let obj = expected.clone().into_py(py);
             obj.extract::<DeviceIndex>(py)
         })?;
@@ -429,7 +429,7 @@ mod tests {
         let expected: Device = "cuda:2".try_into()?;
         let actual = Python::with_gil(|py| {
             // import torch to ensure torch.dtype types are registered
-            py.import_bound("torch")?;
+            py.import("torch")?;
             let obj = expected.clone().into_py(py);
             obj.extract::<Device>(py)
         })?;
@@ -442,10 +442,7 @@ mod tests {
         pyo3::prepare_freethreaded_python();
         let expected: Device = "cuda:2".try_into()?;
         let actual = Python::with_gil(|py| {
-            let obj = py
-                .import_bound("torch")?
-                .getattr("device")?
-                .call1(("cuda:2",))?;
+            let obj = py.import("torch")?.getattr("device")?.call1(("cuda:2",))?;
             obj.extract::<Device>()
         })?;
         assert_eq!(actual, expected);

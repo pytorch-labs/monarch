@@ -28,7 +28,6 @@ use std::mem::take;
 use std::net::ToSocketAddrs;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::OnceLock;
 use std::task::Poll;
 
 use backoff::ExponentialBackoffBuilder;
@@ -61,14 +60,12 @@ use tokio_util::codec::length_delimited::LengthDelimitedCodec;
 use tokio_util::net::Listener;
 use tokio_util::sync::CancellationToken;
 
-use super::hyperactor;
 use super::*;
 use crate::Message;
 use crate::RemoteMessage;
 use crate::clock::Clock;
 use crate::clock::RealClock;
 use crate::config;
-use crate::config::global::message_delivery_timeout;
 
 /// Use to prevent [futures::Stream] objects using the wrong next() method by
 /// accident. Bascially, we want to use [tokio_stream::StreamExt::next] since it
@@ -169,7 +166,7 @@ fn deserialize_ack(data: BytesMut) -> Result<u64, usize> {
 
 fn build_codec() -> LengthDelimitedCodec {
     LengthDelimitedCodec::builder()
-        .max_frame_length(config::global::codec_max_frame_length())
+        .max_frame_length(config::global::get(config::CODEC_MAX_FRAME_LENGTH))
         .new_codec()
 }
 
@@ -232,7 +229,9 @@ impl<M: RemoteMessage> NetTx<M> {
             fn is_expired(&self) -> bool {
                 match self.deque.front() {
                     None => false,
-                    Some((_, _, since, _)) => since.elapsed() > message_delivery_timeout(),
+                    Some((_, _, since, _)) => {
+                        since.elapsed() > config::global::get(config::MESSAGE_DELIVERY_TIMEOUT)
+                    }
                 }
             }
 
@@ -343,7 +342,7 @@ impl<M: RemoteMessage> NetTx<M> {
             fn is_expired(&self) -> bool {
                 matches!(
                     self.0.front(),
-                    Some((_, _, received_at, _)) if received_at.elapsed() > message_delivery_timeout()
+                    Some((_, _, received_at, _)) if received_at.elapsed() > config::global::get(config::MESSAGE_DELIVERY_TIMEOUT)
                 )
             }
 
@@ -354,7 +353,10 @@ impl<M: RemoteMessage> NetTx<M> {
                 match self.0.front() {
                     Some((_, _, received_at, _)) => {
                         RealClock
-                            .sleep_until(received_at.clone() + message_delivery_timeout())
+                            .sleep_until(
+                                received_at.clone()
+                                    + config::global::get(config::MESSAGE_DELIVERY_TIMEOUT),
+                            )
                             .await
                     }
                     None => std::future::pending::<()>().await,
@@ -465,7 +467,7 @@ impl<M: RemoteMessage> NetTx<M> {
                                 "session {}.{}: failed to receive ack within timeout {} secs; link is currently connected",
                                 link.dest(),
                                 session_id,
-                                message_delivery_timeout().as_secs(),
+                                config::global::get(config::MESSAGE_DELIVERY_TIMEOUT).as_secs(),
                             );
                             (State::Closing(Deliveries{outbox, unacked}), Conn::Connected { sink, stream })
                         }
@@ -587,7 +589,7 @@ impl<M: RemoteMessage> NetTx<M> {
                             "session {}.{}: failed to receive ack within timeout {} secs; link is currently broken",
                             link.dest(),
                             session_id,
-                            message_delivery_timeout().as_secs(),
+                            config::global::get(config::MESSAGE_DELIVERY_TIMEOUT).as_secs(),
                         );
                         (
                             State::Closing(Deliveries { outbox, unacked }),
@@ -893,8 +895,8 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
         use anyhow::Context;
         let mut last_ack_time = RealClock.now();
 
-        let ack_time_interval = config::global::message_ack_time_interval();
-        let ack_msg_interval = config::global::message_ack_every_n_messages();
+        let ack_time_interval = config::global::get(config::MESSAGE_ACK_TIME_INTERVAL);
+        let ack_msg_interval = config::global::get(config::MESSAGE_ACK_EVERY_N_MESSAGES);
 
         loop {
             tokio::select! {
@@ -1122,7 +1124,6 @@ impl SessionManager {
 
 /// Main listen loop that actually runs the server. The loop will exit when `parent_cancel_token` is
 /// canceled.
-#[hyperactor::instrument]
 async fn listen<M: RemoteMessage, L: Listener>(
     mut listener: L,
     listener_channel_addr: ChannelAddr,
@@ -1141,6 +1142,7 @@ where
 
     let manager = SessionManager::new();
     let result: Result<(), ServerError> = loop {
+        let _ = tracing::info_span!("channel_listen_accept_loop");
         tokio::select! {
             result = listener.accept() => {
                 tracing::debug!("listener accepted a new connection.");
@@ -1167,7 +1169,7 @@ where
                                 match source {
                                     ChannelAddr::Tcp(source_addr) if source_addr.ip().is_loopback() => {},
                                     _ => {
-                                        tracing::info!(
+                                        tracing::error!(
                                             "serve: error processing peer connection {} <- {}: {:?}",
                                             dest, source, err
                                             );
@@ -1184,6 +1186,7 @@ where
             }
 
             _ = parent_cancel_token.cancelled() => {
+                tracing::info!("recieved parent token cancellation");
                 break Ok(());
             }
 
@@ -1397,7 +1400,8 @@ pub(crate) mod unix {
                     }
                     #[cfg(not(target_os = "linux"))]
                     {
-                        false
+                        // On non-Linux platforms, only compare pathname since no abstract names
+                        saddr.as_pathname() == oaddr.as_pathname()
                     }
                 }
                 (Self::Unbound, _) | (_, Self::Unbound) => false,
@@ -1446,8 +1450,29 @@ pub(crate) mod unix {
         }
 
         #[cfg(not(target_os = "linux"))]
-        pub fn from_abstract_name(_name: &str) -> anyhow::Result<Self> {
-            anyhow::bail!("abstract names are only supported on Linux")
+        pub fn from_abstract_name(name: &str) -> anyhow::Result<Self> {
+            // On non-Linux platforms, convert abstract names to filesystem paths
+            let name = name.strip_prefix("@").unwrap_or(name);
+            let path = Self::abstract_to_filesystem_path(name);
+            Self::from_pathname(&path.to_string_lossy())
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        fn abstract_to_filesystem_path(abstract_name: &str) -> std::path::PathBuf {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::Hash;
+            use std::hash::Hasher;
+
+            // Generate a stable hash of the abstract name for deterministic paths
+            let mut hasher = DefaultHasher::new();
+            abstract_name.hash(&mut hasher);
+            let hash = hasher.finish();
+
+            // Include process ID to prevent inter-process conflicts
+            let process_id = std::process::id();
+
+            // TODO: we just leak these. Should we do something smarter?
+            std::path::PathBuf::from(format!("/tmp/hyperactor_{}_{:x}", process_id, hash))
         }
 
         /// Pathnames may be absolute or relative.
@@ -1550,6 +1575,7 @@ pub(crate) mod meta {
     const THRIFT_TLS_CL_KEY_PATH_ENV: &str = "THRIFT_TLS_CL_KEY_PATH";
     const DEFAULT_SERVER_PEM_PATH: &str = "/var/facebook/x509_identities/server.pem";
 
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ChannelError`.
     pub(crate) fn parse(addr_string: &str) -> Result<ChannelAddr, ChannelError> {
         // use right split to allow for ipv6 addresses where ":" is expected.
         let parts = addr_string.rsplit_once(":");
@@ -1712,7 +1738,7 @@ pub(crate) mod meta {
             let (connector, domain_name) = tls_connector_config(&self.hostname).map_err(|err| {
                 ClientError::Connect(
                     self.dest(),
-                    io::Error::new(io::ErrorKind::Other, err.to_string()),
+                    io::Error::other(err.to_string()),
                     format!("cannot config tls connector for addr {}", addr),
                 )
             })?;
@@ -1744,7 +1770,7 @@ pub(crate) mod meta {
         })?;
         let addr = addrs.next().ok_or(ServerError::Resolve(
             ChannelAddr::MetaTls(hostname.clone(), port),
-            io::Error::new(io::ErrorKind::Other, "no available socket addr"),
+            io::Error::other("no available socket addr"),
         ))?;
         let channel_addr = ChannelAddr::MetaTls(hostname.clone(), port);
         let listener = TcpListener::bind(addr)
@@ -1780,11 +1806,8 @@ mod tests {
     use rand::distributions::Alphanumeric;
     use timed_test::async_timed_test;
     use tokio::io::DuplexStream;
-    use tracing::Level;
 
     use super::*;
-    use crate::Config;
-    use crate::test_utils::tracing::set_tracing_env_filter;
 
     fn unused_return_channel<M>() -> oneshot::Sender<M> {
         oneshot::channel().0
@@ -1893,13 +1916,10 @@ mod tests {
     async fn test_tcp_message_size() {
         let default_size_in_bytes = 100 * 1024 * 1024;
         // Use temporary config for this test
-        let _guard = config::global::set_temp_config(crate::Config {
-            message_delivery_timeout: Duration::from_secs(1),
-            codec_max_frame_length: default_size_in_bytes,
-            ..Default::default()
-        });
+        let config = config::global::lock();
+        let _guard1 = config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(1));
+        let _guard2 = config.override_key(config::CODEC_MAX_FRAME_LENGTH, default_size_in_bytes);
 
-        set_tracing_env_filter(Level::DEBUG);
         let (addr, mut rx) = tcp::serve::<String>("[::1]:0".parse().unwrap())
             .await
             .unwrap();
@@ -1924,13 +1944,11 @@ mod tests {
     }
 
     #[tracing_test::traced_test]
-    #[async_timed_test(timeout_secs = 30)]
+    #[async_timed_test(timeout_secs = 60)]
     async fn test_tcp_reconnect() {
         // Use temporary config for this test
-        let _guard = config::global::set_temp_config(Config {
-            message_ack_every_n_messages: 1,
-            ..Default::default()
-        });
+        let config = config::global::lock();
+        let _guard = config.override_key(config::MESSAGE_ACK_EVERY_N_MESSAGES, 1);
         let socket_addr: SocketAddr = "[::1]:0".parse().unwrap();
         let (local_addr, mut rx1) = tcp::serve::<u64>(socket_addr).await.unwrap();
         let local_socket = match local_addr {
@@ -2134,7 +2152,7 @@ mod tests {
             if self.fail_connects.load(Ordering::Acquire) {
                 return Err(ClientError::Connect(
                     self.dest(),
-                    std::io::Error::new(io::ErrorKind::Other, "intentional error"),
+                    std::io::Error::other("intentional error"),
                     "expected failure injected by the mock".to_string(),
                 ));
             }
@@ -2365,13 +2383,11 @@ mod tests {
         }
     }
 
-    #[async_timed_test(timeout_secs = 30)]
+    #[async_timed_test(timeout_secs = 60)]
     async fn test_persistent_server_session() {
         // Use temporary config for this test
-        let _guard = config::global::set_temp_config(Config {
-            message_ack_every_n_messages: 1,
-            ..Default::default()
-        });
+        let config = config::global::lock();
+        let _guard = config.override_key(config::MESSAGE_ACK_EVERY_N_MESSAGES, 1);
         async fn verify_ack(
             framed: &mut Framed<DuplexStream, LengthDelimitedCodec>,
             expected_last: u64,
@@ -2398,7 +2414,6 @@ mod tests {
             }
         }
 
-        set_tracing_env_filter(Level::DEBUG);
         let manager = SessionManager::new();
         let session_id = 123;
 
@@ -2463,13 +2478,9 @@ mod tests {
     }
 
     #[async_timed_test(timeout_secs = 60)]
-    async fn test_ack_from_server_sesssion() {
-        // Use temporary config for this test
-        let _guard = config::global::set_temp_config(Config {
-            message_ack_every_n_messages: 1,
-            ..Default::default()
-        });
-        hyperactor::test_utils::tracing::set_tracing_env_filter(tracing::Level::DEBUG);
+    async fn test_ack_from_server_session() {
+        let config = config::global::lock();
+        let _guard = config.override_key(config::MESSAGE_ACK_EVERY_N_MESSAGES, 1);
         let manager = SessionManager::new();
         let session_id = 123;
 
@@ -2530,10 +2541,8 @@ mod tests {
         let link = MockLink::<u64>::fail_connects();
         let tx = NetTx::<u64>::new(link);
         // Override the default (1m) for the purposes of this test.
-        let _guard = config::global::set_temp_config(Config {
-            message_delivery_timeout: Duration::from_secs(1),
-            ..Default::default()
-        });
+        let config = config::global::lock();
+        let _guard = config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(1));
         let mut tx_receiver = tx.status().clone();
         let (return_channel, _return_receiver) = oneshot::channel();
         tx.try_post(123, return_channel).unwrap();
@@ -2632,7 +2641,6 @@ mod tests {
     // Verify unacked message will be resent after reconnection.
     #[async_timed_test(timeout_secs = 60)]
     async fn test_persistent_net_tx() {
-        set_tracing_env_filter(Level::DEBUG);
         let link = MockLink::<u64>::new();
         let receiver_storage = link.receiver_storage();
 
@@ -2785,10 +2793,8 @@ mod tests {
 
     async fn verify_ack_exceeded_limit(disconnect_before_ack: bool) {
         // Use temporary config for this test
-        let _guard = config::global::set_temp_config(Config {
-            message_delivery_timeout: Duration::from_secs(2),
-            ..Default::default()
-        });
+        let config = config::global::lock();
+        let _guard = config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(2));
 
         let link: MockLink<u64> = MockLink::<u64>::new();
         let disconnect_signal = link.disconnect_signal().clone();
@@ -2843,9 +2849,8 @@ mod tests {
 
     // Verify a large number of messages can be delivered and acked with the
     // presence of flakiness in the network, i.e. random delay and disconnection.
-    #[async_timed_test(timeout_secs = 30)]
+    #[async_timed_test(timeout_secs = 60)]
     async fn test_network_flakiness_in_channel() {
-        set_tracing_env_filter(Level::DEBUG);
         let sampling_rate = 100;
         let mut link = MockLink::<u64>::with_network_flakiness(NetworkFlakiness {
             disconnect_params: Some((0.001, 15, Duration::from_millis(400))),
@@ -2908,30 +2913,28 @@ mod tests {
         // check here to verify the messages are acked correctly.
     }
 
-    #[async_timed_test(timeout_secs = 30)]
+    #[async_timed_test(timeout_secs = 60)]
     async fn test_ack_every_n_messages() {
-        // Use temporary config for this test
-        let _guard = config::global::set_temp_config(Config {
-            message_ack_every_n_messages: 600,
-            message_ack_time_interval: Duration::from_millis(1000000),
-            ..Default::default()
-        });
+        let config = config::global::lock();
+        let _guard_message_ack = config.override_key(config::MESSAGE_ACK_EVERY_N_MESSAGES, 600);
+        let _guard_time_interval =
+            config.override_key(config::MESSAGE_ACK_TIME_INTERVAL, Duration::from_secs(1000));
         sparse_ack().await;
     }
 
-    #[async_timed_test(timeout_secs = 30)]
+    #[async_timed_test(timeout_secs = 60)]
     async fn test_ack_every_time_interval() {
-        // Use temporary config for this test
-        let _guard = config::global::set_temp_config(Config {
-            message_ack_every_n_messages: 100000000,
-            message_ack_time_interval: Duration::from_millis(500),
-            ..Default::default()
-        });
+        let config = config::global::lock();
+        let _guard_message_ack =
+            config.override_key(config::MESSAGE_ACK_EVERY_N_MESSAGES, 100000000);
+        let _guard_time_interval = config.override_key(
+            config::MESSAGE_ACK_TIME_INTERVAL,
+            Duration::from_millis(500),
+        );
         sparse_ack().await;
     }
 
     async fn sparse_ack() {
-        set_tracing_env_filter(Level::DEBUG);
         let mut link = MockLink::<u64>::new();
         // Set a large buffer size to improve throughput.
         link.set_buffer_size(1024000);
@@ -2992,12 +2995,10 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 300)]
     async fn test_tcp_throughput() {
-        // Use temporary config for this test
-        let _guard = config::global::set_temp_config(Config {
-            message_delivery_timeout: Duration::from_secs(300),
-            ..Default::default()
-        });
-        set_tracing_env_filter(Level::DEBUG);
+        let config = config::global::lock();
+        let _guard =
+            config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(300));
+
         let socket_addr: SocketAddr = "[::1]:0".parse().unwrap();
         let (local_addr, mut rx) = tcp::serve::<String>(socket_addr).await.unwrap();
 

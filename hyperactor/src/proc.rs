@@ -22,6 +22,7 @@ use std::panic;
 use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::Weak;
 use std::sync::atomic::AtomicU64;
@@ -35,7 +36,6 @@ use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
 use dashmap::mapref::multiple::RefMulti;
 use futures::FutureExt;
-use hyperactor_telemetry::kv_pairs;
 use hyperactor_telemetry::recorder;
 use hyperactor_telemetry::recorder::Recording;
 use serde::Deserialize;
@@ -60,6 +60,7 @@ use crate::actor::Binds;
 use crate::actor::RemoteActor;
 use crate::actor::RemoteHandles;
 use crate::actor::Signal;
+use crate::actor::WeakActorHandle;
 use crate::cap;
 use crate::clock::Clock;
 use crate::clock::ClockKind;
@@ -77,7 +78,6 @@ use crate::mailbox::PanickingMailboxSender;
 use crate::mailbox::PortHandle;
 use crate::mailbox::PortReceiver;
 use crate::mailbox::Undeliverable;
-use crate::metrics::ACTOR_STATUS;
 use crate::metrics::MESSAGE_HANDLER_DURATION;
 use crate::metrics::MESSAGE_QUEUE_SIZE;
 use crate::panic_handler;
@@ -120,6 +120,10 @@ struct ProcState {
 
     /// Keep track of all of the active actors in the proc.
     ledger: ActorLedger,
+
+    /// Registry of typed actor handles by name and type, for actor lookup.
+    /// Maps (actor_name, TypeId) to type-erased ActorHandle.
+    actor_registry: DashMap<(String, TypeId), Box<dyn Any + Send + Sync>>,
 
     /// Used by root actors to send events to the actor coordinating
     /// supervision of root actors in this proc.
@@ -324,6 +328,7 @@ impl Proc {
             forwarder,
             roots: DashMap::new(),
             ledger: ActorLedger::new(),
+            actor_registry: DashMap::new(),
             supervision_coordinator_port: OnceLock::new(),
             clock,
         }))
@@ -443,6 +448,12 @@ impl Proc {
         params: A::Params,
     ) -> Result<ActorHandle<A>, anyhow::Error> {
         let actor_id = self.allocate_root_id(name)?;
+        let _ = tracing::debug_span!(
+            "spawn_actor",
+            actor_name = name,
+            actor_type = std::any::type_name::<A>(),
+            actor_id = actor_id.to_string(),
+        );
         let instance = Instance::new(self.clone(), actor_id.clone(), None);
         let actor = A::new(params).await?;
         // Add this actor to the proc's actor ledger. We do not actively remove
@@ -452,7 +463,16 @@ impl Proc {
             .ledger
             .insert(actor_id.clone(), instance.cell.downgrade())?;
 
-        instance.start(actor).await
+        let handle = instance.start(actor).await?;
+
+        // Register a weak reference to the actor handle in the registry for later lookup
+        let registry_key = (name.to_string(), TypeId::of::<A>());
+        let weak_handle = handle.downgrade();
+        self.state()
+            .actor_registry
+            .insert(registry_key, Box::new(weak_handle));
+
+        Ok(handle)
     }
 
     /// Spawn a child actor from the provided parent on this proc. The parent actor
@@ -730,8 +750,10 @@ pub struct Instance<A: Actor> {
     /// A watch for communicating the actor's state.
     status_tx: watch::Sender<ActorStatus>,
 
+    status_span: Mutex<tracing::Span>,
+
     /// The timestamp of when the currently active status was set.
-    last_status_change: tokio::time::Instant,
+    _last_status_change: Arc<tokio::time::Instant>,
 }
 
 impl<A: Actor> Instance<A> {
@@ -755,6 +777,7 @@ impl<A: Actor> Instance<A> {
             Some(info) => ActorType::Named(info),
             None => ActorType::Anonymous(std::any::type_name::<A>()),
         };
+        let ais = actor_id.to_string();
 
         let cell = InstanceCell::new(
             actor_id,
@@ -775,23 +798,26 @@ impl<A: Actor> Instance<A> {
             ports,
             work_rx,
             status_tx,
-            last_status_change: start,
+            status_span: Mutex::new(tracing::debug_span!(
+                "actor_status",
+                actor_id = ais,
+                name = "created"
+            )),
+            _last_status_change: Arc::new(start),
         }
     }
 
     /// Notify subscribers of a change in the actors status and bump counters with the duration which
     /// the last status was active for.
-    fn change_status(&mut self, new: ActorStatus) {
-        let old = self.status_tx.send_replace(new.clone());
+    fn change_status(&self, new: ActorStatus) {
+        // let old = self.status_tx.send_replace(new.clone());
+        self.status_tx.send_replace(new.clone());
         let actor_id_str = self.self_id().to_string();
-        tracing::debug!(actor_id = %actor_id_str, "Changed status from {} to {}", old.arm().unwrap_or_default(), new.arm().unwrap_or_default());
-        let now = self.clock().now();
-        let dur = now.duration_since(self.last_status_change);
-        ACTOR_STATUS.record(
-            dur,
-            kv_pairs!("actor_id" => actor_id_str, "status" => old.arm().unwrap_or_default()),
+        *self.status_span.lock().expect("can't change") = tracing::debug_span!(
+            "actor_status",
+            actor_id = actor_id_str,
+            name = new.arm().unwrap_or_default()
         );
-        self.last_status_change = now;
     }
 
     /// This instance's actor ID.
@@ -800,6 +826,7 @@ impl<A: Actor> Instance<A> {
     }
 
     /// Signal the actor to stop.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ActorError`.
     pub fn stop(&self) -> Result<(), ActorError> {
         self.cell.signal(Signal::DrainAndStop)
     }
@@ -825,6 +852,7 @@ impl<A: Actor> Instance<A> {
     }
 
     /// Send a message to the actor itself with a delay usually to trigger some event.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ActorError`.
     pub fn self_message_with_delay<M>(&self, message: M, delay: Duration) -> Result<(), ActorError>
     where
         M: Message,
@@ -834,7 +862,7 @@ impl<A: Actor> Instance<A> {
         let self_id = self.self_id().clone();
         let clock = self.proc.state().clock.clone();
         tokio::spawn(async move {
-            clock.sleep(delay).await;
+            clock.non_advancing_sleep(delay).await;
             if let Err(e) = port.send(message) {
                 // TODO: this is a fire-n-forget thread. We need to
                 // handle errors in a better way.
@@ -846,6 +874,7 @@ impl<A: Actor> Instance<A> {
 
     /// Start an A-typed actor onto this instance with the provided params. When spawn returns,
     /// the actor has been linked with its parent, if it has one.
+    #[hyperactor::instrument]
     async fn start(self, actor: A) -> Result<ActorHandle<A>, anyhow::Error> {
         let instance_cell = self.cell.clone();
         let actor_id = self.cell.actor_id().clone();
@@ -862,7 +891,6 @@ impl<A: Actor> Instance<A> {
         Ok(actor_handle)
     }
 
-    #[crate::instrument_infallible(fields(actor_id=tracing::field::display(self.self_id())))]
     async fn serve(mut self, mut actor: A) {
         let result = self.run_actor_tree(&mut actor).await;
 
@@ -870,6 +898,12 @@ impl<A: Actor> Instance<A> {
             Ok(_) => ActorStatus::Stopped,
             Err(err) => ActorStatus::Failed(err.to_string()),
         };
+
+        // Clean up the actor registry entry for root actors
+        if self.cell.pid() == 0 {
+            let registry_key = (self.cell.actor_id().name().to_string(), TypeId::of::<A>());
+            self.proc.state().actor_registry.remove(&registry_key);
+        }
 
         let result = self.cell.maybe_unlink_parent();
         if let Some(parent) = result {
@@ -912,6 +946,7 @@ impl<A: Actor> Instance<A> {
         // and tokio will catch the panic anyway:
         // https://docs.rs/tokio/latest/tokio/task/struct.JoinError.html#method.is_panic
         // What we do here is just to catch it early so we can handle it.
+
         let result = match AssertUnwindSafe(self.run(actor)).catch_unwind().await {
             Ok(result) => result,
             Err(err) => {
@@ -991,6 +1026,9 @@ impl<A: Actor> Instance<A> {
                     let _ = MESSAGE_HANDLER_DURATION.start(metric_pairs);
                     let work = work.expect("inconsistent work queue state");
                     if let Err(err) = work.handle(actor, self).await {
+                        for supervision_event in self.supervision_event_receiver.drain() {
+                            self.handle_supervision_event(actor, supervision_event).await;
+                        }
                         return Err(ActorError::new(self.self_id().clone(), ActorErrorKind::Processing(err)));
                     }
                 }
@@ -1012,23 +1050,7 @@ impl<A: Actor> Instance<A> {
                     }
                 }
                 Ok(supervision_event) = self.supervision_event_receiver.recv() => {
-                    // Handle the supervision event with the current actor.
-                    if let Ok(false) = actor.handle_supervision_event(self, &supervision_event).await {
-                        // The supervision event wasn't handled by this actor, try to bubble it up.
-                        let result = self.cell.get_parent_cell();
-                        if let Some(parent) = result {
-                            parent
-                                .send_supervision_event_or_crash(supervision_event);
-                        } else {
-                            // Reaching here means the actor is either a root actor, or an orphaned
-                            // child actor (i.e. the parent actor was dropped unexpectedly). In either
-                            // case, the supervision event should be sent to proc.
-                            //
-                            // Note that orphaned actor is unexpected and would only happen if there
-                            // is a bug.
-                            self.proc.handle_supervision_event(supervision_event);
-                        }
-                    }
+                    self.handle_supervision_event(actor, supervision_event).await;
                 }
             }
             self.cell
@@ -1056,6 +1078,32 @@ impl<A: Actor> Instance<A> {
         Ok(())
     }
 
+    async fn handle_supervision_event(
+        &self,
+        actor: &mut A,
+        supervision_event: ActorSupervisionEvent,
+    ) {
+        // Handle the supervision event with the current actor.
+        if let Ok(false) = actor
+            .handle_supervision_event(self, &supervision_event)
+            .await
+        {
+            // The supervision event wasn't handled by this actor, try to bubble it up.
+            let result = self.cell.get_parent_cell();
+            if let Some(parent) = result {
+                parent.send_supervision_event_or_crash(supervision_event);
+            } else {
+                // Reaching here means the actor is either a root actor, or an orphaned
+                // child actor (i.e. the parent actor was dropped unexpectedly). In either
+                // case, the supervision event should be sent to proc.
+                //
+                // Note that orphaned actor is unexpected and would only happen if there
+                // is a bug.
+                self.proc.handle_supervision_event(supervision_event);
+            }
+        }
+    }
+
     async unsafe fn handle_message<M: Message>(
         &self,
         actor: &mut A,
@@ -1076,14 +1124,12 @@ impl<A: Actor> Instance<A> {
             )
         });
 
-        let _ = self.status_tx.send(ActorStatus::Processing(
+        let _ = self.change_status(ActorStatus::Processing(
             self.clock().system_time_now(),
             handler,
         ));
-        actor
-            .handle(self, message)
-            .instrument(self.cell.state.recording.span())
-            .await
+        let span = self.status_span.lock().unwrap().clone();
+        actor.handle(self, message).instrument(span).await
     }
 
     /// Return a handle port handle representing the actor's message
@@ -1119,6 +1165,22 @@ impl<A: Actor> Instance<A> {
     /// The owning proc.
     pub fn proc(&self) -> &Proc {
         &self.proc
+    }
+
+    /// Look up a root actor by name and type.
+    /// Returns `Some(ActorHandle<T>)` if a root actor with the given name exists and is of type T.
+    /// Returns `None` if no root actor with that name exists, if it's not of the expected type,
+    /// or if the actor has been dropped.
+    pub fn get<T: Actor>(&self, name: &str) -> Option<ActorHandle<T>> {
+        let registry_key = (name.to_string(), TypeId::of::<T>());
+
+        if let Some(entry) = self.proc.state().actor_registry.get(&registry_key) {
+            if let Some(weak_handle) = entry.downcast_ref::<WeakActorHandle<T>>() {
+                return weak_handle.upgrade();
+            }
+        }
+
+        None
     }
 }
 
@@ -1224,6 +1286,7 @@ impl InstanceCell {
         status: watch::Receiver<ActorStatus>,
         parent: Option<InstanceCell>,
     ) -> Self {
+        let _ais = actor_id.to_string();
         let cell = Self {
             state: Arc::new(InstanceState {
                 actor_id,
@@ -1268,6 +1331,7 @@ impl InstanceCell {
     }
 
     /// Send a signal to the actor.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ActorError`.
     pub fn signal(&self, signal: Signal) -> Result<(), ActorError> {
         self.state.signal.send(signal).map_err(ActorError::from)
     }
@@ -1293,7 +1357,7 @@ impl InstanceCell {
     }
 
     /// Downgrade this InstanceCell to a weak reference.
-    fn downgrade(&self) -> WeakInstanceCell {
+    pub fn downgrade(&self) -> WeakInstanceCell {
         WeakInstanceCell {
             state: Arc::downgrade(&self.state),
         }
@@ -1368,18 +1432,18 @@ impl InstanceCell {
 /// A weak version of the InstanceCell. This is used to provide cyclical
 /// linkage between actors without creating a strong reference cycle.
 #[derive(Debug, Clone)]
-struct WeakInstanceCell {
+pub struct WeakInstanceCell {
     state: Weak<InstanceState>,
 }
 
 impl WeakInstanceCell {
     /// Create a new weak instance cell that is never upgradeable.
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self { state: Weak::new() }
     }
 
     /// Upgrade this weak instance cell to a strong reference, if possible.
-    fn upgrade(&self) -> Option<InstanceCell> {
+    pub fn upgrade(&self) -> Option<InstanceCell> {
         self.state.upgrade().map(InstanceCell::wrap)
     }
 }
@@ -1504,12 +1568,14 @@ mod tests {
     use tokio::sync::oneshot;
     use tracing::Level;
     use tracing_subscriber::layer::SubscriberExt;
+    use tracing_test::internal::logs_with_scope_contain;
 
     use super::*;
     // needed for in-crate macro expansion
     use crate as hyperactor;
     use crate::HandleClient;
     use crate::Handler;
+    use crate::OncePortRef;
     use crate::clock::RealClock;
     use crate::test_utils::proc_supervison::ProcSupervisionCoordinator;
     use crate::test_utils::process_assertion::assert_termination;
@@ -1702,6 +1768,100 @@ mod tests {
         rx.await.unwrap();
     }
 
+    #[derive(Debug)]
+    struct LookupTestActor {
+        found_actor: Option<ActorHandle<TestActor>>,
+    }
+
+    #[derive(Handler, HandleClient, Debug)]
+    enum LookupTestMessage {
+        ActorExists(String, #[reply] OncePortRef<bool>),
+    }
+
+    #[async_trait]
+    impl Actor for LookupTestActor {
+        type Params = ();
+
+        async fn new(_params: ()) -> Result<Self, anyhow::Error> {
+            Ok(Self { found_actor: None })
+        }
+    }
+
+    #[async_trait]
+    #[crate::forward(LookupTestMessage)]
+    impl LookupTestMessageHandler for LookupTestActor {
+        async fn actor_exists(
+            &mut self,
+            this: &Instance<Self>,
+            name: String,
+        ) -> Result<bool, anyhow::Error> {
+            self.found_actor = this.get::<TestActor>(&name);
+            Ok(self.found_actor.is_some())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_actor_lookup() {
+        let proc = Proc::local();
+        let client = proc.attach("client").unwrap();
+
+        let target_actor = proc.spawn::<TestActor>("target", ()).await.unwrap();
+        let lookup_actor = proc.spawn::<LookupTestActor>("lookup", ()).await.unwrap();
+
+        assert!(
+            lookup_actor
+                .actor_exists(&client, "target".to_string())
+                .await
+                .unwrap()
+        );
+
+        assert!(
+            !lookup_actor
+                .actor_exists(&client, "nonexistent".to_string())
+                .await
+                .unwrap()
+        );
+
+        target_actor.drain_and_stop().unwrap();
+        target_actor.await;
+
+        assert!(
+            !lookup_actor
+                .actor_exists(&client, "target".to_string())
+                .await
+                .unwrap()
+        );
+
+        lookup_actor.drain_and_stop().unwrap();
+        lookup_actor.await;
+    }
+
+    #[tokio::test]
+    async fn test_actor_registry_cleanup() {
+        let proc = Proc::local();
+
+        let initial_size = proc.state().actor_registry.len();
+
+        for i in 0..5 {
+            let actor_name = format!("temp_actor_{}", i);
+            let actor = proc.spawn::<TestActor>(&actor_name, ()).await.unwrap();
+
+            assert_eq!(proc.state().actor_registry.len(), initial_size + 1);
+
+            actor.drain_and_stop().unwrap();
+            actor.await;
+
+            assert_eq!(
+                proc.state().actor_registry.len(),
+                initial_size,
+                "Registry should be cleaned up after actor {} stops",
+                actor_name
+            );
+        }
+
+        assert_eq!(proc.state().actor_registry.len(), initial_size);
+    }
+
     fn validate_link(child: &InstanceCell, parent: &InstanceCell) {
         assert_eq!(child.actor_id().proc_id(), parent.actor_id().proc_id());
         assert_eq!(
@@ -1724,7 +1884,8 @@ mod tests {
         let third = TestActor::spawn_child(&second).await;
 
         // Check we've got the join handles.
-        assert!(logs_contain(
+        assert!(logs_with_scope_contain(
+            "hyperactor::proc",
             format!(
                 "{}: spawned with {:?}",
                 first.actor_id(),
@@ -1732,7 +1893,8 @@ mod tests {
             )
             .as_str()
         ));
-        assert!(logs_contain(
+        assert!(logs_with_scope_contain(
+            "hyperactor::proc",
             format!(
                 "{}: spawned with {:?}",
                 second.actor_id(),
@@ -1740,7 +1902,8 @@ mod tests {
             )
             .as_str()
         ));
-        assert!(logs_contain(
+        assert!(logs_with_scope_contain(
+            "hyperactor::proc",
             format!(
                 "{}: spawned with {:?}",
                 third.actor_id(),

@@ -82,6 +82,9 @@ class StreamRef(Referenceable):
             messages.CreateStream(self, self.default),
         )
 
+    def __repr__(self):
+        return f"<StreamRef {repr(self.name)} {self.ref}>"
+
     def delete_ref(self, ref):
         client = self.client()
         if client is not None and not client._shutdown:

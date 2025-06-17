@@ -11,7 +11,9 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 use derive_more::From;
+use hyperactor::Handler;
 use hyperactor::Named;
+use hyperactor::message::IndexedErasedUnbound;
 use pyo3::Bound;
 use pyo3::PyResult;
 use pyo3::types::PyModule;
@@ -49,7 +51,13 @@ pub enum DebuggerAction {
     Read { requested_size: usize },
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Named, From)]
+#[derive(Serialize, Deserialize, Debug, Clone, Named, From, Handler)]
 pub enum DebuggerMessage {
     Action { action: DebuggerAction },
 }
+
+hyperactor::alias!(
+    DebuggerActor,
+    DebuggerMessage,
+    IndexedErasedUnbound<DebuggerMessage>
+);

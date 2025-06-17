@@ -6,6 +6,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#![cfg(feature = "tensor_engine")]
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -27,8 +29,10 @@ use monarch_messages::client::ClientMessage;
 use monarch_messages::client::Exception;
 use monarch_messages::client::LogLevel;
 use monarch_messages::controller::ControllerActor;
+use monarch_messages::controller::ControllerMessage;
 use monarch_messages::controller::ControllerMessageClient;
 use monarch_messages::controller::DeviceFailure;
+use monarch_messages::controller::Ranks;
 use monarch_messages::controller::Seq;
 use monarch_messages::controller::WorkerError;
 use monarch_messages::debugger::DebuggerAction;
@@ -36,6 +40,7 @@ use monarch_messages::worker::Ref;
 use monarch_types::PyTree;
 use monarch_types::TryIntoPyObjectUnsafe;
 use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::IntoPyDict;
 use pyo3::types::PyDict;
@@ -44,10 +49,19 @@ use pyo3::types::PyNone;
 use tokio::sync::Mutex;
 use torch_sys::RValue;
 
+use crate::controller::PyRanks;
+use crate::convert::convert;
+
 #[pyclass(frozen, module = "monarch._rust_bindings.monarch_extension.client")]
-struct WorkerResponse {
+pub struct WorkerResponse {
     seq: Seq,
     result: Option<Result<Serialized, Exception>>,
+}
+
+impl WorkerResponse {
+    pub fn new(seq: Seq, result: Option<Result<Serialized, Exception>>) -> Self {
+        Self { seq, result }
+    }
 }
 
 #[pymethods]
@@ -84,7 +98,7 @@ impl WorkerResponse {
     fn result(&self, py: Python<'_>) -> PyResult<PyObject> {
         if let Some(result) = &self.result {
             if result.is_err() {
-                Ok(PyNone::get_bound(py).into_py(py))
+                Ok(PyNone::get(py).into_py(py))
             } else {
                 // TODO: Use better shared error class
                 let rvalue = result
@@ -99,15 +113,15 @@ impl WorkerResponse {
                 Ok(unsafe { rvalue.try_to_object_unsafe(py)?.unbind() })
             }
         } else {
-            Ok(PyNone::get_bound(py).into_py(py))
+            Ok(PyNone::get(py).into_py(py))
         }
     }
 
     fn exception(&self, py: Python<'_>) -> PyResult<PyObject> {
         match self.result.as_ref() {
-            Some(Ok(_)) => Ok(PyNone::get_bound(py).into_py(py)),
+            Some(Ok(_)) => Ok(PyNone::get(py).into_py(py)),
             Some(Err(exc)) => Ok(PyException::exception_to_py(py, exc)?),
-            None => Ok(PyNone::get_bound(py).into_py(py)),
+            None => Ok(PyNone::get(py).into_py(py)),
         }
     }
 
@@ -131,13 +145,19 @@ pub struct PyWorldState {
 #[pymethods]
 impl PyWorldState {
     #[getter]
-    fn labels(self_: PyRef<Self>, py: Python) -> PyObject {
-        self_.inner.labels.clone().into_py_dict_bound(py).into()
+    fn labels(self_: PyRef<Self>, py: Python) -> PyResult<PyObject> {
+        Ok(self_
+            .inner
+            .labels
+            .clone()
+            .into_py_dict(py)?
+            .into_any()
+            .unbind())
     }
 
     #[getter]
     fn procs(self_: PyRef<Self>, py: Python) -> PyResult<PyObject> {
-        let proc_dict = PyDict::new_bound(py);
+        let proc_dict = PyDict::new(py);
         for (proc_id, proc_info) in self_.inner.procs.clone() {
             proc_dict.set_item(proc_id.to_string(), PyProcInfo::from(proc_info).into_py(py))?;
         }
@@ -189,23 +209,25 @@ impl PySystemSnapshotFilter {
     }
 
     #[getter]
-    fn world_labels(self_: PyRef<Self>, py: Python) -> PyObject {
-        self_
+    fn world_labels(self_: PyRef<Self>, py: Python) -> PyResult<PyObject> {
+        Ok(self_
             .inner
             .world_labels
             .clone()
-            .into_py_dict_bound(py)
-            .into()
+            .into_py_dict(py)?
+            .into_any()
+            .unbind())
     }
 
     #[getter]
-    fn proc_labels(self_: PyRef<Self>, py: Python) -> PyObject {
-        self_
+    fn proc_labels(self_: PyRef<Self>, py: Python) -> PyResult<PyObject> {
+        Ok(self_
             .inner
             .proc_labels
             .clone()
-            .into_py_dict_bound(py)
-            .into()
+            .into_py_dict(py)?
+            .into_any()
+            .unbind())
     }
 }
 
@@ -504,7 +526,7 @@ pub struct DebuggerMessage {
 impl DebuggerMessage {
     #[new]
     #[pyo3(signature = (*, debugger_actor_id, action))]
-    fn new(debugger_actor_id: PyActorId, action: DebuggerAction) -> PyResult<Self> {
+    pub fn new(debugger_actor_id: PyActorId, action: DebuggerAction) -> PyResult<Self> {
         Ok(Self {
             debugger_actor_id,
             action,
@@ -569,6 +591,33 @@ impl ClientActor {
         self.instance.blocking_lock().send(actor_id, message)
     }
 
+    fn send_obj(
+        &self,
+        controller: &PyActorId,
+        ranks: PyRanks,
+        message: Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        let ranks = match ranks {
+            PyRanks::Slice(r) => Ranks::Slice(r.into()),
+            PyRanks::SliceList(r) => {
+                if r.is_empty() {
+                    return Err(PyValueError::new_err("Send requires at least one rank"));
+                }
+                Ranks::SliceList(r.into_iter().map(|r| r.into()).collect())
+            }
+        };
+
+        let message = convert(message)?;
+        let message = Serialized::serialize(&message).map_err(|err| {
+            PyRuntimeError::new_err(format!("Failed to serialize message: {err}"))
+        })?;
+        let message = ControllerMessage::Send { ranks, message };
+        let message = PySerialized::new(&message).map_err(|err| {
+            PyRuntimeError::new_err(format!("Failed to serialize message: {err}"))
+        })?;
+        self.instance.blocking_lock().send(controller, &message)
+    }
+
     /// Attach the client to a controller actor. This will block until the controller responds.
     fn attach(&mut self, py: Python, controller_id: PyActorId) -> PyResult<()> {
         let mut instance = self.instance.blocking_lock();
@@ -627,7 +676,7 @@ impl ClientActor {
                     action,
                 }
                 .into_py(py)),
-                Ok(None) => Ok(PyNone::get_bound(py).into_py(py)),
+                Ok(None) => Ok(PyNone::get(py).into_py(py)),
                 Err(err) => {
                     if let Some(ControllerError::Failed(controller_id, err_msg)) =
                         err.downcast_ref::<ControllerError>()
@@ -685,7 +734,7 @@ impl ClientActor {
                 .into_py(py),
             })
             .collect::<Vec<PyObject>>();
-        Ok(PyList::new_bound(py, messages))
+        PyList::new(py, messages)
     }
 
     /// Get the status of all the worlds from the system.
@@ -707,7 +756,7 @@ impl ClientActor {
                 .await
         })??;
         Python::with_gil(|py| {
-            let py_dict = PyDict::new_bound(py);
+            let py_dict = PyDict::new(py);
             for (world, status) in worlds {
                 py_dict.set_item(world.to_string(), status.to_string())?;
             }
@@ -741,7 +790,7 @@ impl ClientActor {
 
         // Convert the snapshot to a Python dictionary
         let result: PyResult<PyObject> = Python::with_gil(|py| {
-            let worlds_dict = PyDict::new_bound(py);
+            let worlds_dict = PyDict::new(py);
             for (world, status) in snapshot.worlds {
                 worlds_dict.set_item(
                     world.to_string(),

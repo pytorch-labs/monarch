@@ -63,13 +63,16 @@ use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::OncePortRef;
 use hyperactor::PortRef;
+use hyperactor::message::Bind;
+use hyperactor::message::Bindings;
 use hyperactor::message::IndexedErasedUnbound;
+use hyperactor::message::Unbind;
 use hyperactor::supervision::ActorSupervisionEvent;
-use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::Mesh;
 use hyperactor_mesh::ProcMesh;
+use hyperactor_mesh::RootActorMesh;
+use hyperactor_mesh::actor_mesh::ActorMesh;
 use hyperactor_mesh::actor_mesh::Cast;
-use hyperactor_mesh::alloc::AllocConstraints;
 use hyperactor_mesh::alloc::AllocSpec;
 use hyperactor_mesh::alloc::Allocator;
 use hyperactor_mesh::alloc::ProcessAllocator;
@@ -144,6 +147,19 @@ struct PsUpdate(pub OncePortRef<bool>);
 // Message to log actors' weights and gradients.
 #[derive(Debug, Serialize, Deserialize, Named, Clone)]
 struct Log;
+
+// TODO(pzhang) replace the boilerplate Bind/Unbind impls with a macro.
+impl Bind for Log {
+    fn bind(self, _bindings: &Bindings) -> anyhow::Result<Self> {
+        Ok(self)
+    }
+}
+
+impl Unbind for Log {
+    fn bindings(&self) -> anyhow::Result<Bindings> {
+        Ok(Bindings::default())
+    }
+}
 
 #[async_trait]
 impl Handler<PsGetBuffers> for ParameterServerActor {
@@ -289,6 +305,19 @@ pub struct WorkerInit(
     pub Vec<ActorRef<RdmaManagerActor>>,
 );
 
+// TODO(pzhang) replace the boilerplate Bind/Unbind impls with a macro.
+impl Bind for WorkerInit {
+    fn bind(self, _bindings: &Bindings) -> anyhow::Result<Self> {
+        Ok(self)
+    }
+}
+
+impl Unbind for WorkerInit {
+    fn bindings(&self) -> anyhow::Result<Bindings> {
+        Ok(Bindings::default())
+    }
+}
+
 // Message to signal the worker to update its gradients and transmit them to the server.
 // The PortRef<bool> is used to notify the main process when the operation completes.
 // - Workers compute local gradients (weights + 1)
@@ -296,12 +325,48 @@ pub struct WorkerInit(
 #[derive(Debug, Serialize, Deserialize, Named, Clone)]
 pub struct WorkerStep(PortRef<bool>);
 
+// TODO(pzhang) replace the boilerplate Bind/Unbind impls with a macro.
+impl Bind for WorkerStep {
+    fn bind(mut self, bindings: &Bindings) -> anyhow::Result<Self> {
+        let mut_ports = [self.0.port_id_mut()];
+        bindings.rebind(mut_ports.into_iter())?;
+        Ok(self)
+    }
+}
+
+impl Unbind for WorkerStep {
+    fn bindings(&self) -> anyhow::Result<Bindings> {
+        let mut bindings = Bindings::default();
+        let ports = [self.0.port_id()];
+        bindings.insert(ports)?;
+        Ok(bindings)
+    }
+}
+
 // Message to signal the worker to pull updated weights from the parameter server.
 // The PortRef<bool> is used to notify the main process when the operation completes.
 // - Workers read the updated weights from the parameter server using RDMA
 // - This happens after the parameter server has applied all gradients to update the weights
 #[derive(Debug, Serialize, Deserialize, Named, Clone)]
 pub struct WorkerUpdate(PortRef<bool>);
+
+// TODO(pzhang) replace the boilerplate Bind/Unbind impls with a macro.
+impl Bind for WorkerUpdate {
+    fn bind(mut self, bindings: &Bindings) -> anyhow::Result<Self> {
+        let mut_ports = [self.0.port_id_mut()];
+        bindings.rebind(mut_ports.into_iter())?;
+        Ok(self)
+    }
+}
+
+impl Unbind for WorkerUpdate {
+    fn bindings(&self) -> anyhow::Result<Bindings> {
+        let mut bindings = Bindings::default();
+        let ports = [self.0.port_id()];
+        bindings.insert(ports)?;
+        Ok(bindings)
+    }
+}
 
 #[async_trait]
 impl Handler<Cast<WorkerInit>> for WorkerActor {
@@ -502,7 +567,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
     // host for any actors using RdmaBuffer.
     // We spin this up manually here, but in Python-land we assume this will
     // be spun up with the PyProcMesh.
-    let ps_rdma_manager: ActorMesh<'_, RdmaManagerActor> = ps_proc_mesh
+    let ps_rdma_manager: RootActorMesh<'_, RdmaManagerActor> = ps_proc_mesh
         .spawn("ps_rdma_manager", &ps_ibv_config)
         .await
         .unwrap();
@@ -524,13 +589,13 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
         worker_ibv_config
     );
     // Similarly, create an RdmaManagerActor corresponding to each worker.
-    let worker_rdma_manager_mesh: ActorMesh<'_, RdmaManagerActor> = worker_proc_mesh
+    let worker_rdma_manager_mesh: RootActorMesh<'_, RdmaManagerActor> = worker_proc_mesh
         .spawn("ps_rdma_manager", &worker_ibv_config)
         .await
         .unwrap();
 
     println!("spawning parameter server");
-    let ps_actor_mesh: ActorMesh<'_, ParameterServerActor> = ps_proc_mesh
+    let ps_actor_mesh: RootActorMesh<'_, ParameterServerActor> = ps_proc_mesh
         .spawn(
             "parameter_server",
             &(ps_rdma_manager.iter().next().unwrap(), num_workers),
@@ -542,7 +607,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
     let ps_actor = ps_actor_mesh.iter().next().unwrap();
 
     println!("spawning worker actors");
-    let worker_actor_mesh: ActorMesh<'_, WorkerActor> =
+    let worker_actor_mesh: RootActorMesh<'_, WorkerActor> =
         worker_proc_mesh.spawn("worker_actors", &()).await.unwrap();
 
     let worker_rdma_managers: Vec<ActorRef<RdmaManagerActor>> =

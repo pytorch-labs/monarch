@@ -4,11 +4,11 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-from typing import Any, ClassVar, Dict, final, List
+from typing import Any, ClassVar, Dict, final, List, NamedTuple, Union
 
-from monarch._rust_bindings.monarch_extension.worker import Ref
+from monarch._rust_bindings.monarch_extension.tensor_worker import Ref
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId, Proc, Serialized
-
+from monarch._rust_bindings.monarch_hyperactor.shape import Slice as NDSlice
 from monarch._rust_bindings.monarch_messages.debugger import DebuggerActionType
 
 class Exception:
@@ -210,6 +210,20 @@ class ClientActor:
         Arguments:
         - `actor_id`: The actor id of the actor to send the message to.
         - `message`: The message to send.
+        """
+        ...
+
+    def send_obj(
+        self,
+        controller: ActorId,
+        ranks: Union[NDSlice | List[NDSlice]],
+        message: NamedTuple,
+    ) -> None:
+        """Send a worker message to the controller actor
+
+        Arguments:
+        - `actor_id`: The actor id of the actor to send the message to.
+        - `message`: The monarch
         """
         ...
 

@@ -112,6 +112,19 @@ pub enum ProcState {
         proc_id: ProcId,
         reason: ProcStopReason,
     },
+    /// Allocation process encountered an irrecoverable error. Depending on the
+    /// implementation, the allocation process may continue transiently and calls
+    /// to next() may return some events. But eventually the allocation will not
+    /// be complete. Callers can use the `description` to determine the reason for
+    /// the failure.
+    /// Allocation can then be cleaned up by calling `stop()`` on the `Alloc` and
+    /// drain the iterator for clean shutdown.
+    Failed {
+        /// The world ID of the failed alloc.
+        world_id: WorldId,
+        /// A description of the failure.
+        description: String,
+    },
 }
 
 impl fmt::Display for ProcState {
@@ -134,6 +147,12 @@ impl fmt::Display for ProcState {
             }
             ProcState::Stopped { proc_id, reason } => {
                 write!(f, "{}: stopped: {}", proc_id, reason)
+            }
+            ProcState::Failed {
+                description,
+                world_id,
+            } => {
+                write!(f, "{}: failed: {}", world_id, description)
             }
         }
     }
@@ -220,7 +239,7 @@ pub mod test_utils {
         pub alloc: MockAlloc,
         pub block_next_after: usize,
         notify_tx: Sender<()>,
-        _notify_rx: Receiver<()>,
+        notify_rx: Receiver<()>,
         next_unblocked: bool,
     }
 
@@ -235,7 +254,7 @@ pub mod test_utils {
                 alloc,
                 block_next_after: count,
                 notify_tx: tx,
-                _notify_rx: rx,
+                notify_rx: rx,
                 next_unblocked: false,
             }
         }
@@ -251,8 +270,7 @@ pub mod test_utils {
             match self.block_next_after {
                 0 => {
                     if !self.next_unblocked {
-                        // resubscribe everytime as recv() gets cancelled
-                        self.notify_tx.subscribe().recv().await.unwrap();
+                        self.notify_rx.recv().await.unwrap();
                         self.next_unblocked = true;
                     }
                 }

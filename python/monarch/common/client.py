@@ -32,7 +32,7 @@ from weakref import WeakKeyDictionary
 
 import torch
 import torch.distributed
-from monarch._rust_bindings.monarch_extension import worker
+from monarch._rust_bindings.monarch_extension import tensor_worker
 from monarch._rust_bindings.monarch_extension.client import (  # @manual=//monarch/monarch_extension:monarch_extension
     LogLevel,
     WorldState,
@@ -102,6 +102,13 @@ class Client:
         # last_assigned_seq, we can tell if all messages are processed by all
         # workers.
         self.last_processed_seq = -1
+
+        # an error that we have received but know for certain has not
+        # been propagated to a future. This will be reported on shutdown
+        # to avoid hiding the error. This is best effort: we only keep
+        # the error until the point the a future is dependent on
+        # _any_ error, not particularly the tracked one.
+        self._pending_shutdown_error = None
 
         self.recorder = Recorder()
 
@@ -174,6 +181,8 @@ class Client:
         destroy_pg: bool = True,
         error_reason: Optional[RemoteException | DeviceException | Exception] = None,
     ) -> None:
+        if self.has_shutdown:
+            return
         logger.info("shutting down the client gracefully")
 
         atexit.unregister(self._atexit)
@@ -255,7 +264,7 @@ class Client:
             self.send(ranks, messages.DeleteRefs(refs))
         else:
             self.send_nocoalesce(ranks, messages.DeleteRefs(refs))
-        self.inner.drop_refs([worker.Ref(id=ref) for ref in refs])
+        self.inner.drop_refs([tensor_worker.Ref(id=ref) for ref in refs])
 
     def flush_deletes(self, coalesce: bool = True):
         for mesh, refs in self._pending_del.items():
@@ -302,7 +311,8 @@ class Client:
         self.last_processed_seq = max(self.last_processed_seq, seq)
 
         if error is not None:
-            logging.error("Received error for seq %s: %s", seq, error)
+            logging.info("Received error for seq %s: %s", seq, error)
+            self._pending_shutdown_error = error
             # We should not have set result if we have an error.
             assert result is None
             if not isinstance(error, RemoteException):
@@ -326,15 +336,17 @@ class Client:
 
         fut, _ = self.pending_results[seq]
         if fut is not None:
-            fut._set_result(result if error is None else error)
+            if error is None:
+                fut._set_result(result)
+            else:
+                fut._set_result(error)
+                self._pending_shutdown_error = None
         elif result is not None:
             logger.debug(f"{seq}: unused result {result}")
         elif error is not None:
             # errors get reported as results even if they
             # do not have futures attached.
-            logger.warning(
-                f"Error encountered for this instruction {seq}. Proceeding forward because error is unused and unhandled. Error details:\n{error}."
-            )
+            pass
 
         # We can safely delete the seq as tracebacks have been saved to the remote failure itself.
         del self.pending_results[seq]

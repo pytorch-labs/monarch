@@ -12,5 +12,3 @@ pub mod pingpong;
 pub mod proc_supervison;
 /// Used to verify behaviors related to process.
 pub mod process_assertion;
-/// Used for using tracing in tests.
-pub mod tracing;

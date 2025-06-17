@@ -39,7 +39,7 @@ pub fn initialize(py: Python) -> Result<()> {
         .map_err(|_| anyhow!("failed to initialize py3 async runtime"))?;
 
     // Initialize thread local state to identify the main Python thread.
-    let threading = Python::import_bound(py, "threading")?;
+    let threading = Python::import(py, "threading")?;
     let main_thread = threading.call_method0("main_thread")?;
     let current_thread = threading.getattr("current_thread")?.call0()?;
     ensure!(
@@ -125,7 +125,7 @@ pub fn sleep_indefinitely_for_unit_tests(py: Python) -> PyResult<()> {
 /// Initialize the runtime module and expose Python functions
 pub fn register_python_bindings(runtime_mod: &Bound<'_, PyModule>) -> PyResult<()> {
     let sleep_indefinitely_fn =
-        wrap_pyfunction_bound!(sleep_indefinitely_for_unit_tests, runtime_mod.py())?;
+        wrap_pyfunction!(sleep_indefinitely_for_unit_tests, runtime_mod.py())?;
     sleep_indefinitely_fn.setattr(
         "__module__",
         "monarch._rust_bindings.monarch_hyperactor.runtime",

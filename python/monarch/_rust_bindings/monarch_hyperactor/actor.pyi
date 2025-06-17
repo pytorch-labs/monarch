@@ -6,11 +6,13 @@
 
 # pyre-strict
 
-from typing import final, List, Protocol
+import abc
 
-from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
+from typing import final, List, Optional, Protocol
 
+from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox, PortId
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId, Proc, Serialized
+from monarch._rust_bindings.monarch_hyperactor.shape import Shape
 
 @final
 class PickledMessage:
@@ -97,7 +99,13 @@ class PythonMessage:
     the arguments to the method.
     """
 
-    def __init__(self, method: str, message: bytes) -> None: ...
+    def __init__(
+        self,
+        method: str,
+        message: bytes,
+        response_port: Optional[PortId],
+        rank: int | None,
+    ) -> None: ...
     @property
     def method(self) -> str:
         """The method of the message."""
@@ -106,6 +114,16 @@ class PythonMessage:
     @property
     def message(self) -> bytes:
         """The pickled arguments."""
+        ...
+
+    @property
+    def response_port(self) -> PortId | None:
+        """The response port."""
+        ...
+
+    @property
+    def rank(self) -> Optional[int]:
+        """If this message is a response, the rank of the actor in the original broadcast that send the request."""
         ...
 
 @final
@@ -133,13 +151,28 @@ class PythonActorHandle:
         """
         ...
 
+@final
+class PanicFlag:
+    """
+    A mechanism to notify the hyperactor runtime that a panic has occurred in an
+    asynchronous Python task. See [Panics in async endpoints] for more details.
+    """
+
+    def signal_panic(self, ex: BaseException) -> None:
+        """
+        Signal that a panic has occurred in an asynchronous Python task.
+        """
+        ...
+
 class Actor(Protocol):
-    async def handle(self, mailbox: Mailbox, message: PythonMessage) -> None: ...
+    async def handle(
+        self, mailbox: Mailbox, message: PythonMessage, panic_flag: PanicFlag
+    ) -> None: ...
     async def handle_cast(
         self,
         mailbox: Mailbox,
         rank: int,
-        coordinates: list[tuple[str, int]],
+        shape: Shape,
         message: PythonMessage,
-    ) -> None:
-        await self.handle(mailbox, message)
+        panic_flag: PanicFlag,
+    ) -> None: ...

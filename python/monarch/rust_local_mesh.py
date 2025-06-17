@@ -49,7 +49,7 @@ from monarch._rust_bindings.monarch_hyperactor.proc import (  # @manual=//monarc
     ActorId,
 )
 
-from monarch._rust_bindings.monarch_worker.bootstrap import (
+from monarch._rust_bindings.monarch_tensor_worker.bootstrap import (
     WorkerServerRequest,
     WorkerServerResponse,
 )
@@ -66,7 +66,7 @@ from monarch.rust_backend_mesh import (
 )
 
 logger: logging.Logger = logging.getLogger(__name__)
-_MONARCH_WORKER_MAIN = "monarch.worker_main"
+_MONARCH_TENSOR_WORKER_MAIN = "monarch.tensor_worker_main"
 
 try:
     from __manifest__ import fbmake  # noqa
@@ -1183,14 +1183,14 @@ def _get_worker_exec_info() -> tuple[list[str], dict[str, str]]:
     if IN_PAR:
         cmd = [sys.argv[0]]
         env = {
-            "PAR_MAIN_OVERRIDE": _MONARCH_WORKER_MAIN,
+            "PAR_MAIN_OVERRIDE": _MONARCH_TENSOR_WORKER_MAIN,
         }
     else:
-        cmd = [sys.executable, "-m", _MONARCH_WORKER_MAIN]
+        cmd = [sys.executable, "-m", _MONARCH_TENSOR_WORKER_MAIN]
         env = {}
 
-    env["MONARCH_WORKER_MAIN"] = _MONARCH_WORKER_MAIN
-    env["MONARCH_WORKER_EXE"] = cmd[0]
+    env["MONARCH_TENSOR_WORKER_MAIN"] = _MONARCH_TENSOR_WORKER_MAIN
+    env["MONARCH_TENSOR_WORKER_EXE"] = cmd[0]
     return cmd, env
 
 

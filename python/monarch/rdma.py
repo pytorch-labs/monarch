@@ -8,9 +8,7 @@ import ctypes
 
 import traceback
 import warnings
-
 from dataclasses import dataclass
-from traceback import extract_tb, StackSummary
 from typing import cast, Dict, Optional
 
 import torch
@@ -19,7 +17,13 @@ from monarch import ActorFuture as Future
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.rdma import _RdmaBuffer
 
-from monarch.service import Actor, ActorMeshRef, endpoint, MonarchContext, Service
+from monarch.actor_mesh import (
+    _ActorMeshRefImpl,
+    Actor,
+    ActorMeshRef,
+    endpoint,
+    MonarchContext,
+)
 
 
 # RDMARead/WriteTransferWarnings are warnings that are only printed once per process.
@@ -33,11 +37,6 @@ class RDMAWriteTransferWarning(Warning):
 
 warnings.simplefilter("once", RDMAReadTransferWarning)
 warnings.simplefilter("once", RDMAWriteTransferWarning)
-
-
-@dataclass
-class LocalRDMARecord:
-    data: torch.Tensor
 
 
 def _assert_tensor_is_1d_contiguous_uint8(t: torch.Tensor) -> None:
@@ -179,28 +178,3 @@ class RDMABuffer:
             timeout=timeout,
         )
         return res
-
-
-class ServiceCallFailedException(Exception):
-    """
-    Deterministic problem with the user's code.
-    For example, an OOM resulting in trying to allocate too much GPU memory, or violating
-    some invariant enforced by the various APIs.
-    """
-
-    def __init__(
-        self,
-        exception: Exception,
-        message: str = "A remote service call has failed asynchronously.",
-    ) -> None:
-        self.exception = exception
-        self.service_frames: StackSummary = extract_tb(exception.__traceback__)
-        self.message = message
-
-    def __str__(self) -> str:
-        exe = str(self.exception)
-        service_tb = "".join(traceback.format_list(self.service_frames))
-        return (
-            f"{self.message}\n"
-            f"Traceback of where the service call failed (most recent call last):\n{service_tb}{type(self.exception).__name__}: {exe}"
-        )

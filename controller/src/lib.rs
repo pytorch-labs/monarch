@@ -12,7 +12,7 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 pub mod bootstrap;
-mod history;
+pub mod history;
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -430,7 +430,7 @@ impl ControllerMessageHandler for ControllerActor {
 
         let slice = Slice::new(0usize, vec![self.world_size], vec![1])
             .unwrap()
-            .view_limit(Limit::from(CASTING_FANOUT_SIZE));
+            .reshape_with_limit(Limit::from(CASTING_FANOUT_SIZE));
 
         self.comm_actor_ref.send(
             this,
@@ -612,7 +612,6 @@ mod tests {
     use hyperactor::RefClient;
     use hyperactor::channel;
     use hyperactor::channel::ChannelTransport;
-    use hyperactor::channel::sim;
     use hyperactor::channel::sim::SimAddr;
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
@@ -631,6 +630,7 @@ mod tests {
     use hyperactor::reference::GangId;
     use hyperactor::reference::ProcId;
     use hyperactor::reference::WorldId;
+    use hyperactor::simnet;
     use hyperactor_mesh::comm::CommActorParams;
     use hyperactor_multiprocess::System;
     use hyperactor_multiprocess::proc_actor::ProcMessage;
@@ -1094,10 +1094,8 @@ mod tests {
 
         // Construct a proc forwarder in terms of the system sender.
         let listen_addr = ChannelAddr::any(ChannelTransport::Local);
-        let proc_forwarder = BoxedMailboxSender::new(DialMailboxRouter::new_with_default(
-            listen_addr.clone(),
-            system_sender,
-        ));
+        let proc_forwarder =
+            BoxedMailboxSender::new(DialMailboxRouter::new_with_default(system_sender));
 
         // Bootstrap proc 'local[0]', join the system.
         let world_id = id!(local);
@@ -1319,10 +1317,8 @@ mod tests {
 
         // Construct a proc forwarder in terms of the system sender.
         let listen_addr = ChannelAddr::any(ChannelTransport::Local);
-        let proc_forwarder = BoxedMailboxSender::new(DialMailboxRouter::new_with_default(
-            listen_addr.clone(),
-            system_sender,
-        ));
+        let proc_forwarder =
+            BoxedMailboxSender::new(DialMailboxRouter::new_with_default(system_sender));
 
         // Bootstrap proc 'local[0]', join the system.
         let world_id = id!(local);
@@ -1553,6 +1549,15 @@ mod tests {
         // Start system actor.
         let system_addr = ChannelAddr::any(ChannelTransport::Unix);
         let proxy_addr = ChannelAddr::any(ChannelTransport::Unix);
+        simnet::start(
+            ChannelAddr::any(ChannelTransport::Unix),
+            proxy_addr.clone(),
+            1000,
+        )
+        .unwrap();
+        simnet::simnet_handle()
+            .unwrap()
+            .set_training_script_state(simnet::TrainingScriptState::Waiting);
 
         let system_sim_addr =
             ChannelAddr::Sim(SimAddr::new(system_addr, proxy_addr.clone()).unwrap());
@@ -1651,7 +1656,7 @@ mod tests {
         assert_eq!(result.0, Seq::default());
         assert!(result.1.expect("result").is_err());
 
-        let records = sim::records().await;
+        let records = simnet::simnet_handle().unwrap().close().await.unwrap();
         eprintln!("{}", serde_json::to_string_pretty(&records).unwrap());
     }
     #[tokio::test]

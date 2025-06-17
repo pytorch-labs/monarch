@@ -6,9 +6,11 @@
 
 # pyre-strict
 
+from datetime import timedelta
 from typing import Optional
 
 from monarch._rust_bindings.hyperactor_extension.alloc import Alloc, AllocSpec
+from typing_extensions import Self
 
 class ProcessAllocatorBase:
     def __init__(
@@ -48,6 +50,43 @@ class ProcessAllocatorBase:
         ...
 
 class LocalAllocatorBase:
+    async def allocate_nonblocking(self, spec: AllocSpec) -> Alloc:
+        """
+        Allocate a process according to the provided spec.
+
+        Arguments:
+        - `spec`: The spec to allocate according to.
+        """
+        ...
+
+    def allocate_blocking(self, spec: AllocSpec) -> Alloc:
+        """
+        Allocate a process according to the provided spec, blocking until an
+        alloc is returned.
+
+        Arguments:
+        - `spec`: The spec to allocate according to.
+        """
+        ...
+
+class RemoteAllocatorBase:
+    def __new__(
+        cls,
+        world_id: str,
+        initializer: "monarch.allocator.RemoteAllocInitializer",  # pyre-ignore[11] defined in monarch/python/monarch/allocator.py
+        heartbeat_interval: timedelta = timedelta(seconds=5),
+    ) -> Self:
+        """
+        Create a new (client-side) allocator instance that submits allocation requests to
+        remote hosts that are running hyperactor's RemoteProcessAllocator.
+
+        Arguments:
+        - `world_id`: The world id to use for the remote allocator.
+        - `initializer`: Returns the server addresses to send allocation requests to.
+        - `heartbeat_interval`: Heartbeat interval used to maintain health status of remote hosts.
+        """
+        ...
+
     async def allocate_nonblocking(self, spec: AllocSpec) -> Alloc:
         """
         Allocate a process according to the provided spec.

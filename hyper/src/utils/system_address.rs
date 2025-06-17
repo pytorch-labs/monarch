@@ -10,7 +10,6 @@ use std::str::FromStr;
 
 use anyhow;
 use hyperactor::channel::ChannelAddr;
-use tokio;
 
 /// Extended type to represent a system address which can be a ChannelAdd or a MAST job name.
 #[derive(Clone, Debug)]

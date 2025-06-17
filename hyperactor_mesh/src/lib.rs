@@ -24,7 +24,7 @@ pub mod reference;
 pub mod shortuuid;
 pub mod test_utils;
 
-pub use actor_mesh::ActorMesh;
+pub use actor_mesh::RootActorMesh;
 pub use actor_mesh::SlicedActorMesh;
 pub use bootstrap::bootstrap;
 pub use bootstrap::bootstrap_or_die;

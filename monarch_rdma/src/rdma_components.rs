@@ -728,7 +728,6 @@ mod tests {
     use super::*;
     use crate::ibverbs_primitives::RdmaOperation;
     use crate::ibverbs_primitives::get_all_devices;
-    use crate::ibverbs_primitives::ibverbs_supported;
 
     #[test]
     fn test_create_connection() {

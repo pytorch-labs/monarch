@@ -98,6 +98,7 @@ pub trait Tx<M: RemoteMessage>: std::fmt::Debug {
     /// the channel has failed and it will be sent back on `return_handle`.
     // TODO: the return channel should be SendError<M> directly, and we should drop
     // the returned result.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SendError`.
     fn try_post(&self, message: M, return_channel: oneshot::Sender<M>) -> Result<(), SendError<M>>;
 
     /// Enqueue a message to be sent on the channel. The caller is expected to monitor
@@ -513,31 +514,14 @@ impl<M: RemoteMessage> Rx<M> for ChannelRx<M> {
 /// Dial the provided address, returning the corresponding Tx, or error
 /// if the channel cannot be established. The underlying connection is
 /// dropped whenever the returned Tx is dropped.
+#[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ChannelError`.
 pub fn dial<M: RemoteMessage>(addr: ChannelAddr) -> Result<ChannelTx<M>, ChannelError> {
-    dial_impl(addr, None)
-}
-
-/// Dial the provided address, providing the address of the dialer, returning
-/// the corresponding Tx, or error if the channel cannot be established.
-/// The underlying connection is dropped whenever the returned Tx is dropped.
-pub fn dial_from_address<M: RemoteMessage>(
-    addr: ChannelAddr,
-    dialer: ChannelAddr,
-) -> Result<ChannelTx<M>, ChannelError> {
-    dial_impl(addr, Some(dialer))
-}
-
-#[crate::instrument]
-fn dial_impl<M: RemoteMessage>(
-    addr: ChannelAddr,
-    dialer: Option<ChannelAddr>,
-) -> Result<ChannelTx<M>, ChannelError> {
     tracing::debug!(name = "dial", "dialing channel {}", addr);
     let inner = match addr {
         ChannelAddr::Local(port) => ChannelTxKind::Local(local::dial(port)?),
         ChannelAddr::Tcp(addr) => ChannelTxKind::Tcp(net::tcp::dial(addr)),
         ChannelAddr::MetaTls(host, port) => ChannelTxKind::MetaTls(net::meta::dial(host, port)),
-        ChannelAddr::Sim(sim_addr) => ChannelTxKind::Sim(sim::dial::<M>(sim_addr, dialer)?),
+        ChannelAddr::Sim(sim_addr) => ChannelTxKind::Sim(sim::dial::<M>(sim_addr)?),
         ChannelAddr::Unix(path) => ChannelTxKind::Unix(net::unix::dial(path)),
     };
     Ok(ChannelTx { inner })
@@ -746,18 +730,20 @@ mod tests {
         use rand::distributions::Uniform;
 
         let rng = rand::thread_rng();
-        let uds_name: String = rng
-            .sample_iter(Uniform::new_inclusive('a', 'z'))
-            .take(10)
-            .collect();
-
         vec![
             "[::1]:0".parse().unwrap(),
             "local!0".parse().unwrap(),
             #[cfg(target_os = "linux")]
             "unix!".parse().unwrap(),
             #[cfg(target_os = "linux")]
-            format!("unix!@{}", uds_name).parse().unwrap(),
+            format!(
+                "unix!@{}",
+                rng.sample_iter(Uniform::new_inclusive('a', 'z'))
+                    .take(10)
+                    .collect::<String>()
+            )
+            .parse()
+            .unwrap(),
         ]
     }
 
@@ -773,12 +759,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_send() {
+        let config = crate::config::global::lock();
+
         // Use temporary config for this test
-        let _guard = crate::config::global::set_temp_config(crate::config::Config {
-            message_delivery_timeout: Duration::from_secs(1),
-            message_ack_every_n_messages: 1,
-            ..Default::default()
-        });
+        let _guard1 = config.override_key(
+            crate::config::MESSAGE_DELIVERY_TIMEOUT,
+            Duration::from_secs(1),
+        );
+        let _guard2 = config.override_key(crate::config::MESSAGE_ACK_EVERY_N_MESSAGES, 1);
         for addr in addrs() {
             let (listen_addr, mut rx) = crate::channel::serve::<i32>(addr).await.unwrap();
             let tx = crate::channel::dial(listen_addr).unwrap();

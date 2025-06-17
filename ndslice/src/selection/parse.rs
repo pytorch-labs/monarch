@@ -6,49 +6,51 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-/// This module defines a parser of a compact syntax used to
-/// describe hierarchical selections over multidimensional meshes.
-/// ```text
-/// expression       ::= union
-/// union            ::= intersection ( "|" intersection )*
-/// intersection     ::= chain ( "&" chain )*
-/// chain            ::= group ( "," group )*
-/// group            ::= range
-///                    | index
-///                    | wildcard
-///                    | any
-///                    | "(" expression ")"
-/// range            ::= number? ":" number? ( ":" number )?
-/// index            ::= number
-/// wildcard         ::= "*"
-/// any              ::= "?"
-/// number           ::= [0-9]+
-/// ```
-///
-/// Notes:
-/// - `,` separates **nested dimensions** (i.e., descent into next
-///   dimension).
-/// - `|` is union, `&` is intersection. `&` binds tighter than `|`.
-/// - `*` selects all values at the current dimension and descends.
-/// - `?` selects a random value at the current dimension and descends.
-/// - A range like `2:5:1` has the form `start:end:step`. Missing
-///   parts default to:
-///     - `start = 0`
-///     - `end = full extent`
-///     - `step = 1`
-/// - An index like `3` is shorthand for the range `3:4`.
-/// - Parentheses `()` allow grouping for precedence control and
-///   nesting of chains.
-/// - Whitespace is not allowed (although the `parse` function will
-///   admit and strip it.)
-/// - Expressions like `(*,*,1:4|5:6)` are valid and parsed as:
-///     - A union of two expressions:
-///         1. The chain `*,*,1:4`
-///         2. The standalone `5:6`
-///     - The union applies at the top level, not just within a dimension.
-///     - To apply the union **only to the third dimension**, parentheses must be used:
-///       e.g., `*,*,(1:4|5:6)`
+//! This module defines a parser of a compact syntax used to
+//! describe hierarchical selections over multidimensional meshes.
+//! ```text
+//! expression       ::= union
+//! union            ::= intersection ( "|" intersection )*
+//! intersection     ::= chain ( "&" chain )*
+//! chain            ::= group ( "," group )*
+//! group            ::= range
+//!                    | index
+//!                    | wildcard
+//!                    | any
+//!                    | "(" expression ")"
+//! range            ::= number? ":" number? ( ":" number )?
+//! index            ::= number
+//! wildcard         ::= "*"
+//! any              ::= "?"
+//! number           ::= [0-9]+
+//! ```
+//!
+//! Notes:
+//! - `,` separates **nested dimensions** (i.e., descent into next
+//!   dimension).
+//! - `|` is union, `&` is intersection. `&` binds tighter than `|`.
+//! - `*` selects all values at the current dimension and descends.
+//! - `?` selects a random value at the current dimension and descends.
+//! - A range like `2:5:1` has the form `start:end:step`. Missing
+//!   parts default to:
+//!     - `start = 0`
+//!     - `end = full extent`
+//!     - `step = 1`
+//! - An index like `3` is shorthand for the range `3:4`.
+//! - Parentheses `()` allow grouping for precedence control and
+//!   nesting of chains.
+//! - Whitespace is not allowed (although the `parse` function will
+//!   admit and strip it.)
+//! - Expressions like `(*,*,1:4|5:6)` are valid and parsed as:
+//!     - A union of two expressions:
+//!         1. The chain `*,*,1:4`
+//!         2. The standalone `5:6`
+//!     - The union applies at the top level, not just within a dimension.
+//!     - To apply the union **only to the third dimension**, parentheses must be used:
+//!       e.g., `*,*,(1:4|5:6)`
+
 use nom::IResult;
+use nom::Parser as _;
 use nom::branch::alt;
 use nom::bytes::complete::tag;
 use nom::character::complete::char;
@@ -59,26 +61,26 @@ use nom::combinator::opt;
 use nom::multi::separated_list1;
 use nom::sequence::delimited;
 use nom::sequence::preceded;
-use nom::sequence::tuple;
 
 use crate::selection::Selection;
 use crate::selection::dsl;
 use crate::shape;
 
 fn number(input: &str) -> IResult<&str, usize> {
-    map_res(digit1, str::parse)(input)
+    map_res(digit1, str::parse).parse(input)
 }
 
 fn index(input: &str) -> IResult<&str, Selection> {
-    map(number, |n| dsl::range(n, dsl::true_()))(input)
+    map(number, |n| dsl::range(n, dsl::true_())).parse(input)
 }
 
 fn range(input: &str) -> IResult<&str, Selection> {
-    let (input, (start, end, step)) = tuple((
+    let (input, (start, end, step)) = (
         opt(number),
         preceded(char(':'), opt(number)),
         opt(preceded(char(':'), number)),
-    ))(input)?;
+    )
+        .parse(input)?;
 
     Ok((
         input,
@@ -90,11 +92,11 @@ fn range(input: &str) -> IResult<&str, Selection> {
 }
 
 fn wildcard(input: &str) -> IResult<&str, Selection> {
-    map(tag("*"), |_| dsl::all(dsl::true_()))(input)
+    map(tag("*"), |_| dsl::all(dsl::true_())).parse(input)
 }
 
 fn any(input: &str) -> IResult<&str, Selection> {
-    map(tag("?"), |_| dsl::any(dsl::true_()))(input)
+    map(tag("?"), |_| dsl::any(dsl::true_())).parse(input)
 }
 
 fn group(input: &str) -> IResult<&str, Selection> {
@@ -104,7 +106,8 @@ fn group(input: &str) -> IResult<&str, Selection> {
         index,
         wildcard,
         any,
-    ))(input)
+    ))
+    .parse(input)
 }
 
 fn chain(input: &str) -> IResult<&str, Selection> {
@@ -112,7 +115,8 @@ fn chain(input: &str) -> IResult<&str, Selection> {
         dims.into_iter()
             .rev()
             .fold(dsl::true_(), |acc, dim| nest(dim, acc))
-    })(input)
+    })
+    .parse(input)
 }
 
 // Recursively nests `dim` into `tail`, modeling `,` (dimension
@@ -141,13 +145,15 @@ fn nest(dim: Selection, tail: Selection) -> Selection {
 fn intersection(input: &str) -> IResult<&str, Selection> {
     map(separated_list1(char('&'), chain), |items| {
         items.into_iter().reduce(dsl::intersection).unwrap()
-    })(input)
+    })
+    .parse(input)
 }
 
 pub fn expression(input: &str) -> IResult<&str, Selection> {
     map(separated_list1(char('|'), intersection), |items| {
         items.into_iter().reduce(dsl::union).unwrap()
-    })(input)
+    })
+    .parse(input)
 }
 
 /// Parses a selection expression from a string, ignoring all
@@ -167,7 +173,8 @@ pub fn parse(input: &str) -> anyhow::Result<Selection> {
     use nom::combinator::all_consuming;
 
     let input: String = input.chars().filter(|c| !c.is_whitespace()).collect();
-    let (_, selection) = all_consuming(expression)(&input)
+    let (_, selection) = all_consuming(expression)
+        .parse(&input)
         .map_err(|err| anyhow::anyhow!("Failed to parse selection: {err:?} (input: {input:?})"))?;
     Ok(selection)
 }

@@ -54,10 +54,7 @@ impl PyMailbox {
                 inner: Arc::new(tokio::sync::Mutex::new(receiver)),
             },
         )?;
-        Ok(PyTuple::new_bound(
-            py,
-            vec![handle.into_any(), receiver.into_any()],
-        ))
+        PyTuple::new(py, vec![handle.into_any(), receiver.into_any()])
     }
 
     fn open_once_port<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
@@ -74,10 +71,7 @@ impl PyMailbox {
                 inner: std::sync::Mutex::new(Some(receiver)),
             },
         )?;
-        Ok(PyTuple::new_bound(
-            py,
-            vec![handle.into_any(), receiver.into_any()],
-        ))
+        PyTuple::new(py, vec![handle.into_any(), receiver.into_any()])
     }
 
     pub(super) fn post<'py>(
@@ -157,6 +151,12 @@ pub struct PyPortId {
 impl From<PortId> for PyPortId {
     fn from(port_id: PortId) -> Self {
         Self { inner: port_id }
+    }
+}
+
+impl From<PyPortId> for PortId {
+    fn from(port_id: PyPortId) -> Self {
+        port_id.inner
     }
 }
 

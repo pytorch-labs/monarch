@@ -11,7 +11,9 @@ license = "MIT"
 [dependencies]
 anyhow = "1.0.95"
 async-trait = "0.1.86"
+chrono = { version = "=0.4.39", features = ["clock", "serde", "std"], default-features = false }
 clap = { version = "4.5.30", features = ["derive", "env", "string", "unicode", "wrap_help"] }
+console = "0.15.7"
 hyperactor = { path = "../hyperactor" }
 hyperactor_multiprocess = { path = "../hyperactor_multiprocess" }
 serde = { version = "1.0.185", features = ["derive", "rc"] }
@@ -19,3 +21,6 @@ serde_json = { version = "1.0.132", features = ["float_roundtrip", "unbounded_de
 tabwriter = { version = "1.2.1", features = ["ansi_formatting"] }
 tokio = { version = "1.41.0", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
+
+[lints]
+rust = { unexpected_cfgs = { check-cfg = ["cfg(fbcode_build)"], level = "warn" } }

@@ -378,15 +378,12 @@ impl ProcActor {
         labels: HashMap<String, String>,
         lifecycle_mode: ProcLifecycleMode,
     ) -> Result<BootstrappedProc, anyhow::Error> {
-        let system_sender = BoxedMailboxSender::new(MailboxClient::new(
-            channel::dial_from_address(bootstrap_addr.clone(), listen_addr.clone())?,
-        ));
+        let system_sender =
+            BoxedMailboxSender::new(MailboxClient::new(channel::dial(bootstrap_addr.clone())?));
         let clock = ClockKind::for_channel_addr(&listen_addr);
 
-        let proc_forwarder = BoxedMailboxSender::new(DialMailboxRouter::new_with_default(
-            listen_addr.clone(),
-            system_sender,
-        ));
+        let proc_forwarder =
+            BoxedMailboxSender::new(DialMailboxRouter::new_with_default(system_sender));
         let proc = Proc::new_with_clock(proc_id.clone(), proc_forwarder, clock);
         Self::bootstrap_for_proc(
             proc,
@@ -683,7 +680,7 @@ impl ProcMessageHandler for ProcActor {
             proc_id: self.params.proc.proc_id().clone(),
             proc_addr: self.params.local_addr.clone(),
             proc_health: ProcStatus::Alive,
-            failed_actors: HashMap::new(),
+            failed_actors: Vec::new(),
         };
 
         match tokio::time::timeout(
@@ -790,7 +787,7 @@ impl Handler<ActorSupervisionEvent> for ProcActor {
             proc_id: self.params.proc.proc_id().clone(),
             proc_addr: self.params.local_addr.clone(),
             proc_health: ProcStatus::Alive,
-            failed_actors: HashMap::from([event.into_inner()]),
+            failed_actors: Vec::from([event.into_inner()]),
         };
         self.params
             .supervisor_actor_ref
@@ -1060,9 +1057,13 @@ mod tests {
         assert_eq!(2, actors_stopped);
         assert_eq!((NUM_ACTORS - 1) + 1, actors_aborted);
 
-        assert!(logs_contain("world[0].proc[0]: aborting JoinHandle"));
+        assert!(tracing_test::internal::logs_with_scope_contain(
+            "hyperactor::proc",
+            "world[0].proc[0]: aborting JoinHandle"
+        ));
         for i in 1..3 {
-            assert!(logs_contain(
+            assert!(tracing_test::internal::logs_with_scope_contain(
+                "hyperactor::proc",
                 format!("world[0].sleeper{}[0]: aborting JoinHandle", i).as_str()
             ));
         }
@@ -1214,7 +1215,7 @@ mod tests {
                         proc_addr: ChannelAddr::Local(3),
                         proc_id: local_proc_id.clone(),
                         proc_health: ProcStatus::Alive,
-                        failed_actors: HashMap::new(),
+                        failed_actors: Vec::new(),
                     }
                 );
                 let _ = port.send(&supervisor_mailbox, ());
@@ -1237,20 +1238,23 @@ mod tests {
         // Since we could get messages from both the periodic task and the
         // report from the failed actor, we need to poll for a while to make
         // sure we get the right message.
-        let result = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                match supervisor_supervision_receiver.recv().await {
-                    Ok(ProcSupervisionMessage::Update(state, _port)) => {
-                        match state.failed_actors.get(test_actor_ref.clone().actor_id()) {
-                            Some(actor_status) => return Ok(actor_status.clone()),
-                            None => {}
+        let result =
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    match supervisor_supervision_receiver.recv().await {
+                        Ok(ProcSupervisionMessage::Update(state, _port)) => {
+                            match state.failed_actors.iter().find(|(failed_id, _)| {
+                                failed_id == test_actor_ref.clone().actor_id()
+                            }) {
+                                Some((_, actor_status)) => return Ok(actor_status.clone()),
+                                None => {}
+                            }
                         }
+                        _ => anyhow::bail!("unexpected message type"),
                     }
-                    _ => anyhow::bail!("unexpected message type"),
                 }
-            }
-        })
-        .await;
+            })
+            .await;
         assert_matches!(
             result.unwrap().unwrap(),
             ActorStatus::Failed(msg) if msg.contains("test actor is erroring out")
@@ -1343,10 +1347,11 @@ mod tests {
         use hyperactor::test_utils::pingpong::PingPongMessage;
 
         // Use temporary config for this test
-        let _guard = hyperactor::config::global::set_temp_config(hyperactor::config::Config {
-            message_delivery_timeout: Duration::from_secs(1),
-            ..Default::default()
-        });
+        let config = hyperactor::config::global::lock();
+        let _guard = config.override_key(
+            hyperactor::config::MESSAGE_DELIVERY_TIMEOUT,
+            Duration::from_secs(1),
+        );
 
         // Serve a system.
         let server_handle = System::serve(
@@ -1371,10 +1376,8 @@ mod tests {
 
         // Construct a proc forwarder in terms of the system sender.
         let listen_addr = ChannelAddr::any(ChannelTransport::Tcp);
-        let proc_forwarder = BoxedMailboxSender::new(DialMailboxRouter::new_with_default(
-            listen_addr.clone(),
-            system_sender,
-        ));
+        let proc_forwarder =
+            BoxedMailboxSender::new(DialMailboxRouter::new_with_default(system_sender));
 
         // Bootstrap proc 'world[0]', join the system.
         let world_id = id!(world);
@@ -1497,10 +1500,8 @@ mod tests {
 
         // Construct a proc forwarder in terms of the system sender.
         let listen_addr = ChannelAddr::any(ChannelTransport::Tcp);
-        let proc_forwarder = BoxedMailboxSender::new(DialMailboxRouter::new_with_default(
-            listen_addr.clone(),
-            system_sender,
-        ));
+        let proc_forwarder =
+            BoxedMailboxSender::new(DialMailboxRouter::new_with_default(system_sender));
 
         // Bootstrap proc 'world[0]', join the system.
         let world_id = id!(world);

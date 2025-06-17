@@ -123,6 +123,7 @@ impl<M: RemoteMessage> Drop for LocalRx<M> {
 }
 
 /// Dial a local port, returning a Tx for it.
+#[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ChannelError`.
 pub fn dial<M: RemoteMessage>(port: u64) -> Result<LocalTx<M>, ChannelError> {
     let ports = PORTS.lock().unwrap();
     let result = ports.get(port);

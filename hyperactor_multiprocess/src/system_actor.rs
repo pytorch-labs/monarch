@@ -37,6 +37,8 @@ use hyperactor::RefClient;
 use hyperactor::WorldId;
 use hyperactor::actor::Handler;
 use hyperactor::channel::ChannelAddr;
+use hyperactor::channel::sim::AddressProxyPair;
+use hyperactor::channel::sim::SimAddr;
 use hyperactor::clock::Clock;
 use hyperactor::clock::ClockKind;
 use hyperactor::id;
@@ -105,7 +107,7 @@ pub struct WorldSnapshot {
 
 impl WorldSnapshot {
     fn from_world_filtered(world: &World, filter: &SystemSnapshotFilter) -> Self {
-        let state = WorldSnapshot {
+        WorldSnapshot {
             host_procs: world.state.host_map.keys().map(|h| &h.0).cloned().collect(),
             procs: world
                 .state
@@ -115,8 +117,7 @@ impl WorldSnapshot {
                 .collect(),
             status: world.state.status.clone(),
             labels: world.labels.clone(),
-        };
-        state
+        }
     }
 }
 
@@ -561,6 +562,7 @@ impl World {
         world_id.name().starts_with(SHADOW_PREFIX)
     }
 
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `CastError`.
     fn get_port_ref_from_host(
         &self,
         host_id: &HostId,
@@ -574,6 +576,7 @@ impl World {
     }
 
     /// Adds procs to the world.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SystemActorError`.
     fn add_proc(
         &mut self,
         proc_id: ProcId,
@@ -639,6 +642,7 @@ impl World {
         Ok(())
     }
 
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SystemActorError`.
     fn get_hosts_to_procs(&mut self) -> Result<HashMap<HostId, Vec<ProcId>>, SystemActorError> {
         // A map from host ID to scheduled proc IDs on this host.
         let mut host_proc_map: HashMap<HostId, Vec<ProcId>> = HashMap::new();
@@ -711,9 +715,9 @@ impl MailboxSender for ReportingRouter {
 }
 
 impl ReportingRouter {
-    fn new(mailbox_address: ChannelAddr) -> Self {
+    fn new() -> Self {
         Self {
-            router: DialMailboxRouter::new(mailbox_address),
+            router: DialMailboxRouter::new(),
             address_cache: Arc::new(DashMap::new()),
         }
     }
@@ -747,6 +751,29 @@ impl ReportingRouter {
 
         let sender_proc_id = envelope.sender().proc_id();
         self.upsert_address_cache(sender_proc_id, &dst_proc_id);
+        // Sim addresses have a concept of directionality. When we notify a proc of an address we should
+        // use the proc's address as the source for the sim address.
+        let sender_address = self.router.lookup_addr(envelope.sender());
+        let dst_proc_addr =
+            if let (Some(ChannelAddr::Sim(sender_sim_addr)), ChannelAddr::Sim(dest_sim_addr)) =
+                (sender_address, &dst_proc_addr)
+            {
+                ChannelAddr::Sim(
+                    SimAddr::new_with_src(
+                        // source is the sender
+                        AddressProxyPair {
+                            address: sender_sim_addr.addr().clone(),
+                            proxy: sender_sim_addr.proxy().clone(),
+                        },
+                        // dest remains unchanged
+                        dest_sim_addr.addr().clone(),
+                        dest_sim_addr.proxy().clone(),
+                    )
+                    .unwrap(),
+                )
+            } else {
+                dst_proc_addr
+            };
         self.serialize_and_send(
             &self.proc_port_ref(sender_proc_id),
             MailboxAdminMessage::UpdateAddress {
@@ -827,13 +854,9 @@ pub struct SystemActorParams {
 
 impl SystemActorParams {
     /// Create a new system actor params.
-    pub fn new(
-        bootstrap_addr: ChannelAddr,
-        supervision_update_timeout: Duration,
-        world_eviction_timeout: Duration,
-    ) -> Self {
+    pub fn new(supervision_update_timeout: Duration, world_eviction_timeout: Duration) -> Self {
         Self {
-            mailbox_router: ReportingRouter::new(bootstrap_addr),
+            mailbox_router: ReportingRouter::new(),
             supervision_update_timeout,
             world_eviction_timeout,
         }
@@ -1255,7 +1278,7 @@ impl SystemMessageHandler for SystemActor {
                     proc_id: proc_id.clone(),
                     proc_addr: channel_addr.clone(),
                     proc_health: ProcStatus::Alive,
-                    failed_actors: HashMap::new(),
+                    failed_actors: Vec::new(),
                 },
                 lifecycle_mode.clone(),
                 this.clock(),
@@ -1784,9 +1807,11 @@ mod tests {
     use std::assert_matches::assert_matches;
 
     use anyhow::Result;
+    use hyperactor::PortId;
     use hyperactor::actor::ActorStatus;
     use hyperactor::channel;
     use hyperactor::channel::ChannelTransport;
+    use hyperactor::channel::Rx;
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
     use hyperactor::data::Serialized;
@@ -1797,6 +1822,7 @@ mod tests {
     use hyperactor::mailbox::PortHandle;
     use hyperactor::mailbox::PortReceiver;
     use hyperactor::mailbox::monitored_return_handle;
+    use hyperactor::simnet;
     use hyperactor::test_utils::pingpong::PingPongActorParams;
 
     use super::*;
@@ -1872,11 +1898,7 @@ mod tests {
     #[tracing_test::traced_test]
     #[tokio::test]
     async fn test_join() {
-        let params = SystemActorParams::new(
-            ChannelAddr::any(ChannelTransport::Local),
-            Duration::from_secs(10),
-            Duration::from_secs(10),
-        );
+        let params = SystemActorParams::new(Duration::from_secs(10), Duration::from_secs(10));
         let (system_actor_handle, system_proc) = SystemActor::bootstrap(params).await.unwrap();
 
         // Use a local proc actor to join the system.
@@ -1931,7 +1953,7 @@ mod tests {
                 proc_addr: ChannelAddr::any(ChannelTransport::Local),
                 proc_id: proc_id_0.clone(),
                 proc_health: ProcStatus::Alive,
-                failed_actors: HashMap::new(),
+                failed_actors: Vec::new(),
             },
             ProcLifecycleMode::ManagedBySystem,
             &clock,
@@ -1944,7 +1966,7 @@ mod tests {
                 proc_addr: ChannelAddr::any(ChannelTransport::Local),
                 proc_id: proc_id_1.clone(),
                 proc_health: ProcStatus::Alive,
-                failed_actors: HashMap::new(),
+                failed_actors: Vec::new(),
             },
             ProcLifecycleMode::ManagedBySystem,
             &clock,
@@ -1968,7 +1990,7 @@ mod tests {
                 proc_addr: ChannelAddr::any(ChannelTransport::Local),
                 proc_id: proc_id_1.clone(),
                 proc_health: ProcStatus::Alive,
-                failed_actors: HashMap::new(),
+                failed_actors: Vec::new(),
             },
             &clock,
         );
@@ -1985,9 +2007,7 @@ mod tests {
                 proc_id: proc_id_1.clone(),
                 proc_health: ProcStatus::Alive,
                 failed_actors: [(actor_id.clone(), ActorStatus::Failed("Actor failed".into()))]
-                    .iter()
-                    .cloned()
-                    .collect(),
+                    .to_vec(),
             },
             &clock,
         );
@@ -2004,8 +2024,7 @@ mod tests {
         // Use small durations to fail fast.
         let timeout: Duration = Duration::from_secs(1);
 
-        let params =
-            SystemActorParams::new(ChannelAddr::any(ChannelTransport::Local), timeout, timeout);
+        let params = SystemActorParams::new(timeout, timeout);
         let (system_actor_handle, _system_proc) = SystemActor::bootstrap(params).await.unwrap();
 
         // Register supervision subscriber, use a new proc
@@ -2117,7 +2136,7 @@ mod tests {
                         proc_addr: local_proc_addr.clone(),
                         proc_id: local_proc_id.clone(),
                         proc_health: ProcStatus::Expired,
-                        failed_actors: HashMap::new(),
+                        failed_actors: Vec::new(),
                     }
                 )])
             })
@@ -2129,8 +2148,7 @@ mod tests {
         // Use small durations to fail fast.
         let timeout: Duration = Duration::from_secs(2);
 
-        let params =
-            SystemActorParams::new(ChannelAddr::any(ChannelTransport::Local), timeout, timeout);
+        let params = SystemActorParams::new(timeout, timeout);
         let (system_actor_handle, _system_proc) = SystemActor::bootstrap(params).await.unwrap();
 
         // Register a client, use a new proc
@@ -2267,8 +2285,7 @@ mod tests {
         // Use small durations to fail fast.
         let timeout: Duration = Duration::from_secs(2);
 
-        let params =
-            SystemActorParams::new(ChannelAddr::any(ChannelTransport::Local), timeout, timeout);
+        let params = SystemActorParams::new(timeout, timeout);
         let (system_actor_handle, _system_proc) = SystemActor::bootstrap(params).await.unwrap();
         let mut sys_status_rx = system_actor_handle.status();
 
@@ -2392,11 +2409,7 @@ mod tests {
     #[tokio::test]
     async fn test_host_join_before_world() {
         // Spins up a new world with 2 hosts, with 3 procs each.
-        let params = SystemActorParams::new(
-            ChannelAddr::any(ChannelTransport::Local),
-            Duration::from_secs(10),
-            Duration::from_secs(10),
-        );
+        let params = SystemActorParams::new(Duration::from_secs(10), Duration::from_secs(10));
         let (system_actor_handle, _system_proc) = SystemActor::bootstrap(params).await.unwrap();
 
         // Use a local proc actor to join the system.
@@ -2470,11 +2483,7 @@ mod tests {
     #[tokio::test]
     async fn test_host_join_after_world() {
         // Spins up a new world with 2 hosts, with 3 procs each.
-        let params = SystemActorParams::new(
-            ChannelAddr::any(ChannelTransport::Local),
-            Duration::from_secs(10),
-            Duration::from_secs(10),
-        );
+        let params = SystemActorParams::new(Duration::from_secs(10), Duration::from_secs(10));
         let (system_actor_handle, _system_proc) = SystemActor::bootstrap(params).await.unwrap();
 
         // Create a new world message and send to system actor
@@ -2596,10 +2605,11 @@ mod tests {
         use crate::supervision::ProcSupervisor;
 
         // Use temporary config for this test
-        let _guard = hyperactor::config::global::set_temp_config(hyperactor::config::Config {
-            message_delivery_timeout: Duration::from_secs(1),
-            ..Default::default()
-        });
+        let config = hyperactor::config::global::lock();
+        let _guard = config.override_key(
+            hyperactor::config::MESSAGE_DELIVERY_TIMEOUT,
+            Duration::from_secs(1),
+        );
 
         // Serve a system. Undeliverable messages encountered by the
         // mailbox server are returned to the system actor.
@@ -2658,10 +2668,8 @@ mod tests {
             channel::dial(server_handle.local_addr().clone()).unwrap(),
         ));
         // Construct a proc forwarder in terms of the system sender.
-        let proc_forwarder = BoxedMailboxSender::new(DialMailboxRouter::new_with_default(
-            ChannelAddr::any(ChannelTransport::Local),
-            system_sender,
-        ));
+        let proc_forwarder =
+            BoxedMailboxSender::new(DialMailboxRouter::new_with_default(system_sender));
 
         // Bootstrap proc 'world[0]', join the system.
         let proc_0 = Proc::new(world_id.proc_id(0), proc_forwarder.clone());
@@ -2786,5 +2794,54 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_update_sim_address() {
+        let proxy = ChannelAddr::any(ChannelTransport::Unix);
+        simnet::start(
+            ChannelAddr::any(ChannelTransport::Unix),
+            proxy.clone(),
+            1000,
+        )
+        .unwrap();
+
+        let src_id = id!(proc[0].actor);
+        let src_addr =
+            ChannelAddr::Sim(SimAddr::new("unix!@src".parse().unwrap(), proxy.clone()).unwrap());
+        let dst_addr =
+            ChannelAddr::Sim(SimAddr::new("unix!@dst".parse().unwrap(), proxy.clone()).unwrap());
+        let (_, mut rx) = channel::serve::<MessageEnvelope>(src_addr.clone())
+            .await
+            .unwrap();
+
+        let router = ReportingRouter::new();
+
+        router
+            .router
+            .bind(src_id.proc_id().clone().into(), src_addr);
+        router.router.bind(id!(proc[1]).into(), dst_addr);
+
+        router.post_update_address(&MessageEnvelope::new(
+            src_id,
+            PortId(id!(proc[1].actor), 9999u64),
+            Serialized::serialize(&1u64).unwrap(),
+        ));
+
+        let envelope = rx.recv().await.unwrap();
+        let admin_msg = envelope
+            .data()
+            .deserialized::<MailboxAdminMessage>()
+            .unwrap();
+        let MailboxAdminMessage::UpdateAddress {
+            addr: ChannelAddr::Sim(addr),
+            ..
+        } = admin_msg
+        else {
+            panic!("Expected sim address");
+        };
+
+        assert_eq!(addr.src().clone().unwrap().address.to_string(), "unix!@src");
+        assert_eq!(addr.addr().to_string(), "unix!@dst");
     }
 }

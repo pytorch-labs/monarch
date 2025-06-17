@@ -16,6 +16,7 @@ use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -25,6 +26,7 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use dashmap::DashSet;
 use enum_as_inner::EnumAsInner;
+use futures::executor::block_on;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
@@ -50,13 +52,27 @@ use crate::WorldId;
 use crate::channel;
 use crate::channel::ChannelAddr;
 use crate::channel::Rx;
+use crate::channel::sim::AddressProxyPair;
 use crate::channel::sim::MessageDeliveryEvent;
-use crate::channel::sim::SimAddr;
 use crate::clock::Clock;
 use crate::clock::RealClock;
 use crate::clock::SimClock;
 use crate::data::Serialized;
 use crate::mailbox::MessageEnvelope;
+
+static HANDLE: OnceLock<SimNetHandle> = OnceLock::new();
+
+/// A handle for SimNet through which you can send and schedule events in the
+/// network.
+///
+/// Return the \[`NotStarted`\] error when called before `simnet::start()` has been called
+#[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SimNetError`.
+pub fn simnet_handle() -> Result<&'static SimNetHandle, SimNetError> {
+    match HANDLE.get() {
+        Some(handle) => Ok(handle),
+        None => Err(SimNetError::Closed("SimNet not started".to_string())),
+    }
+}
 
 const OPERATIONAL_MESSAGE_BUFFER_SIZE: usize = 8;
 
@@ -311,10 +327,19 @@ pub enum SimNetError {
     /// Cannot deliver the message because destination address is missing.
     #[error("missing destination address")]
     MissingDestinationAddress,
+
+    /// SimnetHandle being accessed without starting simnet
+    #[error("simnet not started")]
+    NotStarted,
 }
 
 struct State {
+    // The simnet is allowed to advance to the time of the earliest event in this queue at any time
     scheduled_events: BTreeMap<SimulatorTimeInstant, Vec<ScheduledEvent>>,
+    // The simnet is allowed to advance to the time of the earliest event in this queue at any time
+    // only if the earliest event in `scheduled_events` occurs after the earliest event in this queue
+    // or some debounce period has passed where there are only events in this queue.
+    unadvanceable_scheduled_events: BTreeMap<SimulatorTimeInstant, Vec<ScheduledEvent>>,
 }
 
 /// The state of the python training script.
@@ -328,42 +353,58 @@ pub enum TrainingScriptState {
 
 /// A handle to a running [`SimNet`] instance.
 pub struct SimNetHandle {
-    join_handles: Vec<JoinHandle<()>>,
-    event_tx: UnboundedSender<Box<dyn Event>>,
-    scheduled_event_tx: UnboundedSender<ScheduledEvent>,
+    join_handle: Mutex<Option<JoinHandle<Vec<SimulatorEventRecord>>>>,
+    event_tx: UnboundedSender<(Box<dyn Event>, bool, Option<SimulatorTimeInstant>)>,
     config: Arc<Mutex<SimNetConfig>>,
-    records: Option<Arc<Mutex<Vec<SimulatorEventRecord>>>>,
     pending_event_count: Arc<AtomicUsize>,
     /// Handle to a running proxy server that forwards external messages
     /// into the simnet.
-    proxy_handle: Arc<Mutex<Option<ProxyHandle>>>,
+    proxy_handle: ProxyHandle,
     /// A sender to forward simulator operational messages.
     operational_message_tx: UnboundedSender<OperationalMessage>,
     /// A receiver to receive simulator operational messages.
     /// The receiver can be moved out of the simnet handle.
-    operational_message_rx: Arc<Mutex<Option<UnboundedReceiver<OperationalMessage>>>>,
     training_script_state_tx: tokio::sync::watch::Sender<TrainingScriptState>,
+    /// Signal to stop the simnet loop
+    stop_signal: Arc<AtomicBool>,
 }
 
 impl SimNetHandle {
     /// Sends an event to be scheduled onto the simnet's event loop
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SimNetError`.
     pub fn send_event(&self, event: Box<dyn Event>) -> Result<(), SimNetError> {
+        self.send_event_impl(event, true)
+    }
+
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SimNetError`.
+    fn send_event_impl(&self, event: Box<dyn Event>, advanceable: bool) -> Result<(), SimNetError> {
         self.pending_event_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.event_tx
-            .send(event)
+            .send((event, advanceable, None))
             .map_err(|err| SimNetError::Closed(err.to_string()))
     }
 
+    /// Sends an non-advanceable event to be scheduled onto the simnet's event loop
+    /// A non-advanceable event is an event that cannot advance the simnet's time unless
+    /// the earliest event in the simnet's advancing event queue occurs after the earliest
+    /// event in the simnet's non-advancing event queue, or some debounce period has passed
+    /// where there are only events in the simnet's non-advancing event queue.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SimNetError`.
+    pub fn send_nonadvanceable_event(&self, event: Box<dyn Event>) -> Result<(), SimNetError> {
+        self.send_event_impl(event, false)
+    }
+
     /// Sends an event that already has a scheduled time onto the simnet's event loop
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SimNetError`.
     pub(crate) fn send_scheduled_event(
         &self,
-        scheduled_event: ScheduledEvent,
+        ScheduledEvent { event, time }: ScheduledEvent,
     ) -> Result<(), SimNetError> {
         self.pending_event_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.scheduled_event_tx
-            .send(scheduled_event)
+        self.event_tx
+            .send((event, true, Some(time)))
             .map_err(|err| SimNetError::Closed(err.to_string()))
     }
 
@@ -374,37 +415,34 @@ impl SimNetHandle {
     }
 
     /// Bind the given address to this simulator instance.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SimNetError`.
     pub fn bind(&self, address: ChannelAddr) -> Result<(), SimNetError> {
         self.pending_event_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.event_tx
-            .send(Box::new(NodeJoinEvent {
-                channel_addr: address,
-            }))
+            .send((
+                Box::new(NodeJoinEvent {
+                    channel_addr: address,
+                }),
+                true,
+                None,
+            ))
             .map_err(|err| SimNetError::Closed(err.to_string()))
     }
 
     /// Close the simulator, processing pending messages before
     /// completing the returned future.
-    pub async fn close(self) -> Result<(), JoinError> {
+    pub async fn close(&self) -> Result<Vec<SimulatorEventRecord>, JoinError> {
         // Stop the proxy if there is one.
-        let proxy_handle = self.proxy_handle.lock().await.take();
-        if let Some(proxy_handle) = proxy_handle {
-            proxy_handle.stop().await?;
-        }
-        std::mem::drop(self.event_tx);
-        for handle in self.join_handles {
-            handle.await?;
-        }
-        Ok(())
-    }
+        self.proxy_handle.stop().await?;
+        // Signal the simnet loop to stop
+        self.stop_signal.store(true, Ordering::SeqCst);
 
-    /// Get a copy of records of message deliveries in the simulation.
-    pub async fn records(&self) -> Option<Vec<SimulatorEventRecord>> {
-        if let Some(records) = &self.records {
-            Some(records.lock().await.clone())
+        let mut guard = self.join_handle.lock().await;
+        if let Some(handle) = guard.take() {
+            handle.await
         } else {
-            None
+            Ok(vec![])
         }
     }
 
@@ -443,55 +481,8 @@ impl SimNetHandle {
     }
 
     /// Returns the external address of the simnet.
-    pub async fn proxy_addr(&self) -> Option<ChannelAddr> {
-        self.proxy_handle
-            .lock()
-            .await
-            .as_ref()
-            .map(|proxy_handle| proxy_handle.addr.clone())
-    }
-
-    /// Add a proxy to the network. The proxy will handle external traffic and forward the traffic to the network.
-    /// Args:
-    ///   addr: the address of the proxy
-    ///   gen_event_fcn: a function that specifies how to generate an Event from a forward message
-    pub async fn add_proxy(&self, addr: ChannelAddr) -> Result<(), SimNetError> {
-        let mut maybe_proxy_handle = self.proxy_handle.lock().await;
-        if let Some(ProxyHandle {
-            addr: proxy_addr, ..
-        }) = maybe_proxy_handle.as_ref()
-        {
-            if proxy_addr == &addr {
-                return Ok(());
-            } else {
-                return Err(SimNetError::InvalidAddress(format!(
-                    "cannot add new proxy with different address, current: {}, new: {}",
-                    proxy_addr, &addr
-                )));
-            }
-        }
-        let proxy_handle = ProxyHandle::start(
-            addr.clone(),
-            self.event_tx.clone(),
-            self.pending_event_count.clone(),
-            self.operational_message_tx.clone(),
-        )
-        .await
-        .map_err(|err| SimNetError::ProxyNotAvailable(err.to_string()))?;
-        *maybe_proxy_handle = Some(proxy_handle);
-        Ok(())
-    }
-
-    /// Returns the operational message receiver.
-    pub async fn operational_message_receiver(
-        &self,
-    ) -> Result<UnboundedReceiver<OperationalMessage>, SimNetError> {
-        tracing::info!("moving out operational message receiver");
-        self.operational_message_rx
-            .lock()
-            .await
-            .take()
-            .ok_or(SimNetError::MissingOperationalMessageReceiver)
+    pub fn proxy_addr(&self) -> &ChannelAddr {
+        &self.proxy_handle.addr
     }
 }
 
@@ -586,14 +577,18 @@ impl Event for SimOperation {
 /// this is a self-handlable message.
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
 pub struct ProxyMessage {
-    sender_addr: Option<SimAddr>,
-    dest_addr: Option<SimAddr>,
+    sender_addr: Option<AddressProxyPair>,
+    dest_addr: Option<AddressProxyPair>,
     data: Serialized,
 }
 
 impl ProxyMessage {
     /// Creates a new ForwardMessage.
-    pub fn new(sender_addr: Option<SimAddr>, dest_addr: Option<SimAddr>, data: Serialized) -> Self {
+    pub fn new(
+        sender_addr: Option<AddressProxyPair>,
+        dest_addr: Option<AddressProxyPair>,
+        data: Serialized,
+    ) -> Self {
         Self {
             sender_addr,
             dest_addr,
@@ -650,14 +645,14 @@ pub struct SimNet {
     address_book: DashSet<ChannelAddr>,
     state: State,
     max_latency: Duration,
-    records: Option<Arc<Mutex<Vec<SimulatorEventRecord>>>>,
+    records: Vec<SimulatorEventRecord>,
     // number of events that has been received but not yet processed.
     pending_event_count: Arc<AtomicUsize>,
 }
 
 /// A proxy to bridge external nodes and the SimNet.
 struct ProxyHandle {
-    join_handle: JoinHandle<()>,
+    join_handle: Mutex<Option<JoinHandle<()>>>,
     stop_signal: Arc<AtomicBool>,
     addr: ChannelAddr,
 }
@@ -672,7 +667,7 @@ impl ProxyHandle {
     ///  to_event: a function that specifies how to generate an Event from a forward message
     async fn start(
         proxy_addr: ChannelAddr,
-        event_tx: UnboundedSender<Box<dyn Event>>,
+        event_tx: UnboundedSender<(Box<dyn Event>, bool, Option<SimulatorTimeInstant>)>,
         pending_event_count: Arc<AtomicUsize>,
         operational_message_tx: UnboundedSender<OperationalMessage>,
     ) -> anyhow::Result<Self> {
@@ -703,7 +698,7 @@ impl ProxyHandle {
                             }
                         };
 
-                        if let Err(e) = event_tx.send(event) {
+                        if let Err(e) = event_tx.send((event, true, None)) {
                             tracing::error!("error sending message to simnet: {:?}", e);
                         } else {
                             pending_event_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -717,16 +712,21 @@ impl ProxyHandle {
             })
         };
         Ok(Self {
-            join_handle,
+            join_handle: Mutex::new(Some(join_handle)),
             stop_signal,
             addr,
         })
     }
 
     /// Stop the proxy.
-    async fn stop(self) -> Result<(), JoinError> {
+    async fn stop(&self) -> Result<(), JoinError> {
         self.stop_signal.store(true, Ordering::SeqCst);
-        self.join_handle.await
+        let mut guard = self.join_handle.lock().await;
+        if let Some(handle) = guard.take() {
+            handle.await
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -735,7 +735,11 @@ impl ProxyHandle {
 ///     private_addr: an internal address to receive operational messages such as NodeJoinEvent
 ///     max_duration_ms: an optional config to override default settings of the network latency
 ///     enable_record: a flag to enable recording of message delivery records
-pub fn start(private_addr: ChannelAddr, max_duration_ms: u64) -> anyhow::Result<SimNetHandle> {
+pub fn start(
+    private_addr: ChannelAddr,
+    proxy_addr: ChannelAddr,
+    max_duration_ms: u64,
+) -> anyhow::Result<UnboundedReceiver<OperationalMessage>> {
     // Construct a topology with one node: the default A.
     let address_book: DashSet<ChannelAddr> = DashSet::new();
     address_book.insert(private_addr.clone());
@@ -755,45 +759,55 @@ pub fn start(private_addr: ChannelAddr, max_duration_ms: u64) -> anyhow::Result<
 
     let (training_script_state_tx, training_script_state_rx) =
         tokio::sync::watch::channel(TrainingScriptState::Running);
-    let (event_tx, event_rx) = mpsc::unbounded_channel::<Box<dyn Event>>();
-    let (scheduled_event_tx, scheduled_event_rx) = mpsc::unbounded_channel::<ScheduledEvent>();
-    let records = Some(Arc::new(Mutex::new(vec![]))); // TODO remove optional
+    let (event_tx, event_rx) =
+        mpsc::unbounded_channel::<(Box<dyn Event>, bool, Option<SimulatorTimeInstant>)>();
     let pending_event_count = Arc::new(AtomicUsize::new(0));
-    let simnet_join_handle = {
-        let records = records.clone();
+    let stop_signal = Arc::new(AtomicBool::new(false));
+
+    let join_handle = Mutex::new(Some({
         let config = config.clone();
         let pending_event_count = pending_event_count.clone();
+        let stop_signal = stop_signal.clone();
+
         tokio::spawn(async move {
             let mut net = SimNet {
                 config,
                 address_book,
                 state: State {
                     scheduled_events: BTreeMap::new(),
+                    unadvanceable_scheduled_events: BTreeMap::new(),
                 },
                 max_latency: Duration::from_millis(max_duration_ms),
-                records,
+                records: Vec::new(),
                 pending_event_count,
             };
-            net.run(event_rx, scheduled_event_rx, training_script_state_rx)
-                .await;
+            net.run(event_rx, training_script_state_rx, stop_signal)
+                .await
         })
-    };
-    let join_handles = vec![simnet_join_handle];
+    }));
     let (operational_message_tx, operational_message_rx) =
         mpsc::unbounded_channel::<OperationalMessage>();
 
-    Ok(SimNetHandle {
-        join_handles,
+    let proxy_handle = block_on(ProxyHandle::start(
+        proxy_addr,
+        event_tx.clone(),
+        pending_event_count.clone(),
+        operational_message_tx.clone(),
+    ))
+    .map_err(|err| SimNetError::ProxyNotAvailable(err.to_string()))?;
+
+    HANDLE.get_or_init(|| SimNetHandle {
+        join_handle,
         event_tx,
-        scheduled_event_tx,
         config,
-        records,
         pending_event_count,
-        proxy_handle: Arc::new(Mutex::new(None)),
+        proxy_handle,
         operational_message_tx,
-        operational_message_rx: Arc::new(Mutex::new(Some(operational_message_rx))),
         training_script_state_tx,
-    })
+        stop_signal,
+    });
+
+    Ok(operational_message_rx)
 }
 
 impl SimNet {
@@ -844,54 +858,59 @@ impl SimNet {
     }
 
     /// Schedule the event into the network.
-    async fn schedule_event(&mut self, scheduled_event: ScheduledEvent) {
-        if let Some(records) = &self.records {
-            records.lock().await.push(SimulatorEventRecord {
-                summary: scheduled_event.event.summary(),
-                start_at: SimClock.millis_since_start(SimClock.now()),
-                end_at: scheduled_event.time,
-            });
+    fn schedule_event(&mut self, scheduled_event: ScheduledEvent, advanceable: bool) {
+        let start_at = SimClock.millis_since_start(SimClock.now());
+        let end_at = scheduled_event.time;
+
+        self.records.push(SimulatorEventRecord {
+            summary: scheduled_event.event.summary(),
+            start_at,
+            end_at,
+        });
+
+        if advanceable {
+            self.state
+                .scheduled_events
+                .entry(scheduled_event.time)
+                .or_insert_with(Vec::new)
+                .push(scheduled_event);
+        } else {
+            self.state
+                .unadvanceable_scheduled_events
+                .entry(scheduled_event.time)
+                .or_insert_with(Vec::new)
+                .push(scheduled_event);
         }
-        self.state
-            .scheduled_events
-            .entry(scheduled_event.time)
-            .or_insert_with(Vec::new)
-            .push(scheduled_event);
     }
 
     /// Run the simulation. This will dispatch all the messages in the network.
     /// And wait for new ones.
     async fn run(
         &mut self,
-        mut event_rx: UnboundedReceiver<Box<dyn Event>>,
-        mut scheduled_event_rx: UnboundedReceiver<ScheduledEvent>,
+        mut event_rx: UnboundedReceiver<(Box<dyn Event>, bool, Option<SimulatorTimeInstant>)>,
         training_script_state_rx: tokio::sync::watch::Receiver<TrainingScriptState>,
-    ) {
+        stop_signal: Arc<AtomicBool>,
+    ) -> Vec<SimulatorEventRecord> {
         // The simulated number of milliseconds the training script
         // has spent waiting for the backend to resolve a future
         let mut training_script_waiting_time: u64 = 0;
+        // Duration elapsed while only non_advanceable_events has events
+        let mut debounce_timer: Option<tokio::time::Instant> = None;
         'outer: loop {
-            // TODO: Find a way to drain all needed messages with better guarantees.
-            //
-            // Allow tiny grace period for messages to stop coming in before we actually advance time
-            // to handle inflight events
-            while let Ok(event) =
-                tokio::time::timeout(tokio::time::Duration::from_millis(10), event_rx.recv()).await
-            {
-                if let Some(event) = event {
-                    let scheduled_event = self.create_scheduled_event(event).await;
-                    self.schedule_event(scheduled_event).await;
-                } else {
-                    break 'outer;
-                }
+            // Check if we should stop
+            if stop_signal.load(Ordering::SeqCst) {
+                break 'outer self.records.clone();
             }
 
-            while let Ok(ScheduledEvent { time, event }) = scheduled_event_rx.try_recv() {
-                self.schedule_event(ScheduledEvent {
-                    time: time + training_script_waiting_time,
-                    event,
-                })
-                .await;
+            while let Ok((event, advanceable, time)) = event_rx.try_recv() {
+                let scheduled_event = match time {
+                    Some(time) => ScheduledEvent {
+                        time: time + training_script_waiting_time,
+                        event,
+                    },
+                    None => self.create_scheduled_event(event).await,
+                };
+                self.schedule_event(scheduled_event, advanceable);
             }
 
             {
@@ -910,12 +929,65 @@ impl SimNet {
                                     + training_script_waiting_time
                         })
                 {
+                    tokio::task::yield_now().await;
                     continue;
                 }
+                match (
+                    self.state.scheduled_events.first_key_value(),
+                    self.state.unadvanceable_scheduled_events.first_key_value(),
+                ) {
+                    (None, Some(_)) if debounce_timer.is_none() => {
+                        // Start debounce timer when only the non-advancedable
+                        // queue has events and the timer has not already started
+                        debounce_timer = Some(RealClock.now());
+                    }
+                    // Timer already active
+                    (None, Some(_)) => {}
+                    // Reset timer when non-advanceable queue is not the only queue with events
+                    _ => {
+                        debounce_timer = None;
+                    }
+                }
                 // process for next delivery time.
-                let Some((scheduled_time, scheduled_events)) =
-                    self.state.scheduled_events.pop_first()
-                else {
+                let Some((scheduled_time, scheduled_events)) = (match (
+                    self.state.scheduled_events.first_key_value(),
+                    self.state.unadvanceable_scheduled_events.first_key_value(),
+                ) {
+                    (Some((advanceable_time, _)), Some((unadvanceable_time, _))) => {
+                        if unadvanceable_time < advanceable_time {
+                            self.state.unadvanceable_scheduled_events.pop_first()
+                        } else {
+                            self.state.scheduled_events.pop_first()
+                        }
+                    }
+                    (Some(_), None) => self.state.scheduled_events.pop_first(),
+                    (None, Some(_)) => match debounce_timer {
+                        Some(time) => {
+                            if time.elapsed() > tokio::time::Duration::from_millis(1000) {
+                                // debounce interval has elapsed, reset timer
+                                debounce_timer = None;
+                                self.state.unadvanceable_scheduled_events.pop_first()
+                            } else {
+                                None
+                            }
+                        }
+                        None => None,
+                    },
+                    (None, None) => None,
+                }) else {
+                    tokio::select! {
+                        Some((event, advanceable, time)) = event_rx.recv() => {
+                            let scheduled_event = match time {
+                                Some(time) => ScheduledEvent {
+                                    time: time + training_script_waiting_time,
+                                    event,
+                                },
+                                None => self.create_scheduled_event(event).await,
+                            };
+                            self.schedule_event(scheduled_event, advanceable);
+                        },
+                        _ = RealClock.sleep(Duration::from_millis(10)) => {}
+                    }
                     continue;
                 };
                 if training_script_state_rx.borrow().is_waiting() {
@@ -928,7 +1000,7 @@ impl SimNet {
                     self.pending_event_count
                         .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
                     if scheduled_event.event.handle_network(self).await.is_err() {
-                        break 'outer;
+                        break 'outer self.records.clone(); //TODO
                     }
                 }
             }
@@ -986,6 +1058,7 @@ pub struct EdgeConfig {
 
 impl NetworkConfig {
     /// Create a new configuration from a YAML string.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SimNetError`.
     pub fn from_yaml(yaml: &str) -> Result<Self, SimNetError> {
         let config: NetworkConfig = serde_yaml::from_str(yaml)
             .map_err(|err| SimNetError::InvalidArg(format!("failed to parse config: {}", err)))?;
@@ -999,16 +1072,11 @@ mod tests {
     use std::sync::Arc;
 
     use async_trait::async_trait;
-    use rand::Rng;
-    use rand::distributions::Alphanumeric;
     use tokio::sync::Mutex;
-    use tokio::sync::oneshot;
 
     use super::*;
-    use crate::PortId;
-    use crate::channel::Tx;
-    use crate::channel::sim::HANDLE;
-    use crate::channel::sim::records;
+    use crate::channel::ChannelTransport;
+    use crate::channel::sim::SimAddr;
     use crate::clock::Clock;
     use crate::clock::RealClock;
     use crate::clock::SimClock;
@@ -1114,6 +1182,9 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     fn random_abstract_addr() -> ChannelAddr {
+        use rand::Rng;
+        use rand::distributions::Alphanumeric;
+
         let random_string = rand::thread_rng()
             .sample_iter(&Alphanumeric)
             .take(24)
@@ -1127,16 +1198,27 @@ mod tests {
         let default_addr = format!("local!{}", 0)
             .parse::<simnet::ChannelAddr>()
             .unwrap();
-        let nw_handle = start(default_addr.clone(), 1000).unwrap();
-        nw_handle.close().await.unwrap();
+        assert!(
+            start(
+                default_addr.clone(),
+                ChannelAddr::any(ChannelTransport::Unix),
+                1000,
+            )
+            .is_ok()
+        );
+        simnet_handle().unwrap().close().await.unwrap();
     }
 
     #[tokio::test]
     async fn test_simnet_config() {
         // Tests that we can create a simnet, config latency between two node and deliver
         // the message with configured latency.
-        let default_addr = "local!0".parse::<simnet::ChannelAddr>().unwrap();
-        let nw_handle = start(default_addr.clone(), 1000).unwrap();
+        start(
+            "local!0".parse::<simnet::ChannelAddr>().unwrap(),
+            ChannelAddr::any(ChannelTransport::Unix),
+            1000,
+        )
+        .unwrap();
         let alice = "local!1".parse::<simnet::ChannelAddr>().unwrap();
         let bob = "local!2".parse::<simnet::ChannelAddr>().unwrap();
         let latency = Duration::from_millis(1000);
@@ -1147,7 +1229,11 @@ mod tests {
                 metadata: SimNetEdgeInfo { latency },
             }],
         };
-        nw_handle.update_network_config(config).await.unwrap();
+        simnet_handle()
+            .unwrap()
+            .update_network_config(config)
+            .await
+            .unwrap();
 
         let proxy_addr = ChannelAddr::any(channel::ChannelTransport::Unix);
         let alice = SimAddr::new(alice, proxy_addr.clone()).unwrap();
@@ -1158,9 +1244,13 @@ mod tests {
             Serialized::serialize(&"123".to_string()).unwrap(),
             None,
         ));
-        nw_handle.send_event(msg).unwrap();
-        nw_handle.flush(Duration::from_secs(30)).await.unwrap();
-        let records = nw_handle.records().await;
+        simnet_handle().unwrap().send_event(msg).unwrap();
+        simnet_handle()
+            .unwrap()
+            .flush(Duration::from_secs(30))
+            .await
+            .unwrap();
+        let records = simnet_handle().unwrap().close().await;
         let expected_record = SimulatorEventRecord {
             summary: "Sending message from local!1 to local!2".to_string(),
             start_at: 0,
@@ -1173,12 +1263,18 @@ mod tests {
     #[tokio::test]
     async fn test_simnet_debounce() {
         let default_addr = "local!0".parse::<simnet::ChannelAddr>().unwrap();
-        let nw_handle = start(default_addr.clone(), 1000).unwrap();
+        start(
+            default_addr.clone(),
+            ChannelAddr::any(ChannelTransport::Unix),
+            1000,
+        )
+        .unwrap();
         let alice = "local!1".parse::<simnet::ChannelAddr>().unwrap();
         let bob = "local!2".parse::<simnet::ChannelAddr>().unwrap();
 
         let latency = Duration::from_millis(10000);
-        nw_handle
+        simnet_handle()
+            .unwrap()
             .update_network_config(NetworkConfig {
                 edges: vec![EdgeConfig {
                     src: alice.clone(),
@@ -1196,7 +1292,8 @@ mod tests {
 
         // Rapidly send 10 messages expecting that each one debounces the processing
         for _ in 0..10 {
-            nw_handle
+            simnet_handle()
+                .unwrap()
                 .send_event(Box::new(MessageDeliveryEvent::new(
                     alice.clone(),
                     bob.clone(),
@@ -1207,9 +1304,13 @@ mod tests {
             RealClock.sleep(tokio::time::Duration::from_millis(3)).await;
         }
 
-        nw_handle.flush(Duration::from_secs(20)).await.unwrap();
+        simnet_handle()
+            .unwrap()
+            .flush(Duration::from_secs(20))
+            .await
+            .unwrap();
 
-        let records = nw_handle.records().await;
+        let records = simnet_handle().unwrap().close().await;
         assert_eq!(records.as_ref().unwrap().len(), 10);
 
         // If debounce is successful, the simnet will not advance to the delivery of any of
@@ -1222,10 +1323,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_sim_dispatch() {
-        let default_addr = format!("local!{}", 0)
-            .parse::<simnet::ChannelAddr>()
-            .unwrap();
-        let nw_handle = start(default_addr.clone(), 1000).unwrap();
+        let proxy = ChannelAddr::any(ChannelTransport::Unix);
+        start(
+            ChannelAddr::any(ChannelTransport::Unix),
+            proxy.clone(),
+            1000,
+        )
+        .unwrap();
         let sender = Some(TestDispatcher::default());
         let mut addresses: Vec<simnet::ChannelAddr> = Vec::new();
         // // Create a simple network of 4 nodes.
@@ -1266,15 +1370,19 @@ mod tests {
             sender.clone(),
         ));
 
-        nw_handle.send_event(one).unwrap();
-        nw_handle.send_event(two).unwrap();
-        nw_handle.send_event(three).unwrap();
+        simnet_handle().unwrap().send_event(one).unwrap();
+        simnet_handle().unwrap().send_event(two).unwrap();
+        simnet_handle().unwrap().send_event(three).unwrap();
 
-        nw_handle.flush(Duration::from_millis(1000)).await.unwrap();
-        let records = nw_handle.records().await;
+        simnet_handle()
+            .unwrap()
+            .flush(Duration::from_millis(1000))
+            .await
+            .unwrap();
+        let records = simnet_handle().unwrap().close().await.unwrap();
         eprintln!("Records: {:?}", records);
         // Close the channel
-        nw_handle.close().await.unwrap();
+        simnet_handle().unwrap().close().await.unwrap();
 
         // Check results
         let buf = sender.as_ref().unwrap().mbuffers.lock().await;
@@ -1338,24 +1446,44 @@ edges:
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn test_simnet_receive_external_message() {
+        use tokio::sync::oneshot;
+
+        use crate::PortId;
+        use crate::channel::Tx;
+
         let proxy_addr = ChannelAddr::any(channel::ChannelTransport::Unix);
-        let _ = HANDLE.add_proxy(proxy_addr.clone()).await.unwrap();
+        start(
+            ChannelAddr::any(ChannelTransport::Unix),
+            proxy_addr.clone(),
+            1000,
+        )
+        .unwrap();
         let tx = crate::channel::dial(proxy_addr.clone()).unwrap();
         let port_id = PortId(id!(test[0].actor0), 0);
         let src_to_dst_msg = Serialized::serialize(&"hola".to_string()).unwrap();
         let src = random_abstract_addr();
         let dst = random_abstract_addr();
-        let src_sim = SimAddr::new(src.clone(), proxy_addr.clone()).unwrap();
-        let dst_sim = SimAddr::new(dst.clone(), proxy_addr.clone()).unwrap();
-        let forward_message = ProxyMessage::new(Some(src_sim), Some(dst_sim), src_to_dst_msg);
+        let src_and_proxy = Some(AddressProxyPair {
+            address: src.clone(),
+            proxy: proxy_addr.clone(),
+        });
+        let dst_and_proxy = AddressProxyPair {
+            address: dst.clone(),
+            proxy: proxy_addr.clone(),
+        };
+        let forward_message = ProxyMessage::new(src_and_proxy, Some(dst_and_proxy), src_to_dst_msg);
         let external_message =
             MessageEnvelope::new_unknown(port_id, Serialized::serialize(&forward_message).unwrap());
         tx.try_post(external_message, oneshot::channel().0).unwrap();
         // flush doesn't work here because tx.send() delivers the message through real network.
         // We have to wait for the message to enter simnet.
         RealClock.sleep(Duration::from_millis(1000)).await;
-        HANDLE.flush(Duration::from_millis(1000)).await.unwrap();
-        let records = records().await;
+        simnet_handle()
+            .unwrap()
+            .flush(Duration::from_millis(1000))
+            .await
+            .unwrap();
+        let records = simnet_handle().unwrap().close().await;
         assert!(records.as_ref().unwrap().len() == 1);
         let expected_record = SimulatorEventRecord {
             summary: format!("Sending message from {} to {}", src, dst),
@@ -1368,8 +1496,18 @@ edges:
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn test_simnet_receive_operational_message() {
+        use tokio::sync::oneshot;
+
+        use crate::PortId;
+        use crate::channel::Tx;
+
         let proxy_addr = ChannelAddr::any(channel::ChannelTransport::Unix);
-        let _ = HANDLE.add_proxy(proxy_addr.clone()).await.unwrap();
+        let mut operational_message_rx = start(
+            ChannelAddr::any(ChannelTransport::Unix),
+            proxy_addr.clone(),
+            1000,
+        )
+        .unwrap();
         let tx = crate::channel::dial(proxy_addr.clone()).unwrap();
         let port_id = PortId(id!(test[0].actor0), 0);
         let spawn_mesh = SpawnMesh {
@@ -1388,7 +1526,6 @@ edges:
         // flush doesn't work here because tx.send() delivers the message through real network.
         // We have to wait for the message to enter simnet.
         RealClock.sleep(Duration::from_millis(1000)).await;
-        let mut operational_message_rx = HANDLE.operational_message_receiver().await.unwrap();
         let received_operational_message = operational_message_rx.recv().await.unwrap();
 
         // Check the received message.
@@ -1397,10 +1534,22 @@ edges:
 
     #[tokio::test]
     async fn test_sim_sleep() {
+        start(
+            ChannelAddr::any(ChannelTransport::Unix),
+            ChannelAddr::any(ChannelTransport::Unix),
+            1000,
+        )
+        .unwrap();
+
         let default_addr = format!("local!{}", 0)
             .parse::<simnet::ChannelAddr>()
             .unwrap();
-        let _ = start(default_addr.clone(), 1000).unwrap();
+        let _ = start(
+            default_addr.clone(),
+            ChannelAddr::any(ChannelTransport::Unix),
+            1000,
+        )
+        .unwrap();
 
         let start = SimClock.now();
         assert_eq!(SimClock.millis_since_start(start), 0);
@@ -1413,15 +1562,20 @@ edges:
 
     #[tokio::test]
     async fn test_torch_op() {
-        let default_addr = "local!0".parse::<simnet::ChannelAddr>().unwrap();
-        let nw_handle = start(default_addr.clone(), 1000).unwrap();
+        start(
+            ChannelAddr::any(ChannelTransport::Unix),
+            ChannelAddr::any(ChannelTransport::Unix),
+            1000,
+        )
+        .unwrap();
         let args_string = "1, 2".to_string();
         let kwargs_string = "a=2".to_string();
 
         let mailbox = Mailbox::new_detached(id!(proc[0].proc).clone());
         let (tx, rx) = mailbox.open_once_port::<()>();
 
-        nw_handle
+        simnet_handle()
+            .unwrap()
             .send_event(TorchOpEvent::new(
                 "torch.ops.aten.ones.default".to_string(),
                 tx.bind(),
@@ -1434,8 +1588,12 @@ edges:
 
         rx.recv().await.unwrap();
 
-        nw_handle.flush(Duration::from_millis(1000)).await.unwrap();
-        let records = nw_handle.records().await;
+        simnet_handle()
+            .unwrap()
+            .flush(Duration::from_millis(1000))
+            .await
+            .unwrap();
+        let records = simnet_handle().unwrap().close().await;
         let expected_record = SimulatorEventRecord {
             summary:
                 "[mesh_0_worker[0].worker_0[0]] Torch Op: torch.ops.aten.ones.default(1, 2, a=2)"
@@ -1445,7 +1603,5 @@ edges:
         };
         assert!(records.as_ref().unwrap().len() == 1);
         assert_eq!(records.unwrap().first().unwrap(), &expected_record);
-        // Close the channel
-        nw_handle.close().await.unwrap();
     }
 }

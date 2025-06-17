@@ -6,23 +6,31 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::fmt;
+use std::future::Future;
+use std::future::pending;
+use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::ActorId;
+use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Named;
+use hyperactor::PortId;
+use hyperactor::forward;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::message::Unbind;
-use hyperactor::message::Unbound;
 use hyperactor_mesh::actor_mesh::Cast;
 use monarch_types::PickledPyObject;
+use monarch_types::SerializablePyErr;
+use pyo3::conversion::IntoPyObjectExt;
+use pyo3::exceptions::PyBaseException;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -33,6 +41,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_bytes::ByteBuf;
 use tokio::sync::Mutex;
+use tokio::sync::oneshot;
 
 use crate::mailbox::PyMailbox;
 use crate::proc::InstanceWrapper;
@@ -78,7 +87,7 @@ impl PickledMessage {
 
     #[getter]
     fn message<'a>(&self, py: Python<'a>) -> Bound<'a, PyBytes> {
-        PyBytes::new_bound(py, self.message.as_ref())
+        PyBytes::new(py, self.message.as_ref())
     }
 
     fn serialize(&self) -> PyResult<PySerialized> {
@@ -121,7 +130,7 @@ impl PickledMessageClientActor {
         })?;
         Python::with_gil(|py| {
             result
-                .map(|res| res.into_py(py))
+                .map(|res| res.into_py_any(py))?
                 .map_err(|err| PyRuntimeError::new_err(err.to_string()))
         })
     }
@@ -134,9 +143,9 @@ impl PickledMessageClientActor {
             .drain_and_stop()
             .map_err(|err| PyRuntimeError::new_err(err.to_string()))?
             .into_iter()
-            .map(|message| message.into_py(py))
-            .collect::<Vec<PyObject>>();
-        Ok(PyList::new_bound(py, messages))
+            .map(|message| message.into_py_any(py))
+            .collect::<PyResult<Vec<PyObject>>>()?;
+        PyList::new(py, messages)
     }
 
     fn world_status<'py>(&mut self, py: Python<'py>) -> PyResult<PyObject> {
@@ -146,7 +155,7 @@ impl PickledMessageClientActor {
             instance.lock().await.world_status(Default::default()).await
         })??;
         Python::with_gil(|py| {
-            let py_dict = PyDict::new_bound(py);
+            let py_dict = PyDict::new(py);
             for (world, status) in worlds {
                 py_dict.set_item(world.to_string(), status.to_string())?;
             }
@@ -162,10 +171,12 @@ impl PickledMessageClientActor {
 }
 
 #[pyclass(frozen, module = "monarch._rust_bindings.monarch_hyperactor.actor")]
-#[derive(Clone, Serialize, Deserialize, Named)]
+#[derive(Clone, Serialize, Deserialize, Named, PartialEq)]
 pub struct PythonMessage {
     method: String,
     message: ByteBuf,
+    response_port: Option<PortId>,
+    rank: Option<usize>,
 }
 
 impl std::fmt::Debug for PythonMessage {
@@ -181,13 +192,20 @@ impl std::fmt::Debug for PythonMessage {
 }
 
 impl Unbind for PythonMessage {
-    fn unbind(self) -> anyhow::Result<Unbound<Self>> {
-        Ok(Unbound::new(self, Bindings::default()))
+    fn bindings(&self) -> anyhow::Result<Bindings> {
+        let mut bindings = Bindings::default();
+        if let Some(response_port) = &self.response_port {
+            bindings.push(response_port)?;
+        }
+        Ok(bindings)
     }
 }
 
 impl Bind for PythonMessage {
-    fn bind(self, _bindings: &Bindings) -> anyhow::Result<Self> {
+    fn bind(mut self, bindings: &Bindings) -> anyhow::Result<Self> {
+        if let Some(response_port) = &mut self.response_port {
+            bindings.rebind::<PortId>([response_port].into_iter())?;
+        }
         Ok(self)
     }
 }
@@ -195,11 +213,18 @@ impl Bind for PythonMessage {
 #[pymethods]
 impl PythonMessage {
     #[new]
-    #[pyo3(signature = (method, message))]
-    fn new(method: String, message: Vec<u8>) -> Self {
+    #[pyo3(signature = (method, message, response_port, rank))]
+    fn new(
+        method: String,
+        message: Vec<u8>,
+        response_port: Option<crate::mailbox::PyPortId>,
+        rank: Option<usize>,
+    ) -> Self {
         Self {
             method,
             message: ByteBuf::from(message),
+            response_port: response_port.map(Into::into),
+            rank,
         }
     }
 
@@ -210,7 +235,17 @@ impl PythonMessage {
 
     #[getter]
     fn message<'a>(&self, py: Python<'a>) -> Bound<'a, PyBytes> {
-        PyBytes::new_bound(py, self.message.as_ref())
+        PyBytes::new(py, self.message.as_ref())
+    }
+
+    #[getter]
+    fn response_port(&self) -> Option<crate::mailbox::PyPortId> {
+        self.response_port.clone().map(Into::into)
+    }
+
+    #[getter]
+    fn rank(&self) -> Option<usize> {
+        self.rank
     }
 }
 
@@ -234,10 +269,17 @@ impl PythonActorHandle {
     }
 }
 
+/// An actor for which message handlers are implemented in Python.
 #[derive(Debug)]
 #[hyperactor::export_spawn(PythonMessage, Cast<PythonMessage>, IndexedErasedUnbound<Cast<PythonMessage>>)]
 pub(super) struct PythonActor {
+    /// The Python object that we delegate message handling to. An instance of
+    /// `monarch.actor_mesh._Actor`.
     pub(super) actor: PyObject,
+
+    /// Stores a reference to the Python event loop to run Python coroutines on.
+    /// We give each PythonActor its own even loop in its own thread.
+    task_locals: pyo3_async_runtimes::TaskLocals,
 }
 
 #[async_trait]
@@ -245,44 +287,85 @@ impl Actor for PythonActor {
     type Params = PickledPyObject;
 
     async fn new(actor_type: PickledPyObject) -> Result<Self, anyhow::Error> {
-        Ok(Python::with_gil(|py| -> PyResult<Self> {
+        Ok(Python::with_gil(|py| -> Result<Self, SerializablePyErr> {
             let unpickled = actor_type.unpickle(py)?;
             let class_type: &Bound<'_, PyType> = unpickled.downcast()?;
-            let actor: PyObject = class_type.call0()?.to_object(py);
+            let actor = class_type.call0()?.into_pyobject(py)?;
 
-            Ok(Self { actor })
+            // Release the GIL so that the thread spawned below can acquire it.
+            let task_locals = Python::allow_threads(py, || {
+                let (tx, rx) = std::sync::mpsc::channel();
+                let _ = std::thread::spawn(move || {
+                    Python::with_gil(|py| {
+                        let asyncio = Python::import(py, "asyncio").unwrap();
+                        let event_loop = asyncio.call_method0("new_event_loop").unwrap();
+                        asyncio
+                            .call_method1("set_event_loop", (event_loop.clone(),))
+                            .unwrap();
+
+                        let task_locals = pyo3_async_runtimes::TaskLocals::new(event_loop.clone())
+                            .copy_context(py)
+                            .unwrap();
+                        tx.send(task_locals).unwrap();
+                        event_loop.call_method0("run_forever").unwrap();
+                    });
+                });
+                rx.recv().unwrap()
+            });
+
+            Ok(Self {
+                actor: actor.into(),
+                task_locals,
+            })
         })?)
     }
 }
 
-/// Get the event loop state to run PythonActor handlers in. We construct a
-/// fresh event loop in its own thread for us to schedule this work onto, to
-/// avoid disturbing any event loops that the user might be running.
-fn get_task_locals(py: Python) -> &'static pyo3_async_runtimes::TaskLocals {
-    static TASK_LOCALS: OnceLock<pyo3_async_runtimes::TaskLocals> = OnceLock::new();
+// [Panics in async endpoints]
+// This class exists to solve a deadlock when an async endpoint calls into some
+// Rust code that panics.
+//
+// When an async endpoint is invoked and calls into Rust, the following sequence happens:
+//
+// hyperactor message -> PythonActor::handle() -> call _Actor.handle() in Python
+//   -> convert the resulting coroutine into a Rust future, but scheduled on
+//      the Python asyncio event loop (`into_future_with_locals`)
+//   -> set a callback on Python asyncio loop to ping a channel that fulfills
+//      the Rust future when the Python coroutine has finished. ('PyTaskCompleter`)
+//
+// This works fine for normal results and Python exceptions: we will take the
+// result of the callback and send it through the channel, where it will be
+// returned to the `await`er of the Rust future.
+//
+// This DOESN'T work for panics. The behavior of a panic in pyo3-bound code is
+// that it will get caught by pyo3 and re-thrown to Python as a PanicException.
+// And if that PanicException ever makes it back to Rust, it will get unwound
+// instead of passed around as a normal PyErr type.
+//
+// So:
+//   - Endpoint panics.
+//   - This panic is captured as a PanicException in Python and
+//     stored as the result of the Python asyncio task.
+//   - When the callback in `PyTaskCompleter` queries the status of the task to
+//     pass it back to the Rust awaiter, instead of getting a Result type, it
+//     just starts resumes unwinding the PanicException
+//   - This triggers a deadlock, because the whole task dies without ever
+//     pinging the response channel, and the Rust awaiter will never complete.
+//
+// We work around this by passing a side-channel to our Python task so that it,
+// in Python, can catch the PanicException and notify the Rust awaiter manually.
+// In this way we can guarantee that the awaiter will complete even if the
+// `PyTaskCompleter` callback explodes.
+#[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.actor")]
+struct PanicFlag {
+    sender: Option<tokio::sync::oneshot::Sender<PyObject>>,
+}
 
-    // Temporarily release the GIL (as the thread we are about to create needs it).
-    Python::allow_threads(py, || {
-        TASK_LOCALS.get_or_init(|| {
-            let (tx, rx) = std::sync::mpsc::channel();
-            let _ = std::thread::spawn(move || {
-                Python::with_gil(|py| {
-                    let asyncio = Python::import_bound(py, "asyncio").unwrap();
-                    let event_loop = asyncio.call_method0("new_event_loop").unwrap();
-                    asyncio
-                        .call_method1("set_event_loop", (event_loop.clone(),))
-                        .unwrap();
-
-                    let task_locals = pyo3_async_runtimes::TaskLocals::new(event_loop.clone())
-                        .copy_context(py)
-                        .unwrap();
-                    tx.send(task_locals).unwrap();
-                    event_loop.call_method0("run_forever").unwrap();
-                });
-            });
-            rx.recv().unwrap()
-        })
-    })
+#[pymethods]
+impl PanicFlag {
+    fn signal_panic(&mut self, ex: PyObject) {
+        self.sender.take().unwrap().send(ex).unwrap();
+    }
 }
 
 #[async_trait]
@@ -292,27 +375,36 @@ impl Handler<PythonMessage> for PythonActor {
         this: &Instance<Self>,
         message: PythonMessage,
     ) -> anyhow::Result<()> {
-        let future = Python::with_gil(|py| -> PyResult<_> {
-            let mailbox = PyMailbox {
-                inner: this.mailbox_for_py().clone(),
-            };
-            let awaitable = tokio::task::block_in_place(|| {
-                self.actor
-                    .call_method_bound(py, "handle", (mailbox, message), None)
-            })?;
+        let mailbox = PyMailbox {
+            inner: this.mailbox_for_py().clone(),
+        };
+        // Create a channel for signaling panics in async endpoints.
+        // See [Panics in async endpoints].
+        let (sender, receiver) = oneshot::channel();
 
-            if awaitable.is_none(py) {
-                return Ok(None);
-            }
+        let future = Python::with_gil(|py| -> Result<_, SerializablePyErr> {
+            let awaitable = self.actor.call_method(
+                py,
+                "handle",
+                (
+                    mailbox,
+                    message,
+                    PanicFlag {
+                        sender: Some(sender),
+                    },
+                ),
+                None,
+            )?;
             pyo3_async_runtimes::into_future_with_locals(
-                get_task_locals(py),
+                &self.task_locals,
                 awaitable.into_bound(py),
             )
-            .map(Some)
+            .map_err(|err| err.into())
         })?;
-        if let Some(future) = future {
-            future.await?;
-        }
+
+        // Spawn a child actor to await the Python handler method.
+        let handler = AsyncEndpointTask::spawn(this, ()).await?;
+        handler.run(this, PythonTask::new(future), receiver).await?;
         Ok(())
     }
 }
@@ -328,32 +420,139 @@ impl Handler<Cast<PythonMessage>> for PythonActor {
             shape,
         }: Cast<PythonMessage>,
     ) -> anyhow::Result<()> {
-        let future = Python::with_gil(|py| -> PyResult<_> {
-            let mailbox = PyMailbox {
-                inner: this.mailbox_for_py().clone(),
-            };
+        let mailbox = PyMailbox {
+            inner: this.mailbox_for_py().clone(),
+        };
+        // Create a channel for signaling panics in async endpoints.
+        // See [Panics in async endpoints].
+        let (sender, receiver) = oneshot::channel();
 
-            let awaitable = tokio::task::block_in_place(|| {
-                self.actor.call_method_bound(
-                    py,
-                    "handle_cast",
-                    (mailbox, rank.0, PyShape::from(shape), message),
-                    None,
-                )
-            })?;
+        let future = Python::with_gil(|py| -> Result<_, SerializablePyErr> {
+            let awaitable = self.actor.call_method(
+                py,
+                "handle_cast",
+                (
+                    mailbox,
+                    rank.0,
+                    PyShape::from(shape),
+                    message,
+                    PanicFlag {
+                        sender: Some(sender),
+                    },
+                ),
+                None,
+            )?;
 
-            if awaitable.is_none(py) {
-                return Ok(None);
-            }
             pyo3_async_runtimes::into_future_with_locals(
-                get_task_locals(py),
+                &self.task_locals,
                 awaitable.into_bound(py),
             )
-            .map(Some)
+            .map_err(|err| err.into())
         })?;
-        if let Some(future) = future {
-            future.await?;
+
+        // Spawn a child actor to await the Python handler method.
+        let handler = AsyncEndpointTask::spawn(this, ()).await?;
+        handler.run(this, PythonTask::new(future), receiver).await?;
+        Ok(())
+    }
+}
+
+/// Helper struct to make a Python future passable in an actor message.
+///
+/// Also so that we don't have to write this massive type signature everywhere
+struct PythonTask {
+    future: Mutex<Pin<Box<dyn Future<Output = PyResult<PyObject>> + Send + 'static>>>,
+}
+
+impl PythonTask {
+    fn new(fut: impl Future<Output = PyResult<PyObject>> + Send + 'static) -> Self {
+        Self {
+            future: Mutex::new(Box::pin(fut)),
         }
+    }
+
+    async fn take(self) -> Pin<Box<dyn Future<Output = PyResult<PyObject>> + Send + 'static>> {
+        self.future.into_inner()
+    }
+}
+
+impl fmt::Debug for PythonTask {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PythonTask")
+            .field("future", &"<PythonFuture>")
+            .finish()
+    }
+}
+
+/// An ['Actor'] used to monitor the result of an async endpoint. We use an
+/// actor so that:
+/// - Actually waiting on the async endpoint can happen concurrently with other endpoints.
+/// - Any uncaught errors in the async endpoint will get propagated as a supervision event.
+#[derive(Debug)]
+struct AsyncEndpointTask {}
+
+/// An invocation of an async endpoint on a [`PythonActor`].
+#[derive(Handler, HandleClient, Debug)]
+enum AsyncEndpointInvocation {
+    Run(PythonTask, oneshot::Receiver<PyObject>),
+}
+
+#[async_trait]
+impl Actor for AsyncEndpointTask {
+    type Params = ();
+
+    async fn new(_params: Self::Params) -> anyhow::Result<Self> {
+        Ok(Self {})
+    }
+}
+
+#[async_trait]
+#[forward(AsyncEndpointInvocation)]
+impl AsyncEndpointInvocationHandler for AsyncEndpointTask {
+    async fn run(
+        &mut self,
+        this: &Instance<Self>,
+        task: PythonTask,
+        side_channel: oneshot::Receiver<PyObject>,
+    ) -> anyhow::Result<()> {
+        // Drive our PythonTask to completion, but listen on the side channel
+        // and raise an error if we hear anything there.
+
+        let err_or_never = async {
+            // The side channel will resolve with a value if a panic occured during
+            // processing of the async endpoint, see [Panics in async endpoints].
+            match side_channel.await {
+                Ok(value) => Python::with_gil(|py| -> Result<(), SerializablePyErr> {
+                    let err: PyErr = value
+                        .downcast_bound::<PyBaseException>(py)
+                        .unwrap()
+                        .clone()
+                        .into();
+                    Err(SerializablePyErr::from(py, &err))
+                }),
+                // An Err means that the sender has been dropped without sending.
+                // That's okay, it just means that the Python task has completed.
+                // In that case, just never resolve this future. We expect the other
+                // branch of the select to finish eventually.
+                Err(_) => pending().await,
+            }
+        };
+        let future = task.take().await;
+        let result: Result<(), SerializablePyErr> = tokio::select! {
+            result = future => {
+                match result {
+                    Ok(_) => Ok(()),
+                    Err(e) => Err(e.into()),
+                }
+            },
+            result = err_or_never => {
+                result
+            }
+        };
+        result?;
+
+        // Stop this actor now that its job is done.
+        this.stop()?;
         Ok(())
     }
 }
@@ -363,5 +562,36 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
     hyperactor_mod.add_class::<PickledMessageClientActor>()?;
     hyperactor_mod.add_class::<PythonActorHandle>()?;
     hyperactor_mod.add_class::<PythonMessage>()?;
+    hyperactor_mod.add_class::<PanicFlag>()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use hyperactor::id;
+
+    use super::*;
+
+    #[test]
+    fn test_python_message_bind_unbind() {
+        let message = PythonMessage {
+            method: "test".to_string(),
+            message: ByteBuf::from(vec![1, 2, 3]),
+            response_port: Some(id!(world[0].client[0][123])),
+            rank: None,
+        };
+        {
+            let unbound = message.clone().unbind().unwrap();
+            assert_eq!(message, unbound.bind().unwrap());
+        }
+
+        let no_port_message = PythonMessage {
+            response_port: None,
+            ..message
+        };
+        {
+            let unbound = no_port_message.clone().unbind().unwrap();
+            assert_eq!(no_port_message, unbound.bind().unwrap());
+        }
+    }
 }

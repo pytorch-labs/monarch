@@ -14,7 +14,7 @@ use ndslice::SliceIterator;
 
 /// A mesh of nodes, organized into the topology described by its shape (see [`Shape`]).
 #[async_trait]
-pub trait Mesh: Sized {
+pub trait Mesh {
     /// The type of the node contained in the mesh.
     type Node;
 
@@ -46,7 +46,7 @@ pub trait Mesh: Sized {
 }
 
 /// An iterator over the nodes of a mesh.
-pub struct MeshIter<'a, M: Mesh> {
+pub struct MeshIter<'a, M: Mesh + ?Sized> {
     mesh: &'a M,
     slice_iter: SliceIterator<'a>,
 }

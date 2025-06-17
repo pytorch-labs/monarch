@@ -61,6 +61,7 @@ impl CollectiveCoorindator {
         }
     }
 
+    #[allow(dead_code)]
     async fn deactivate_mesh(&self, world_id: WorldId) -> Result<(), SimulatorError> {
         let mut meshes = self.meshes.lock().await;
         let mesh_mut = meshes
@@ -136,6 +137,7 @@ pub async fn collect() -> Receiver<CollectiveResult> {
     COLLECTIVE_COORDINATOR.collect().await
 }
 
+#[allow(dead_code)]
 pub async fn deactivate_mesh(world_id: WorldId) -> Result<(), SimulatorError> {
     COLLECTIVE_COORDINATOR.deactivate_mesh(world_id).await
 }

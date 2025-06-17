@@ -39,7 +39,7 @@ use ndslice::ShapeError;
 
 use crate::CommActor;
 use crate::Mesh;
-use crate::actor_mesh::ActorMesh;
+use crate::actor_mesh::RootActorMesh;
 use crate::alloc::Alloc;
 use crate::alloc::AllocatorError;
 use crate::alloc::ProcState;
@@ -136,11 +136,19 @@ impl ProcMesh {
                         rank
                     );
                 }
+                // TODO: We should push responsibility to the allocator, which
+                // can choose to either provide a new proc or emit a
+                // ProcState::Failed to fail the whole allocation.
                 ProcState::Stopped { proc_id, reason } => {
-                    if let Some(rank) = proc_ids.unassign(proc_id.clone()) {
-                        let _ = running.remove(rank);
-                        tracing::info!("proc {} rank {}: stopped: {}", proc_id, rank, reason);
-                    }
+                    tracing::error!("allocation failed for proc_id {}: {}", proc_id, reason);
+                    return Err(AllocatorError::Other(anyhow::Error::msg(reason)));
+                }
+                ProcState::Failed {
+                    world_id,
+                    description,
+                } => {
+                    tracing::error!("allocation failed for world {}: {}", world_id, description);
+                    return Err(AllocatorError::Other(anyhow::Error::msg(description)));
                 }
             }
         }
@@ -155,10 +163,7 @@ impl ProcMesh {
         let (router_channel_addr, router_rx) = channel::serve(ChannelAddr::any(alloc.transport()))
             .await
             .map_err(|err| AllocatorError::Other(err.into()))?;
-        let router = DialMailboxRouter::new_with_default(
-            router_channel_addr.clone(),
-            global_router().boxed(),
-        );
+        let router = DialMailboxRouter::new_with_default(global_router().boxed());
         for (rank, (addr, _agent)) in running.iter().enumerate() {
             let proc_id = proc_ids.get(rank).unwrap().clone();
             router.bind(Reference::Proc(proc_id.clone()), addr.clone());
@@ -350,11 +355,11 @@ impl ProcMesh {
         &self,
         actor_name: &str,
         params: &A::Params,
-    ) -> Result<ActorMesh<'_, A>, anyhow::Error>
+    ) -> Result<RootActorMesh<'_, A>, anyhow::Error>
     where
         A::Params: RemoteMessage,
     {
-        Ok(ActorMesh::new(
+        Ok(RootActorMesh::new(
             self,
             actor_name.to_string(),
             Self::spawn_on_procs::<A>(&self.client, self.agents(), actor_name, params).await?,
@@ -364,6 +369,14 @@ impl ProcMesh {
     /// A client used to communicate with any member of this mesh.
     pub fn client(&self) -> &Mailbox {
         &self.client
+    }
+
+    pub fn client_proc(&self) -> &Proc {
+        &self.client_proc
+    }
+
+    pub fn proc_id(&self) -> &ProcId {
+        self.client_proc.proc_id()
     }
 
     /// An event stream of proc events. Each ProcMesh can produce only one such
@@ -379,6 +392,9 @@ impl ProcMesh {
                 .collect(),
         })
     }
+    pub fn shape(&self) -> &Shape {
+        &self.shape
+    }
 }
 
 /// Proc lifecycle events.
@@ -389,6 +405,19 @@ pub enum ProcEvent {
     /// The proc crashed, with the provided "reason". This is reserved for
     /// unhandled supervision events.
     Crashed(usize, String),
+}
+
+impl fmt::Display for ProcEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProcEvent::Stopped(rank, reason) => {
+                write!(f, "Proc at rank {} stopped: {}", rank, reason)
+            }
+            ProcEvent::Crashed(rank, reason) => {
+                write!(f, "Proc at rank {} crashed: {}", rank, reason)
+            }
+        }
+    }
 }
 
 /// An event stream of [`ProcEvent`]
@@ -443,7 +472,7 @@ pub trait SharedSpawnable {
         &self,
         actor_name: &str,
         params: &A::Params,
-    ) -> Result<ActorMesh<'static, A>, anyhow::Error>
+    ) -> Result<RootActorMesh<'static, A>, anyhow::Error>
     where
         A::Params: RemoteMessage;
 }
@@ -454,11 +483,11 @@ impl SharedSpawnable for Arc<ProcMesh> {
         &self,
         actor_name: &str,
         params: &A::Params,
-    ) -> Result<ActorMesh<'static, A>, anyhow::Error>
+    ) -> Result<RootActorMesh<'static, A>, anyhow::Error>
     where
         A::Params: RemoteMessage,
     {
-        Ok(ActorMesh::new_shared(
+        Ok(RootActorMesh::new_shared(
             Arc::clone(self),
             actor_name.to_string(),
             ProcMesh::spawn_on_procs::<A>(&self.client, self.agents(), actor_name, params).await?,
@@ -540,6 +569,7 @@ mod tests {
     use ndslice::shape;
 
     use super::*;
+    use crate::actor_mesh::ActorMesh;
     use crate::actor_mesh::test_util::Error;
     use crate::actor_mesh::test_util::TestActor;
     use crate::alloc::AllocSpec;

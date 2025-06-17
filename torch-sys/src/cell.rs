@@ -166,7 +166,7 @@ impl<T: ?Sized> AliasTrackingRefCell<T> {
     /// Returns a reference to the tensor, without checking for borrows.
     ///
     /// SAFETY: The caller must ensure that it holds a borrow on this tensor.
-    pub(crate) unsafe fn get_unchecked(&self) -> &T {
+    pub unsafe fn get_unchecked(&self) -> &T {
         // SAFETY: see above
         unsafe { self.value.get().as_ref().unwrap() }
     }

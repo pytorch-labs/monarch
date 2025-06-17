@@ -97,7 +97,7 @@ class RemoteProcessGroup(Referenceable):
         self._drop_ref()
 
     def size(self):
-        return self.device_mesh.numdevices(self.dims)
+        return self.device_mesh.size(self.dims)
 
     def _drop_ref(self):
         if self.ref is None:
@@ -172,21 +172,6 @@ class DeviceMesh(Referenceable, MeshTrait):
         self.ref = None
         self._active_mesh_context = None
 
-    def numdevices(self, dims: Optional[Dims] = None) -> int:
-        """
-        Returns the number of devices (total) of the subset of mesh asked for.
-        If dims is None, returns the total number of devices in the mesh.
-        """
-        if dims is None:
-            dims = self.names
-        missing_dims = set(dims) - set(self.names)
-        if missing_dims:
-            raise ValueError(f"Dimensions not found: {', '.join(missing_dims)}")
-        product = 1
-        for dim in dims:
-            product *= self.size(dim)
-        return product
-
     def define_remotely(self):
         if self.ref is None:
             self.ref = self.client.new_ref()
@@ -259,40 +244,25 @@ class DeviceMesh(Referenceable, MeshTrait):
     def rotate(self, **kwargs: Dict[str, int]):
         raise NotImplementedError()
 
-    def rank(self, dims: Union[str, Sequence[str]]) -> int:
+    def rank(self, dims: Union[str, Sequence[str]]) -> torch.Tensor:
         self.define_remotely()
         if isinstance(dims, str):
             if dims not in self.names:
                 raise KeyError(f"{self} does not have dimension {repr(dims)}")
             return _remote(
-                "monarch.worker.worker._rank",
+                _rank,
                 propagate=lambda _self, _dims: torch.full((), 0, dtype=torch.long),
             )(self, dims)
 
-        combined_rank = 0
+        combined_rank: Any = 0
         for dim in dims:
             combined_rank *= self.size(dim)
             combined_rank += self.rank(dim)
         return combined_rank
 
-    def size(self, dim: Union[str, Sequence[str]]) -> int:
-        if isinstance(dim, str):
-            if dim not in self.names:
-                raise KeyError(f"{self} does not have dimension {repr(dim)}")
-            return self.processes.sizes[self.names.index(dim)]
-        else:
-            p = 1
-            for d in dim:
-                p *= self.size(d)
-            return p
-
     @property
-    def ranks(self) -> dict[str, int]:
+    def ranks(self) -> dict[str, torch.Tensor]:
         return {dim: self.rank(dim) for dim in self.names}
-
-    @property
-    def sizes(self) -> dict[str, int]:
-        return dict(zip(self.names, self.processes.sizes))
 
     def process_idx(self):
         self.define_remotely()
@@ -364,6 +334,10 @@ class _ActiveMesh(TorchDispatchMode):
         return _remote(func, propagate=func)(*args, **kwargs)
 
 
+def _rank(mesh, dim):
+    return torch.full((), mesh.dims[dim].rank, dtype=torch.long)
+
+
 @contextmanager
 def _dispatch():
     global _dispatch_enabled
@@ -431,7 +405,7 @@ def to_mesh(
 
 def slice_mesh(
     tensors: Any,
-    **kwargs: Dict[str, Union[int, slice]],
+    **kwargs: Union[int, slice],
 ) -> Any:
     """
     Performs the slice_mesh operation for each tensor in tensors.

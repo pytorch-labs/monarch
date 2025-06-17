@@ -8,7 +8,7 @@
 import runpy
 import sys
 
-__MONARCH_WORKER_ENV__ = True
+__MONARCH_TENSOR_WORKER_ENV__ = True
 
 
 def main() -> None:

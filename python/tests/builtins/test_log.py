@@ -30,7 +30,7 @@ class TestLogFunctions:
             num_hosts,
             gpu_per_host,
             activate,
-            rust=backend_type == BackendType.RS,
+            backend=str(backend_type),
         )
 
     @patch("monarch.builtins.log.logger")

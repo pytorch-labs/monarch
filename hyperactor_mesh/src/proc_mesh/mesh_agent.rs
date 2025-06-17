@@ -32,12 +32,14 @@ use hyperactor::actor::remote::Remote;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::mailbox::BoxedMailboxSender;
+use hyperactor::mailbox::DeliveryError;
 use hyperactor::mailbox::DialMailboxRouter;
 use hyperactor::mailbox::IntoBoxedMailboxSender;
 use hyperactor::mailbox::MailboxClient;
 use hyperactor::mailbox::MailboxSender;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
+use hyperactor::mailbox::UndeliverableMessageError;
 use hyperactor::proc::Proc;
 use hyperactor::supervision::ActorSupervisionEvent;
 use serde::Deserialize;
@@ -111,6 +113,7 @@ impl MeshAgent {
             supervisor: None, // not yet assigned
         };
         let handle = proc.spawn::<Self>("mesh", agent).await?;
+        tracing::info!("bootstrap_end");
         Ok((proc, handle))
     }
 }
@@ -125,6 +128,30 @@ impl Actor for MeshAgent {
 
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
         self.proc.set_supervision_coordinator(this.port())?;
+        Ok(())
+    }
+
+    // This is an override of the default actor behavior.
+    async fn handle_undeliverable_message(
+        &mut self,
+        this: &Instance<Self>,
+        undelivered: Undeliverable<MessageEnvelope>,
+    ) -> Result<(), anyhow::Error> {
+        let Undeliverable(ref envelope) = undelivered;
+        tracing::debug!("took charge of a message not delivered: {}", envelope);
+
+        let sender = envelope.sender().clone();
+        if this.self_id() == &sender {
+            anyhow::bail!(UndeliverableMessageError::delivery_failure(envelope));
+        }
+
+        let mut envelope = envelope.clone();
+        let return_port = PortRef::attest_message_port(&sender);
+        return_port.send(this, undelivered).map_err(|err| {
+            envelope.try_set_error(DeliveryError::BrokenLink(format!("send failure: {err}")));
+            UndeliverableMessageError::return_failure(&envelope)
+        })?;
+
         Ok(())
     }
 }
@@ -146,11 +173,7 @@ impl MeshAgentMessageHandler for MeshAgent {
         // for better ergonomics in the allocator.
         self.supervisor = Some(supervisor);
         let client = MailboxClient::new(channel::dial(forwarder)?);
-        let self_address = address_book
-            .get(this.self_id().proc_id())
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("self rank {} missing in address book", rank))?;
-        let router = DialMailboxRouter::new_with_default(self_address, client.into_boxed());
+        let router = DialMailboxRouter::new_with_default(client.into_boxed());
         for (proc_id, addr) in address_book {
             router.bind(proc_id.into(), addr);
         }

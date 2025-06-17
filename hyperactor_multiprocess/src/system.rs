@@ -52,11 +52,7 @@ impl System {
         world_eviction_timeout: tokio::time::Duration,
     ) -> Result<ServerHandle, anyhow::Error> {
         let clock = ClockKind::for_channel_addr(&addr);
-        let params = SystemActorParams::new(
-            addr.clone(),
-            supervision_update_timeout,
-            world_eviction_timeout,
-        );
+        let params = SystemActorParams::new(supervision_update_timeout, world_eviction_timeout);
         let (actor_handle, system_proc) = SystemActor::bootstrap_with_clock(params, clock).await?;
         actor_handle.bind::<SystemActor>();
 
@@ -122,7 +118,7 @@ impl System {
             )
             .await
             .unwrap();
-        let timeout = hyperactor::config::global::message_delivery_timeout();
+        let timeout = hyperactor::config::global::get(hyperactor::config::MESSAGE_DELIVERY_TIMEOUT);
         loop {
             let result = tokio::time::timeout(timeout, proc_rx.recv()).await?;
             match result? {
@@ -664,7 +660,10 @@ mod tests {
         // are stopped by checking the logs.
         for m in 0..(shape.iter().product()) {
             let proc_id = worker_world_id.proc_id(m);
-            assert!(logs_contain(format!("{proc_id}: proc stopped",).as_str()));
+            assert!(tracing_test::internal::logs_with_scope_contain(
+                "hyperactor::proc",
+                format!("{proc_id}: proc stopped").as_str()
+            ));
         }
     }
 

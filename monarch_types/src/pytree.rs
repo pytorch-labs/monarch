@@ -134,11 +134,11 @@ impl<T> PyTree<T> {
     ) -> PyResult<Bound<'a, PyAny>> {
         if let TreeSpec::Tree(tree) = treespec {
             // Call into pytorch's unflatten.
-            let module = PyModule::import_bound(py, "torch.utils._pytree")?;
+            let module = PyModule::import(py, "torch.utils._pytree")?;
             let function = module.getattr("tree_unflatten")?;
             let leaves = leaves.collect::<Result<Vec<_>, _>>()?;
-            let leaves = PyList::new_bound(py, &leaves);
-            let args = PyTuple::new_bound(py, vec![leaves.as_any(), &tree.unpickle(py)?]);
+            let leaves = PyList::new(py, &leaves)?;
+            let args = PyTuple::new(py, vec![leaves.as_any(), &tree.unpickle(py)?])?;
             let result = function.call(args, None)?;
             Ok(result)
         } else {
@@ -209,7 +209,7 @@ impl<'a, T: FromPyObject<'a>> PyTree<T> {
         let py = tree.py();
 
         // Call into pytorch's flatten.
-        let pytree_module = PyModule::import_bound(py, "torch.utils._pytree")?;
+        let pytree_module = PyModule::import(py, "torch.utils._pytree")?;
         let tree_flatten = pytree_module.getattr("tree_flatten")?;
         let res = tree_flatten.call1((tree,))?;
 
@@ -217,7 +217,7 @@ impl<'a, T: FromPyObject<'a>> PyTree<T> {
         let (leaves, treespec) = match res.downcast::<PyTuple>()?.as_slice() {
             [leaves, treespec] => {
                 let mut out = vec![];
-                for leaf in leaves.iter()? {
+                for leaf in leaves.try_iter()? {
                     out.push(T::extract_bound(&leaf?)?);
                 }
                 (out, treespec)
@@ -254,6 +254,7 @@ impl<'a, T: FromPyObject<'a>> FromPyObject<'a> for PyTree<T> {
 mod tests {
     use anyhow::Result;
     use pyo3::Python;
+    use pyo3::ffi::c_str;
     use pyo3::py_run;
 
     use super::PyTree;
@@ -263,7 +264,7 @@ mod tests {
     fn flatten_unflatten() -> Result<()> {
         pyo3::prepare_freethreaded_python();
         Python::with_gil(|py| {
-            let tree = py.eval_bound("[1, 2]", None, None)?;
+            let tree = py.eval(c_str!("[1, 2]"), None, None)?;
             let tree: PyTree<u64> = PyTree::flatten(&tree)?;
             assert_eq!(tree.leaves, vec![1u64, 2u64]);
             let list = tree.try_to_object(py)?;
@@ -277,7 +278,7 @@ mod tests {
     fn try_map() -> Result<()> {
         pyo3::prepare_freethreaded_python();
         Python::with_gil(|py| {
-            let tree = py.eval_bound("[1, 2]", None, None)?;
+            let tree = py.eval(c_str!("[1, 2]"), None, None)?;
             let tree: PyTree<u64> = PyTree::flatten(&tree)?;
             let tree = tree.try_map(|v| anyhow::Ok(v + 1))?;
             assert_eq!(tree.leaves, vec![2u64, 3u64]);

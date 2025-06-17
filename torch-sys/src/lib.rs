@@ -110,8 +110,6 @@ mod scalar_type;
 mod tensor;
 
 pub mod backend;
-pub mod cuda;
-pub mod nccl;
 
 /// Binding for `c10::Layout`.
 pub use bindings::root::c10::Layout;
@@ -148,9 +146,13 @@ pub use crate::scalar_type::ScalarTypeDef;
 pub mod testing {
     /// Compares two tensors with `torch.allclose`.
     pub use crate::bridge::ffi::allclose;
+    pub use crate::bridge::ffi::cuda_full;
+    pub use crate::bridge::ffi::stack;
 }
 pub use crate::bridge::ffi::factory_empty;
 pub use crate::bridge::ffi::factory_zeros;
+pub use crate::bridge::ffi::is_float8_type;
+pub use crate::bridge::ffi::suggest_memory_format;
 // Only here to make them available to doctests!
 #[doc(hidden)]
 pub use crate::bridge::ffi::test_make_alias;

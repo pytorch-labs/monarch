@@ -4,24 +4,35 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+import asyncio
 import operator
+import os
+import re
+import threading
 from types import ModuleType
+from unittest.mock import AsyncMock, patch
+
+import monarch
 
 import pytest
 
 import torch
 
-from monarch.proc_mesh import local_proc_mesh, proc_mesh
-from monarch.rdma import RDMABuffer
-from monarch.service import (
+from monarch.actor_mesh import (
     Accumulator,
     Actor,
     current_actor_name,
     current_rank,
     current_size,
     endpoint,
-    ServiceCallFailedException,
+    MonarchContext,
 )
+from monarch.debugger import init_debugging
+
+from monarch.mesh_controller import spawn_tensor_engine
+
+from monarch.proc_mesh import local_proc_mesh, proc_mesh
+from monarch.rdma import RDMABuffer
 
 
 class Counter(Actor):
@@ -323,6 +334,11 @@ def test_sync_actor_sync_client():
     assert r == 5
 
 
+def test_proc_mesh_size() -> None:
+    proc = local_proc_mesh(gpus=2).get()
+    assert 2 == proc.size("gpus")
+
+
 def test_rank_size_sync() -> None:
     proc = local_proc_mesh(gpus=2).get()
     r = proc.spawn("runit", RunIt).get()
@@ -375,22 +391,273 @@ def test_rust_binding_modules_correct() -> None:
     check(bindings, "monarch._rust_bindings")
 
 
-class ErrorActor(Actor):
+two_gpu = pytest.mark.skipif(
+    torch.cuda.device_count() < 2,
+    reason="Not enough GPUs, this test requires at least 2 GPUs",
+)
+
+
+@two_gpu
+def test_tensor_engine() -> None:
+    pm = proc_mesh(gpus=2).get()
+
+    dm = spawn_tensor_engine(pm)
+    with dm.activate():
+        r = monarch.inspect(2 * torch.zeros(3, 4))
+
+    fm = dm.flatten("all")
+    with fm.activate():
+        f = monarch.inspect(2 * torch.zeros(3, 4), all=1)
+
+    assert torch.allclose(torch.zeros(3, 4), r)
+    assert torch.allclose(torch.zeros(3, 4), f)
+
+    dm.exit()
+
+
+def _debugee_actor_internal(rank):
+    if rank == 0:
+        breakpoint()  # noqa
+        rank += 1
+        return rank
+    elif rank == 1:
+        breakpoint()  # noqa
+        rank += 2
+        return rank
+    elif rank == 2:
+        breakpoint()  # noqa
+        rank += 3
+        raise ValueError("bad rank")
+    elif rank == 3:
+        breakpoint()  # noqa
+        rank += 4
+        return rank
+
+
+class DebugeeActor(Actor):
     @endpoint
-    def raise_exception(self):
-        raise ValueError("test")
+    async def to_debug(self):
+        rank = MonarchContext.get().point.rank
+        return _debugee_actor_internal(rank)
 
 
-def test_exception_propagates_call() -> None:
-    proc = proc_mesh(gpus=2).get()
-    error_actor_mesh = proc.spawn("error_actor", ErrorActor).get()
+async def test_debug() -> None:
+    input_mock = AsyncMock()
+    input_mock.side_effect = [
+        "attach 1",
+        "n",
+        "n",
+        "n",
+        "n",
+        "detach",
+        "attach 1",
+        "detach",
+        "quit",
+        "cast 0,3 n",
+        "cast 0,3 n",
+        # Attaching to 0 and 3 ensures that when we call "list"
+        # the next time, their function/lineno info will be
+        # up-to-date.
+        "attach 0",
+        "detach",
+        "attach 3",
+        "detach",
+        "quit",
+        "attach 2",
+        "c",
+        "quit",
+        "continue",
+    ]
 
-    with pytest.raises(ServiceCallFailedException, match="test"):
-        error_actor_mesh.raise_exception.call().get()
+    outputs = []
+
+    def _patch_output(msg):
+        nonlocal outputs
+        outputs.append(msg)
+
+    with patch("monarch.debugger._debugger_input", side_effect=input_mock), patch(
+        "monarch.debugger._debugger_output", new=_patch_output
+    ):
+        proc = await proc_mesh(hosts=2, gpus=2)
+        debugee = await proc.spawn("debugee", DebugeeActor)
+        debug_client = await init_debugging(debugee)
+
+        fut = debugee.to_debug.call()
+        await debug_client.wait_pending_session.call_one()
+        breakpoints = []
+        for i in range(10):
+            breakpoints = await debug_client.list.call_one()
+            if len(breakpoints) == 4:
+                break
+            await asyncio.sleep(1)
+            if i == 9:
+                raise RuntimeError("timed out waiting for breakpoints")
+
+        initial_linenos = {}
+        for i in range(len(breakpoints)):
+            rank, coords, _, _, function, lineno = breakpoints[i]
+            initial_linenos[rank] = lineno
+            assert rank == i
+            assert coords == {"hosts": rank % 2, "gpus": rank // 2}
+            assert function == "test_python_actors._debugee_actor_internal"
+            assert lineno == breakpoints[0][5] + 4 * rank
+
+        await debug_client.enter.call_one()
+
+        # Check that when detaching and re-attaching to a session, the last portion of the output is repeated
+        expected_last_output = [
+            r"--Return--",
+            r"\n",
+            r"> (/.*/)+test_python_actors.py\(\d+\)to_debug\(\)->3\n-> return _debugee_actor_internal\(rank\)",
+            r"\n",
+            r"\(Pdb\) ",
+        ]
+        output_len = len(expected_last_output)
+        assert outputs[-2 * output_len : -output_len] == outputs[-output_len:]
+        for real_output, expected_output in zip(
+            outputs[-output_len:], expected_last_output
+        ):
+            assert re.match(expected_output, real_output) is not None
+
+        breakpoints = await debug_client.list.call_one()
+        for i in range(len(breakpoints)):
+            if i == 1:
+                assert breakpoints[i][4] == "test_python_actors.to_debug"
+            else:
+                assert breakpoints[i][4] == "test_python_actors._debugee_actor_internal"
+                assert breakpoints[i][5] == initial_linenos[i]
+
+        await debug_client.enter.call_one()
+
+        breakpoints = await debug_client.list.call_one()
+        for i in range(len(breakpoints)):
+            if i == 1:
+                assert breakpoints[i][4] == "test_python_actors.to_debug"
+            elif i in (0, 3):
+                assert breakpoints[i][4] == "test_python_actors._debugee_actor_internal"
+                assert breakpoints[i][5] == initial_linenos[i] + 2
+            else:
+                assert breakpoints[i][4] == "test_python_actors._debugee_actor_internal"
+                assert breakpoints[i][5] == initial_linenos[i]
+
+        await debug_client.enter.call_one()
+
+        breakpoints = await debug_client.list.call_one()
+        assert len(breakpoints) == 3
+        for i, rank in enumerate((0, 1, 3)):
+            assert breakpoints[i][0] == rank
+
+        await debug_client.enter.call_one()
+        breakpoints = await debug_client.list.call_one()
+        assert len(breakpoints) == 0
+
+        with pytest.raises(monarch.actor_mesh.ActorError, match="ValueError: bad rank"):
+            await fut
 
 
-def test_exception_propagates_call_one() -> None:
-    proc = proc_mesh(gpus=1).get()
-    error_actor_mesh = proc.spawn("error_actor", ErrorActor).get()
-    with pytest.raises(ServiceCallFailedException, match="test"):
-        error_actor_mesh.raise_exception.call_one().get()
+class TLSActor(Actor):
+    """An actor that manages thread-local state."""
+
+    def __init__(self):
+        self.local = threading.local()
+        self.local.value = 0
+
+    @endpoint
+    def increment(self):
+        self.local.value += 1
+
+    @endpoint
+    async def increment_async(self):
+        self.local.value += 1
+
+    @endpoint
+    def get(self):
+        return self.local.value
+
+    @endpoint
+    async def get_async(self):
+        return self.local.value
+
+
+async def test_actor_tls() -> None:
+    """Test that thread-local state is respected."""
+    pm = await proc_mesh(gpus=1)
+    am = await pm.spawn("tls", TLSActor)
+    await am.increment.call_one()
+    await am.increment_async.call_one()
+    await am.increment.call_one()
+    await am.increment_async.call_one()
+
+    assert 4 == await am.get.call_one()
+    assert 4 == await am.get_async.call_one()
+
+
+class TLSActorFullSync(Actor):
+    """An actor that manages thread-local state."""
+
+    def __init__(self):
+        self.local = threading.local()
+        self.local.value = 0
+
+    @endpoint
+    def increment(self):
+        self.local.value += 1
+
+    @endpoint
+    def get(self):
+        return self.local.value
+
+
+async def test_actor_tls_full_sync() -> None:
+    """Test that thread-local state is respected."""
+    pm = await proc_mesh(gpus=1)
+    am = await pm.spawn("tls", TLSActorFullSync)
+    await am.increment.call_one()
+    await am.increment.call_one()
+    await am.increment.call_one()
+    await am.increment.call_one()
+
+    assert 4 == await am.get.call_one()
+
+
+@two_gpu
+def test_proc_mesh_tensor_engine() -> None:
+    pm = proc_mesh(gpus=2).get()
+    with pm.activate():
+        f = 10 * pm.rank_tensor("gpus").cuda()
+        a = monarch.inspect(f, hosts=0, gpus=0)
+        b = monarch.inspect(f, hosts=0, gpus=1)
+
+    one = pm.slice(gpus=1)
+    with one.activate():
+        sliced_b = monarch.slice_mesh(f, gpus=1).to_mesh(one)
+        c = monarch.inspect(sliced_b * 10)
+    assert a == 0
+    assert b == 10
+    assert c == 100
+
+
+class AsyncActor(Actor):
+    def __init__(self):
+        self.should_exit = False
+
+    @endpoint
+    async def sleep(self) -> None:
+        while True and not self.should_exit:
+            await asyncio.sleep(1)
+
+    @endpoint
+    async def no_more(self) -> None:
+        self.should_exit = True
+
+
+@pytest.mark.timeout(15)
+async def test_async_concurrency():
+    """Test that async endpoints will be processed concurrently."""
+    pm = await proc_mesh(gpus=1)
+    am = await pm.spawn("async", AsyncActor)
+    fut = am.sleep.call()
+    # This call should go through and exit the sleep loop, as long as we are
+    # actually concurrently processing messages.
+    await am.no_more.call()
+    await fut

@@ -284,7 +284,7 @@ impl BoxedBackend {
 
 fn register(py: Python<'_>) -> PyResult<()> {
     // Import torch.distributed module
-    let module = py.import_bound("torch.distributed")?;
+    let module = py.import("torch.distributed")?;
 
     // Get the register_backend attribute from Backend
     let backend = module.getattr("Backend")?;
@@ -295,7 +295,7 @@ fn register(py: Python<'_>) -> PyResult<()> {
 
     // We use the extended API so that callers can pass in the inner, pre-
     // initialized backend via `pg_options`.
-    let kwargs = PyDict::new_bound(py);
+    let kwargs = PyDict::new(py);
     kwargs.set_item("devices", vec!["cuda"])?;
     kwargs.set_item("extended_api", true)?;
 
@@ -308,7 +308,7 @@ fn register(py: Python<'_>) -> PyResult<()> {
 }
 
 fn init_process_group(py: Python<'_>, world_size: usize, rank: usize) -> PyResult<()> {
-    let torchd = py.import_bound("torch.distributed")?;
+    let torchd = py.import("torch.distributed")?;
 
     // Get the register_backend attribute from Backend
     let backend = torchd.getattr("Backend")?;
@@ -319,7 +319,7 @@ fn init_process_group(py: Python<'_>, world_size: usize, rank: usize) -> PyResul
 
     // We use the extended API so that callers can pass in the inner, pre-
     // initialized backend via `pg_options`.
-    let kwargs = PyDict::new_bound(py);
+    let kwargs = PyDict::new(py);
     kwargs.set_item("extended_api", true)?;
 
     // Register the backend
@@ -328,7 +328,7 @@ fn init_process_group(py: Python<'_>, world_size: usize, rank: usize) -> PyResul
         .inspect_err(|e| tracing::error!("failed init backend: {}", e))?;
 
     // Init the process group.
-    let kwargs = PyDict::new_bound(py);
+    let kwargs = PyDict::new(py);
     // Use a special noop backend that errors out if it's actually used.
     kwargs.set_item("backend", "null")?;
     kwargs.set_item("rank", rank)?;
@@ -360,7 +360,7 @@ pub fn new_group<'py, B: Backend<Error = anyhow::Error>>(
     // Make sure we've registered the monarch backend.
     py.allow_threads(|| REGISTER.get_or_try_init(|| Python::with_gil(register)))?;
 
-    let kwargs = PyDict::new_bound(py);
+    let kwargs = PyDict::new(py);
     kwargs.set_item("backend", "monarch")?;
     kwargs.set_item("ranks", ranks)?;
     kwargs.set_item(
@@ -368,7 +368,7 @@ pub fn new_group<'py, B: Backend<Error = anyhow::Error>>(
         Box::into_raw(Box::new(BoxedBackend(Box::new(backend)))) as u64,
     )?;
 
-    let torchd = py.import_bound("torch.distributed")?;
+    let torchd = py.import("torch.distributed")?;
 
     torchd.call_method("new_group", (), Some(&kwargs))
 }

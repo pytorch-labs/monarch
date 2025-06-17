@@ -10,6 +10,8 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::ops::ControlFlow;
 
+use nom::Parser as _;
+
 use crate::Slice;
 use crate::selection::Selection;
 use crate::selection::routing::RoutingAction;
@@ -24,7 +26,7 @@ pub fn parse(input: &str) -> Selection {
 
     use crate::selection::parse::expression;
 
-    let (_, selection) = all_consuming(expression)(input).unwrap();
+    let (_, selection) = all_consuming(expression).parse(input).unwrap();
     selection
 }
 

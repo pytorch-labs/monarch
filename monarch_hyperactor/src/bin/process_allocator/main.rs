@@ -8,6 +8,8 @@
 
 mod common;
 
+use std::str::FromStr;
+
 use clap::Parser;
 use common::Args;
 use common::main_impl;
@@ -18,9 +20,11 @@ async fn main() {
     let args = Args::parse();
     hyperactor::initialize();
 
-    let bind = format!("{}:{}", args.addr, args.port);
-    let socket_addr: std::net::SocketAddr = bind.parse().unwrap();
-    let serve_address = ChannelAddr::Tcp(socket_addr);
+    let bind = args
+        .addr
+        .unwrap_or_else(|| format!("tcp![::]:{}", args.port));
+
+    let serve_address = ChannelAddr::from_str(&bind).unwrap();
 
     let _ = main_impl(serve_address, args.program).await.unwrap();
 }

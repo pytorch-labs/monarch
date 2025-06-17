@@ -6,6 +6,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#![cfg(feature = "tensor_engine")]
+
 use std::sync::Arc;
 
 use hyperactor::ActorRef;
@@ -17,9 +19,9 @@ use monarch_messages::controller::ControllerActor;
 use monarch_messages::controller::ControllerMessageClient;
 use monarch_messages::debugger::DebuggerAction;
 use monarch_messages::debugger::DebuggerMessage;
-use monarch_worker::stream::CONTROLLER_ACTOR_REF;
-use monarch_worker::stream::PROC;
-use monarch_worker::stream::ROOT_ACTOR_ID;
+use monarch_tensor_worker::stream::CONTROLLER_ACTOR_REF;
+use monarch_tensor_worker::stream::PROC;
+use monarch_tensor_worker::stream::ROOT_ACTOR_ID;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -60,7 +62,7 @@ pub fn get_bytes_from_write_action(
     action: DebuggerAction,
 ) -> PyResult<Bound<'_, PyBytes>> {
     if let DebuggerAction::Write { bytes } = action {
-        Ok(PyBytes::new_bound(py, &bytes))
+        Ok(PyBytes::new(py, &bytes))
     } else {
         Err(PyRuntimeError::new_err(format!(
             "Cannot extract bytes from non-write debugger action {:?}",
@@ -113,7 +115,7 @@ impl PdbActor {
             )?;
         match result {
             Ok(Some(DebuggerMessage::Action { action })) => Ok(action.into_py(py)),
-            Ok(None) => Ok(PyNone::get_bound(py).into_py(py)),
+            Ok(None) => Ok(PyNone::get(py).into_py(py)),
             Err(err) => Err(PyRuntimeError::new_err(err.to_string())),
         }
     }
