@@ -758,7 +758,7 @@ pub fn start(
     let config = Arc::new(Mutex::new(SimNetConfig { topology }));
 
     let (training_script_state_tx, training_script_state_rx) =
-        tokio::sync::watch::channel(TrainingScriptState::Running);
+        tokio::sync::watch::channel(TrainingScriptState::Waiting);
     let (event_tx, event_rx) =
         mpsc::unbounded_channel::<(Box<dyn Event>, bool, Option<SimulatorTimeInstant>)>();
     let pending_event_count = Arc::new(AtomicUsize::new(0));
@@ -902,7 +902,9 @@ impl SimNet {
                 break 'outer self.records.clone();
             }
 
-            while let Ok((event, advanceable, time)) = event_rx.try_recv() {
+            while let Ok(Some((event, advanceable, time))) =
+                tokio::time::timeout(tokio::time::Duration::from_millis(1), event_rx.recv()).await
+            {
                 let scheduled_event = match time {
                     Some(time) => ScheduledEvent {
                         time: time + training_script_waiting_time,
@@ -1301,7 +1303,9 @@ mod tests {
                     None,
                 )))
                 .unwrap();
-            RealClock.sleep(tokio::time::Duration::from_millis(3)).await;
+            RealClock
+                .sleep(tokio::time::Duration::from_micros(500))
+                .await;
         }
 
         simnet_handle()
