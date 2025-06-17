@@ -943,6 +943,21 @@ impl<M: RemoteMessage> Named for OncePortRef<M> {
     }
 }
 
+// We do not split PortRef, because it can only receive a single response, and
+// there is no meaningful performance gain to make that response going through
+// comm actors.
+impl<M: RemoteMessage> Unbind for OncePortRef<M> {
+    fn unbind(&self, _bindings: &mut Bindings) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+impl<M: RemoteMessage> Bind for OncePortRef<M> {
+    fn bind(&mut self, _bindings: &mut Bindings) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
 /// Gangs identify a gang of actors across the world.
 #[derive(
     Debug,
