@@ -403,7 +403,7 @@ impl Handler<PythonMessage> for PythonActor {
         })?;
 
         // Spawn a child actor to await the Python handler method.
-        let handler = AsyncEndpointTask::spawn(this, ()).await?;
+        let handler = AsyncEndpointTask::spawn_child(this, ()).await?;
         handler.run(this, PythonTask::new(future), receiver).await?;
         Ok(())
     }
@@ -451,7 +451,7 @@ impl Handler<Cast<PythonMessage>> for PythonActor {
         })?;
 
         // Spawn a child actor to await the Python handler method.
-        let handler = AsyncEndpointTask::spawn(this, ()).await?;
+        let handler = AsyncEndpointTask::spawn_child(this, ()).await?;
         handler.run(this, PythonTask::new(future), receiver).await?;
         Ok(())
     }
