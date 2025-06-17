@@ -17,8 +17,11 @@ use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Mailbox;
 use hyperactor::Named;
+use hyperactor::OncePortRef;
+use hyperactor::ProcId;
 use hyperactor::RefClient;
 use hyperactor::channel::ChannelAddr;
+use hyperactor::mailbox::DialMailboxRouter;
 use hyperactor::proc::Proc;
 use serde::Deserialize;
 use serde::Serialize;
@@ -27,6 +30,33 @@ use crate::client::ClientActor;
 use crate::client::ClientMessageClient;
 use crate::create_remote_client;
 use crate::object::GenericStateObject;
+
+/// Result code for state actor operations
+#[derive(Debug, Clone, Serialize, Deserialize, Named)]
+pub enum ResultCode {
+    /// Operation completed successfully
+    OK,
+    /// Invalid input provided
+    InvalidInput,
+}
+
+/// Result of a subscribe logs operation
+#[derive(Debug, Clone, Serialize, Deserialize, Named)]
+pub struct SubscribeLogsResult {
+    /// Result code of the operation
+    pub code: ResultCode,
+    /// Message providing additional information about the result
+    pub message: String,
+}
+
+/// Result of an unsubscribe logs operation
+#[derive(Debug, Clone, Serialize, Deserialize, Named)]
+pub struct UnsubscribeLogsResult {
+    /// Result code of the operation
+    pub code: ResultCode,
+    /// Message providing additional information about the result
+    pub message: String,
+}
 
 /// A state actor which serves as a centralized store for state.
 #[derive(Debug)]
@@ -42,15 +72,20 @@ pub enum StateMessage {
     SetLogs { logs: Vec<GenericStateObject> },
     /// Log subscription messages from client. This message should be sent by the client actor to
     /// inform the state actor to start sending logs to the client.
-    SubscribeLogs {
-        addr: ChannelAddr,
-        client_actor_ref: ActorRef<ClientActor>,
-    },
+    SubscribeLogs(
+        ChannelAddr,
+        ActorRef<ClientActor>,
+        #[reply] OncePortRef<SubscribeLogsResult>,
+    ),
     /// Unsubscribe the client from logs. This message should be sent by the client actor to inform
     /// the state actor stop sending logs to the client.
-    UnsubscribeLogs {
-        client_actor_ref: ActorRef<ClientActor>,
-    },
+    UnsubscribeLogs(
+        ActorRef<ClientActor>,
+        #[reply] OncePortRef<UnsubscribeLogsResult>,
+    ),
+    /// Joins the state actor by sending the proc ID and channel address to the state actor.
+    /// This way the state actor can send responses to the joined proc.
+    Join { proc_id: ProcId, addr: ChannelAddr },
 }
 
 #[async_trait]
@@ -72,8 +107,9 @@ impl StateMessageHandler for StateActor {
         _this: &Instance<Self>,
         logs: Vec<GenericStateObject>,
     ) -> Result<(), anyhow::Error> {
-        for (subscriber, (_, remote_client)) in self.log_subscribers.iter() {
-            subscriber.logs(remote_client, logs.clone()).await?;
+        // Process each subscriber
+        for (subscriber_ref, (_, remote_client)) in self.log_subscribers.iter_mut() {
+            subscriber_ref.logs(remote_client, logs.clone()).await?;
         }
         Ok(())
     }
@@ -83,24 +119,61 @@ impl StateMessageHandler for StateActor {
         _this: &Instance<Self>,
         addr: ChannelAddr,
         client_actor_ref: ActorRef<ClientActor>,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<SubscribeLogsResult, anyhow::Error> {
+        if self.log_subscribers.contains_key(&client_actor_ref) {
+            return Ok(SubscribeLogsResult {
+                code: ResultCode::InvalidInput,
+                message: format!("Client {} is already subscribed", client_actor_ref),
+            });
+        }
         tracing::info!(
-            "Subscribing client {} at {} to logs",
+            "Subscribing client {} at {} for logs",
             client_actor_ref,
             &addr
         );
+        let (proc, remote_client, _) = create_remote_client(addr).await?;
         self.log_subscribers
-            .insert(client_actor_ref, create_remote_client(addr).await?);
-        Ok(())
+            .insert(client_actor_ref, (proc, remote_client));
+        Ok(SubscribeLogsResult {
+            code: ResultCode::OK,
+            message: String::new(),
+        })
     }
 
     async fn unsubscribe_logs(
         &mut self,
         _this: &Instance<Self>,
         client_actor_ref: ActorRef<ClientActor>,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<UnsubscribeLogsResult, anyhow::Error> {
+        if !self.log_subscribers.contains_key(&client_actor_ref) {
+            return Ok(UnsubscribeLogsResult {
+                code: ResultCode::InvalidInput,
+                message: format!("Client {} is not subscribed", client_actor_ref),
+            });
+        }
         tracing::info!("Subscribing client {}", client_actor_ref);
         self.log_subscribers.remove(&client_actor_ref);
+        Ok(UnsubscribeLogsResult {
+            code: ResultCode::OK,
+            message: String::new(),
+        })
+    }
+
+    async fn join(
+        &mut self,
+        this: &Instance<Self>,
+        proc_id: ProcId,
+        addr: ChannelAddr,
+    ) -> Result<(), anyhow::Error> {
+        if let Some(router) = this.proc().forwarder().downcast_ref::<DialMailboxRouter>() {
+            tracing::info!("binding {} to {}", &proc_id, &addr,);
+            router.bind(proc_id.into(), addr);
+        } else {
+            tracing::warn!(
+                "proc {} received update_address but does not use a DialMailboxRouter",
+                this.proc().proc_id()
+            );
+        }
         Ok(())
     }
 }
@@ -120,6 +193,112 @@ mod tests {
     use crate::test_utils::log_items;
 
     #[tokio::test]
+    async fn test_duplicate_subscribe() {
+        // Create a state actor
+        let state_actor_addr = ChannelAddr::any(channel::ChannelTransport::Unix);
+        let (state_actor_addr, state_actor_ref) =
+            spawn_actor::<StateActor>(state_actor_addr.clone(), id![state[0].state], ())
+                .await
+                .unwrap();
+
+        // Create a client actor
+        let client_actor_addr = ChannelAddr::any(channel::ChannelTransport::Unix);
+        let (sender, _receiver) = tokio::sync::mpsc::channel::<GenericStateObject>(20);
+        let params = ClientActorParams { sender };
+        let (client_actor_addr, client_actor_ref) = spawn_actor::<ClientActor>(
+            client_actor_addr.clone(),
+            id![state_client[0].state_client],
+            params,
+        )
+        .await
+        .unwrap();
+
+        // Connect to the state actor
+        let (remote_client_proc, remote_client, remote_client_addr) =
+            create_remote_client(state_actor_addr).await.unwrap();
+        state_actor_ref
+            .join(
+                &remote_client,
+                remote_client_proc.proc_id().to_owned(),
+                remote_client_addr,
+            )
+            .await
+            .unwrap();
+        // First subscription should succeed
+        let subscribe_result = state_actor_ref
+            .subscribe_logs(
+                &remote_client,
+                client_actor_addr.clone(),
+                client_actor_ref.clone(),
+            )
+            .await
+            .unwrap();
+
+        // Verify the result code is OK
+        assert!(matches!(subscribe_result.code, ResultCode::OK));
+        assert!(subscribe_result.message.is_empty());
+
+        // Second subscription with the same client_actor_ref should return InvalidInput
+        let duplicate_result = state_actor_ref
+            .subscribe_logs(
+                &remote_client,
+                client_actor_addr.clone(),
+                client_actor_ref.clone(),
+            )
+            .await
+            .unwrap();
+
+        // Verify that the second subscription attempt returned InvalidInput
+        assert!(matches!(duplicate_result.code, ResultCode::InvalidInput));
+        assert!(duplicate_result.message.contains("already subscribed"));
+    }
+
+    #[tokio::test]
+    async fn test_unsubscribe_nonexistent() {
+        // Create a state actor
+        let state_actor_addr = ChannelAddr::any(channel::ChannelTransport::Unix);
+        let (state_actor_addr, state_actor_ref) =
+            spawn_actor::<StateActor>(state_actor_addr.clone(), id![state[0].state], ())
+                .await
+                .unwrap();
+
+        // Create a client actor but don't subscribe it
+        let client_actor_addr = ChannelAddr::any(channel::ChannelTransport::Unix);
+        let (sender, _receiver) = tokio::sync::mpsc::channel::<GenericStateObject>(20);
+        let params = ClientActorParams { sender };
+        let (_unused, client_actor_ref) = spawn_actor::<ClientActor>(
+            client_actor_addr.clone(),
+            id![state_client[0].state_client],
+            params,
+        )
+        .await
+        .unwrap();
+
+        // Connect to the state actor
+        let (remote_client_proc, remote_client, remote_client_addr) =
+            create_remote_client(state_actor_addr).await.unwrap();
+        state_actor_ref
+            .join(
+                &remote_client,
+                remote_client_proc.proc_id().to_owned(),
+                remote_client_addr,
+            )
+            .await
+            .unwrap();
+
+        // Trying to unsubscribe a client that was never subscribed should return InvalidInput
+        let unsubscribe_result = state_actor_ref
+            .unsubscribe_logs(&remote_client, client_actor_ref.clone())
+            .await
+            .unwrap();
+
+        // Verify the result code is InvalidInput
+        assert!(matches!(unsubscribe_result.code, ResultCode::InvalidInput));
+        assert!(unsubscribe_result.message.contains("not subscribed"));
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
     async fn test_subscribe_logs() {
         let state_actor_addr = ChannelAddr::any(channel::ChannelTransport::Unix);
         let (state_actor_addr, state_actor_ref) =
@@ -138,10 +317,19 @@ mod tests {
         .await
         .unwrap();
 
-        let (_proc, remote_client) = create_remote_client(state_actor_addr).await.unwrap();
+        let (remote_client_proc, remote_client, remote_client_addr) =
+            create_remote_client(state_actor_addr).await.unwrap();
+        state_actor_ref
+            .join(
+                &remote_client,
+                remote_client_proc.proc_id().to_owned(),
+                remote_client_addr,
+            )
+            .await
+            .unwrap();
 
         // 1. Subscribe to logs
-        state_actor_ref
+        let subscribe_result = state_actor_ref
             .subscribe_logs(
                 &remote_client,
                 client_actor_addr.clone(),
@@ -149,6 +337,9 @@ mod tests {
             )
             .await
             .unwrap();
+
+        // Verify the result code is OK
+        assert!(matches!(subscribe_result.code, ResultCode::OK));
 
         // 2. Send logs and verify they are received
         state_actor_ref
@@ -177,10 +368,13 @@ mod tests {
         assert!(extra.is_err(), "expected no more messages");
 
         // 3. Unsubscribe from logs
-        state_actor_ref
+        let unsubscribe_result = state_actor_ref
             .unsubscribe_logs(&remote_client, client_actor_ref.clone())
             .await
             .unwrap();
+
+        // Verify the result code is OK
+        assert!(matches!(unsubscribe_result.code, ResultCode::OK));
 
         // 4. Send more logs and verify they are not received
         state_actor_ref
@@ -193,10 +387,13 @@ mod tests {
         assert!(no_logs.is_err(), "expected no messages after unsubscribing");
 
         // 5. Subscribe again
-        state_actor_ref
+        let resubscribe_result = state_actor_ref
             .subscribe_logs(&remote_client, client_actor_addr, client_actor_ref)
             .await
             .unwrap();
+
+        // Verify the result code is OK
+        assert!(matches!(resubscribe_result.code, ResultCode::OK));
 
         // 6. Send logs and verify they are received again
         state_actor_ref

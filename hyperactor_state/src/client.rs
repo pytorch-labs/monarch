@@ -92,7 +92,8 @@ mod tests {
         .await
         .unwrap();
 
-        let (_client_proc, remote_client) = create_remote_client(client_actor_addr).await.unwrap();
+        let (_client_proc, remote_client, _) =
+            create_remote_client(client_actor_addr).await.unwrap();
 
         let log_items_0_10 = log_items(0, 10);
         client_actor_ref
