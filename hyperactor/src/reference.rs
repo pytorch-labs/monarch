@@ -864,18 +864,34 @@ impl<M: RemoteMessage> Named for PortRef<M> {
     }
 }
 
+/// The parameters extracted from [`PortRef`] to [`Bindings`].
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Named)]
+pub struct UnboundPort(pub PortId, pub Option<u64>);
+
+impl UnboundPort {
+    /// Update the port id of this binding.
+    pub fn update(&mut self, port_id: PortId) {
+        self.0 = port_id;
+    }
+}
+
+impl<M: RemoteMessage> From<&PortRef<M>> for UnboundPort {
+    fn from(port_ref: &PortRef<M>) -> Self {
+        UnboundPort(port_ref.port_id.clone(), port_ref.reducer_typehash.clone())
+    }
+}
+
 impl<M: RemoteMessage> Unbind for PortRef<M> {
     fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        bindings.push_back::<PortId>(&self.port_id)
+        bindings.push_back::<UnboundPort>(&UnboundPort::from(self))
     }
 }
 
 impl<M: RemoteMessage> Bind for PortRef<M> {
     fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        let Some(bound) = bindings.pop_front()? else {
-            anyhow::bail!("PortId requires a PortId binding, but none was found")
-        };
-        self.port_id = bound;
+        let bound = bindings.try_pop_front::<UnboundPort>()?;
+        self.port_id = bound.0;
+        self.reducer_typehash = bound.1;
         Ok(())
     }
 }
@@ -940,6 +956,21 @@ impl<M: RemoteMessage> fmt::Display for OncePortRef<M> {
 impl<M: RemoteMessage> Named for OncePortRef<M> {
     fn typename() -> &'static str {
         crate::data::intern_typename!(Self, "hyperactor::mailbox::OncePortRef<{}>", M)
+    }
+}
+
+// We do not split PortRef, because it can only receive a single response, and
+// there is no meaningful performance gain to make that response going through
+// comm actors.
+impl<M: RemoteMessage> Unbind for OncePortRef<M> {
+    fn unbind(&self, _bindings: &mut Bindings) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+impl<M: RemoteMessage> Bind for OncePortRef<M> {
+    fn bind(&mut self, _bindings: &mut Bindings) -> anyhow::Result<()> {
+        Ok(())
     }
 }
 
