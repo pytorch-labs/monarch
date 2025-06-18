@@ -21,7 +21,7 @@ class PortId:
         Create a new port id given an actor id and an index.
         """
         ...
-    def __str__(self) -> str: ...
+    def __repr__(self) -> str: ...
     def __hash__(self) -> int: ...
     def __eq__(self, other: object) -> bool: ...
     @property
@@ -54,9 +54,20 @@ class PortHandle:
     def send(self, message: PythonMessage) -> None:
         """Send a message to the port's receiver."""
 
-    def bind(self) -> PortId:
-        """Bind this port. The returned port ID can be used to reach the port externally."""
+    def bind(self) -> PortRef:
+        """Bind this port. The returned port ref can be used to reach the port externally."""
         ...
+
+@final
+class PortRef:
+    """
+    A reference to a remote port over which PythonMessages can be sent.
+    """
+
+    def send(self, mailbox: Mailbox, message: PythonMessage) -> None:
+        """Send a single message to the port's receiver."""
+        ...
+    def __repr__(self) -> str: ...
 
 @final
 class PortReceiver:
@@ -80,9 +91,20 @@ class OncePortHandle:
         """Send a single message to the port's receiver."""
         ...
 
-    def bind(self) -> PortId:
+    def bind(self) -> OncePortRef:
         """Bind this port. The returned port ID can be used to reach the port externally."""
         ...
+
+@final
+class OncePortRef:
+    """
+    A reference to a remote once port over which a single PythonMessages can be sent.
+    """
+
+    def send(self, mailbox: Mailbox, message: PythonMessage) -> None:
+        """Send a single message to the port's receiver."""
+        ...
+    def __repr__(self) -> str: ...
 
 @final
 class OncePortReceiver:
@@ -110,7 +132,7 @@ class Mailbox:
         """Open a port to receive a single `PythonMessage` message."""
         ...
 
-    def post(self, dest: ActorId | PortId, message: PythonMessage) -> None:
+    def post(self, dest: ActorId, message: PythonMessage) -> None:
         """
         Post a message to the provided destination. If the destination is an actor id,
         the message is sent to the default handler for `PythonMessage` on the actor.
@@ -119,7 +141,7 @@ class Mailbox:
         ...
 
     def post_cast(
-        self, dest: ActorId | PortId, rank: int, shape: Shape, message: PythonMessage
+        self, dest: ActorId, rank: int, shape: Shape, message: PythonMessage
     ) -> None:
         """
         Post a message to the provided actor. It will be handled using the handle_cast
