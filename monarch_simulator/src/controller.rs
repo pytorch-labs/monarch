@@ -36,7 +36,12 @@ use tokio::sync::OnceCell;
 use crate::worker::WorkerActor;
 
 #[derive(Debug)]
-#[hyperactor::export_spawn(ControllerMessage)]
+#[hyperactor::export(
+    spawn = true,
+    handlers = [
+        ControllerMessage,
+    ],
+)]
 pub struct SimControllerActor {
     client_actor_ref: OnceCell<ActorRef<ClientActor>>,
     worker_actor_ref: ActorRef<WorkerActor>,

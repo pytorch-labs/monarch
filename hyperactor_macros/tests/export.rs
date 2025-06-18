@@ -18,7 +18,7 @@ use serde::Deserialize;
 use crate::Serialize;
 
 #[derive(Debug)]
-#[hyperactor::export(TestMessage, (), MyGeneric<()>)]
+#[hyperactor::export(handlers = [TestMessage, (), MyGeneric<()>,])]
 struct TestActor {
     // Forward the received message to this port, so it can be inspected by
     // the unit test.

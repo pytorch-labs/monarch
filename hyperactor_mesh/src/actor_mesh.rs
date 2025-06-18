@@ -375,15 +375,18 @@ pub(crate) mod test_util {
     // 'hyperactor_mesh_test_bootstrap' for the `tests::process` actor
     // mesh test suite.
     #[derive(Debug)]
-    #[hyperactor::export_spawn(
-        Cast<Echo>,
-        Cast<GetRank>,
-        Cast<Error>,
-        GetRank,
-        Relay,
-        IndexedErasedUnbound<Cast<Echo>>,
-        IndexedErasedUnbound<Cast<GetRank>>,
-        IndexedErasedUnbound<Cast<Error>>,
+    #[hyperactor::export(
+        spawn = true,
+        handlers = [
+            Cast<Echo>,
+            Cast<GetRank>,
+            Cast<Error>,
+            GetRank,
+            Relay,
+            IndexedErasedUnbound<Cast<Echo>>,
+            IndexedErasedUnbound<Cast<GetRank>>,
+            IndexedErasedUnbound<Cast<Error>>,
+        ],
     )]
     pub struct TestActor;
 

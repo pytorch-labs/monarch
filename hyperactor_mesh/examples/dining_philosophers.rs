@@ -47,9 +47,12 @@ enum ChopstickStatus {
 }
 
 #[derive(Debug)]
-#[hyperactor::export_spawn(
-    Cast<PhilosopherMessage>,
-    IndexedErasedUnbound<Cast<PhilosopherMessage>>,
+#[hyperactor::export(
+    spawn = true,
+    handlers = [
+        Cast<PhilosopherMessage>,
+        IndexedErasedUnbound<Cast<PhilosopherMessage>>,
+    ],
 )]
 struct PhilosopherActor {
     /// Status of left and right chopsticks

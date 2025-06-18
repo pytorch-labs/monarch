@@ -116,8 +116,6 @@ pub use hyperactor_macros::RefClient;
 #[doc(inline)]
 pub use hyperactor_macros::export;
 #[doc(inline)]
-pub use hyperactor_macros::export_spawn;
-#[doc(inline)]
 pub use hyperactor_macros::forward;
 #[doc(inline)]
 pub use hyperactor_macros::instrument;

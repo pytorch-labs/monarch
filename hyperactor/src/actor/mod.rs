@@ -1005,7 +1005,7 @@ mod tests {
     impl MultiValuesTest {}
 
     #[derive(Debug)]
-    #[hyperactor::export(u64, String)]
+    #[hyperactor::export(handlers = [u64, String])]
     struct MultiActor(MultiValues);
 
     #[async_trait]

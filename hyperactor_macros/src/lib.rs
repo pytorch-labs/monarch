@@ -22,6 +22,7 @@ use syn::Data;
 use syn::DataEnum;
 use syn::DeriveInput;
 use syn::Expr;
+use syn::ExprLit;
 use syn::Field;
 use syn::Fields;
 use syn::Ident;
@@ -32,6 +33,9 @@ use syn::Meta;
 use syn::MetaNameValue;
 use syn::Token;
 use syn::Type;
+use syn::bracketed;
+use syn::parse::Parse;
+use syn::parse::ParseStream;
 use syn::parse_macro_input;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
@@ -443,7 +447,12 @@ fn parse_message_enum(input: DeriveInput) -> Result<Vec<Message>, syn::Error> {
 ///
 /// // Define an actor.
 /// #[derive(Debug)]
-/// #[hyperactor::export_spawn(ShoppingList)]
+/// #[hyperactor::export(
+///     spawn = true,
+///     handlers = [
+///         ShoppingList,
+///     ],
+/// )]
 /// struct ShoppingListActor(HashSet<String>);
 ///
 /// #[async_trait]
@@ -1139,45 +1148,97 @@ pub fn named_derive(input: TokenStream) -> TokenStream {
     TokenStream::from(expanded)
 }
 
-/// Exports an actor so that it may be bound to [`hyperactor::ActorRef`]s.
+/// Attribute Struct for [`fn export`] macro.
+struct ExportAttr {
+    spawn: bool,
+    handlers: Vec<Type>,
+}
+
+impl Parse for ExportAttr {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let mut spawn = false;
+        let mut handlers = vec![];
+
+        while !input.is_empty() {
+            let key: Ident = input.parse()?;
+            input.parse::<Token![=]>()?;
+
+            if key == "spawn" {
+                let expr: Expr = input.parse()?;
+                if let Expr::Lit(ExprLit {
+                    lit: Lit::Bool(b), ..
+                }) = expr
+                {
+                    spawn = b.value;
+                } else {
+                    return Err(syn::Error::new_spanned(
+                        expr,
+                        "expected boolean for `spawn`",
+                    ));
+                }
+            } else if key == "handlers" {
+                let content;
+                bracketed!(content in input);
+                let types = content.parse_terminated(Type::parse, Token![,])?;
+                if types.is_empty() {
+                    return Err(syn::Error::new_spanned(
+                        types,
+                        "`handlers` must include at least one type",
+                    ));
+                }
+                handlers = types.into_iter().collect();
+            } else {
+                return Err(syn::Error::new_spanned(
+                    key,
+                    "unexpected key in `#[export(...)]`. Only supports `spawn` and `handlers`",
+                ));
+            }
+
+            // optional trailing comma
+            let _ = input.parse::<Token![,]>();
+        }
+
+        Ok(ExportAttr { spawn, handlers })
+    }
+}
+
+/// Exports handlers for this actor. The set of exported handlers
+/// determine the messages that may be sent to remote references of
+/// the actor ([`hyperaxtor::ActorRef`]). Only messages that implement
+/// [`hyperactor::RemoteMessage`] may be exported.
 ///
-/// The macro must be provided with the set of types that are exported, and
-/// which may therefore be dispatched through references to the actor.
+/// Additionally, an exported actor may be remotely spawned,
+/// indicated by `spawn = true`. Such actors must also ensure that
+/// their parameter type implements [`hyperactor::RemoteMessage`].
+///
+/// # Example
+///
+/// In the following example, `MyActor` can be spawned remotely. It also has
+/// exports handlers for two message types, `MyMessage` and `MyOtherMessage`.
+/// Consequently, `ActorRef`s of the actor's type may dispatch messages of these
+/// types.
+///
+/// ```ignore
+/// #[export(
+///     spawn = true,
+///     handlers = [
+///         MyMessage,
+///         MyOtherMessage,
+///     ],
+/// )]
+/// struct MyActor {}
+/// ```
 #[proc_macro_attribute]
 pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
-    export_impl("export", attr, &parse_macro_input!(item as DeriveInput))
-}
-
-/// A version of [`export`] which also makes the actor remotely spawnable.
-#[proc_macro_attribute]
-pub fn export_spawn(attr: TokenStream, item: TokenStream) -> TokenStream {
     let input: DeriveInput = parse_macro_input!(item as DeriveInput);
-
-    let mut exported = export_impl("export_spawn", attr, &input);
-
-    let data_type_name = &input.ident;
-    exported.extend(TokenStream::from(quote! {
-        hyperactor::remote!(#data_type_name);
-    }));
-
-    exported
-}
-
-fn export_impl(which: &'static str, attr: TokenStream, input: &DeriveInput) -> TokenStream {
     let data_type_name = &input.ident;
 
-    let attr_args =
-        parse_macro_input!(attr with Punctuated::<syn::Type, Token![,]>::parse_terminated);
-    if attr_args.is_empty() {
-        return TokenStream::from(
-            syn::Error::new_spanned(attr_args, format!("`{}` expects one or more type path arguments\n\n= help: use `#[{}(MyType, MyOtherType<T>)]`", which, which)).to_compile_error(),
-        );
-    }
+    let ExportAttr { spawn, handlers } = parse_macro_input!(attr as ExportAttr);
 
     let mut handles = Vec::new();
     let mut bindings = Vec::new();
 
-    for ty in &attr_args {
+    for ty in &handlers {
         handles.push(quote! {
             impl hyperactor::actor::RemoteHandles<#ty> for #data_type_name {}
         });
@@ -1186,26 +1247,33 @@ fn export_impl(which: &'static str, attr: TokenStream, input: &DeriveInput) -> T
         });
     }
 
-    let expanded = quote! {
-       #input
+    let mut expanded = quote! {
+        #input
 
-       impl hyperactor::actor::RemoteActor for #data_type_name {}
+        impl hyperactor::actor::RemoteActor for #data_type_name {}
 
-       #(#handles)*
+        #(#handles)*
 
-       // Always export the `Signal` type.
-       impl hyperactor::actor::RemoteHandles<hyperactor::actor::Signal> for #data_type_name {}
+        // Always export the `Signal` type.
+        impl hyperactor::actor::RemoteHandles<hyperactor::actor::Signal> for #data_type_name {}
 
-       impl hyperactor::actor::Binds<#data_type_name> for #data_type_name {
-           fn bind(ports: &hyperactor::proc::Ports<Self>) {
-               #(#bindings)*
-           }
-       }
+        impl hyperactor::actor::Binds<#data_type_name> for #data_type_name {
+            fn bind(ports: &hyperactor::proc::Ports<Self>) {
+                #(#bindings)*
+            }
+        }
 
         impl hyperactor::data::Named for #data_type_name {
             fn typename() -> &'static str { concat!(std::module_path!(), "::", stringify!(#data_type_name)) }
         }
     };
+
+    if spawn {
+        expanded.extend(quote! {
+
+            hyperactor::remote!(#data_type_name);
+        });
+    }
 
     TokenStream::from(expanded)
 }

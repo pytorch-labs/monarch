@@ -273,7 +273,14 @@ impl PythonActorHandle {
 
 /// An actor for which message handlers are implemented in Python.
 #[derive(Debug)]
-#[hyperactor::export_spawn(PythonMessage, Cast<PythonMessage>, IndexedErasedUnbound<Cast<PythonMessage>>)]
+#[hyperactor::export(
+    spawn = true,
+    handlers = [
+        PythonMessage,
+        Cast<PythonMessage>,
+        IndexedErasedUnbound<Cast<PythonMessage>>,
+    ],
+)]
 pub(super) struct PythonActor {
     /// The Python object that we delegate message handling to. An instance of
     /// `monarch.actor_mesh._Actor`.

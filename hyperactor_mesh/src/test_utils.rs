@@ -40,8 +40,11 @@ impl Unbind for EmptyMessage {
 /// No-op actor.
 #[derive(Debug, PartialEq)]
 #[hyperactor::export(
-    EmptyMessage,
-    Cast<EmptyMessage>, IndexedErasedUnbound<Cast<EmptyMessage>>
+    handlers = [
+        EmptyMessage,
+        Cast<EmptyMessage>,
+        IndexedErasedUnbound<Cast<EmptyMessage>>,
+    ],
 )]
 pub struct EmptyActor();
 

@@ -74,7 +74,12 @@ const CASTING_FANOUT_SIZE: usize = 8;
 /// compute tasks. This acts a proxy managing comms with the workers and handling things like history,
 /// data dependency, worker lifecycles etc for the client abstracting it away.
 #[derive(Debug)]
-#[hyperactor::export_spawn(ControllerMessage)]
+#[hyperactor::export(
+    spawn = true,
+    handlers = [
+        ControllerMessage,
+    ],
+)]
 pub(crate) struct ControllerActor {
     client_actor_ref: OnceCell<ActorRef<ClientActor>>,
     comm_actor_ref: ActorRef<CommActor>,
@@ -1772,7 +1777,11 @@ mod tests {
     }
 
     #[derive(Debug)]
-    #[hyperactor::export(PanickingMessage)]
+    #[hyperactor::export(
+        handlers = [
+            PanickingMessage,
+        ],
+    )]
     struct PanickingActor;
 
     #[async_trait]

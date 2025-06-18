@@ -154,7 +154,17 @@ enum Recording {
 ///
 /// See [`WorkerMessage`] for what it can do!
 #[derive(Debug)]
-#[hyperactor::export_spawn(WorkerMessage, IndexedErasedUnbound<WorkerMessage>, Cast<AssignRankMessage>, Cast<WorkerMessage>, IndexedErasedUnbound<Cast<AssignRankMessage>>, IndexedErasedUnbound<Cast<WorkerMessage>>)]
+#[hyperactor::export(
+    spawn = true,
+    handlers = [
+        WorkerMessage,
+        IndexedErasedUnbound<WorkerMessage>,
+        Cast<AssignRankMessage>,
+        Cast<WorkerMessage>,
+        IndexedErasedUnbound<Cast<AssignRankMessage>>,
+        IndexedErasedUnbound<Cast<WorkerMessage>>,
+    ],
+)]
 pub struct WorkerActor {
     device: Option<CudaDevice>,
     streams: HashMap<StreamRef, Arc<ActorHandle<StreamActor>>>,

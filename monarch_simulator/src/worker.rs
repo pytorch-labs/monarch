@@ -151,7 +151,13 @@ fn reduce_op<T: Clone + Default + Add<Output = T>>(
 }
 
 #[derive(Debug)]
-#[hyperactor::export_spawn(WorkerMessage, IndexedErasedUnbound<WorkerMessage>)]
+#[hyperactor::export(
+    spawn = true,
+    handlers = [
+        WorkerMessage,
+        IndexedErasedUnbound<WorkerMessage>,
+    ],
+)]
 pub struct WorkerActor {
     rank: usize,
     worker_actor_id: ActorId,

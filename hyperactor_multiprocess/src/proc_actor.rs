@@ -316,7 +316,12 @@ pub struct BootstrappedProc {
 /// the lifecycle of all of the proc's actors, and to route messages
 /// accordingly.
 #[derive(Debug)]
-#[hyperactor::export(ProcMessage, MailboxAdminMessage)]
+#[hyperactor::export(
+    handlers = [
+        ProcMessage,
+        MailboxAdminMessage,
+    ],
+)]
 pub struct ProcActor {
     params: ProcActorParams,
     state: ProcState,
@@ -931,7 +936,12 @@ mod tests {
     }
 
     #[derive(Debug)]
-    #[hyperactor::export_spawn(TestActorMessage)]
+    #[hyperactor::export(
+        spawn = true,
+        handlers = [
+            TestActorMessage,
+        ],
+    )]
     struct TestActor;
 
     #[derive(Handler, HandleClient, RefClient, Serialize, Deserialize, Debug, Named)]
@@ -1000,7 +1010,12 @@ mod tests {
 
     // Sleep
     #[derive(Debug)]
-    #[hyperactor::export_spawn(u64)]
+    #[hyperactor::export(
+        spawn = true,
+        handlers = [
+            u64,
+        ],
+    )]
     struct SleepActor {}
 
     #[async_trait]

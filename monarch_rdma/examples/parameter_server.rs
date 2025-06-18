@@ -91,7 +91,14 @@ const BUFFER_SIZE: usize = 8;
 
 // Parameter Server Actor
 #[derive(Debug)]
-#[hyperactor::export_spawn(PsGetBuffers, PsUpdate, Log)]
+#[hyperactor::export(
+    spawn = true,
+    handlers = [
+        PsGetBuffers,
+        PsUpdate,
+        Log,
+    ],
+)]
 pub struct ParameterServerActor {
     weights_data: Box<[u8]>,
     grad_buffer_data: Box<[Box<[u8]>]>,
@@ -252,11 +259,18 @@ impl Handler<Log> for ParameterServerActor {
 
 // Worker Actor
 #[derive(Debug)]
-#[hyperactor::export_spawn(
-    Cast<WorkerInit>, IndexedErasedUnbound<Cast<WorkerInit>>,
-    Cast<WorkerStep>, IndexedErasedUnbound<Cast<WorkerStep>>,
-    Cast<WorkerUpdate>, IndexedErasedUnbound<Cast<WorkerUpdate>>,
-    Cast<Log>, IndexedErasedUnbound<Cast<Log>>,
+#[hyperactor::export(
+    spawn = true,
+    handlers = [
+        Cast<WorkerInit>,
+        IndexedErasedUnbound<Cast<WorkerInit>>,
+        Cast<WorkerStep>,
+        IndexedErasedUnbound<Cast<WorkerStep>>,
+        Cast<WorkerUpdate>,
+        IndexedErasedUnbound<Cast<WorkerUpdate>>,
+        Cast<Log>,
+        IndexedErasedUnbound<Cast<Log>>,
+    ],
 )]
 pub struct WorkerActor {
     ps_weights_handle: Option<RdmaBuffer>,

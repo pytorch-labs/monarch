@@ -64,7 +64,7 @@ impl PingPongActorParams {
 
 /// A PingPong actor that can play the PingPong game by sending messages around.
 #[derive(Debug)]
-#[hyperactor::export(PingPongMessage)]
+#[hyperactor::export(handlers = [PingPongMessage])]
 pub struct PingPongActor {
     params: PingPongActorParams,
 }

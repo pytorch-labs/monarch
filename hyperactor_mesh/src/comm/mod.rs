@@ -66,7 +66,14 @@ struct ReceiveState {
 /// This is the comm actor used for efficient and scalable message multicasting
 /// and result accumulation.
 #[derive(Debug)]
-#[hyperactor::export_spawn(CommActorMode, CastMessage, ForwardMessage)]
+#[hyperactor::export(
+    spawn = true,
+    handlers = [
+        CommActorMode,
+        CastMessage,
+        ForwardMessage,
+    ],
+)]
 pub struct CommActor {
     /// Each world will use its own seq num from this caster.
     send_seq: HashMap<Slice, usize>,
@@ -434,7 +441,15 @@ pub mod test_utils {
     }
 
     #[derive(Debug)]
-    #[hyperactor::export_spawn(TestMessage, Cast<TestMessage>, IndexedErasedUnbound<TestMessage>, IndexedErasedUnbound<Cast<TestMessage>>)]
+    #[hyperactor::export(
+        spawn = true,
+        handlers = [
+            TestMessage,
+            Cast<TestMessage>,
+            IndexedErasedUnbound<TestMessage>,
+            IndexedErasedUnbound<Cast<TestMessage>>,
+        ],
+    )]
     pub struct TestActor {
         // Forward the received message to this port, so it can be inspected by
         // the unit test.

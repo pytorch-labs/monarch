@@ -152,7 +152,12 @@ pub enum RdmaManagerMessage {
 }
 
 #[derive(Debug)]
-#[hyperactor::export_spawn(RdmaManagerMessage)]
+#[hyperactor::export(
+    spawn = true,
+    handlers = [
+        RdmaManagerMessage,
+    ],
+)]
 pub struct RdmaManagerActor {
     // Map between ActorIds and their corresponding RdmaQueuePair
     qp_map: HashMap<ActorId, RdmaQueuePair>,

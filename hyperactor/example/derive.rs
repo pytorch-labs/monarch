@@ -36,7 +36,12 @@ enum ShoppingList {
 
 // Define an actor.
 #[derive(Debug)]
-#[hyperactor::export_spawn(ShoppingList)]
+#[hyperactor::export(
+    spawn = true,
+    handlers = [
+        ShoppingList,
+    ],
+)]
 struct ShoppingListActor(HashSet<String>);
 
 #[async_trait]

@@ -88,7 +88,7 @@ pub(crate) enum MeshAgentMessage {
 
 /// A mesh agent is responsible for managing procs in a [`ProcMesh`].
 #[derive(Debug)]
-#[hyperactor::export(MeshAgentMessage)]
+#[hyperactor::export(handlers=[MeshAgentMessage])]
 pub struct MeshAgent {
     proc: Proc,
     remote: Remote,

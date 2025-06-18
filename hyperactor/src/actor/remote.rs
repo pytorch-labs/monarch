@@ -143,7 +143,7 @@ mod tests {
     use crate::Instance;
 
     #[derive(Debug)]
-    #[hyperactor::export(())]
+    #[hyperactor::export(handlers = [()])]
     struct MyActor;
 
     #[async_trait]

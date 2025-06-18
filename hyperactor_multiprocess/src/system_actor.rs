@@ -1085,7 +1085,13 @@ enum SystemStopMessage {
 /// procs. The system actor also provides a central mailbox that can
 /// route messages to any live actor in the system.
 #[derive(Debug, Clone)]
-#[hyperactor::export(SystemMessage, ProcSupervisionMessage, WorldSupervisionMessage)]
+#[hyperactor::export(
+    handlers = [
+        SystemMessage,
+        ProcSupervisionMessage,
+        WorldSupervisionMessage,
+    ],
+)]
 pub struct SystemActor {
     params: SystemActorParams,
     supervision_state: SystemSupervisionState,

@@ -207,7 +207,12 @@ enum DemoMessage {
 }
 
 #[derive(Debug)]
-#[hyperactor::export_spawn(DemoMessage)]
+#[hyperactor::export(
+    spawn = true,
+    handlers = [
+        DemoMessage,
+    ],
+)]
 struct DemoActor;
 
 #[async_trait]
