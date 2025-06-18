@@ -25,7 +25,6 @@ from monarch._rust_bindings.monarch_extension import tensor_worker
 from monarch.common.function import ResolvableFromCloudpickle, ResolvableFunction
 from monarch.common.invocation import DeviceException, RemoteException
 from monarch.common.reference import Referenceable
-from monarch.common.stream import StreamRef
 from monarch.common.tree import flattener
 from pyre_extensions import none_throws
 
@@ -33,6 +32,8 @@ from .shape import NDSlice
 from .tensor_factory import TensorFactory
 
 if TYPE_CHECKING:
+    from monarch.common.stream import StreamRef
+
     from .device_mesh import DeviceMesh, RemoteProcessGroup
     from .pipe import Pipe
     from .recording import Recording
@@ -98,7 +99,7 @@ class CreateDeviceMesh(NamedTuple):
 
 
 class CreateStream(NamedTuple):
-    result: StreamRef
+    result: "StreamRef"
     default: bool
 
     def to_rust_message(self) -> tensor_worker.WorkerMessage:
@@ -132,7 +133,7 @@ class CallFunction(NamedTuple):
     function: ResolvableFunction
     args: Tuple[object, ...]
     kwargs: Dict[str, object]
-    stream: StreamRef
+    stream: "StreamRef"
     device_mesh: DeviceMesh
     remote_process_groups: List[RemoteProcessGroup]
 
@@ -199,7 +200,7 @@ class RecordingFormal(NamedTuple):
 class RecordingResult(NamedTuple):
     input: Tensor | tensor_worker.Ref
     output_index: int
-    stream: StreamRef
+    stream: "StreamRef"
 
     def to_rust_message(self) -> tensor_worker.WorkerMessage:
         return tensor_worker.RecordingResult(
