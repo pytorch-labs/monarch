@@ -14,11 +14,13 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorRef;
+use hyperactor::Bind;
 use hyperactor::Message;
 use hyperactor::Named;
 use hyperactor::PortHandle;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
+use hyperactor::Unbind;
 use hyperactor::actor::RemoteActor;
 use hyperactor::mailbox::MailboxSenderError;
 use hyperactor::mailbox::PortReceiver;
@@ -365,8 +367,6 @@ pub(crate) mod test_util {
     use hyperactor::Handler;
     use hyperactor::Instance;
     use hyperactor::PortRef;
-    use hyperactor::message::Bind;
-    use hyperactor::message::Unbind;
 
     use super::*;
 
@@ -406,21 +406,8 @@ pub(crate) mod test_util {
     ///
     /// This is useful for testing both successful and failing
     /// responses from a single message type.
-    #[derive(Debug, Serialize, Deserialize, Named, Clone)]
-    pub struct GetRank(pub bool, pub PortRef<usize>);
-
-    // TODO(pzhang) replace the boilerplate Bind/Unbind impls with a macro.
-    impl Bind for GetRank {
-        fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
-            self.1.bind(bindings)
-        }
-    }
-
-    impl Unbind for GetRank {
-        fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
-            self.1.unbind(bindings)
-        }
-    }
+    #[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
+    pub struct GetRank(pub bool, #[binding(include)] pub PortRef<usize>);
 
     #[async_trait]
     impl Handler<GetRank> for TestActor {
@@ -453,21 +440,8 @@ pub(crate) mod test_util {
         }
     }
 
-    #[derive(Debug, Serialize, Deserialize, Named, Clone)]
-    pub struct Echo(pub String, pub PortRef<String>);
-
-    // TODO(pzhang) replace the boilerplate Bind/Unbind impls with a macro.
-    impl Bind for Echo {
-        fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
-            self.1.bind(bindings)
-        }
-    }
-
-    impl Unbind for Echo {
-        fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
-            self.1.unbind(bindings)
-        }
-    }
+    #[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
+    pub struct Echo(pub String, #[binding(include)] pub PortRef<String>);
 
     #[async_trait]
     impl Handler<Cast<Echo>> for TestActor {
@@ -482,21 +456,8 @@ pub(crate) mod test_util {
         }
     }
 
-    #[derive(Debug, Serialize, Deserialize, Named, Clone)]
+    #[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
     pub struct Error(pub String);
-
-    // TODO(pzhang) replace the boilerplate Bind/Unbind impls with a macro.
-    impl Bind for Error {
-        fn bind(&mut self, _bindings: &mut Bindings) -> anyhow::Result<()> {
-            Ok(())
-        }
-    }
-
-    impl Unbind for Error {
-        fn unbind(&self, _bindings: &mut Bindings) -> anyhow::Result<()> {
-            Ok(())
-        }
-    }
 
     #[async_trait]
     impl Handler<Cast<Error>> for TestActor {
@@ -976,30 +937,15 @@ mod tests {
         )));
     }
 
-    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Named)]
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
     struct MyNamedStruct {
         field0: u64,
         field1: String,
+        #[binding(include)]
         field2: PortRef<String>,
         field3: bool,
+        #[binding(include)]
         field4: hyperactor::PortRef<u64>,
-    }
-
-    // TODO(pzhang) replace the boilerplate Bind/Unbind impls with a macro.
-    impl Bind for MyNamedStruct {
-        fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
-            self.field2.bind(bindings)?;
-            self.field4.bind(bindings)?;
-            Ok(())
-        }
-    }
-
-    impl Unbind for MyNamedStruct {
-        fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
-            self.field2.unbind(bindings)?;
-            self.field4.unbind(bindings)?;
-            Ok(())
-        }
     }
 
     #[test]
