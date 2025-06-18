@@ -41,6 +41,8 @@ from monarch.common import messages
 from monarch.common.borrows import Borrow, StorageAliases
 from monarch.common.controller_api import LogMessage, MessageResult, TController
 from monarch.common.device_mesh import DeviceMesh
+
+from monarch.common.future import Future
 from monarch.common.invocation import DeviceException, RemoteException, Seq
 from monarch.common.recording import flatten_messages, Recording
 
@@ -51,9 +53,6 @@ from monarch.common.tensor import Tensor
 from monarch.common.tree import tree_map
 
 from . import _coalescing
-
-if TYPE_CHECKING:
-    from monarch.common.future import Future
 
 
 logger = logging.getLogger(__name__)
@@ -446,6 +445,39 @@ class Client:
 
     def mesh_state(self) -> WorldState:
         return self.inner.worker_world_state()
+
+    def fetch(
+        self,
+        mesh: "DeviceMesh",
+        stream: "StreamRef",
+        shard,
+        preprocess_message,
+        args,
+        kwargs,
+        defs: Tuple["Tensor", ...],
+        uses: Tuple["Tensor", ...],
+    ) -> "Future":
+        fut = Future(self)
+        ident = self.new_node(defs, uses, fut)
+        process = mesh._process(shard)
+        self.send(
+            process,
+            messages.SendValue(
+                ident,
+                None,
+                defs,
+                preprocess_message,
+                args,
+                kwargs,
+                stream,
+            ),
+        )
+        # we have to ask for status updates
+        # from workers to be sure they have finished
+        # enough work to count this future as finished,
+        # and all potential errors have been reported
+        self._request_status()
+        return fut
 
 
 def tree_map_refs(first_ref: int, tree):

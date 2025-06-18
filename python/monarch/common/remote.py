@@ -21,6 +21,7 @@ from typing import (
     overload,
     Protocol,
     Tuple,
+    TYPE_CHECKING,
     TypeVar,
 )
 
@@ -29,6 +30,9 @@ import monarch.common.messages as messages
 import torch
 
 from monarch.common import _coalescing, device_mesh, messages, stream
+
+if TYPE_CHECKING:
+    from monarch.common.client import Client
 
 from monarch.common.device_mesh import RemoteProcessGroup
 from monarch.common.fake import fake_call
@@ -173,30 +177,19 @@ def _call_on_shard_and_fetch(
         propagator, rfunction, args, kwargs, ambient_mesh, stream._active
     )
 
-    client = mesh.client
+    client: "Client" = mesh.client
     if _coalescing.is_active(client):
         raise NotImplementedError("NYI: fetching results during a coalescing block")
-    fut = Future(client)
-    ident = client.new_node(mutates, dtensors, fut)
-    process = mesh._process(shard)
-    client.send(
-        process,
-        messages.SendValue(
-            ident,
-            None,
-            mutates,
-            preprocess_message,
-            args,
-            kwargs,
-            stream._active._to_ref(client),
-        ),
+    return client.fetch(
+        mesh,
+        stream._active._to_ref(client),
+        shard,
+        preprocess_message,
+        args,
+        kwargs,
+        mutates,
+        dtensors,
     )
-    # we have to ask for status updates
-    # from workers to be sure they have finished
-    # enough work to count this future as finished,
-    # and all potential errors have been reported
-    client._request_status()
-    return fut
 
 
 @remote
