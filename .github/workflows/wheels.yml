@@ -2,6 +2,9 @@ name: Build and publish nightly monarch wheels
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/wheels.yml'
   schedule:
     - cron: '0 0 * * *'  # Daily at midnight UTC
 
@@ -14,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false  # Changed to false to see results from all Python versions
       matrix:
-        python-version: ["3.10"]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
         include:
           - name: 4xlarge
             runs-on: linux.g5.4xlarge.nvidia.gpu
@@ -30,27 +33,9 @@ jobs:
       submodules: recursive
       upload-artifact: monarch-${{ matrix.python-version }}-${{ matrix.gpu-arch-type }}${{ matrix.gpu-arch-version }}
       script: |
-        conda create -n venv python=${{ matrix.python-version }} -y
-        conda activate venv
-        export PATH=/opt/rh/devtoolset-10/root/usr/bin/:$PATH
-        python -m pip install --upgrade pip
-
-        # Install native dependencies
-        dnf update -y
-        dnf install clang-devel libunwind libunwind-devel -y
-
-        # Install rust and setup nightly toolchain
-        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-        source $HOME/.cargo/env
-        rustup toolchain install nightly
-        rustup default nightly
-
-        # Install torch
-        pip install torch
-
-        # Install Python dependencies
-        pip install setuptools-rust
-        pip install pyzmq requests numpy pyre-extensions
+        source scripts/common-setup.sh
+        setup_build_environment ${{ matrix.python-version }}
+        cargo install --path monarch_hyperactor
 
         # Build wheel
         export MONARCH_PACKAGE_NAME="torchmonarch-nightly"
@@ -62,10 +47,16 @@ jobs:
         find dist -name "*linux_x86_64.whl" -type f -exec bash -c 'mv "$1" "${1/linux_x86_64.whl/manylinux2014_x86_64.whl}"' _ {} \;
         ls -la dist/
 
+        # Run tests
+        install_wheel_from_artifact
+        LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip" -n auto
+        python python/tests/test_mock_cuda.py
+
   publish:
     name: Publish to PyPI
     needs: build
     runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
     permissions:
       id-token: write  # Required for PyPI trusted publishing
       contents: read

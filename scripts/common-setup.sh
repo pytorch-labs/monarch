@@ -9,10 +9,11 @@
 
 set -ex
 
-# Setup conda environment
+# Setup conda environment. Defaults to Python 3.10.
 setup_conda_environment() {
-    echo "Setting up conda environment..."
-    conda create -n venv python=3.10 -y
+    local python_version=${1:-3.10}
+    echo "Setting up conda environment with Python ${python_version}..."
+    conda create -n venv python="${python_version}" -y
     conda activate venv
     export PATH=/opt/rh/devtoolset-10/root/usr/bin/:$PATH
     python -m pip install --upgrade pip
@@ -62,7 +63,8 @@ build_process_allocator() {
 
 # Common setup for build workflows (environment + system deps + rust)
 setup_build_environment() {
-    setup_conda_environment
+    local python_version=${1:-3.10}
+    setup_conda_environment "${python_version}"
     install_system_dependencies
     setup_rust_toolchain
     install_build_dependencies
@@ -70,6 +72,7 @@ setup_build_environment() {
 
 # Common setup for test workflows (environment only)
 setup_test_environment() {
-    setup_conda_environment
+    local python_version=${1:-3.10}
+    setup_conda_environment "${python_version}"
     install_python_test_dependencies
 }
