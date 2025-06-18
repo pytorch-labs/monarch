@@ -173,10 +173,19 @@ impl PickledMessageClientActor {
 #[pyclass(frozen, module = "monarch._rust_bindings.monarch_hyperactor.actor")]
 #[derive(Clone, Serialize, Deserialize, Named, PartialEq)]
 pub struct PythonMessage {
-    method: String,
+    pub method: String,
     message: ByteBuf,
     response_port: Option<PortId>,
     rank: Option<usize>,
+}
+
+impl PythonMessage {
+    pub fn with_rank(self, rank: usize) -> PythonMessage {
+        PythonMessage {
+            rank: Some(rank),
+            ..self
+        }
+    }
 }
 
 impl std::fmt::Debug for PythonMessage {
@@ -214,7 +223,7 @@ impl Bind for PythonMessage {
 impl PythonMessage {
     #[new]
     #[pyo3(signature = (method, message, response_port, rank))]
-    fn new(
+    pub fn new(
         method: String,
         message: Vec<u8>,
         response_port: Option<crate::mailbox::PyPortId>,
