@@ -558,7 +558,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_realtime_frontier() {
-        let proxy: ChannelAddr = "unix!@proxy".parse().unwrap();
+        let proxy: ChannelAddr = ChannelAddr::any(ChannelTransport::Unix);
         start(
             ChannelAddr::any(ChannelTransport::Unix),
             proxy.clone(),
