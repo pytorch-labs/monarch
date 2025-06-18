@@ -6,14 +6,17 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::collections::BTreeMap;
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::iter::repeat_n;
 use std::sync::Arc;
+use std::sync::atomic;
 use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering;
 
-use controller::history;
 use hyperactor::ActorRef;
+use hyperactor::data::Serialized;
 use hyperactor_mesh::actor_mesh::ActorMesh;
 use hyperactor_mesh::actor_mesh::RootActorMesh;
 use hyperactor_mesh::proc_mesh::SharedSpawnable;
@@ -26,6 +29,7 @@ use monarch_hyperactor::runtime::signal_safe_block_on;
 use monarch_messages::client::Exception;
 use monarch_messages::controller::ControllerActor;
 use monarch_messages::controller::ControllerMessage;
+use monarch_messages::controller::Seq;
 use monarch_messages::debugger::DebuggerAction;
 use monarch_messages::debugger::DebuggerActor;
 use monarch_messages::debugger::DebuggerMessage;
@@ -49,7 +53,7 @@ struct _Controller {
     controller_instance: Arc<Mutex<InstanceWrapper<ControllerMessage>>>,
     workers: RootActorMesh<'static, WorkerActor>,
     pending_messages: VecDeque<PyObject>,
-    history: history::History,
+    history: History,
 }
 
 impl _Controller {
@@ -97,11 +101,25 @@ impl _Controller {
                     self.add_responses(py, responses)?;
                 }
                 ControllerMessage::RemoteFunctionFailed { seq, error } => {
-                    self.history
+                    let responses = self
+                        .history
                         .propagate_exception(seq, Exception::Error(seq, seq, error));
+                    self.add_responses(py, responses)?;
                 }
-                ControllerMessage::FetchResult { seq, value } => {
+                ControllerMessage::FetchResult {
+                    seq,
+                    value: Ok(value),
+                } => {
                     self.history.set_result(seq, value);
+                }
+                ControllerMessage::FetchResult {
+                    seq,
+                    value: Err(error),
+                } => {
+                    let responses = self
+                        .history
+                        .propagate_exception(seq, Exception::Error(seq, seq, error));
+                    self.add_responses(py, responses)?;
                 }
                 message => {
                     panic!("unexpected message: {:?}", message);
@@ -134,7 +152,7 @@ impl _Controller {
     #[new]
     fn new(py: Python, py_proc_mesh: &PyProcMesh) -> PyResult<Self> {
         let proc_mesh = py_proc_mesh.inner.as_ref();
-        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let id = NEXT_ID.fetch_add(1, atomic::Ordering::Relaxed);
         let controller_instance: InstanceWrapper<ControllerMessage> = InstanceWrapper::new(
             &PyProc::new_from_proc(proc_mesh.client_proc().clone()),
             &format!("tensor_engine_controller_{}", id),
@@ -175,7 +193,7 @@ impl _Controller {
             workers: workers?,
             controller_instance: Arc::new(Mutex::new(controller_instance)),
             pending_messages: VecDeque::new(),
-            history: history::History::new(world_size),
+            history: History::new(world_size),
         })
     }
 
@@ -267,4 +285,339 @@ impl _Controller {
 pub(crate) fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<_Controller>()?;
     Ok(())
+}
+
+/// An invocation tracks a discrete node in the graph of operations executed by
+/// the worker based on instructions from the client.
+/// It is useful for tracking the dependencies of an operation and propagating
+/// failures. In the future this will be used with more data dependency tracking
+/// to support better failure handling.
+// Allowing dead code until we do something smarter with defs, uses etc.
+#[derive(Debug)]
+struct Invocation {
+    /// The sequence number of the invocation. This should be unique and increasing across all
+    /// invocations.
+    seq: Seq,
+    /// The references that this invocation defines or redefines. Effectively the
+    /// output of the invocation.
+    defs: Vec<Ref>,
+    /// The result of the invocation. This is set when the invocation is completed or
+    /// when a failure is inferred. A successful result will always supersede any failure.
+    result: Option<Result<Serialized, Exception>>,
+    /// The seqs for the invocations that depend on this invocation. Useful for propagating failures.
+    users: HashSet<Seq>,
+}
+
+impl Invocation {
+    fn new(seq: Seq, defs: Vec<Ref>) -> Self {
+        Self {
+            seq,
+            defs,
+            result: None,
+            users: HashSet::new(),
+        }
+    }
+
+    fn add_user(&mut self, user: Seq) {
+        self.users.insert(user);
+    }
+
+    /// Invocation results can only go from valid to failed, or be
+    /// set if the invocation result is empty.
+    fn set_result(&mut self, result: Serialized) {
+        if self.result.is_none() {
+            self.result = Some(Ok(result));
+        }
+    }
+
+    fn set_exception(&mut self, exception: Exception) {
+        match exception {
+            Exception::Error(_, caused_by, error) => {
+                let e = Err(Exception::Error(self.seq, caused_by, error));
+                match self.result {
+                    Some(Ok(_)) => {
+                        self.result = Some(e);
+                    }
+                    None => {
+                        self.result = Some(e);
+                    }
+                    Some(Err(_)) => {}
+                }
+            }
+            Exception::Failure(_) => {
+                tracing::error!(
+                    "system failures {:?} can never be assigned for an invocation",
+                    exception
+                );
+            }
+        }
+    }
+
+    fn exception(&self) -> Option<&Exception> {
+        self.result
+            .as_ref()
+            .map(Result::as_ref)
+            .and_then(Result::err)
+    }
+
+    #[allow(dead_code)]
+    fn value(&self) -> Option<&Serialized> {
+        self.result
+            .as_ref()
+            .map(Result::as_ref)
+            .and_then(Result::ok)
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum RefStatus {
+    // The invocation for this ref is still in progress.
+    Invoked(Seq),
+    // The invocation for this ref has errored.
+    Errored(Exception),
+}
+
+/// The history of invocations sent by the client to be executed on the workers.
+/// This is used to track dependencies between invocations and to propagate exceptions.
+/// It purges history for completed invocations to avoid memory bloat.
+/// TODO: Revisit this setup around purging refs automatically once we start doing
+/// more complex data dependency tracking. We will want to be more aware of things like
+/// borrows, drops etc. directly.
+#[derive(Debug)]
+struct History {
+    /// The first incomplete Seq for each rank. This is used to determine which
+    /// Seqs are no longer relevant and can be purged from the history.
+    first_incomplete_seqs: MinVector<Seq>,
+    /// The minimum incomplete Seq across all ranks.
+    min_incomplete_seq: Seq,
+    /// A map of seq to the invocation that it represents.
+    invocations: HashMap<Seq, Invocation>,
+    /// A map of reference to the seq for the invocation that defines it. This is used to
+    /// compute dependencies between invocations.
+    invocation_for_ref: HashMap<Ref, RefStatus>,
+    // Refs to be deleted in mark_worker_complete_and_propagate_failures
+    marked_for_deletion: HashSet<Ref>,
+    // no new sequence numbers should be below this bound. use for
+    // sanity checking.
+    seq_lower_bound: Seq,
+}
+
+/// A vector that keeps track of the minimum value.
+#[derive(Debug)]
+struct MinVector<T> {
+    data: Vec<T>,
+    value_counts: BTreeMap<T, usize>,
+}
+
+impl<T> MinVector<T>
+where
+    T: Ord + Copy,
+{
+    fn new(data: Vec<T>) -> Self {
+        let mut value_counts = BTreeMap::new();
+        for &value in &data {
+            *value_counts.entry(value).or_insert(0) += 1;
+        }
+        MinVector { data, value_counts }
+    }
+
+    fn set(&mut self, index: usize, value: T) {
+        // Decrease the count of the old value
+        let old_value = self.data[index];
+        if let Some(count) = self.value_counts.get_mut(&old_value) {
+            *count -= 1;
+            if *count == 0 {
+                self.value_counts.remove(&old_value);
+            }
+        }
+        // Update the value in the vector
+        self.data[index] = value;
+
+        // Increase the count of the new value
+        *self.value_counts.entry(value).or_insert(0) += 1;
+    }
+
+    fn min(&self) -> T {
+        *self.value_counts.keys().next().unwrap()
+    }
+}
+
+impl History {
+    pub fn new(world_size: usize) -> Self {
+        Self {
+            first_incomplete_seqs: MinVector::new(vec![Seq::default(); world_size]),
+            min_incomplete_seq: Seq::default(),
+            invocation_for_ref: HashMap::new(),
+            invocations: HashMap::new(),
+            marked_for_deletion: HashSet::new(),
+            seq_lower_bound: 0.into(),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn first_incomplete_seqs(&self) -> &[Seq] {
+        self.first_incomplete_seqs.vec()
+    }
+
+    pub fn delete_invocations_for_refs(&mut self, refs: Vec<Ref>) {
+        self.marked_for_deletion.extend(refs);
+
+        self.marked_for_deletion
+            .retain(|ref_| match self.invocation_for_ref.get(ref_) {
+                Some(RefStatus::Invoked(seq)) => {
+                    if seq < &self.min_incomplete_seq {
+                        self.invocation_for_ref.remove(ref_);
+                        false
+                    } else {
+                        true
+                    }
+                }
+                Some(RefStatus::Errored(_)) => {
+                    self.invocation_for_ref.remove(ref_);
+                    false
+                }
+                None => true,
+            });
+    }
+
+    /// Add an invocation to the history.
+    pub fn add_invocation(
+        &mut self,
+        seq: Seq,
+        uses: Vec<Ref>,
+        defs: Vec<Ref>,
+    ) -> Vec<(Seq, Option<Result<Serialized, Exception>>)> {
+        let mut results = Vec::new();
+        assert!(
+            seq >= self.seq_lower_bound,
+            "nonmonotonic seq: {:?}; current lower bound: {:?}",
+            seq,
+            self.seq_lower_bound,
+        );
+        self.seq_lower_bound = seq;
+        let mut invocation = Invocation::new(seq, defs.clone());
+
+        for use_ in uses {
+            // The invocation for every use_ should add this seq as a user.
+            match self.invocation_for_ref.get(&use_) {
+                Some(RefStatus::Errored(exception)) => {
+                    // We know that this invocation hasn't been completed yet, so we can
+                    // directly call set_exception on it.
+                    if results.is_empty() {
+                        invocation.set_exception(exception.clone());
+                        results.push((seq, Some(Err(exception.clone()))));
+                    }
+                }
+                Some(RefStatus::Invoked(invoked_seq)) => {
+                    if let Some(invocation) = self.invocations.get_mut(invoked_seq) {
+                        invocation.add_user(seq)
+                    }
+                }
+                None => tracing::debug!(
+                    "ignoring dependency on potentially complete invocation for ref: {:?}",
+                    use_
+                ),
+            }
+        }
+        for def in defs {
+            self.invocation_for_ref.insert(
+                def,
+                match invocation.exception() {
+                    Some(err) => RefStatus::Errored(err.clone()),
+                    None => RefStatus::Invoked(seq.clone()),
+                },
+            );
+        }
+
+        self.invocations.insert(seq, invocation);
+
+        results
+    }
+
+    /// Propagate worker error to the invocation with the given Seq. This will also propagate
+    /// to all seqs that depend on this seq directly or indirectly.
+    pub fn propagate_exception(
+        &mut self,
+        seq: Seq,
+        exception: Exception,
+    ) -> Vec<(Seq, Option<Result<Serialized, Exception>>)> {
+        let mut results = Vec::new();
+        let mut queue = vec![seq];
+        let mut visited = HashSet::new();
+
+        while let Some(seq) = queue.pop() {
+            if !visited.insert(seq) {
+                continue;
+            }
+
+            let Some(invocation) = self.invocations.get_mut(&seq) else {
+                continue;
+            };
+
+            // Overwrite the error, so we are using the last error for this invocation to send
+            // to the client.
+            for def in invocation.defs.iter() {
+                match self.invocation_for_ref.get(def) {
+                    Some(RefStatus::Invoked(invoked_seq)) if *invoked_seq == seq => self
+                        .invocation_for_ref
+                        .insert(*def, RefStatus::Errored(exception.clone())),
+                    _ => None,
+                };
+            }
+            invocation.set_exception(exception.clone());
+            results.push((seq, invocation.result.clone()));
+            queue.extend(invocation.users.iter());
+        }
+        results
+    }
+
+    /// Mark the given rank as completed up to but excluding the given Seq. This will also purge history for
+    /// any Seqs that are no longer relevant (completed on all ranks).
+    pub fn rank_completed(
+        &mut self,
+        rank: usize,
+        seq: Seq,
+    ) -> Vec<(Seq, Option<Result<Serialized, Exception>>)> {
+        self.first_incomplete_seqs.set(rank, seq);
+        let prev = self.min_incomplete_seq;
+        self.min_incomplete_seq = self.first_incomplete_seqs.min();
+
+        let mut results: Vec<(Seq, Option<Result<Serialized, Exception>>)> = Vec::new();
+        for i in Seq::iter_between(prev, self.min_incomplete_seq) {
+            if let Some(invocation) = self.invocations.remove(&i) {
+                match invocation.result {
+                    Some(Err(_)) => {
+                        // Retain the def history because we may need it to propagate
+                        // errors in the future. We rely here on the fact that the invocation
+                        // above has been marked as failed by way of failure propagation.
+                        for def in &invocation.defs {
+                            match self.invocation_for_ref.get(def) {
+                                Some(RefStatus::Invoked(seq)) if *seq == i => {
+                                    self.invocation_for_ref.remove(def)
+                                }
+                                _ => None,
+                            };
+                        }
+
+                        // we have already reported all exceptions when they are generated.
+                    }
+                    e => {
+                        results.push((i, e));
+                    }
+                }
+            }
+        }
+        results
+    }
+
+    #[cfg(test)]
+    fn get_invocation(&self, seq: Seq) -> Option<&Invocation> {
+        self.invocations.get(&seq)
+    }
+
+    pub fn set_result(&mut self, seq: Seq, result: Serialized) {
+        if let Some(invocation) = self.invocations.get_mut(&seq) {
+            invocation.set_result(result);
+        }
+    }
 }
