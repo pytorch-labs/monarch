@@ -14,21 +14,33 @@ use std::sync::Arc;
 use hyperactor::Mailbox;
 use hyperactor::Named;
 use hyperactor::OncePortHandle;
+use hyperactor::OncePortRef;
 use hyperactor::PortHandle;
 use hyperactor::PortId;
+use hyperactor::PortRef;
+use hyperactor::accum::Accumulator;
+use hyperactor::accum::CommReducer;
+use hyperactor::accum::ReducerFactory;
+use hyperactor::accum::ReducerSpec;
 use hyperactor::data::Serialized;
 use hyperactor::mailbox::MailboxSender;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::OncePortReceiver;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::mailbox::monitored_return_handle;
+use hyperactor::message::Bind;
+use hyperactor::message::Bindings;
+use hyperactor::message::Unbind;
 use hyperactor_mesh::actor_mesh::Cast;
 use hyperactor_mesh::comm::multicast::CastRank;
+use monarch_types::PickledPyObject;
 use pyo3::exceptions::PyEOFError;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
+use serde::Deserialize;
+use serde::Serialize;
 
 use crate::actor::PythonMessage;
 use crate::proc::PyActorId;
@@ -74,23 +86,28 @@ impl PyMailbox {
         PyTuple::new(py, vec![handle.into_any(), receiver.into_any()])
     }
 
-    pub(super) fn post<'py>(
+    fn open_accum_port<'py>(
         &self,
         py: Python<'py>,
-        dest: PyObject,
-        message: &PythonMessage,
-    ) -> PyResult<()> {
-        let port_id = if let Ok(actor_id) = dest.extract::<PyActorId>(py) {
-            // Messages to an actor gets sent to the message port for PythonMessage.
-            actor_id.inner.port_id(PythonMessage::port())
-        } else if let Ok(port_id) = dest.extract::<PyPortId>(py) {
-            port_id.inner.clone()
-        } else {
-            return Err(PyErr::new::<PyValueError, _>(
-                "dest must be either an actor id or a port id",
-            ));
-        };
+        accumulator: PyObject,
+    ) -> PyResult<Bound<'py, PyTuple>> {
+        let py_accumulator = PythonAccumulator::new(py, accumulator)?;
+        let (handle, receiver) = self.inner.open_accum_port(py_accumulator);
+        let handle = Py::new(py, PythonPortHandle { inner: handle })?;
+        let receiver = Py::new(
+            py,
+            PythonPortReceiver {
+                inner: Arc::new(tokio::sync::Mutex::new(receiver)),
+            },
+        )?;
+        Ok(PyTuple::new_bound(
+            py,
+            vec![handle.into_any(), receiver.into_any()],
+        ))
+    }
 
+    pub(super) fn post(&self, dest: &PyActorId, message: &PythonMessage) -> PyResult<()> {
+        let port_id = dest.inner.port_id(PythonMessage::port());
         let message = Serialized::serialize(message).map_err(|err| {
             PyRuntimeError::new_err(format!(
                 "failed to serialize message ({:?}) to Serialized: {}",
@@ -104,7 +121,7 @@ impl PyMailbox {
 
     pub(super) fn post_cast(
         &self,
-        dest: PyActorId,
+        dest: &PyActorId,
         rank: usize,
         shape: &PyShape,
         message: &PythonMessage,
@@ -238,11 +255,39 @@ impl PythonPortHandle {
         Ok(())
     }
 
-    // TODO: We probably should have a specific "PythonMessagePortRef" type here instead.
-    fn bind(&self) -> PyPortId {
-        PyPortId {
-            inner: self.inner.bind().into_port_id(),
+    fn bind(&self) -> PythonPortRef {
+        PythonPortRef {
+            inner: self.inner.bind(),
         }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[pyclass(
+    name = "PortRef",
+    module = "monarch._rust_bindings.monarch_hyperactor.mailbox"
+)]
+pub(super) struct PythonPortRef {
+    pub(crate) inner: PortRef<PythonMessage>,
+}
+
+#[pymethods]
+impl PythonPortRef {
+    fn send(&self, mailbox: &PyMailbox, message: PythonMessage) -> PyResult<()> {
+        self.inner
+            .send(&mailbox.inner, message)
+            .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
+        Ok(())
+    }
+
+    fn __str__(&self) -> String {
+        self.inner.to_string()
+    }
+}
+
+impl From<PortRef<PythonMessage>> for PythonPortRef {
+    fn from(port_ref: PortRef<PythonMessage>) -> Self {
+        Self { inner: port_ref }
     }
 }
 
@@ -296,14 +341,50 @@ impl PythonOncePortHandle {
         Ok(())
     }
 
-    // TODO: We probably should have a specific "PythonMessagePortRef" type here instead.
-    fn bind(&mut self) -> PyResult<PyPortId> {
+    fn bind(&mut self) -> PyResult<PythonOncePortRef> {
         let Some(port) = self.inner.take() else {
             return Err(PyErr::new::<PyValueError, _>("OncePort is already used"));
         };
-        Ok(PyPortId {
-            inner: port.bind().into_port_id(),
+        Ok(PythonOncePortRef {
+            inner: Some(port.bind()),
         })
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[pyclass(
+    name = "OncePortRef",
+    module = "monarch._rust_bindings.monarch_hyperactor.mailbox"
+)]
+pub(crate) struct PythonOncePortRef {
+    pub(crate) inner: Option<OncePortRef<PythonMessage>>,
+}
+
+#[pymethods]
+impl PythonOncePortRef {
+    fn send(&mut self, mailbox: &PyMailbox, message: PythonMessage) -> PyResult<()> {
+        let Some(port_ref) = self.inner.take() else {
+            return Err(PyErr::new::<PyValueError, _>("OncePortRef is already used"));
+        };
+
+        port_ref
+            .send(&mailbox.inner, message)
+            .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
+        Ok(())
+    }
+
+    fn __str__(&self) -> String {
+        self.inner
+            .as_ref()
+            .map_or("OncePortRef is already used".to_string(), |r| r.to_string())
+    }
+}
+
+impl From<OncePortRef<PythonMessage>> for PythonOncePortRef {
+    fn from(port_ref: OncePortRef<PythonMessage>) -> Self {
+        Self {
+            inner: Some(port_ref),
+        }
     }
 }
 
@@ -338,12 +419,135 @@ impl PythonOncePortReceiver {
     }
 }
 
+#[derive(
+    Clone,
+    Serialize,
+    Deserialize,
+    Named,
+    PartialEq,
+    FromPyObject,
+    IntoPyObject
+)]
+pub(super) enum EitherPortRef {
+    Unbounded(PythonPortRef),
+    Once(PythonOncePortRef),
+}
+
+impl Unbind for EitherPortRef {
+    fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
+        match self {
+            EitherPortRef::Unbounded(port_ref) => port_ref.inner.unbind(bindings),
+            EitherPortRef::Once(once_port_ref) => once_port_ref.inner.unbind(bindings),
+        }
+    }
+}
+
+impl Bind for EitherPortRef {
+    fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
+        match self {
+            EitherPortRef::Unbounded(port_ref) => port_ref.inner.bind(bindings),
+            EitherPortRef::Once(once_port_ref) => once_port_ref.inner.bind(bindings),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Named)]
+#[named(dump = false)]
+struct PythonReducer(PyObject);
+
+impl PythonReducer {
+    fn new(params: Option<Serialized>) -> anyhow::Result<Self> {
+        let p = params.ok_or_else(|| anyhow::anyhow!("params cannot be None"))?;
+        let obj: PickledPyObject = p.deserialized()?;
+        Ok(Python::with_gil(|py: Python<'_>| -> PyResult<Self> {
+            let unpickled = obj.unpickle(py)?;
+            Ok(Self(unpickled.unbind()))
+        })?)
+    }
+}
+
+impl CommReducer for PythonReducer {
+    type Update = PythonMessage;
+
+    fn reduce(&self, left: Self::Update, right: Self::Update) -> anyhow::Result<Self::Update> {
+        Python::with_gil(|py: Python<'_>| {
+            let result = self.0.call(py, (left, right), None)?;
+            Ok(result.extract::<PythonMessage>(py)?)
+        })
+    }
+}
+
+struct PythonAccumulator {
+    accumulator: PyObject,
+    reducer: Option<Serialized>,
+}
+
+impl PythonAccumulator {
+    fn new<'py>(py: Python<'py>, accumulator: PyObject) -> PyResult<Self> {
+        let py_reducer = accumulator.getattr(py, "reducer")?;
+        let reducer: Option<Serialized> = if py_reducer.is_none(py) {
+            None
+        } else {
+            let pickled = PickledPyObject::cloudpickle(py_reducer.bind(py))?;
+            Some(
+                Serialized::serialize(&pickled)
+                    .map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
+            )
+        };
+
+        Ok(Self {
+            accumulator,
+            reducer,
+        })
+    }
+}
+
+impl Accumulator for PythonAccumulator {
+    type State = PythonMessage;
+    type Update = PythonMessage;
+
+    fn accumulate(&self, state: &mut Self::State, update: Self::Update) -> anyhow::Result<()> {
+        Python::with_gil(|py: Python<'_>| {
+            // Initialize state if it is empty.
+            if state.message.is_empty() && state.method.is_empty() {
+                *state = self
+                    .accumulator
+                    .getattr(py, "initial_state")?
+                    .extract::<PythonMessage>(py)?;
+            }
+
+            // TODO(pzhang) Make accumulate consumes state and update, and returns
+            // a new state. That will avoid this clone.
+            let old_state = state.clone();
+            let result = self.accumulator.call(py, (old_state, update), None)?;
+            *state = result.extract::<PythonMessage>(py)?;
+            Ok(())
+        })
+    }
+
+    fn reducer_spec(&self) -> Option<ReducerSpec> {
+        self.reducer.as_ref().map(|r| ReducerSpec {
+            typehash: <PythonReducer as Named>::typehash(),
+            builder_params: Some(r.clone()),
+        })
+    }
+}
+
+inventory::submit! {
+    ReducerFactory {
+        typehash_f: <PythonReducer as Named>::typehash,
+        builder_f: |params| Ok(Box::new(PythonReducer::new(params)?)),
+    }
+}
+
 pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResult<()> {
     hyperactor_mod.add_class::<PyMailbox>()?;
     hyperactor_mod.add_class::<PyPortId>()?;
     hyperactor_mod.add_class::<PythonPortHandle>()?;
+    hyperactor_mod.add_class::<PythonPortRef>()?;
     hyperactor_mod.add_class::<PythonPortReceiver>()?;
     hyperactor_mod.add_class::<PythonOncePortHandle>()?;
+    hyperactor_mod.add_class::<PythonOncePortRef>()?;
     hyperactor_mod.add_class::<PythonOncePortReceiver>()?;
 
     Ok(())
