@@ -11,19 +11,35 @@ import time
 import traceback
 from collections import deque
 from logging import Logger
-from typing import List, NamedTuple, Optional, TYPE_CHECKING, Union
+from typing import (
+    Any,
+    cast,
+    List,
+    NamedTuple,
+    Optional,
+    Sequence,
+    Tuple,
+    TYPE_CHECKING,
+    Union,
+)
 
 import torch.utils._python_dispatch
 
-from monarch import NDSlice
+from monarch import NDSlice, Stream
 from monarch._rust_bindings.monarch_extension import client, debugger
 from monarch._rust_bindings.monarch_extension.client import (  # @manual=//monarch/monarch_extension:monarch_extension
     WorldState,
 )
 from monarch._rust_bindings.monarch_extension.mesh_controller import _Controller
+from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
 from monarch._rust_bindings.monarch_hyperactor.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
     ActorId,
 )
+from monarch.actor_mesh import Port, PortTuple
+from monarch.common import messages
+from monarch.common.invocation import Seq
+from monarch.common.stream import StreamRef
+from monarch.common.tensor import Tensor
 
 if TYPE_CHECKING:
     from monarch._rust_bindings.monarch_hyperactor.proc_mesh import (
@@ -37,8 +53,10 @@ from monarch._rust_bindings.monarch_messages.debugger import DebuggerAction
 from monarch.common.client import Client
 from monarch.common.controller_api import LogMessage, MessageResult
 from monarch.common.device_mesh import DeviceMesh, no_mesh
+from monarch.common.future import Future as OldFuture
 from monarch.common.invocation import DeviceException, RemoteException
 from monarch.controller.debugger import read as debugger_read, write as debugger_write
+from monarch.future import ActorFuture
 from monarch.rust_local_mesh import _get_worker_exec_info
 from pyre_extensions import none_throws
 
@@ -48,6 +66,7 @@ logger: Logger = logging.getLogger(__name__)
 class Controller(_Controller):
     def __init__(self, workers: "HyProcMesh") -> None:
         super().__init__()
+        self._mailbox: Mailbox = workers.client
         # Buffer for messages unrelated to debugging that are received while a
         # debugger session is active.
         self._non_debugger_pending_messages: deque[
@@ -220,6 +239,40 @@ def _initialize_env(worker_point: Point, proc_id: str) -> None:
 
 
 class MeshClient(Client):
+    def fetch(
+        self,
+        mesh: "DeviceMesh",
+        stream: "StreamRef",
+        shard,
+        preprocess_message,
+        args,
+        kwargs,
+        defs: Tuple["Tensor", ...],
+        uses: Tuple["Tensor", ...],
+    ) -> "OldFuture":  # the OldFuture is a lie
+        sender, receiver = PortTuple.create(self._mesh_controller._mailbox, once=True)
+
+        ident = self.new_node(defs, uses, cast("OldFuture", sender))
+        process = mesh._process(shard)
+        self.send(
+            process,
+            messages.SendValue(
+                ident,
+                None,
+                defs,
+                preprocess_message,
+                args,
+                kwargs,
+                stream,
+            ),
+        )
+        # we have to ask for status updates
+        # from workers to be sure they have finished
+        # enough work to count this future as finished,
+        # and all potential errors have been reported
+        self._request_status()
+        return cast("OldFuture", receiver.recv())
+
     def shutdown(
         self,
         destroy_pg: bool = True,
@@ -233,26 +286,46 @@ class MeshClient(Client):
         atexit.unregister(self._atexit)
         self._shutdown = True
 
+        sender, receiver = PortTuple.create(self._mesh_controller._mailbox, once=True)
+
         # ensure all pending work is finished.
         # all errors must be messaged back at this point
-        self.new_node_nocoalesce([], [], None, [])
+        seq = self.new_node_nocoalesce([], [], cast("OldFuture", sender), [])
+        self._mesh_controller.exit(seq)
         self._request_status()
-
-        ttl = 60
-        start_time = time.time()
-        end_time = start_time + ttl
-        while ttl > 0 and self.last_assigned_seq > self.last_processed_seq:
-            ttl = end_time - time.time()
-            self.handle_next_message(ttl)
-            if self._pending_shutdown_error:
-                raise self._pending_shutdown_error
-
-        if ttl <= 0:
-            raise RuntimeError("shutdown timed out")
-
+        receiver.recv().get(timeout=60)
         # we are not expecting anything more now, because we already
         # waited for the responses
         self.inner.drain_and_stop()
+
+    @property
+    def _mesh_controller(self) -> Controller:
+        return cast(Controller, self.inner)
+
+    def new_node_nocoalesce(
+        self,
+        defs: Sequence["Tensor"],
+        uses: Sequence["Tensor"],
+        future: Optional["OldFuture"],
+        tracebacks: List[List[traceback.FrameSummary]],
+    ) -> Seq:
+        seq = self._next_seq()
+        for d in defs:
+            d._seq = seq
+        response_port = None
+        if future is not None:
+            # method annotation is a lie to make Client happy
+            port = cast("Port[Any]", future)
+            slice = NDSlice.new_row_major([])
+            response_port = (port._port, slice)
+        self._mesh_controller.node(seq, defs, uses, response_port, tracebacks)
+        return seq
+
+    def handle_next_message(self, timeout: Optional[float]) -> bool:
+        """
+        Mesh controller message loop is handled by the tokio event loop.
+        """
+        return False
 
 
 def spawn_tensor_engine(proc_mesh: "ProcMesh") -> DeviceMesh:
@@ -269,3 +342,28 @@ def spawn_tensor_engine(proc_mesh: "ProcMesh") -> DeviceMesh:
     )
     dm.exit = lambda: client.shutdown()
     return dm
+
+
+class RemoteException(Exception):
+    def __init__(
+        self,
+        worker_error_string: str,  # this should really be an exception + stacktrace but
+        # worker code needs major refactor to make this possible
+        controller_frames: List[traceback.FrameSummary],
+        rank: int,
+    ):
+        self.worker_error_string = worker_error_string
+        self.controller_frames = controller_frames
+        self.rank = rank
+
+    def __str__(self):
+        try:
+            controller_tb = "".join(traceback.format_list(self.controller_frames))
+            return (
+                f"A remote function has failed asynchronously on rank {self.rank}.\n"
+                f"Traceback of where the remote function was issued on controller (most recent call last):\n{controller_tb}"
+                f"Error as reported from worker:\n{self.worker_error_string}"
+            )
+        except Exception:
+            traceback.print_exc()
+            return "<exception formatting RemoteException>"

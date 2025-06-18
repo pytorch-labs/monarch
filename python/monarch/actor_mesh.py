@@ -398,19 +398,31 @@ class Port(Generic[R]):
         )
 
 
+from typing import NamedTuple
+
+R = TypeVar("R")
+
+T = TypeVar("T")
+
+
+class PortTuple(NamedTuple, Generic[R]):
+    sender: "Port[R]"
+    receiver: "PortReceiver[R]"
+
+    @staticmethod
+    def create(mailbox: Mailbox, once: bool = False) -> "PortTuple[Any]":
+        handle, receiver = mailbox.open_once_port() if once else mailbox.open_port()
+        port_id: PortId = handle.bind()
+        return PortTuple(
+            Port(port_id, mailbox, rank=None), PortReceiver(mailbox, receiver)
+        )
+
+
 # advance lower-level API for sending messages. This is intentially
 # not part of the Endpoint API because they way it accepts arguments
 # and handles concerns is different.
-def port(
-    endpoint: Endpoint[P, R], once: bool = False
-) -> Tuple["Port[R]", "PortReceiver[R]"]:
-    handle, receiver = (
-        endpoint._mailbox.open_once_port() if once else endpoint._mailbox.open_port()
-    )
-    port_id: PortId = handle.bind()
-    return Port(port_id, endpoint._mailbox, rank=None), PortReceiver(
-        endpoint._mailbox, receiver
-    )
+def port(endpoint: Endpoint[P, R], once: bool = False) -> "PortTuple[R]":
+    return PortTuple.create(endpoint._mailbox, once)
 
 
 def ranked_port(

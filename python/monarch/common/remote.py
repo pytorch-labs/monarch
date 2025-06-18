@@ -180,15 +180,9 @@ def _call_on_shard_and_fetch(
     client: "Client" = mesh.client
     if _coalescing.is_active(client):
         raise NotImplementedError("NYI: fetching results during a coalescing block")
+    stream_ref = stream._active._to_ref(client)
     return client.fetch(
-        mesh,
-        stream._active._to_ref(client),
-        shard,
-        preprocess_message,
-        args,
-        kwargs,
-        mutates,
-        dtensors,
+        mesh, stream_ref, shard, preprocess_message, args, kwargs, mutates, dtensors
     )
 
 

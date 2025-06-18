@@ -9,6 +9,7 @@ import pickle
 from typing import Any, Callable, Iterable, List, Tuple
 
 import cloudpickle
+import torch
 
 
 class _Pickler(cloudpickle.Pickler):
@@ -44,5 +45,6 @@ def flatten(obj: Any, filter: Callable[[Any], bool]) -> Tuple[List[Any], bytes]:
 
 
 def unflatten(data: bytes, values: Iterable[Any]) -> Any:
-    up = _Unpickler(data, values)
-    return up.load()
+    with torch.utils._python_dispatch._disable_current_modes():
+        up = _Unpickler(data, values)
+        return up.load()
