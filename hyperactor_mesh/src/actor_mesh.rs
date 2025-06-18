@@ -19,6 +19,7 @@ use hyperactor::Named;
 use hyperactor::PortHandle;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
+use hyperactor::accum::ReducerSpec;
 use hyperactor::actor::RemoteActor;
 use hyperactor::mailbox::MailboxSenderError;
 use hyperactor::mailbox::PortReceiver;
