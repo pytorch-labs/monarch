@@ -10,6 +10,7 @@ license = "BSD-3-Clause"
 [dependencies]
 anyhow = "1.0.95"
 async-trait = "0.1.86"
+ffi = { package = "ibverbs-sys", version = "0.1.2" }
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 ibverbs = "0.7.1"
 rand = { version = "0.8", features = ["small_rng"] }

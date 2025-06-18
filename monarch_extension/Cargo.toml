@@ -16,22 +16,23 @@ crate-type = ["cdylib"]
 [dependencies]
 anyhow = "1.0.95"
 clap = { version = "4.5.38", features = ["derive", "env", "string", "unicode", "wrap_help"] }
-controller = { version = "0.0.0", path = "../controller", optional = true }
-hyperactor = { version = "0.0.0", path = "../hyperactor" }
-hyperactor_extension = { version = "0.0.0", path = "../hyperactor_extension" }
-hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }
-hyperactor_multiprocess = { version = "0.0.0", path = "../hyperactor_multiprocess" }
-monarch_hyperactor = { version = "0.0.0", path = "../monarch_hyperactor" }
-monarch_messages = { version = "0.0.0", path = "../monarch_messages", optional = true }
-monarch_simulator_lib = { version = "0.0.0", path = "../monarch_simulator", optional = true }
-monarch_tensor_worker = { version = "0.0.0", path = "../monarch_tensor_worker", optional = true }
-monarch_types = { version = "0.0.0", path = "../monarch_types" }
+controller = { path = "../controller", optional = true }
+hyperactor = { path = "../hyperactor" }
+hyperactor_extension = { path = "../hyperactor_extension" }
+hyperactor_mesh = { path = "../hyperactor_mesh" }
+hyperactor_multiprocess = { path = "../hyperactor_multiprocess" }
+monarch_hyperactor = { path = "../monarch_hyperactor" }
+monarch_messages = { path = "../monarch_messages", optional = true }
+monarch_rdma_extension = { path = "../monarch_rdma/extension" }
+monarch_simulator_lib = { path = "../monarch_simulator", optional = true }
+monarch_tensor_worker = { path = "../monarch_tensor_worker", optional = true }
+monarch_types = { path = "../monarch_types" }
 nccl-sys = { path = "../nccl-sys", optional = true }
-ndslice = { version = "0.0.0", path = "../ndslice" }
+ndslice = { path = "../ndslice" }
 pyo3 = { version = "0.24", features = ["anyhow"] }
 tokio = { version = "1.45.0", features = ["full", "test-util", "tracing"] }
-torch-sys = { version = "0.0.0", path = "../torch-sys", optional = true }
-torch-sys-cuda = { version = "0.0.0", path = "../torch-sys-cuda", optional = true }
+torch-sys = { path = "../torch-sys", optional = true }
+torch-sys-cuda = { path = "../torch-sys-cuda", optional = true }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 
 [features]

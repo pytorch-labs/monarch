@@ -39,8 +39,8 @@ use crate::shape::PyShape;
     name = "Mailbox",
     module = "monarch._rust_bindings.monarch_hyperactor.mailbox"
 )]
-pub(super) struct PyMailbox {
-    pub(super) inner: Mailbox,
+pub struct PyMailbox {
+    pub inner: Mailbox,
 }
 
 #[pymethods]

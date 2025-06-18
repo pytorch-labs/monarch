@@ -10,12 +10,16 @@ use std::sync::Arc;
 
 use hyperactor::WorldId;
 use hyperactor_extension::alloc::PyAlloc;
+use hyperactor_extension::alloc::PyAllocWrapper;
+use hyperactor_mesh::actor_mesh::RootActorMesh;
 use hyperactor_mesh::alloc::Alloc;
 use hyperactor_mesh::alloc::ProcStopReason;
 use hyperactor_mesh::proc_mesh::ProcEvent;
 use hyperactor_mesh::proc_mesh::ProcEvents;
 use hyperactor_mesh::proc_mesh::ProcMesh;
 use hyperactor_mesh::proc_mesh::SharedSpawnable;
+use monarch_rdma::IbverbsConfig;
+use monarch_rdma::RdmaManagerActor;
 use monarch_types::PickledPyObject;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
@@ -26,6 +30,9 @@ use crate::mailbox::PyMailbox;
 use crate::runtime::signal_safe_block_on;
 use crate::shape::PyShape;
 
+/// `PyProcMesh` is a Python wrapper for `ProcMesh`.
+/// If the system supports RDMA (Remote Direct Memory Access), an RDMA manager
+/// actor is spawned to enable the use of RDMABuffers (see monarch_rdma).
 #[pyclass(
     name = "ProcMesh",
     module = "monarch._rust_bindings.monarch_hyperactor.proc_mesh"
@@ -33,7 +40,9 @@ use crate::shape::PyShape;
 pub struct PyProcMesh {
     pub inner: Arc<ProcMesh>,
     monitor: tokio::task::JoinHandle<()>,
+    pub(super) rdma_manager: Option<Arc<RootActorMesh<'static, RdmaManagerActor>>>,
 }
+
 fn allocate_proc_mesh<'py>(py: Python<'py>, alloc: &PyAlloc) -> PyResult<Bound<'py, PyAny>> {
     let alloc = match alloc.take() {
         Some(alloc) => alloc,
@@ -43,13 +52,7 @@ fn allocate_proc_mesh<'py>(py: Python<'py>, alloc: &PyAlloc) -> PyResult<Bound<'
             ));
         }
     };
-    pyo3_async_runtimes::tokio::future_into_py(py, async move {
-        let world_id = alloc.world_id().clone();
-        let mesh = ProcMesh::allocate(alloc)
-            .await
-            .map_err(|err| PyException::new_err(err.to_string()))?;
-        Ok(PyProcMesh::monitored(mesh, world_id))
-    })
+    pyo3_async_runtimes::tokio::future_into_py(py, PyProcMesh::create_monitored(alloc))
 }
 
 fn allocate_proc_mesh_blocking<'py>(py: Python<'py>, alloc: &PyAlloc) -> PyResult<PyProcMesh> {
@@ -61,27 +64,49 @@ fn allocate_proc_mesh_blocking<'py>(py: Python<'py>, alloc: &PyAlloc) -> PyResul
             ));
         }
     };
-    signal_safe_block_on(py, async move {
-        let world_id = alloc.world_id().clone();
-        let mesh = ProcMesh::allocate(alloc)
-            .await
-            .map_err(|err| PyException::new_err(err.to_string()))?;
-        Ok(PyProcMesh::monitored(mesh, world_id))
-    })?
+    signal_safe_block_on(py, PyProcMesh::create_monitored(alloc))?
 }
 
 impl PyProcMesh {
-    /// Create a new [`PyProcMesh`] with a monitor that crashes the
-    /// process on any proc failure.
-    fn monitored(mut proc_mesh: ProcMesh, world_id: WorldId) -> Self {
-        let monitor = tokio::spawn(Self::monitor_proc_mesh(
-            proc_mesh.events().unwrap(),
-            world_id,
-        ));
-        Self {
-            inner: Arc::new(proc_mesh),
+    /// Creates a new `PyProcMesh` instance asynchronously.
+    ///
+    /// This function initializes a new process mesh with the provided allocator and
+    /// sets up RDMA (Remote Direct Memory Access) if supported by the system.
+    ///
+    /// # Arguments
+    /// * `alloc` - A wrapper around the Python allocator to be used for the process mesh
+    ///
+    /// # Returns
+    /// * A future that resolves to a `PyResult<PyProcMesh>` - the new process mesh or an error
+    ///
+    /// # Errors
+    /// * Returns a `PyException` if allocation fails or if RDMA initialization fails
+    async fn create_monitored(alloc: PyAllocWrapper) -> PyResult<Self> {
+        let world_id = alloc.world_id().clone();
+        let mut mesh = ProcMesh::allocate(alloc)
+            .await
+            .map_err(|err| PyException::new_err(err.to_string()))?;
+        let monitor = tokio::spawn(Self::monitor_proc_mesh(mesh.events().unwrap(), world_id));
+        let inner = Arc::new(mesh);
+        let rdma_manager = if monarch_rdma::ibverbs_supported() {
+            // TODO - make this configurable
+            let config = IbverbsConfig::default();
+            tracing::debug!("rdma is enabled, using device {}", config.device);
+            let actor_mesh = inner
+                .spawn("rdma_manager", &config)
+                .await
+                .map_err(|err| PyException::new_err(err.to_string()))?;
+            Some(Arc::new(actor_mesh))
+        } else {
+            tracing::info!("rdma is not enabled on this hardware");
+            None
+        };
+
+        Ok(Self {
+            inner,
             monitor,
-        }
+            rdma_manager,
+        })
     }
 
     /// Monitor the proc mesh for crashes. If a proc crashes, we print the reason

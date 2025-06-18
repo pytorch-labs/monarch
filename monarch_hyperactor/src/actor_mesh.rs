@@ -8,6 +8,7 @@
 
 use std::sync::Arc;
 
+use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor_mesh::Mesh;
 use hyperactor_mesh::RootActorMesh;
@@ -50,7 +51,7 @@ impl PythonActorMesh {
     }
 
     #[getter]
-    fn client(&self) -> PyMailbox {
+    pub fn client(&self) -> PyMailbox {
         self.client.clone()
     }
 
@@ -59,6 +60,7 @@ impl PythonActorMesh {
         PyShape::from(self.inner.shape().clone())
     }
 }
+
 pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResult<()> {
     hyperactor_mod.add_class::<PythonActorMesh>()?;
     Ok(())
