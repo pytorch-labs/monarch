@@ -102,6 +102,13 @@ impl Bindings {
         }
     }
 
+    /// Fallible version of [Bindings::pop_front].
+    pub fn try_pop_front<T: DeserializeOwned + Named>(&mut self) -> anyhow::Result<T> {
+        self.pop_front::<T>()?.ok_or_else(|| {
+            anyhow::anyhow!("expect a {} binding, but none was found", T::typename())
+        })
+    }
+
     fn visit_mut<T: Serialize + DeserializeOwned + Named>(
         &mut self,
         mut f: impl FnMut(&mut T) -> anyhow::Result<()>,
@@ -282,13 +289,32 @@ impl_bind_unbind_basic!(isize);
 impl_bind_unbind_basic!(usize);
 impl_bind_unbind_basic!(String);
 
+impl<T: Unbind> Unbind for Option<T> {
+    fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
+        match self {
+            Some(t) => t.unbind(bindings),
+            None => Ok(()),
+        }
+    }
+}
+
+impl<T: Bind> Bind for Option<T> {
+    fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
+        match self {
+            Some(t) => t.bind(bindings),
+            None => Ok(()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use hyperactor::PortRef;
     use hyperactor::id;
 
     use super::*;
-    use crate::PortId;
+    use crate::accum::ReducerSpec;
+    use crate::reference::UnboundPort;
 
     // Used to demonstrate a user defined reply type.
     #[derive(Debug, PartialEq, Serialize, Deserialize, Named)]
@@ -324,7 +350,13 @@ mod tests {
     #[test]
     fn test_castable() {
         let original_port0 = PortRef::attest(id!(world[0].actor[0][123]));
-        let original_port1 = PortRef::attest(id!(world[1].actor1[0][456]));
+        let original_port1 = PortRef::attest_reducible(
+            id!(world[1].actor1[0][456]),
+            Some(ReducerSpec {
+                typehash: 123,
+                builder_params: None,
+            }),
+        );
         let my_message = MyMessage {
             arg0: true,
             arg1: 42,
@@ -343,12 +375,12 @@ mod tests {
                 bindings: Bindings(
                     [
                         (
-                            PortId::typehash(),
-                            Serialized::serialize(original_port0.port_id()).unwrap()
+                            UnboundPort::typehash(),
+                            Serialized::serialize(&UnboundPort::from(&original_port0)).unwrap(),
                         ),
                         (
-                            PortId::typehash(),
-                            Serialized::serialize(original_port1.port_id()).unwrap()
+                            UnboundPort::typehash(),
+                            Serialized::serialize(&UnboundPort::from(&original_port1)).unwrap(),
                         ),
                     ]
                     .into_iter()
@@ -365,20 +397,30 @@ mod tests {
 
         let mut new_ports = vec![&new_port_id0, &new_port_id1].into_iter();
         erased
-            .visit_mut::<PortId>(|p| {
-                *p = new_ports.next().unwrap().clone();
+            .visit_mut::<UnboundPort>(|mut b| {
+                let port = new_ports.next().unwrap();
+                b.update(port.clone());
                 Ok(())
             })
             .unwrap();
+
+        let new_port0 = PortRef::<String>::attest(new_port_id0);
+        let new_port1 = PortRef::<MyReply>::attest_reducible(
+            new_port_id1,
+            Some(ReducerSpec {
+                typehash: 123,
+                builder_params: None,
+            }),
+        );
         let new_bindings = Bindings(
             [
                 (
-                    PortId::typehash(),
-                    Serialized::serialize(&new_port_id0).unwrap(),
+                    UnboundPort::typehash(),
+                    Serialized::serialize(&UnboundPort::from(&new_port0)).unwrap(),
                 ),
                 (
-                    PortId::typehash(),
-                    Serialized::serialize(&new_port_id1).unwrap(),
+                    UnboundPort::typehash(),
+                    Serialized::serialize(&UnboundPort::from(&new_port1)).unwrap(),
                 ),
             ]
             .into_iter()
@@ -407,8 +449,8 @@ mod tests {
             MyMessage {
                 arg0: true,
                 arg1: 42,
-                reply0: PortRef::attest(new_port_id0),
-                reply1: PortRef::attest(new_port_id1),
+                reply0: new_port0,
+                reply1: new_port1,
             }
         );
     }
