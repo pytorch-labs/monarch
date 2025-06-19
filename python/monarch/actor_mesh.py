@@ -319,6 +319,10 @@ class Accumulator(Generic[P, R, A]):
 
 
 class ValueMesh(MeshTrait, Generic[R]):
+    """
+    Container of return values, indexed by rank.
+    """
+
     def __init__(self, shape: Shape, values: List[R]) -> None:
         self._shape = shape
         self._values = values
