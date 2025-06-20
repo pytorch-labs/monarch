@@ -83,6 +83,7 @@ pub trait ActorMesh: Mesh {
         // TODO: We should repair this by introducing an explicit stream key, associated
         // with the root mesh.
         let selection_of_slice = self
+            .proc_mesh()
             .shape()
             .slice()
             .reify_view(self.shape().slice())
