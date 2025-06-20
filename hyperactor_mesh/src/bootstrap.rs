@@ -137,10 +137,13 @@ pub async fn bootstrap() -> anyhow::Error {
                             );
                         }
                     }
-
+                    tracing::info!("exiting with {code}");
                     std::process::exit(code);
                 }
-                Allocator2Process::Exit(code) => std::process::exit(code),
+                Allocator2Process::Exit(code) => {
+                    tracing::info!("exiting with {code}");
+                    std::process::exit(code);
+                }
             }
         }
     }
