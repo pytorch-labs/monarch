@@ -62,6 +62,10 @@ impl DurableMailboxSender {
 
         Self(sequencer)
     }
+
+    async fn flush(&mut self) -> Result<(), watch::error::RecvError> {
+        self.0.flush().await
+    }
 }
 
 #[async_trait]
@@ -336,7 +340,7 @@ mod tests {
     async fn test_durable_mailbox_sender() {
         let inner = Mailbox::new_detached(id!(world0[0].actor0));
         let write_ahead_log = TestLog::new();
-        let durable_mbox = DurableMailboxSender::new(write_ahead_log.clone(), inner.clone());
+        let mut durable_mbox = DurableMailboxSender::new(write_ahead_log.clone(), inner.clone());
 
         let (port1, mut receiver1) = inner.open_port::<u64>();
         let (port2, mut _receiver2) = inner.open_port::<u64>();
@@ -367,6 +371,8 @@ mod tests {
             monitored_return_handle(),
         );
         assert_eq!(receiver1.recv().await.unwrap(), 1u64);
+
+        durable_mbox.flush().await.unwrap();
 
         let mut it = write_ahead_log.read(1).await.unwrap();
         let (seq, message): (SeqId, MessageEnvelope) = it.next().await.unwrap().unwrap();
