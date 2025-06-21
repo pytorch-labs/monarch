@@ -68,7 +68,8 @@ impl _Controller {
     ) -> PyResult<()> {
         for (seq, response) in responses {
             let message = crate::client::WorkerResponse::new(seq, response);
-            self.pending_messages.push_back(message.into_py(py));
+            self.pending_messages
+                .push_back(message.into_pyobject(py)?.into_any().unbind());
         }
         Ok(())
     }
@@ -89,7 +90,9 @@ impl _Controller {
                     action,
                 } => {
                     let dm = crate::client::DebuggerMessage::new(debugger_actor_id.into(), action)?
-                        .into_py(py);
+                        .into_pyobject(py)?
+                        .into_any()
+                        .unbind();
                     self.pending_messages.push_back(dm);
                 }
                 ControllerMessage::Status {

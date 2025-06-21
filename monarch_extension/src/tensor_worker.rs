@@ -1284,7 +1284,9 @@ fn wire_values_to_kwargs(py: Python<'_>, kwargs: HashMap<String, WireValue>) -> 
             }))
         })
         .collect::<Result<HashMap<_, _>, PyErr>>()?
-        .to_object(py))
+        .into_pyobject(py)?
+        .into_any()
+        .unbind())
 }
 
 // TODO: This can become an impl on WorkerMessage once we adjust crate split with monarch_messages
@@ -1294,79 +1296,137 @@ pub(crate) fn worker_message_to_py(py: Python<'_>, message: &WorkerMessage) -> P
     });
     let initializer = match message {
         WorkerMessage::BackendNetworkInit { .. } => {
-            Py::new(py, initializer.add_subclass(BackendNetworkInit {}))?.to_object(py)
+            Py::new(py, initializer.add_subclass(BackendNetworkInit {}))?
+                .into_pyobject(py)?
+                .into_any()
+                .unbind()
         }
         WorkerMessage::BackendNetworkPointToPointInit { .. } => Py::new(
             py,
             initializer.add_subclass(BackendNetworkPointToPointInit {}),
         )?
-        .to_object(py),
+        .into_pyobject(py)?
+        .into_any()
+        .unbind(),
         WorkerMessage::CallFunction { .. } => {
-            Py::new(py, initializer.add_subclass(CallFunction {}))?.to_object(py)
+            Py::new(py, initializer.add_subclass(CallFunction {}))?
+                .into_pyobject(py)?
+                .into_any()
+                .unbind()
         }
         WorkerMessage::CreateStream { .. } => {
-            Py::new(py, initializer.add_subclass(CreateStream {}))?.to_object(py)
+            Py::new(py, initializer.add_subclass(CreateStream {}))?
+                .into_pyobject(py)?
+                .into_any()
+                .unbind()
         }
         WorkerMessage::CreateRemoteProcessGroup { .. } => {
-            Py::new(py, initializer.add_subclass(CreateRemoteProcessGroup {}))?.to_object(py)
+            Py::new(py, initializer.add_subclass(CreateRemoteProcessGroup {}))?
+                .into_pyobject(py)?
+                .into_any()
+                .unbind()
         }
         WorkerMessage::CreateDeviceMesh { .. } => {
-            Py::new(py, initializer.add_subclass(CreateDeviceMesh {}))?.to_object(py)
+            Py::new(py, initializer.add_subclass(CreateDeviceMesh {}))?
+                .into_pyobject(py)?
+                .into_any()
+                .unbind()
         }
         WorkerMessage::BorrowCreate { .. } => {
-            Py::new(py, initializer.add_subclass(BorrowCreate {}))?.to_object(py)
+            Py::new(py, initializer.add_subclass(BorrowCreate {}))?
+                .into_pyobject(py)?
+                .into_any()
+                .unbind()
         }
         WorkerMessage::BorrowFirstUse { .. } => {
-            Py::new(py, initializer.add_subclass(BorrowFirstUse {}))?.to_object(py)
+            Py::new(py, initializer.add_subclass(BorrowFirstUse {}))?
+                .into_pyobject(py)?
+                .into_any()
+                .unbind()
         }
         WorkerMessage::BorrowLastUse { .. } => {
-            Py::new(py, initializer.add_subclass(BorrowLastUse {}))?.to_object(py)
+            Py::new(py, initializer.add_subclass(BorrowLastUse {}))?
+                .into_pyobject(py)?
+                .into_any()
+                .unbind()
         }
-        WorkerMessage::BorrowDrop { .. } => {
-            Py::new(py, initializer.add_subclass(BorrowDrop {}))?.to_object(py)
-        }
-        WorkerMessage::DeleteRefs { .. } => {
-            Py::new(py, initializer.add_subclass(DeleteRefs {}))?.to_object(py)
-        }
+        WorkerMessage::BorrowDrop { .. } => Py::new(py, initializer.add_subclass(BorrowDrop {}))?
+            .into_pyobject(py)?
+            .into_any()
+            .unbind(),
+        WorkerMessage::DeleteRefs { .. } => Py::new(py, initializer.add_subclass(DeleteRefs {}))?
+            .into_pyobject(py)?
+            .into_any()
+            .unbind(),
         WorkerMessage::RequestStatus { .. } => {
-            Py::new(py, initializer.add_subclass(RequestStatus {}))?.to_object(py)
+            Py::new(py, initializer.add_subclass(RequestStatus {}))?
+                .into_pyobject(py)?
+                .into_any()
+                .unbind()
         }
-        WorkerMessage::Reduce { .. } => {
-            Py::new(py, initializer.add_subclass(Reduce {}))?.to_object(py)
-        }
-        WorkerMessage::SendTensor { .. } => {
-            Py::new(py, initializer.add_subclass(SendTensor {}))?.to_object(py)
-        }
-        WorkerMessage::CreatePipe { .. } => {
-            Py::new(py, initializer.add_subclass(CreatePipe {}))?.to_object(py)
-        }
-        WorkerMessage::SendValue { .. } => {
-            Py::new(py, initializer.add_subclass(SendValue {}))?.to_object(py)
-        }
-        WorkerMessage::PipeRecv { .. } => {
-            Py::new(py, initializer.add_subclass(PipeRecv {}))?.to_object(py)
-        }
-        WorkerMessage::SplitComm { .. } => {
-            Py::new(py, initializer.add_subclass(SplitComm {}))?.to_object(py)
-        }
+        WorkerMessage::Reduce { .. } => Py::new(py, initializer.add_subclass(Reduce {}))?
+            .into_pyobject(py)?
+            .into_any()
+            .unbind(),
+        WorkerMessage::SendTensor { .. } => Py::new(py, initializer.add_subclass(SendTensor {}))?
+            .into_pyobject(py)?
+            .into_any()
+            .unbind(),
+        WorkerMessage::CreatePipe { .. } => Py::new(py, initializer.add_subclass(CreatePipe {}))?
+            .into_pyobject(py)?
+            .into_any()
+            .unbind(),
+        WorkerMessage::SendValue { .. } => Py::new(py, initializer.add_subclass(SendValue {}))?
+            .into_pyobject(py)?
+            .into_any()
+            .unbind(),
+        WorkerMessage::PipeRecv { .. } => Py::new(py, initializer.add_subclass(PipeRecv {}))?
+            .into_pyobject(py)?
+            .into_any()
+            .unbind(),
+        WorkerMessage::SplitComm { .. } => Py::new(py, initializer.add_subclass(SplitComm {}))?
+            .into_pyobject(py)?
+            .into_any()
+            .unbind(),
         WorkerMessage::SplitCommForProcessGroup { .. } => {
-            Py::new(py, initializer.add_subclass(SplitCommForProcessGroup {}))?.to_object(py)
+            Py::new(py, initializer.add_subclass(SplitCommForProcessGroup {}))?
+                .into_pyobject(py)?
+                .into_any()
+                .unbind()
         }
-        WorkerMessage::Exit { .. } => Py::new(py, initializer.add_subclass(Exit {}))?.to_object(py),
+        WorkerMessage::Exit { .. } => Py::new(py, initializer.add_subclass(Exit {}))?
+            .into_pyobject(py)?
+            .into_any()
+            .unbind(),
         WorkerMessage::CommandGroup { .. } => {
-            Py::new(py, initializer.add_subclass(CommandGroup {}))?.to_object(py)
+            Py::new(py, initializer.add_subclass(CommandGroup {}))?
+                .into_pyobject(py)?
+                .into_any()
+                .unbind()
         }
         WorkerMessage::DefineRecording { .. } => {
-            Py::new(py, initializer.add_subclass(DefineRecording {}))?.to_object(py)
+            Py::new(py, initializer.add_subclass(DefineRecording {}))?
+                .into_pyobject(py)?
+                .into_any()
+                .unbind()
         }
         WorkerMessage::RecordingFormal { .. } => {
-            Py::new(py, initializer.add_subclass(RecordingFormal {}))?.to_object(py)
+            Py::new(py, initializer.add_subclass(RecordingFormal {}))?
+                .into_pyobject(py)?
+                .into_any()
+                .unbind()
         }
         WorkerMessage::RecordingResult { .. } => {
-            Py::new(py, initializer.add_subclass(RecordingResult {}))?.to_object(py)
+            Py::new(py, initializer.add_subclass(RecordingResult {}))?
+                .into_pyobject(py)?
+                .into_any()
+                .unbind()
         }
         WorkerMessage::CallRecording { .. } => {
-            Py::new(py, initializer.add_subclass(CallRecording {}))?.to_object(py)
+            Py::new(py, initializer.add_subclass(CallRecording {}))?
+                .into_pyobject(py)?
+                .into_any()
+                .unbind()
         }
         WorkerMessage::SetRefUnitTestsOnly { .. } => unimplemented!(),
         WorkerMessage::GetRefUnitTestsOnly { .. } => unimplemented!(),
