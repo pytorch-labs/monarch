@@ -16,6 +16,7 @@ pub mod alloc;
 mod assign;
 pub mod bootstrap;
 pub mod comm;
+pub mod connect;
 pub mod mesh;
 pub mod mesh_selection;
 mod metrics;
