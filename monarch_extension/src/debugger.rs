@@ -6,8 +6,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-#![cfg(feature = "tensor_engine")]
-
 use std::sync::Arc;
 
 use hyperactor::ActorRef;

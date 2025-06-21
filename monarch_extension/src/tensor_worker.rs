@@ -6,8 +6,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-#![cfg(feature = "tensor_engine")]
-
 /// These are the worker messages exposed through pyo3 to python.
 /// The actual documentation of the messages can be found in [`monarch_messages::worker::WorkerMessage`]
 /// This split is currently needed to customize the constructors for the messages and due to the
