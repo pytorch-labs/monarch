@@ -79,7 +79,7 @@ use hyperactor_mesh::alloc::ProcessAllocator;
 use monarch_rdma::IbverbsConfig;
 use monarch_rdma::RdmaBuffer;
 use monarch_rdma::RdmaManagerActor;
-use monarch_rdma::RdmaMemoryRegionView;
+use monarch_rdma::RdmaManagerMessageClient;
 use ndslice::selection;
 use ndslice::shape;
 use serde::Deserialize;
@@ -177,21 +177,9 @@ impl Handler<PsGetBuffers> for ParameterServerActor {
         PsGetBuffers(rank, reply): PsGetBuffers,
     ) -> Result<(), anyhow::Error> {
         if self.weights_handle.is_none() {
-            let client = this.mailbox_for_py();
-
-            let mr = RdmaMemoryRegionView::from_boxed_slice(&self.weights_data);
-            println!(
-                "[parameter server actor] creating RdmaBuffer for weights data (mr: {:?})",
-                mr
-            );
-
-            let weights_handle = RdmaBuffer::new(
-                "weights_buffer".to_string(),
-                self.owner_ref.clone(),
-                client,
-                mr,
-            )
-            .await?;
+            let addr = self.weights_data.as_ptr() as usize;
+            let size = self.weights_data.len();
+            let weights_handle = self.owner_ref.request_buffer(this, addr, size).await?;
             self.weights_handle = Some(weights_handle);
         }
         let weights_handle = self
@@ -203,19 +191,9 @@ impl Handler<PsGetBuffers> for ParameterServerActor {
         let grad_buffer_handle = match entry {
             std::collections::hash_map::Entry::Occupied(e) => e.get().clone(),
             std::collections::hash_map::Entry::Vacant(e) => {
-                let client = this.mailbox_for_py();
-                let mr = RdmaMemoryRegionView::from_boxed_slice(&self.grad_buffer_data[rank]);
-                println!(
-                    "[parameter server actor] creating rdma buffer for gradients for worker {} (mr: {:?})",
-                    rank, mr
-                );
-                let grad_buffer_handle = RdmaBuffer::new(
-                    format!("gradients_buffer_{}", rank),
-                    self.owner_ref.clone(),
-                    client,
-                    mr,
-                )
-                .await?;
+                let addr = self.grad_buffer_data[rank].as_ptr() as usize;
+                let size = self.grad_buffer_data[rank].len();
+                let grad_buffer_handle = self.owner_ref.request_buffer(this, addr, size).await?;
                 e.insert(grad_buffer_handle.clone());
                 grad_buffer_handle
             }
@@ -433,19 +411,24 @@ impl Handler<Cast<WorkerStep>> for WorkerActor {
             *rank, self.local_gradients
         );
 
-        let mr = RdmaMemoryRegionView::from_boxed_slice(&self.local_gradients);
-        let client = this.mailbox_for_py();
-
         let owner_ref = self
             .rdma_manager
             .as_ref()
             .expect("worker should have been initialized");
         let ps_grad_handle = self
             .ps_grad_handle
-            .as_mut()
+            .as_ref()
             .expect("worker_actor should be initialized");
-        ps_grad_handle
-            .write_from(mr, client, owner_ref, Some(5))
+        let mut lbuffer = owner_ref
+            .request_buffer(
+                this,
+                self.local_gradients.as_ptr() as usize,
+                self.local_gradients.len(),
+            )
+            .await?;
+
+        lbuffer
+            .read_into(this.mailbox_for_py(), ps_grad_handle.clone(), 5)
             .await?;
 
         self.local_gradients.fill(0);
@@ -471,19 +454,23 @@ impl Handler<Cast<WorkerUpdate>> for WorkerActor {
             "[worker_actor_{}] pulling new weights from parameter server (before: {:?})",
             *rank, self.weights_data,
         );
-        let mr = RdmaMemoryRegionView::from_boxed_slice(&self.weights_data);
-        let client = this.mailbox_for_py();
-
-        let owner_ref = self
+        let mut lbuffer = self
             .rdma_manager
             .as_ref()
-            .expect("worker should have been initialized");
+            .expect("Rmda Manager should have been initialized")
+            .request_buffer(
+                this,
+                self.weights_data.as_ptr() as usize,
+                self.weights_data.len(),
+            )
+            .await?;
+
         let ps_weights_handle = self
             .ps_weights_handle
-            .as_mut()
+            .as_ref()
             .expect("worker_actor should be initialized");
-        ps_weights_handle
-            .read_into(mr, client, owner_ref, Some(5))
+        lbuffer
+            .write_from(this.mailbox_for_py(), ps_weights_handle.clone(), 5)
             .await?;
         reply.send(this, true)?;
         Ok(())
@@ -523,8 +510,8 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
     let ps_ibv_config: IbverbsConfig;
     let worker_ibv_config: IbverbsConfig;
 
-    if devices.len() == 12 {
-        // On H100 machines with 12 devices, use specific devices
+    // Quick check for H100
+    if devices.len() > 4 {
         ps_ibv_config = IbverbsConfig {
             device: devices.clone().into_iter().next().unwrap(),
             ..Default::default()
@@ -538,7 +525,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
     } else {
         // For other configurations, use default settings (parameter server + workers all use the same ibv device)
         println!(
-            "using default IbverbsConfig as {} devices were found (expected 12 for H100)",
+            "using default IbverbsConfig as {} devices were found (expected > 4 for H100)",
             devices.len()
         );
         ps_ibv_config = IbverbsConfig::default();
@@ -694,7 +681,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
 mod tests {
     use super::*;
 
-    #[timed_test::async_timed_test(timeout_secs = 60)]
+    #[timed_test::async_timed_test(timeout_secs = 30)]
     async fn test_parameter_server() -> Result<(), anyhow::Error> {
         run(1, 4).await
     }
