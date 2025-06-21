@@ -9,6 +9,7 @@ import string
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from monarch.tools.network import get_sockaddr
 from torchx import specs
 
 DEFAULT_REMOTE_ALLOCATOR_PORT = 26600
@@ -16,6 +17,10 @@ DEFAULT_REMOTE_ALLOCATOR_PORT = 26600
 _TAG_MESHES_PREFIX = "monarch/meshes/${mesh_name}/"
 _TAG_HOST_TYPE: str = _TAG_MESHES_PREFIX + "host_type"
 _TAG_GPUS: str = _TAG_MESHES_PREFIX + "gpus"
+_TAG_TRANSPORT: str = _TAG_MESHES_PREFIX + "transport"
+
+_UNSET_INT = -1
+_UNSET_STR = "__UNSET__"
 
 
 @dataclass
@@ -26,10 +31,37 @@ class MeshSpec:
 
     name: str
     num_hosts: int
-    host_type: str
-    gpus: int
+    host_type: str = _UNSET_STR
+    gpus: int = _UNSET_INT
+    # NOTE: using str over monarch._rust_bindings.monarch_hyperactor.channel.ChannelTransport enum
+    #  b/c the rust binding doesn't have Python enum semantics, hence doesn't serialize well
+    transport: str = "tcp"
     port: int = DEFAULT_REMOTE_ALLOCATOR_PORT
     hostnames: list[str] = field(default_factory=list)
+
+    def server_addrs(
+        self, transport: Optional[str] = None, port: Optional[int] = None
+    ) -> list[str]:
+        """
+        Returns the hostnames (servers) in channel address format.
+        `transport` and `port` is typically taken from this mesh spec's fields, but
+        the caller can override them when calling this function.
+        """
+
+        transport = transport or self.transport
+        port = port or self.port
+
+        if transport == "tcp":
+            # need to resolve hostnames to ip address for TCP
+            return [
+                f"tcp!{get_sockaddr(hostname, port)}" for hostname in self.hostnames
+            ]
+        elif transport == "metatls":
+            return [f"metatls!{hostname}:{port}" for hostname in self.hostnames]
+        else:
+            raise ValueError(
+                f"Unsupported transport: {transport}. Must be one of: 'tcp' or 'metatls'"
+            )
 
 
 def _tag(mesh_name: str, tag_template: str) -> str:
@@ -39,6 +71,7 @@ def _tag(mesh_name: str, tag_template: str) -> str:
 def tag_as_metadata(mesh_spec: MeshSpec, appdef: specs.AppDef) -> None:
     appdef.metadata[_tag(mesh_spec.name, _TAG_HOST_TYPE)] = mesh_spec.host_type
     appdef.metadata[_tag(mesh_spec.name, _TAG_GPUS)] = str(mesh_spec.gpus)
+    appdef.metadata[_tag(mesh_spec.name, _TAG_TRANSPORT)] = mesh_spec.transport
 
 
 def mesh_spec_from_metadata(appdef: specs.AppDef, mesh_name: str) -> Optional[MeshSpec]:
@@ -47,8 +80,13 @@ def mesh_spec_from_metadata(appdef: specs.AppDef, mesh_name: str) -> Optional[Me
             return MeshSpec(
                 name=mesh_name,
                 num_hosts=role.num_replicas,
-                host_type=appdef.metadata.get(_tag(mesh_name, _TAG_HOST_TYPE), ""),
-                gpus=int(appdef.metadata.get(_tag(mesh_name, _TAG_GPUS), "-1")),
+                host_type=appdef.metadata.get(
+                    _tag(mesh_name, _TAG_HOST_TYPE), _UNSET_STR
+                ),
+                gpus=int(
+                    appdef.metadata.get(_tag(mesh_name, _TAG_GPUS), str(_UNSET_INT))
+                ),
+                transport=appdef.metadata.get(_tag(mesh_name, _TAG_TRANSPORT), "tcp"),
                 port=role.port_map.get("mesh", DEFAULT_REMOTE_ALLOCATOR_PORT),
             )
 
