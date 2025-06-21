@@ -114,8 +114,10 @@ impl PdbActor {
                 async move { instance.lock().await.next_message(None).await },
             )?;
         match result {
-            Ok(Some(DebuggerMessage::Action { action })) => Ok(action.into_py(py)),
-            Ok(None) => Ok(PyNone::get(py).into_py(py)),
+            Ok(Some(DebuggerMessage::Action { action })) => {
+                Ok(action.into_pyobject(py)?.into_any().unbind())
+            }
+            Ok(None) => Ok(PyNone::get(py).as_any().clone().unbind()),
             Err(err) => Err(PyRuntimeError::new_err(err.to_string())),
         }
     }
