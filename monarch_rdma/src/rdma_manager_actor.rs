@@ -43,50 +43,30 @@ use hyperactor::supervision::ActorSupervisionEvent;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::ibverbs_primitives::IbvWc;
 use crate::ibverbs_primitives::IbverbsConfig;
-use crate::ibverbs_primitives::RdmaMemoryRegionView;
-use crate::ibverbs_primitives::RdmaOperation;
 use crate::ibverbs_primitives::RdmaQpInfo;
+use crate::rdma_components::RdmaBuffer;
 use crate::rdma_components::RdmaDomain;
 use crate::rdma_components::RdmaQueuePair;
 
 /// Represents a reference to a remote RDMA buffer that can be accessed via RDMA operations.
 /// This struct encapsulates all the information needed to identify and access a memory region
 /// on a remote host using RDMA.
-#[derive(Debug, Eq, PartialEq, Hash, Clone, Serialize, Deserialize)]
-pub struct RemoteBufferRef {
-    /// The RDMA manager actor that owns this buffer
-    pub manager: ActorRef<RdmaManagerActor>,
-    /// Memory region view containing address and length information
-    mr: RdmaMemoryRegionView,
-    /// Remote key needed to access this memory region via RDMA
-    rkey: u32,
-}
-
-impl RemoteBufferRef {
-    /// Creates a new `RemoteBufferRef` instance.
-    ///
-    /// # Arguments
-    ///
-    /// * `manager` - The `ActorRef` to the `RdmaManagerActor` that owns this buffer.
-    /// * `mr` - The `RdmaMemoryRegionView` containing address and length information of the memory region.
-    /// * `rkey` - The remote key needed to access this memory region via RDMA.
-    ///
-    /// # Returns
-    ///
-    /// A new instance of `RemoteBufferRef` initialized with the provided manager, memory region view, and remote key.
-    pub fn new(
-        manager: ActorRef<RdmaManagerActor>,
-        mr: RdmaMemoryRegionView,
-        rkey: u32,
-    ) -> RemoteBufferRef {
-        RemoteBufferRef { manager, mr, rkey }
-    }
-}
-
 #[derive(Handler, HandleClient, RefClient, Debug, Serialize, Deserialize, Named)]
 pub enum RdmaManagerMessage {
+    RequestBuffer {
+        addr: usize,
+        size: usize,
+        #[reply]
+        /// `reply` - Reply channel to return the RDMA buffer handle
+        reply: OncePortRef<RdmaBuffer>,
+    },
+    RequestQueuePair {
+        remote: ActorRef<RdmaManagerActor>,
+        #[reply]
+        /// `reply` - Reply channel to return the queue pair for communication
+        reply: OncePortRef<RdmaQueuePair>,
+    },
     IsConnected {
         /// `other` - The ActorId of the actor to check connection with
         other: ActorRef<RdmaManagerActor>,
@@ -100,41 +80,11 @@ pub enum RdmaManagerMessage {
         /// `endpoint` - Connection information needed to establish the RDMA connection
         endpoint: RdmaQpInfo,
     },
-
-    Fetch {
-        /// `local_memory_region` - The local memory region where data will be placed
-        local_memory_region: RdmaMemoryRegionView,
-        /// `remote_buffer` - The remote buffer provided by the caller, representing
-        /// the memory location on the caller's host that contains the data
-        remote_buffer: RemoteBufferRef,
+    InitializeQP {
+        remote: ActorRef<RdmaManagerActor>,
         #[reply]
-        /// `reply` - Reply channel to return the work completion ID
-        reply: OncePortRef<u64>,
-    },
-
-    Put {
-        /// `local_memory_region` - The local memory region containing data to be written
-        local_memory_region: RdmaMemoryRegionView,
-        /// `remote_buffer` - The remote buffer provided by the caller, representing
-        /// the memory location where data will be written
-        remote_buffer: RemoteBufferRef,
-        #[reply]
-        /// `reply` - Reply channel to return the work completion ID
-        reply: OncePortRef<u64>,
-    },
-
-    PollCompletion {
-        /// `other` - The ActorId of the actor associated with the operation
-        other: ActorRef<RdmaManagerActor>,
-        #[reply]
-        /// `reply` - Reply channel to return work completion details if completed, None if not completed
-        reply: OncePortRef<Option<IbvWc>>,
-    },
-    Release {
-        /// `other` - The ActorId associated with the memory region
-        other: ActorRef<RdmaManagerActor>,
-        /// `region` - The memory region to release
-        region: RdmaMemoryRegionView,
+        /// `reply` - Reply channel to return the queue pair for communication
+        reply: OncePortRef<bool>,
     },
     ConnectionInfo {
         /// `other` - The ActorId to get connection info for
@@ -142,12 +92,6 @@ pub enum RdmaManagerMessage {
         #[reply]
         /// `reply` - Reply channel to return connection information needed for the RDMA connection
         reply: OncePortRef<RdmaQpInfo>,
-    },
-    GetKeys {
-        #[reply]
-        /// `reply` - Reply channel to return a tuple containing (lkey, rkey) where lkey is the local memory key
-        /// and rkey is the remote memory key
-        reply: OncePortRef<(u32, u32)>,
     },
 }
 
@@ -162,9 +106,6 @@ pub struct RdmaManagerActor {
     // Map between ActorIds and their corresponding RdmaQueuePair
     qp_map: HashMap<ActorId, RdmaQueuePair>,
 
-    // Map between a RemoteBufferRef and its latest work completion ID.
-    work_id_map: HashMap<RemoteBufferRef, u64>,
-
     // The RDMA domain associated with this actor.
     //
     // The domain is responsible for managing the RDMA resources and configurations
@@ -176,99 +117,7 @@ pub struct RdmaManagerActor {
     // and is used throughout the actor's lifecycle to manage RDMA connections
     // and operations.
     domain: RdmaDomain,
-}
-
-impl RdmaManagerActor {
-    /// Number of work completion IDs to reserve per actor ID / memory region
-    ///
-    /// This constant defines how many work completion IDs are reserved for each
-    /// unique combination of actor ID and memory region. It helps avoid ID conflicts
-    /// between different RDMA operations by allocating a dedicated range of IDs
-    /// for each memory region.
-    ///
-    /// It's okay for work IDs to be re-used, so we expect to pass this limit
-    /// and loop back to the beginning of the reservation block.
-    const WORK_ID_RESERVATION_SIZE: u64 = 100;
-
-    /// Convenience utility to create a new RdmaConnection.
-    ///
-    /// This initializes a new RDMA connection with another actor if one doesn't already exist.
-    /// It creates a new RdmaQueuePair associated with the specified actor ID and adds it to the
-    /// connection map.
-    ///
-    /// # Arguments
-    ///
-    /// * `other` - The ActorRef of the remote actor to connect with
-    pub async fn initialize_qp(
-        &mut self,
-        other: ActorRef<RdmaManagerActor>,
-    ) -> Result<(), anyhow::Error> {
-        let key = other.actor_id().clone();
-        if let std::collections::hash_map::Entry::Vacant(e) = self.qp_map.entry(key) {
-            tracing::debug!("initializing connection with {:?}", other);
-            let qp = RdmaQueuePair::new(&self.domain)
-                .map_err(|e| anyhow::anyhow!("could not create RdmaQueuePair: {}", e))?;
-            e.insert(qp);
-            tracing::debug!("successfully created a connection with {:?}", other);
-        }
-        Ok(())
-    }
-
-    /// Generates a new work completion ID for a given memory region
-    ///
-    /// This generates a unique work completion ID for RDMA operations
-    /// associated with a specific memory region. It manages a reservation system
-    /// where each buffer gets a dedicated block of IDs to avoid
-    /// conflicts between different operations.
-    ///
-    /// # Arguments
-    ///
-    /// * `buffer` - The RemoteBufferRef containing the memory region
-    ///
-    /// # Returns
-    ///
-    /// A unique work completion ID for the RDMA operation
-    async fn next_work_id(&mut self, buffer: &RemoteBufferRef) -> u64 {
-        let base_id_reservation_size = Self::WORK_ID_RESERVATION_SIZE;
-        let reservation_idx = self.work_id_map.len() as u64;
-
-        let entry = self.work_id_map.entry(buffer.clone());
-        let work_id = match entry {
-            std::collections::hash_map::Entry::Occupied(mut e) => {
-                let current = *e.get();
-                let next = current + 1;
-
-                // Check if we've reached the end of our reservation block
-                let reservation_base =
-                    (current / base_id_reservation_size) * base_id_reservation_size;
-                let reservation_end = reservation_base + base_id_reservation_size - 1;
-
-                if current >= reservation_end {
-                    // Loop back to the start of this key's reservation block
-                    e.insert(reservation_base);
-                    reservation_base
-                } else {
-                    // Move to next ID in the reservation block
-                    e.insert(next);
-                    next
-                }
-            }
-            std::collections::hash_map::Entry::Vacant(e) => {
-                // First operation for this key, calculate its reservation block
-                let base = reservation_idx * base_id_reservation_size;
-                e.insert(base);
-                base
-            }
-        };
-
-        tracing::debug!(
-            "calculated next work id for buffer {:?}: {}",
-            buffer,
-            work_id
-        );
-
-        work_id
-    }
+    config: IbverbsConfig,
 }
 
 #[async_trait]
@@ -277,13 +126,12 @@ impl Actor for RdmaManagerActor {
 
     async fn new(_params: Self::Params) -> Result<Self, anyhow::Error> {
         let config = _params;
-        tracing::debug!("creating RdmaManagerActor with config {}", config);
-        let domain = RdmaDomain::new(config)
+        let domain = RdmaDomain::new(config.device.clone())
             .map_err(|e| anyhow::anyhow!("rdmaManagerActor could not create domain: {}", e))?;
         Ok(Self {
             qp_map: HashMap::new(),
-            work_id_map: HashMap::new(),
             domain,
+            config,
         })
     }
 
@@ -301,6 +149,101 @@ impl Actor for RdmaManagerActor {
 #[async_trait]
 #[hyperactor::forward(RdmaManagerMessage)]
 impl RdmaManagerMessageHandler for RdmaManagerActor {
+    /// Requests a buffer to be registered with the RDMA domain.
+    ///
+    /// This function registers a memory region with the RDMA domain and returns an `RdmaBuffer`
+    /// that encapsulates the necessary information for RDMA operations.
+    ///
+    /// # Arguments
+    ///
+    /// * `this` - The instance of the actor requesting the buffer.
+    /// * `addr` - The starting address of the memory region to be registered.
+    /// * `size` - The size of the memory region to be registered.
+    ///
+    /// # Returns
+    ///
+    /// * `Result<RdmaBuffer, anyhow::Error>` - On success, returns an `RdmaBuffer` containing
+    ///   the registered memory region's details. On failure, returns an error.
+    async fn request_buffer(
+        &mut self,
+        this: &Instance<Self>,
+        addr: usize,
+        size: usize,
+    ) -> Result<RdmaBuffer, anyhow::Error> {
+        let mr = self.domain.register_buffer(addr, size)?;
+        Ok(RdmaBuffer {
+            owner: this.bind().clone(),
+            addr: mr.addr,
+            size: mr.size,
+            rkey: mr.rkey,
+            lkey: mr.lkey,
+        })
+    }
+
+    /// Requests a queue pair for communication with a remote RDMA manager actor.
+    ///
+    /// This function checks if a connection already exists with the specified remote actor.
+    /// If not, it initializes a new queue pair and establishes a connection with the remote actor.
+    /// It then retrieves the queue pair associated with the remote actor for communication.
+    ///
+    /// # Arguments
+    ///
+    /// * `this` - The instance of the actor requesting the queue pair.
+    /// * `remote` - The ActorRef of the remote RDMA manager actor to communicate with.
+    ///
+    /// # Returns
+    ///
+    /// * `Result<RdmaQueuePair, anyhow::Error>` - On success, returns the queue pair for communication.
+    ///   On failure, returns an error.
+    async fn request_queue_pair(
+        &mut self,
+        this: &Instance<Self>,
+        remote: ActorRef<RdmaManagerActor>,
+    ) -> Result<RdmaQueuePair, anyhow::Error> {
+        if !self.is_connected(this, remote.clone()).await? {
+            self.initialize_qp(this, remote.clone()).await?;
+            remote.initialize_qp(this, this.bind().clone()).await?;
+
+            let remote_endpoint = remote.connection_info(this, this.bind().clone()).await?;
+            self.connect(this, remote.clone(), remote_endpoint).await?;
+
+            let local_endpoint = self.connection_info(this, remote.clone()).await?;
+            remote
+                .connect(this, this.bind().clone(), local_endpoint)
+                .await?;
+        }
+        let qp = self
+            .qp_map
+            .get_mut(&remote.actor_id().clone())
+            .ok_or_else(|| anyhow::anyhow!("on get, no connection found for actor {}", remote))?;
+        Ok(qp.clone())
+    }
+
+    /// Convenience utility to create a new RdmaQueuePair.
+    ///
+    /// This initializes a new RDMA connection with another actor if one doesn't already exist.
+    /// It creates a new RdmaQueuePair associated with the specified actor ID and adds it to the
+    /// connection map.
+    ///
+    /// # Arguments
+    ///
+    /// * `other` - The ActorRef of the remote actor to connect with
+    async fn initialize_qp(
+        &mut self,
+        _this: &Instance<Self>,
+        other: ActorRef<RdmaManagerActor>,
+    ) -> Result<bool, anyhow::Error> {
+        let key = other.actor_id().clone();
+
+        if let std::collections::hash_map::Entry::Vacant(e) = self.qp_map.entry(key) {
+            let qp = RdmaQueuePair::new(self.domain.context, self.domain.pd, self.config.clone())
+                .map_err(|e| anyhow::anyhow!("could not create RdmaQueuePair: {}", e))?;
+            e.insert(qp);
+            tracing::debug!("successfully created a connection with {:?}", other);
+        }
+        Ok(true)
+    }
+
     /// Checks if a connection exists with another actor
     ///
     /// # Arguments
@@ -314,8 +257,15 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         other: ActorRef<RdmaManagerActor>,
     ) -> Result<bool, anyhow::Error> {
         tracing::debug!("checking if connected with {:?}", other);
-        let connected = self.qp_map.contains_key(&other.actor_id().clone());
-        Ok(connected)
+        if !self.qp_map.contains_key(&other.actor_id().clone()) {
+            return Ok(false);
+        }
+        let qp_state = self
+            .qp_map
+            .get_mut(&other.actor_id().clone())
+            .unwrap()
+            .state()?;
+        Ok(qp_state == ffi::ibv_qp_state::IBV_QPS_RTS)
     }
 
     /// Establishes a connection with another actor
@@ -330,9 +280,6 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         endpoint: RdmaQpInfo,
     ) -> Result<(), anyhow::Error> {
         tracing::debug!("connecting with {:?}", other);
-        if !self.qp_map.contains_key(&other.actor_id().clone()) {
-            self.initialize_qp(other.clone()).await?;
-        }
         let qp = self
             .qp_map
             .get_mut(&other.actor_id().clone())
@@ -341,141 +288,6 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
             })?;
         qp.connect(&endpoint)
             .map_err(|e| anyhow::anyhow!("could not connect to RDMA endpoint: {}", e))?;
-        Ok(())
-    }
-
-    /// Performs an RDMA read operation (fetch data from remote memory)
-    ///
-    /// # Arguments
-    /// * `local_memory_region` - The local memory region where data will be placed
-    /// * `remote_buffer` - The remote buffer to read from
-    ///
-    /// # Returns
-    /// * `u64` - Work completion ID for tracking the operation
-    async fn fetch(
-        &mut self,
-        _this: &Instance<Self>,
-        local_memory_region: RdmaMemoryRegionView,
-        remote_buffer: RemoteBufferRef,
-    ) -> Result<u64, anyhow::Error> {
-        let work_id = self.next_work_id(&remote_buffer).await;
-
-        let qp = self
-            .qp_map
-            .get_mut(&remote_buffer.manager.actor_id().clone())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "on fetch, no connection found for actor {}",
-                    remote_buffer.manager.actor_id()
-                )
-            })?;
-        tracing::debug!(
-            "fetch for ({:?}) (qp: {:?}) with id {}",
-            remote_buffer,
-            qp,
-            work_id
-        );
-
-        qp.post_send(
-            local_memory_region.addr(),
-            local_memory_region.len(),
-            work_id,
-            true,
-            RdmaOperation::Read,
-            remote_buffer.mr.addr(),
-            remote_buffer.rkey,
-        )
-        .map_err(|e| anyhow::anyhow!("could not post RDMA read: {}", e))?;
-
-        Ok(work_id)
-    }
-
-    /// Performs an RDMA write operation (put data to remote memory)
-    ///
-    /// # Arguments
-    /// * `local_memory_region` - The local memory region containing data to be written
-    /// * `remote_buffer` - The remote buffer to write to
-    ///
-    /// # Returns
-    /// * `u64` - Work completion ID for tracking the operation
-    async fn put(
-        &mut self,
-        _this: &Instance<Self>,
-        local_memory_region: RdmaMemoryRegionView,
-        remote_buffer: RemoteBufferRef,
-    ) -> Result<u64, anyhow::Error> {
-        let work_id = self.next_work_id(&remote_buffer).await;
-
-        let qp = self
-            .qp_map
-            .get_mut(&remote_buffer.manager.actor_id().clone())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "on put, no connection found for actor {}",
-                    remote_buffer.manager
-                )
-            })?;
-        tracing::debug!(
-            "put for ({:?}) (qp: {:?}) with id {}",
-            remote_buffer,
-            qp,
-            work_id
-        );
-        qp.post_send(
-            local_memory_region.addr(),
-            local_memory_region.len(),
-            work_id,
-            true,
-            RdmaOperation::Write,
-            remote_buffer.mr.addr(),
-            remote_buffer.rkey,
-        )
-        .map_err(|e| anyhow::anyhow!("could not post RDMA write: {}", e))?;
-
-        Ok(work_id)
-    }
-
-    /// Polls for completion of an RDMA operation
-    ///
-    /// # Arguments
-    /// * `other` - The ActorRef of the actor associated with the operation
-    ///
-    /// # Returns
-    /// * `Option<IbvWc>` - Work completion details if completed, None if not completed
-    async fn poll_completion(
-        &mut self,
-        _this: &Instance<Self>,
-        other: ActorRef<RdmaManagerActor>,
-    ) -> Result<Option<IbvWc>, anyhow::Error> {
-        let qp = self
-            .qp_map
-            .get_mut(&other.actor_id().clone())
-            .ok_or_else(|| anyhow::anyhow!("on poll, no connection found for actor {}", other))?;
-
-        let wc = qp
-            .poll_completion()
-            .map_err(|e| anyhow::anyhow!("could not poll completion: {}", e))?;
-        Ok(wc)
-    }
-
-    /// Releases a registered memory region
-    ///
-    /// # Arguments
-    /// * `other` - The ActorRef associated with the memory region
-    /// * `region` - The memory region to release
-    async fn release(
-        &mut self,
-        _this: &Instance<Self>,
-        other: ActorRef<RdmaManagerActor>,
-        region: RdmaMemoryRegionView,
-    ) -> Result<(), anyhow::Error> {
-        let buffer = RemoteBufferRef {
-            manager: other,
-            mr: region,
-            rkey: 0, // We don't need the actual rkey for removal
-        };
-        tracing::debug!("releasing {:?}", buffer);
-        self.work_id_map.remove(&buffer);
         Ok(())
     }
 
@@ -492,9 +304,6 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         other: ActorRef<RdmaManagerActor>,
     ) -> Result<RdmaQpInfo, anyhow::Error> {
         tracing::debug!("getting connection info with {:?}", other);
-        if !self.qp_map.contains_key(&other.actor_id().clone()) {
-            self.initialize_qp(other.clone()).await?;
-        }
 
         let connection_info = self
             .qp_map
@@ -503,25 +312,11 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
             .get_qp_info()?;
         Ok(connection_info)
     }
-
-    /// Gets the local and remote memory keys from the RDMA domain
-    ///
-    /// # Returns
-    /// * `(u32, u32)` - A tuple containing (lkey, rkey) where lkey is the local memory key
-    ///   and rkey is the remote memory key
-    async fn get_keys(&mut self, _this: &Instance<Self>) -> Result<(u32, u32), anyhow::Error> {
-        let lkey = self.domain.lkey();
-        let rkey = self.domain.rkey();
-        tracing::debug!("lkey: {} rkey: {}", lkey, rkey);
-        Ok((lkey, rkey))
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use hyperactor::Mailbox;
-    use hyperactor::clock::Clock;
-    use hyperactor::clock::RealClock;
     use hyperactor_mesh::Mesh;
     use hyperactor_mesh::ProcMesh;
     use hyperactor_mesh::RootActorMesh;
@@ -529,26 +324,23 @@ mod tests {
     use hyperactor_mesh::alloc::Allocator;
     use hyperactor_mesh::alloc::LocalAllocator;
     use ndslice::shape;
-    use tokio::time::Duration;
 
     use super::*;
     use crate::ibverbs_primitives::get_all_devices;
+    use crate::test_utils::wait_for_completion;
 
-    struct RdmaManagerTestEnv {
+    struct RdmaManagerTestEnv<'a> {
         buffer1: Box<[u8]>,
         buffer2: Box<[u8]>,
-        // Note: Using a static `proc_mesh` here is suboptimal because it leaks memory,
-        // but it is necessary for the lifetime of `actor_mesh` in this test setup.
-        // This should be fine for the sake of testing though.
-        proc_mesh_1: &'static ProcMesh,
-        proc_mesh_2: &'static ProcMesh,
+        client_1: &'a Mailbox,
+        client_2: &'a Mailbox,
         actor_1: ActorRef<RdmaManagerActor>,
         actor_2: ActorRef<RdmaManagerActor>,
-        rkey1: u32,
-        rkey2: u32,
+        rdma_handle_1: RdmaBuffer,
+        rdma_handle_2: RdmaBuffer,
     }
 
-    impl RdmaManagerTestEnv {
+    impl RdmaManagerTestEnv<'_> {
         /// Sets up the RDMA test environment.
         ///
         /// This function initializes the RDMA test environment by setting up two actor meshes
@@ -571,7 +363,6 @@ mod tests {
                         "need at least 5 RDMA devices for this test"
                     ));
                 }
-
                 (
                     IbverbsConfig {
                         device: all_devices.clone().into_iter().nth(dev1_idx).unwrap(),
@@ -618,92 +409,37 @@ mod tests {
                 *val = (i % 256) as u8;
             }
 
-            // Get keys from both actors.
             let actor_1 = actor_mesh_1.get(0).unwrap();
             let actor_2 = actor_mesh_2.get(0).unwrap();
-            let (_, rkey1) = actor_1.get_keys(proc_mesh_1.client()).await?;
-            let (_, rkey2) = actor_2.get_keys(proc_mesh_2.client()).await?;
+
+            let rdma_handle_1 = actor_1
+                .request_buffer(
+                    proc_mesh_1.client(),
+                    buffer1.as_ptr() as usize,
+                    buffer1.len(),
+                )
+                .await?;
+            let rdma_handle_2 = actor_2
+                .request_buffer(
+                    proc_mesh_2.client(),
+                    buffer2.as_ptr() as usize,
+                    buffer2.len(),
+                )
+                .await?;
+            // Get keys from both actors.
+
             Ok(Self {
                 buffer1,
                 buffer2,
-                proc_mesh_1,
-                proc_mesh_2,
+                client_1: proc_mesh_1.client(),
+                client_2: proc_mesh_2.client(),
                 actor_1,
                 actor_2,
-                rkey1,
-                rkey2,
+                rdma_handle_1,
+                rdma_handle_2,
             })
         }
 
-        // Initializes the RDMA connections between two actor meshes.
-        //
-        // This function sets up the RDMA connection by exchanging connection information
-        // between two actors and establishing the connection using the provided endpoints.
-        // It ensures that both actors are aware of each other's memory regions and can
-        // perform RDMA operations.
-        //
-        // The function first retrieves the connection information for each actor's memory
-        // region and then uses this information to establish the RDMA connection.
-        async fn initialize(&mut self) -> Result<(), anyhow::Error> {
-            // Get the endpoints
-            let endpoint1 = self
-                .actor_1
-                .connection_info(self.proc_mesh_1.client(), self.actor_2.clone())
-                .await?;
-            let endpoint2 = self
-                .actor_2
-                .connection_info(self.proc_mesh_2.client(), self.actor_1.clone())
-                .await?;
-
-            // Connect to endpoints
-            self.actor_1
-                .connect(self.proc_mesh_1.client(), self.actor_2.clone(), endpoint2)
-                .await?;
-
-            self.actor_2
-                .connect(self.proc_mesh_2.client(), self.actor_1.clone(), endpoint1)
-                .await?;
-
-            Ok(())
-        }
-
-        // Waits for the completion of an RDMA operation.
-        //
-        // This function polls for the completion of an RDMA operation by repeatedly
-        // sending a `PollCompletion` message to the specified actor mesh and checking
-        // the returned work completion status. It continues polling until the operation
-        // completes or the specified timeout is reached.
-        async fn wait_for_completion(
-            &self,
-            client: &Mailbox,
-            waiting_actor: ActorRef<RdmaManagerActor>,
-            calling_actor: ActorRef<RdmaManagerActor>,
-            wr_id: u64,
-            timeout_secs: u64,
-        ) -> Result<bool, anyhow::Error> {
-            let timeout = Duration::from_secs(timeout_secs);
-            let start_time = std::time::Instant::now();
-            while start_time.elapsed() < timeout {
-                let wc = waiting_actor
-                    .poll_completion(client, calling_actor.clone())
-                    .await
-                    .unwrap();
-                match wc {
-                    Some(wc) => {
-                        if wc.wr_id() == wr_id {
-                            return Ok(true);
-                        }
-                    }
-                    None => {
-                        RealClock.sleep(Duration::from_millis(1)).await;
-                    }
-                }
-            }
-
-            Ok(false)
-        }
-
-        // Verifies that both buffers contain the same data.
         async fn verify_buffers(&self, size: usize) -> Result<(), anyhow::Error> {
             for i in 0..size {
                 assert_eq!(
@@ -712,204 +448,134 @@ mod tests {
                     i, self.buffer1[i], self.buffer2[i]
                 );
             }
-
             Ok(())
         }
     }
 
     // Test that RDMA write can be performed between two actors on the same device.
-    #[timed_test::async_timed_test(timeout_secs = 60)]
-    async fn test_rdma_write_loopback() -> Result<(), anyhow::Error> {
+    #[timed_test::async_timed_test(timeout_secs = 20)]
+    async fn test_rdma_read_loopback() -> Result<(), anyhow::Error> {
         const BSIZE: usize = 32;
-
-        let mut env = RdmaManagerTestEnv::setup(BSIZE, None).await?;
-        env.initialize().await?;
-
-        let client = env.proc_mesh_1.client();
-        // Get work ID for the operation
-        let remote_buffer = RemoteBufferRef {
-            manager: env.actor_2.clone(),
-            mr: RdmaMemoryRegionView::from_boxed_slice(&env.buffer2),
-            rkey: env.rkey2,
-        };
-        let work_id = env
+        let env = RdmaManagerTestEnv::setup(BSIZE, Some((0, 0))).await?;
+        let mut qp_1 = env
             .actor_1
-            .put(
-                client,
-                RdmaMemoryRegionView::from_boxed_slice(&env.buffer1),
-                remote_buffer,
-            )
+            .request_queue_pair(&env.client_1.clone(), env.actor_2.clone())
             .await?;
-        let completed = env
-            .wait_for_completion(client, env.actor_1.clone(), env.actor_2.clone(), work_id, 5)
-            .await?;
-        assert!(completed, "rdma write operation did not complete");
+        qp_1.put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
+
+        // Poll for completion
+        wait_for_completion(&qp_1, 2).await?;
 
         env.verify_buffers(BSIZE).await?;
         Ok(())
     }
 
-    // Test that RDMA read can be performed between two actors on the same device.
-    #[timed_test::async_timed_test(timeout_secs = 60)]
-    async fn test_rdma_read_loopback() -> Result<(), anyhow::Error> {
+    #[timed_test::async_timed_test(timeout_secs = 20)]
+    async fn test_rdma_write_loopback() -> Result<(), anyhow::Error> {
         const BSIZE: usize = 32;
-
-        let mut env = RdmaManagerTestEnv::setup(BSIZE, None).await?;
-        env.initialize().await?;
-
-        let client = env.proc_mesh_2.client();
-        // Get work ID for the operation
-        let remote_buffer = RemoteBufferRef {
-            manager: env.actor_1.clone(),
-            mr: RdmaMemoryRegionView::from_boxed_slice(&env.buffer1),
-            rkey: env.rkey1,
-        };
-        let work_id = env
-            .actor_2
-            .fetch(
-                client,
-                RdmaMemoryRegionView::from_boxed_slice(&env.buffer2),
-                remote_buffer,
-            )
+        let env = RdmaManagerTestEnv::setup(BSIZE, Some((0, 0))).await?;
+        let mut qp_1 = env
+            .actor_1
+            .request_queue_pair(&env.client_1.clone(), env.actor_2.clone())
             .await?;
-        let completed = env
-            .wait_for_completion(client, env.actor_2.clone(), env.actor_1.clone(), work_id, 5)
-            .await?;
-        assert!(completed, "rdma read operation did not complete");
+        qp_1.get(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
+
+        // Poll for completion
+        wait_for_completion(&qp_1, 2).await?;
 
         env.verify_buffers(BSIZE).await?;
         Ok(())
     }
 
     // Test that RDMA read can be performed between two actors on separate devices.
-    #[timed_test::async_timed_test(timeout_secs = 60)]
+    #[timed_test::async_timed_test(timeout_secs = 20)]
     async fn test_rdma_read_separate_devices() -> Result<(), anyhow::Error> {
         const BSIZE: usize = 32;
         let devices = get_all_devices();
-        if devices.len() != 12 {
+        if devices.len() < 4 {
             println!(
                 "skipping this test as it is only configured on H100 nodes with backend network"
             );
             return Ok(());
         }
-
-        let mut env = RdmaManagerTestEnv::setup(BSIZE, Some((0, 4))).await?;
-        env.initialize().await?;
-
-        let client = env.proc_mesh_2.client();
-        // Get work ID for the operation
-        let remote_buffer = RemoteBufferRef {
-            manager: env.actor_1.clone(),
-            mr: RdmaMemoryRegionView::from_boxed_slice(&env.buffer1),
-            rkey: env.rkey1,
-        };
-        let work_id = env
-            .actor_2
-            .fetch(
-                client,
-                RdmaMemoryRegionView::from_boxed_slice(&env.buffer2),
-                remote_buffer,
-            )
+        let env = RdmaManagerTestEnv::setup(BSIZE, Some((0, 4))).await?;
+        let mut qp_1 = env
+            .actor_1
+            .request_queue_pair(&env.client_1.clone(), env.actor_2.clone())
             .await?;
-        let completed = env
-            .wait_for_completion(client, env.actor_2.clone(), env.actor_1.clone(), work_id, 5)
-            .await?;
-        assert!(completed, "rdma read operation did not complete");
+        qp_1.put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
+
+        // Poll for completion
+        wait_for_completion(&qp_1, 2).await?;
 
         env.verify_buffers(BSIZE).await?;
         Ok(())
     }
 
     // Test that RDMA write can be performed between two actors on separate devices.
-    #[timed_test::async_timed_test(timeout_secs = 60)]
+    #[timed_test::async_timed_test(timeout_secs = 20)]
     async fn test_rdma_write_separate_devices() -> Result<(), anyhow::Error> {
         const BSIZE: usize = 32;
         let devices = get_all_devices();
-        if devices.len() != 12 {
+        if devices.len() < 5 {
             println!(
                 "skipping this test as it is only configured on H100 nodes with backend network"
             );
             return Ok(());
         }
         let mut env = RdmaManagerTestEnv::setup(BSIZE, Some((0, 4))).await?;
-        env.initialize().await?;
-
-        let client = env.proc_mesh_1.client();
-        // Get work ID for the operation
-        let remote_buffer = RemoteBufferRef {
-            manager: env.actor_2.clone(),
-            mr: RdmaMemoryRegionView::from_boxed_slice(&env.buffer2),
-            rkey: env.rkey2,
-        };
-        let work_id = env
+        let mut qp_1 = env
             .actor_1
-            .put(
-                client,
-                RdmaMemoryRegionView::from_boxed_slice(&env.buffer1),
-                remote_buffer,
-            )
+            .request_queue_pair(&env.client_1.clone(), env.actor_2.clone())
             .await?;
-        let completed = env
-            .wait_for_completion(client, env.actor_1.clone(), env.actor_2.clone(), work_id, 5)
-            .await?;
-        assert!(completed, "rdma write operation did not complete");
+        qp_1.get(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
+
+        // Poll for completion
+        wait_for_completion(&qp_1, 2).await?;
 
         env.verify_buffers(BSIZE).await?;
         Ok(())
     }
 
-    // Tests that keys can be retrieved from the RDMA manager.
-    #[timed_test::async_timed_test(timeout_secs = 60)]
-    async fn test_get_keys() -> Result<(), anyhow::Error> {
-        let mut env = RdmaManagerTestEnv::setup(32, None).await?;
-        env.initialize().await?;
+    // Tests RdmaBufer's `read_into` API
+    #[timed_test::async_timed_test(timeout_secs = 20)]
+    async fn test_rdma_read_into() -> Result<(), anyhow::Error> {
+        const BSIZE: usize = 32;
+        let devices = get_all_devices();
+        if devices.len() < 5 {
+            println!(
+                "skipping this test as it is only configured on H100 nodes with backend network"
+            );
+            return Ok(());
+        }
+        let env = RdmaManagerTestEnv::setup(BSIZE, Some((0, 4))).await?;
+        let mut rdma_handle_1 = env.rdma_handle_1.clone();
+        rdma_handle_1
+            .read_into(&env.client_1.clone(), env.rdma_handle_2.clone(), 2)
+            .await?;
 
-        let client = env.proc_mesh_1.client();
-        let (lkey, rkey) = env.actor_1.get_keys(client).await?;
-        assert!(lkey > 0, "lkey should be greater than 0");
-        assert!(rkey > 0, "rkey should be greater than 0");
-
+        env.verify_buffers(BSIZE).await?;
         Ok(())
     }
 
-    // Tests that connected() works correctly.
-    #[timed_test::async_timed_test(timeout_secs = 60)]
-    async fn test_connected() -> Result<(), anyhow::Error> {
-        let mut env = RdmaManagerTestEnv::setup(32, None).await?;
-
-        let client1 = env.proc_mesh_1.client();
-        let client2 = env.proc_mesh_2.client();
-
-        // Check that initially there's no connection
-        let connected = env
-            .actor_1
-            .is_connected(client1, env.actor_2.clone())
+    // Tests RdmaBufer's `write_from` API
+    #[timed_test::async_timed_test(timeout_secs = 20)]
+    async fn test_rdma_write_from() -> Result<(), anyhow::Error> {
+        const BSIZE: usize = 32;
+        let devices = get_all_devices();
+        if devices.len() < 5 {
+            println!(
+                "skipping this test as it is only configured on H100 nodes with backend network"
+            );
+            return Ok(());
+        }
+        let env = RdmaManagerTestEnv::setup(BSIZE, Some((0, 4))).await?;
+        let mut rdma_handle_1 = env.rdma_handle_1.clone();
+        rdma_handle_1
+            .write_from(&env.client_1.clone(), env.rdma_handle_2.clone(), 2)
             .await?;
-        assert!(!connected, "connection should not be initialized yet");
 
-        // Initialize the connection properly
-        env.initialize().await?;
-
-        // Check connection from actor_1 to actor_2
-        let connected = env
-            .actor_1
-            .is_connected(client1, env.actor_2.clone())
-            .await?;
-        assert!(
-            connected,
-            "connection from actor_1 to actor_2 should be initialized"
-        );
-
-        // Check connection from actor_2 to actor_1
-        let connected = env
-            .actor_2
-            .is_connected(client2, env.actor_1.clone())
-            .await?;
-        assert!(
-            connected,
-            "connection from actor_2 to actor_1 should be initialized"
-        );
-
+        env.verify_buffers(BSIZE).await?;
         Ok(())
     }
 }
