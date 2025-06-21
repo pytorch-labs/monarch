@@ -14,14 +14,13 @@ use std::process::ExitCode;
 use anyhow::Result;
 use async_trait::async_trait;
 use hyperactor::Actor;
+use hyperactor::Bind;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::PortRef;
-use hyperactor::message::Bind;
-use hyperactor::message::Bindings;
+use hyperactor::Unbind;
 use hyperactor::message::IndexedErasedUnbound;
-use hyperactor::message::Unbind;
 use hyperactor_mesh::ProcMesh;
 use hyperactor_mesh::actor_mesh::ActorMesh;
 use hyperactor_mesh::actor_mesh::Cast;
@@ -66,29 +65,10 @@ struct PhilosopherActor {
 }
 
 /// Message from the waiter to a philosopher
-#[derive(Debug, Serialize, Deserialize, Named, Clone)]
+#[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
 enum PhilosopherMessage {
-    Start(PortRef<WaiterMessage>),
+    Start(#[binding(include)] PortRef<WaiterMessage>),
     GrantChopstick(usize),
-}
-
-// TODO(pzhang) replace the boilerplate Bind/Unbind impls with a macro.
-impl Bind for PhilosopherMessage {
-    fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        match self {
-            Self::Start(port) => port.bind(bindings),
-            Self::GrantChopstick(_) => Ok(()),
-        }
-    }
-}
-
-impl Unbind for PhilosopherMessage {
-    fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        match self {
-            Self::Start(port) => port.unbind(bindings),
-            Self::GrantChopstick(_) => Ok(()),
-        }
-    }
 }
 
 /// Message from a philosopher to the waiter

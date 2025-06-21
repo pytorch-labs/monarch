@@ -306,37 +306,23 @@ mod tests {
     use hyperactor::id;
 
     use super::*;
+    use crate::Bind;
     use crate::PortId;
+    use crate::Unbind;
 
     // Used to demonstrate a user defined reply type.
     #[derive(Debug, PartialEq, Serialize, Deserialize, Named)]
     struct MyReply(String);
 
     // Used to demonstrate a two-way message type.
-    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
     struct MyMessage {
         arg0: bool,
         arg1: u32,
+        #[binding(include)]
         reply0: PortRef<String>,
+        #[binding(include)]
         reply1: PortRef<MyReply>,
-    }
-
-    // TODO(pzhang) add macro to auto-gen this implementation.
-    impl Unbind for MyMessage {
-        fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
-            self.reply0.unbind(bindings)?;
-            self.reply1.unbind(bindings)?;
-            Ok(())
-        }
-    }
-
-    // TODO(pzhang) add macro to auto-gen this implementation.
-    impl Bind for MyMessage {
-        fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
-            self.reply0.bind(bindings)?;
-            self.reply1.bind(bindings)?;
-            Ok(())
-        }
     }
 
     #[test]
