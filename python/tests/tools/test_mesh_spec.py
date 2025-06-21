@@ -16,6 +16,7 @@ from monarch.tools.mesh_spec import (
     ServerSpec,
     tag_as_metadata,
 )
+from monarch.tools.network import get_sockaddr
 
 from torchx import specs
 
@@ -34,6 +35,7 @@ class TestMeshSpec(unittest.TestCase):
             {
                 "monarch/meshes/trainer/host_type": "gpu.medium",
                 "monarch/meshes/trainer/gpus": "2",
+                "monarch/meshes/trainer/transport": "tcp",
             },
             appdef.metadata,
         )
@@ -69,6 +71,7 @@ class TestMeshSpec(unittest.TestCase):
             metadata={
                 "monarch/meshes/trainer/host_type": "gpu.medium",
                 "monarch/meshes/trainer/gpus": "2",
+                "monarch/meshes/trainer/transport": "metatls",
             },
         )
         trainer_mesh_spec = mesh_spec_from_metadata(appdef, "trainer")
@@ -76,6 +79,7 @@ class TestMeshSpec(unittest.TestCase):
         self.assertEqual(4, trainer_mesh_spec.num_hosts)
         self.assertEqual("gpu.medium", trainer_mesh_spec.host_type)
         self.assertEqual(2, trainer_mesh_spec.gpus)
+        self.assertEqual("metatls", trainer_mesh_spec.transport)
 
         # no generator role in appdef
         self.assertIsNone(mesh_spec_from_metadata(appdef, "generator"))
@@ -94,6 +98,7 @@ class TestMeshSpec(unittest.TestCase):
   "num_hosts": 4,
   "host_type": "gpu.medium",
   "gpus": 2,
+  "transport": "tcp",
   "port": 26600,
   "hostnames": [
     "n0",
@@ -104,6 +109,63 @@ class TestMeshSpec(unittest.TestCase):
 }
 """
         self.assertEqual(expected.strip("\n"), json.dumps(asdict(mesh_spec), indent=2))
+
+    def test_mesh_spec_server_addrs_empty_hostnames(self) -> None:
+        for transport in ["tcp", "metatls"]:
+            with self.subTest(transport=transport):
+                mesh_spec = MeshSpec(name="x", num_hosts=2, transport=transport)
+                self.assertListEqual([], mesh_spec.server_addrs())
+
+    def test_mesh_spec_server_addrs_unsupported_transport(self) -> None:
+        for transport in ["unix", "local"]:
+            with self.subTest(transport=transport):
+                mesh_spec = MeshSpec(
+                    name="x",
+                    num_hosts=2,
+                    transport=transport,
+                    hostnames=["node0", "node1"],
+                )
+                with self.assertRaises(ValueError):
+                    mesh_spec.server_addrs()
+
+    def test_mesh_spec_server_addrs_tcp(self) -> None:
+        mesh_spec = MeshSpec(
+            name="x",
+            num_hosts=1,
+            port=29000,
+            hostnames=["localhost"],
+        )
+
+        self.assertListEqual(
+            [f"tcp!{get_sockaddr('localhost', 29000)}"],
+            mesh_spec.server_addrs(),
+        )
+
+    def test_mesh_spec_server_addrs_transport_port_override(self) -> None:
+        mesh_spec = MeshSpec(
+            name="x",
+            num_hosts=1,
+            port=29000,
+            transport="tcp",
+            hostnames=["devgpu001.abc.facebook.com"],
+        )
+        self.assertListEqual(
+            ["metatls!devgpu001.abc.facebook.com:29001"],
+            mesh_spec.server_addrs(transport="metatls", port=29001),
+        )
+
+    def test_mesh_spec_server_addrs_metatls(self) -> None:
+        mesh_spec = MeshSpec(
+            name="x",
+            num_hosts=1,
+            transport="metatls",
+            port=29000,
+            hostnames=["devgpu001.abc.facebook.com"],
+        )
+        self.assertListEqual(
+            ["metatls!devgpu001.abc.facebook.com:29000"],
+            mesh_spec.server_addrs(),
+        )
 
 
 class ServerSpecTest(unittest.TestCase):

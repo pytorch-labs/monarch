@@ -7,7 +7,8 @@
 # pyre-strict
 
 import abc
-from typing import final
+import logging
+from typing import final, Optional
 
 from monarch import ActorFuture as Future
 from monarch._rust_bindings.hyperactor_extension.alloc import (  # @manual=//monarch/monarch_extension:monarch_extension
@@ -20,6 +21,10 @@ from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monar
     ProcessAllocatorBase,
     RemoteAllocatorBase,
 )
+
+ALLOC_LABEL_PROC_MESH_NAME = "procmesh.monarch.meta.com/name"
+
+logger: logging.Logger = logging.getLogger(__name__)
 
 
 @final
@@ -109,6 +114,87 @@ class StaticRemoteAllocInitializer(RemoteAllocInitializer):
     async def initialize_alloc(self, match_labels: dict[str, str]) -> list[str]:
         _ = match_labels  # Suppress unused variable warning
         return list(self.addrs)
+
+
+class TorchXRemoteAllocInitializer(RemoteAllocInitializer):
+    """
+    For monarch runtimes running as a job on a supported scheduler.
+    Such runtimes are typically launched using the monarch CLI (e.g `monarch create --scheduler slurm ...`).
+
+    Returns the server addresses of a specific monarch runtime by using TorchX's status API
+    to get the hostnames of the nodes.
+    """
+
+    def __init__(
+        self,
+        server_handle: str,
+        /,
+        transport: Optional[str] = None,
+        port: Optional[int] = None,
+    ) -> None:
+        """
+        NOTE: If `transport` and `port` specified, they are used over the `transport` and `port`
+          information that is tagged as metadata on the server's job. This is useful in two specific
+          situations:
+            1) The job was NOT created wit monarch CLI (hence no metadata tags exist)
+            2) The scheduler does not support job metadata tagging
+
+        Arguments:
+        - `server_handle`: points to a monarch runtime. Of the form `{scheduler}://{namespace}/{job_id}`.
+             the `{namespace}` can be empty if not configured (e.g. `slurm:///1234` - notice the triple slashes).
+        - `transport`: the channel transport that should be used to connect to the remote process allocator address
+        - `port`: the port that the remote process allocator is running on
+
+        """
+        self.server_handle = server_handle
+        self.transport = transport
+        self.port = port
+
+    async def initialize_alloc(self, match_labels: dict[str, str]) -> list[str]:
+        # lazy import since torchx-fb is not included in `fbcode//monarch/python/monarch:monarch.whl`
+        # nor any of the base conda environments
+        from monarch.tools.commands import server_ready
+
+        mesh_name = match_labels.get(ALLOC_LABEL_PROC_MESH_NAME)
+
+        server = await server_ready(self.server_handle)
+
+        # job does not exist or it is in a terminal state (SUCCEEDED, FAILED, CANCELLED)
+        if not (server and server.is_running):
+            raise ValueError(
+                f"{self.server_handle} does not exist or is in a terminal state"
+            )
+
+        if not mesh_name:
+            logger.info(
+                "no match label `%s` specified in alloc constraints",
+                ALLOC_LABEL_PROC_MESH_NAME,
+            )
+
+            num_meshes = len(server.meshes)
+
+            if num_meshes == 1:
+                logger.info(
+                    "found a single proc mesh `%s` in %s, will allocate on it",
+                    server.meshes[0].name,
+                    self.server_handle,
+                )
+            else:
+                raise RuntimeError(
+                    f"{num_meshes} proc meshes in {self.server_handle},"
+                    f" please specify the mesh name as a match label `{ALLOC_LABEL_PROC_MESH_NAME}`"
+                    f" in allocation constraints of the alloc spec"
+                )
+            mesh = server.meshes[0]
+        else:
+            mesh = server.get_mesh_spec(mesh_name)
+
+        server_addrs = mesh.server_addrs(self.transport, self.port)
+
+        logger.info(
+            "initializing alloc on remote allocator addresses: %s", server_addrs
+        )
+        return server_addrs
 
 
 @final

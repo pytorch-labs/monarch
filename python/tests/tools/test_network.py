@@ -25,13 +25,13 @@ class TestNetwork(unittest.TestCase):
                         socket.SOCK_STREAM,
                         socket.IPPROTO_TCP,
                         "",
-                        ("123.45.67.89", 80),
+                        ("123.45.67.89", 8080),
                     )
                 ],
             ],
         ):
             self.assertEqual(
-                "123.45.67.89", network.get_ip_addr("foo.bar.facebook.com")
+                "123.45.67.89:8080", network.get_sockaddr("foo.bar.facebook.com", 8080)
             )
 
     def test_network_ipv6(self) -> None:
@@ -50,11 +50,11 @@ class TestNetwork(unittest.TestCase):
             ),
         ):
             self.assertEqual(
-                "1234:ab00:567c:89d:abcd:0:328:0",
-                network.get_ip_addr("foo.bar.facebook.com"),
+                "[1234:ab00:567c:89d:abcd:0:328:0]:8080",
+                network.get_sockaddr("foo.bar.facebook.com", 8080),
             )
 
     def test_network(self) -> None:
         # since we patched `socket.getaddrinfo` above
         # don't patch and just make sure things don't error out
-        self.assertIsNotNone(network.get_ip_addr(socket.getfqdn()))
+        self.assertIsNotNone(network.get_sockaddr(socket.getfqdn(), 8080))

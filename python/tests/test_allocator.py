@@ -14,7 +14,8 @@ import subprocess
 import sys
 import unittest
 from datetime import timedelta
-from typing import Generator
+from typing import Generator, Optional
+from unittest import mock
 
 import cloudpickle
 
@@ -26,19 +27,27 @@ from monarch._rust_bindings.hyperactor_extension.alloc import (
     AllocConstraints,
     AllocSpec,
 )
-
 from monarch._rust_bindings.monarch_hyperactor.channel import (
     ChannelAddr,
     ChannelTransport,
 )
 from monarch.actor_mesh import Actor, current_rank, current_size, endpoint, ValueMesh
-
-from monarch.allocator import RemoteAllocator, StaticRemoteAllocInitializer
+from monarch.allocator import (
+    ALLOC_LABEL_PROC_MESH_NAME,
+    RemoteAllocator,
+    StaticRemoteAllocInitializer,
+    TorchXRemoteAllocInitializer,
+)
 from monarch.proc_mesh import ProcMesh
+from monarch.tools.mesh_spec import MeshSpec, ServerSpec
+from monarch.tools.network import get_sockaddr
 
 from torch.distributed.elastic.utils.distributed import get_free_port
+from torchx.specs import AppState
 
 _100_MILLISECONDS = timedelta(milliseconds=100)
+
+SERVER_READY = "monarch.tools.commands.server_ready"
 
 
 class TestActor(Actor):
@@ -63,9 +72,9 @@ class TestActor(Actor):
 
 
 @contextlib.contextmanager
-def remote_process_allocator() -> Generator[str, None, None]:
+def remote_process_allocator(addr: Optional[str] = None) -> Generator[str, None, None]:
     with importlib.resources.path(__package__, "") as package_path:
-        addr = ChannelAddr.any(ChannelTransport.Unix)
+        addr = addr or ChannelAddr.any(ChannelTransport.Unix)
 
         process_allocator = subprocess.Popen(
             args=[
@@ -215,3 +224,139 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
 
             self.assert_computed_world_size(results_a, 2)  # a is a 1x2 mesh
             self.assert_computed_world_size(results_b, 6)  # b is a 1x6 mesh
+
+    async def test_torchx_remote_alloc_initializer_no_server(self) -> None:
+        with mock.patch(SEVER_READY, return_value=None):
+            initializer = TorchXRemoteAllocInitializer("slurm:///123")
+            allocator = RemoteAllocator(world_id="test", initializer=initializer)
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"slurm:///123 does not exist or is in a terminal state",
+            ):
+                await allocator.allocate(AllocSpec(AllocConstraints(), host=1, gpu=1))
+
+    async def test_torchx_remote_alloc_initializer_no_match_label_gt_1_meshes(
+        self,
+    ) -> None:
+        # asserts that an exception is raised if no match label is specified in alloc constraints
+        # but there are more than 1 mesh (hence ambiguous which mesh to allocate on)
+
+        server = ServerSpec(
+            name="__UNUSED__",
+            state=AppState.RUNNING,
+            meshes=[MeshSpec(name="x", num_hosts=1), MeshSpec(name="y", num_hosts=1)],
+        )
+
+        with mock.patch(SERVER_READY, return_value=server):
+            initializer = TorchXRemoteAllocInitializer("slurm:///123")
+            allocator = RemoteAllocator(world_id="test", initializer=initializer)
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"2 proc meshes in slurm:///123, please specify the mesh name as a match label `procmesh.monarch.meta.com/name`",
+            ):
+                await allocator.allocate(AllocSpec(AllocConstraints(), host=1, gpu=1))
+
+    async def test_torchx_remote_alloc_initializer_no_match_label_1_mesh(self) -> None:
+        server = ServerSpec(
+            name="__UNUSED__",
+            state=AppState.RUNNING,
+            meshes=[
+                MeshSpec(
+                    name="x",
+                    num_hosts=1,
+                    transport="tcp",
+                    hostnames=["localhost"],
+                )
+            ],
+        )
+        port = get_free_port()
+        with remote_process_allocator(addr=f"tcp!{get_sockaddr('localhost', port)}"):
+            with mock.patch(SERVER_READY, return_value=server):
+                initializer = TorchXRemoteAllocInitializer("local:///test", port=port)
+                allocator = RemoteAllocator(
+                    world_id="test",
+                    initializer=initializer,
+                    heartbeat_interval=_100_MILLISECONDS,
+                )
+                alloc = await allocator.allocate(
+                    AllocSpec(AllocConstraints(), host=1, gpu=4)
+                )
+                proc_mesh = await ProcMesh.from_alloc(alloc)
+                actor = await proc_mesh.spawn("test_actor", TestActor)
+                results = await actor.compute_world_size.call(
+                    master_addr="0.0.0.0", master_port=get_free_port()
+                )
+                self.assert_computed_world_size(results, 4)  # 1x4 mesh
+
+    async def test_torchx_remote_alloc_initializer_with_match_label(self) -> None:
+        server = ServerSpec(
+            name="__UNUSED__",
+            state=AppState.RUNNING,
+            meshes=[
+                MeshSpec(
+                    name="x",
+                    num_hosts=1,
+                    transport="tcp",
+                    hostnames=["localhost"],
+                )
+            ],
+        )
+        port = get_free_port()
+        with remote_process_allocator(addr=f"tcp!{get_sockaddr('localhost', port)}"):
+            with mock.patch(SERVER_READY, return_value=server):
+                initializer = TorchXRemoteAllocInitializer("local:///test", port=port)
+                allocator = RemoteAllocator(
+                    world_id="test",
+                    initializer=initializer,
+                    heartbeat_interval=_100_MILLISECONDS,
+                )
+                alloc = await allocator.allocate(
+                    AllocSpec(
+                        AllocConstraints(
+                            match_labels={ALLOC_LABEL_PROC_MESH_NAME: "x"}
+                        ),
+                        host=1,
+                        gpu=3,
+                    )
+                )
+                proc_mesh = await ProcMesh.from_alloc(alloc)
+                actor = await proc_mesh.spawn("test_actor", TestActor)
+                results = await actor.compute_world_size.call(
+                    master_addr="0.0.0.0", master_port=get_free_port()
+                )
+                self.assert_computed_world_size(results, 3)  # 1x3 mesh
+
+    async def test_torchx_remote_alloc_initializer_with_match_label_no_match(
+        self,
+    ) -> None:
+        # assert that match label with a mesh name that does not exist should error out
+
+        server = ServerSpec(
+            name="test",
+            state=AppState.RUNNING,
+            meshes=[
+                MeshSpec(
+                    name="x",
+                    num_hosts=1,
+                    transport="tcp",
+                    hostnames=["localhost"],
+                )
+            ],
+        )
+
+        with mock.patch(SERVER_READY, return_value=server):
+            with self.assertRaisesRegex(RuntimeError, r"'y' not found in job: test"):
+                initializer = TorchXRemoteAllocInitializer("local:///test")
+                allocator = RemoteAllocator(world_id="test", initializer=initializer)
+                alloc = await allocator.allocate(
+                    AllocSpec(
+                        AllocConstraints(
+                            match_labels={ALLOC_LABEL_PROC_MESH_NAME: "y"}
+                        ),
+                        host=1,
+                        gpu=1,
+                    )
+                )
+                await ProcMesh.from_alloc(alloc)

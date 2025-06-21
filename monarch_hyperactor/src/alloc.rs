@@ -206,7 +206,17 @@ impl RemoteProcessAllocInitializer for PyRemoteProcessAllocInitializer {
             .map(|channel_addr| {
                 let addr = ChannelAddr::from_str(channel_addr)?;
                 let (id, hostname) = match addr {
-                    ChannelAddr::Tcp(socket) => (socket.ip().to_string(), socket.ip().to_string()),
+                    ChannelAddr::Tcp(socket) => {
+                        if socket.is_ipv6() {
+                            // ipv6 addresses need to be wrapped in square-brackets [ipv6_addr]
+                            // since the return value here gets concatenated with 'port' to make up a sockaddr
+                            let ipv6_addr = format!("[{}]", socket.ip());
+                            (ipv6_addr.clone(), ipv6_addr.clone())
+                        } else {
+                            let ipv4_addr = socket.ip().to_string();
+                            (ipv4_addr.clone(), ipv4_addr.clone())
+                        }
+                    }
                     ChannelAddr::MetaTls(hostname, _) => (hostname.clone(), hostname.clone()),
                     ChannelAddr::Unix(_) => (addr.to_string(), addr.to_string()),
                     _ => anyhow::bail!("unsupported transport for channel address: `{addr}`"),
