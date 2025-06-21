@@ -9,12 +9,14 @@
 //! This crate provides hyperactor's mesh abstractions.
 
 #![feature(assert_matches)]
+#![feature(exit_status_error)]
 #![feature(impl_trait_in_bindings)]
 
 pub mod actor_mesh;
 pub mod alloc;
 mod assign;
 pub mod bootstrap;
+pub mod code_sync;
 pub mod comm;
 pub mod connect;
 pub mod mesh;
