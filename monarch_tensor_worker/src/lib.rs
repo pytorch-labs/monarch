@@ -56,16 +56,15 @@ use device_mesh::DeviceMesh;
 use futures::future::try_join_all;
 use hyperactor::Actor;
 use hyperactor::ActorRef;
+use hyperactor::Bind;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Named;
+use hyperactor::Unbind;
 use hyperactor::actor::ActorHandle;
 use hyperactor::cap;
 use hyperactor::forward;
-use hyperactor::message::Bind;
-use hyperactor::message::Bindings;
 use hyperactor::message::IndexedErasedUnbound;
-use hyperactor::message::Unbind;
 use hyperactor::reference::ActorId;
 use hyperactor_mesh::actor_mesh::Cast;
 use itertools::Itertools;
@@ -287,22 +286,9 @@ impl Handler<Cast<AssignRankMessage>> for WorkerActor {
 
 /// Worker messages. These define the observable behavior of the worker, so the
 /// documentations here
-#[derive(Handler, Clone, Serialize, Deserialize, Debug, Named)]
+#[derive(Handler, Clone, Serialize, Deserialize, Debug, Named, Bind, Unbind)]
 pub enum AssignRankMessage {
     AssignRank(),
-}
-
-// TODO(pzhang) replace the boilerplate Bind/Unbind impls with a macro.
-impl Bind for AssignRankMessage {
-    fn bind(&mut self, _bindings: &mut Bindings) -> anyhow::Result<()> {
-        Ok(())
-    }
-}
-
-impl Unbind for AssignRankMessage {
-    fn unbind(&self, _bindings: &mut Bindings) -> anyhow::Result<()> {
-        Ok(())
-    }
 }
 
 #[async_trait]
