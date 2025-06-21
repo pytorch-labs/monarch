@@ -10,6 +10,7 @@
 
 #[cfg(feature = "tensor_engine")]
 mod client;
+pub mod code_sync;
 #[cfg(feature = "tensor_engine")]
 mod controller;
 #[cfg(feature = "tensor_engine")]
@@ -170,6 +171,10 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
     hyperactor_extension::telemetry::register_python_bindings(&get_or_add_new_module(
         module,
         "hyperactor_extension.telemetry",
+    )?)?;
+    code_sync::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_extension.code_sync",
     )?)?;
 
     crate::panic::register_python_bindings(&get_or_add_new_module(
