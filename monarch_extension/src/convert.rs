@@ -6,8 +6,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-#![cfg(feature = "tensor_engine")]
-
 use std::collections::HashMap;
 use std::sync::OnceLock;
 

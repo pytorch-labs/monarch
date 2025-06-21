@@ -6,8 +6,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-#![cfg(feature = "tensor_engine")]
-
 /// These the controller messages that are exposed to python to allow the client to construct and
 /// send messages to the controller. For more details of the definitions take a look at
 /// [`monarch_messages::controller::ControllerMessage`].
