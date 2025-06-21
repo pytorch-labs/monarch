@@ -98,7 +98,7 @@ impl WorkerResponse {
     fn result(&self, py: Python<'_>) -> PyResult<PyObject> {
         if let Some(result) = &self.result {
             if result.is_err() {
-                Ok(PyNone::get(py).into_py(py))
+                Ok(PyNone::get(py).as_any().clone().unbind())
             } else {
                 // TODO: Use better shared error class
                 let rvalue = result
@@ -113,15 +113,15 @@ impl WorkerResponse {
                 Ok(unsafe { rvalue.try_to_object_unsafe(py)?.unbind() })
             }
         } else {
-            Ok(PyNone::get(py).into_py(py))
+            Ok(PyNone::get(py).as_any().clone().unbind())
         }
     }
 
     fn exception(&self, py: Python<'_>) -> PyResult<PyObject> {
         match self.result.as_ref() {
-            Some(Ok(_)) => Ok(PyNone::get(py).into_py(py)),
+            Some(Ok(_)) => Ok(PyNone::get(py).as_any().clone().unbind()),
             Some(Err(exc)) => Ok(PyException::exception_to_py(py, exc)?),
-            None => Ok(PyNone::get(py).into_py(py)),
+            None => Ok(PyNone::get(py).as_any().clone().unbind()),
         }
     }
 
@@ -159,7 +159,13 @@ impl PyWorldState {
     fn procs(self_: PyRef<Self>, py: Python) -> PyResult<PyObject> {
         let proc_dict = PyDict::new(py);
         for (proc_id, proc_info) in self_.inner.procs.clone() {
-            proc_dict.set_item(proc_id.to_string(), PyProcInfo::from(proc_info).into_py(py))?;
+            proc_dict.set_item(
+                proc_id.to_string(),
+                PyProcInfo::from(proc_info)
+                    .into_pyobject(py)?
+                    .into_any()
+                    .unbind(),
+            )?;
         }
         Ok(proc_dict.into())
     }
@@ -198,14 +204,16 @@ impl PySystemSnapshotFilter {
     }
 
     #[getter]
-    fn worlds(self_: PyRef<Self>, py: Python) -> PyObject {
-        self_
+    fn worlds(self_: PyRef<Self>, py: Python) -> PyResult<PyObject> {
+        Ok(self_
             .inner
             .worlds
             .iter()
             .map(|world_id| world_id.name())
             .collect::<Vec<_>>()
-            .into_py(py)
+            .into_pyobject(py)?
+            .into_any()
+            .unbind())
     }
 
     #[getter]
@@ -269,8 +277,8 @@ impl From<WorldSnapshotProcInfo> for PyProcInfo {
 #[pymethods]
 impl PyProcInfo {
     #[getter]
-    fn labels(self_: PyRef<Self>, py: Python) -> PyObject {
-        self_.inner.labels.clone().into_py_dict_bound(py).into()
+    fn labels(self_: PyRef<Self>, py: Python) -> PyResult<PyObject> {
+        Ok(self_.inner.labels.clone().into_py_dict(py)?.into())
     }
 }
 
@@ -288,12 +296,14 @@ impl PyException {
     pub(crate) fn exception_to_py(py: Python<'_>, exc: &Exception) -> PyResult<PyObject> {
         let initializer = PyClassInitializer::from(PyException { inner: exc.clone() });
         Ok(match exc {
-            Exception::Error(_, _, _) => {
-                Py::new(py, initializer.add_subclass(PyError))?.to_object(py)
-            }
-            Exception::Failure(_) => {
-                Py::new(py, initializer.add_subclass(PyFailure))?.to_object(py)
-            }
+            Exception::Error(_, _, _) => Py::new(py, initializer.add_subclass(PyError))?
+                .into_pyobject(py)?
+                .into_any()
+                .unbind(),
+            Exception::Failure(_) => Py::new(py, initializer.add_subclass(PyFailure))?
+                .into_pyobject(py)?
+                .into_any()
+                .unbind(),
         })
     }
 }
@@ -345,7 +355,10 @@ impl PyError {
             ),
         })
         .add_subclass(Self);
-        Ok(Py::new(py, initializer)?.to_object(py))
+        Ok(Py::new(py, initializer)?
+            .into_pyobject(py)?
+            .into_any()
+            .unbind())
     }
 
     #[getter]
@@ -485,7 +498,10 @@ impl PyFailure {
             }),
         })
         .add_subclass(Self);
-        Ok(Py::new(py, initializer)?.to_object(py))
+        Ok(Py::new(py, initializer)?
+            .into_pyobject(py)?
+            .into_any()
+            .unbind())
     }
 
     #[getter]
@@ -661,13 +677,18 @@ impl ClientActor {
         Python::with_gil(|py| {
             match result {
                 Ok(Some(ClientMessage::Result { seq, result })) => {
-                    Ok(WorkerResponse { seq, result }.into_py(py))
+                    Ok(WorkerResponse { seq, result }
+                        .into_pyobject(py)?
+                        .into_any()
+                        .unbind())
                 }
                 Ok(Some(ClientMessage::Log { level, message })) => Ok(LogMessage {
                     level: PyLogLevel::from(level),
                     message,
                 }
-                .into_py(py)),
+                .into_pyobject(py)?
+                .into_any()
+                .unbind()),
                 Ok(Some(ClientMessage::DebuggerMessage {
                     debugger_actor_id,
                     action,
@@ -675,8 +696,10 @@ impl ClientActor {
                     debugger_actor_id: debugger_actor_id.into(),
                     action,
                 }
-                .into_py(py)),
-                Ok(None) => Ok(PyNone::get(py).into_py(py)),
+                .into_pyobject(py)?
+                .into_any()
+                .unbind()),
+                Ok(None) => Ok(PyNone::get(py).as_any().clone().unbind()),
                 Err(err) => {
                     if let Some(ControllerError::Failed(controller_id, err_msg)) =
                         err.downcast_ref::<ControllerError>()
@@ -690,7 +713,9 @@ impl ClientActor {
                             seq: Seq::default(),
                             result: Some(Err(Exception::Failure(failure))),
                         }
-                        .into_py(py))
+                        .into_pyobject(py)?
+                        .into_any()
+                        .unbind())
                     } else {
                         Err(PyRuntimeError::new_err(err.to_string()))
                     }
@@ -717,23 +742,32 @@ impl ClientActor {
             .drain_and_stop()
             .map_err(|err| PyRuntimeError::new_err(err.to_string()))?
             .into_iter()
-            .map(|message| match message {
-                ClientMessage::Result { seq, result } => WorkerResponse { seq, result }.into_py(py),
-                ClientMessage::Log { level, message } => LogMessage {
-                    level: PyLogLevel::from(level),
-                    message,
-                }
-                .into_py(py),
-                ClientMessage::DebuggerMessage {
-                    debugger_actor_id,
-                    action,
-                } => DebuggerMessage {
-                    debugger_actor_id: debugger_actor_id.into(),
-                    action,
-                }
-                .into_py(py),
+            .map(|message| {
+                Ok(match message {
+                    ClientMessage::Result { seq, result } => WorkerResponse { seq, result }
+                        .into_pyobject(py)?
+                        .into_any()
+                        .unbind(),
+                    ClientMessage::Log { level, message } => LogMessage {
+                        level: PyLogLevel::from(level),
+                        message,
+                    }
+                    .into_pyobject(py)?
+                    .into_any()
+                    .unbind(),
+                    ClientMessage::DebuggerMessage {
+                        debugger_actor_id,
+                        action,
+                    } => DebuggerMessage {
+                        debugger_actor_id: debugger_actor_id.into(),
+                        action,
+                    }
+                    .into_pyobject(py)?
+                    .into_any()
+                    .unbind(),
+                })
             })
-            .collect::<Vec<PyObject>>();
+            .collect::<PyResult<Vec<PyObject>>>()?;
         PyList::new(py, messages)
     }
 
@@ -794,7 +828,10 @@ impl ClientActor {
             for (world, status) in snapshot.worlds {
                 worlds_dict.set_item(
                     world.to_string(),
-                    Py::new(py, PyWorldState { inner: status })?.to_object(py),
+                    Py::new(py, PyWorldState { inner: status })?
+                        .into_pyobject(py)?
+                        .into_any()
+                        .unbind(),
                 )?;
             }
             Ok(worlds_dict.into())
