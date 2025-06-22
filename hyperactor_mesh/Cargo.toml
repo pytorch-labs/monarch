@@ -25,6 +25,7 @@ mockall = "0.13.1"
 ndslice = { version = "0.0.0", path = "../ndslice" }
 rand = { version = "0.8", features = ["small_rng"] }
 serde = { version = "1.0.185", features = ["derive", "rc"] }
+serde_bytes = "0.11"
 thiserror = "2.0.12"
 tokio = { version = "1.45.0", features = ["full", "test-util", "tracing"] }
 tokio-stream = { version = "0.1.17", features = ["fs", "io-util", "net", "signal", "sync", "time"] }
