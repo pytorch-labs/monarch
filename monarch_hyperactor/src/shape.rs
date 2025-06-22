@@ -23,6 +23,13 @@ use crate::ndslice::PySlice;
 pub struct PyShape {
     pub(super) inner: Shape,
 }
+
+impl PyShape {
+    pub fn get_inner(&self) -> &Shape {
+        &self.inner
+    }
+}
+
 #[pymethods]
 impl PyShape {
     #[new]

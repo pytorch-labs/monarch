@@ -6,6 +6,7 @@
 
 # pyre-strict
 
+import os
 import sys
 from contextlib import AbstractContextManager
 
@@ -37,6 +38,7 @@ from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyPr
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape, Slice
 from monarch.actor_mesh import _Actor, _ActorMeshRefImpl, Actor, ActorMeshRef
 
+from monarch.code_sync import RsyncMeshClient
 from monarch.common._device_utils import _local_device_count
 from monarch.common.device_mesh import DeviceMesh
 from monarch.common.shape import MeshTrait
@@ -71,6 +73,7 @@ class ProcMesh(MeshTrait):
         self._mock_shape: Optional[Shape] = _mock_shape
         self._mailbox: Mailbox = self._proc_mesh.client
         self._rdma_manager: Optional[RDMAManager] = None
+        self._rsync_mesh_client: Optional[RsyncMeshClient] = None
         self._maybe_device_mesh: Optional[DeviceMesh] = _device_mesh
         if _mock_shape is None:
             self._rdma_manager = self._spawn_blocking("rdma_manager", RDMAManager)
@@ -173,6 +176,27 @@ class ProcMesh(MeshTrait):
 
     def rank_tensors(self) -> Dict[str, "torch.Tensor"]:
         return self._device_mesh.ranks
+
+    async def sync_workspace(self) -> None:
+        if self._rsync_mesh_client is None:
+            # TODO(agallagher): We need some way to configure and pass this
+            # in -- right now we're assuming the `gpu` dimension, which isn't
+            # correct.
+            assert set(self._proc_mesh.shape.labels).issubset({"gpus", "hosts"})
+            # The workspace shape (i.e. only perform one rsync per host).
+            workspace_shape = self.slice(gpus=slice(0, 1, 1))._mock_shape
+            assert workspace_shape is not None
+            # TODO(agallagher): We should probably hide this behind something
+            # like a `Workspace` class and support abstracting/configuring
+            # different sync methods.
+            self._rsync_mesh_client = RsyncMeshClient.spawn_blocking(
+                proc_mesh=self._proc_mesh,
+                shape=workspace_shape,
+                # TODO(agallagher): Is there a better way to infer/set the local
+                # workspace dir, rather than use PWD?
+                workspace=os.getcwd(),
+            )
+        await self._rsync_mesh_client.sync_workspace()
 
 
 async def local_proc_mesh_nonblocking(
