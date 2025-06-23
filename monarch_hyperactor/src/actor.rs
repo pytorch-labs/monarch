@@ -171,10 +171,10 @@ impl PickledMessageClientActor {
 }
 
 #[pyclass(frozen, module = "monarch._rust_bindings.monarch_hyperactor.actor")]
-#[derive(Clone, Serialize, Deserialize, Named, PartialEq)]
+#[derive(Default, Clone, Serialize, Deserialize, Named, PartialEq)]
 pub struct PythonMessage {
-    method: String,
-    message: ByteBuf,
+    pub(crate) method: String,
+    pub(crate) message: ByteBuf,
     response_port: Option<EitherPortRef>,
     rank: Option<usize>,
 }
@@ -569,21 +569,41 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
 #[cfg(test)]
 mod tests {
     use hyperactor::PortRef;
+    use hyperactor::accum::ReducerSpec;
+    use hyperactor::data::Serialized;
     use hyperactor::id;
+    use hyperactor::message::ErasedUnbound;
     use hyperactor::message::Unbound;
+    use hyperactor::reference::UnboundPort;
 
     use super::*;
 
     #[test]
     fn test_python_message_bind_unbind() {
-        let port_ref = PortRef::<PythonMessage>::attest(id!(world[0].client[0][123]));
+        let reducer_spec = ReducerSpec {
+            typehash: 123,
+            builder_params: Some(Serialized::serialize(&"abcdefg12345".to_string()).unwrap()),
+        };
+        let port_ref = PortRef::<PythonMessage>::attest_reducible(
+            id!(world[0].client[0][123]),
+            Some(reducer_spec),
+        );
         let message = PythonMessage {
             method: "test".to_string(),
             message: ByteBuf::from(vec![1, 2, 3]),
-            response_port: Some(EitherPortRef::Unbounded(port_ref.into())),
+            response_port: Some(EitherPortRef::Unbounded(port_ref.clone().into())),
             rank: None,
         };
         {
+            let mut erased = ErasedUnbound::try_from_message(message.clone()).unwrap();
+            let mut bindings = vec![];
+            erased
+                .visit_mut::<UnboundPort>(|b| {
+                    bindings.push(b.clone());
+                    Ok(())
+                })
+                .unwrap();
+            assert_eq!(bindings, vec![UnboundPort::from(&port_ref)]);
             let unbound = Unbound::try_from_message(message.clone()).unwrap();
             assert_eq!(message, unbound.bind().unwrap());
         }
@@ -593,6 +613,15 @@ mod tests {
             ..message
         };
         {
+            let mut erased = ErasedUnbound::try_from_message(no_port_message.clone()).unwrap();
+            let mut bindings = vec![];
+            erased
+                .visit_mut::<UnboundPort>(|b| {
+                    bindings.push(b.clone());
+                    Ok(())
+                })
+                .unwrap();
+            assert_eq!(bindings.len(), 0);
             let unbound = Unbound::try_from_message(no_port_message.clone()).unwrap();
             assert_eq!(no_port_message, unbound.bind().unwrap());
         }

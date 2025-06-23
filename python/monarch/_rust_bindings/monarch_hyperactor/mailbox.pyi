@@ -6,7 +6,7 @@
 
 # pyre-strict
 
-from typing import final
+from typing import final, Generic, Protocol
 
 from monarch._rust_bindings.monarch_hyperactor.actor import PythonMessage
 
@@ -132,6 +132,12 @@ class Mailbox:
         """Open a port to receive a single `PythonMessage` message."""
         ...
 
+    def open_accum_port(
+        self, accumulator: Accumulator
+    ) -> tuple[PortHandle, PortReceiver]:
+        """Open a accum port."""
+        ...
+
     def post(self, dest: ActorId, message: PythonMessage) -> None:
         """
         Post a message to the provided destination. If the destination is an actor id,
@@ -151,3 +157,42 @@ class Mailbox:
 
     @property
     def actor_id(self) -> ActorId: ...
+
+class Accumulator(Protocol):
+    """
+    Define the Python interface for its `trait Accumulator` counterpart in
+    Monarch Rust backend. It enables users to implement accumulators in python
+    natively.
+    """
+    def __call__(
+        self, state: PythonMessage, update: PythonMessage
+    ) -> PythonMessage: ...
+    """
+    Accumulate an `update` into the current `state`.
+
+    This method's Rust counterpart is `Accumulator::accumulate`.
+    """
+    @property
+    def initial_state(self) -> PythonMessage: ...
+    """
+    Define the initial state of this accumulator.
+    """
+    @property
+    def reducer(self) -> Reducer | None: ...
+    """
+    The reducer associated with this accumulator.
+    """
+
+class Reducer(Protocol):
+    """
+    Define the Python interface for its `trait CommReducer` counterpart in
+    Monarch Rust backend. It enables users to implement reducers in python
+    natively.
+    """
+
+    def __call__(self, left: PythonMessage, right: PythonMessage) -> PythonMessage: ...
+    """
+    Reduce 2 updates into a single update.
+
+    This method's Rust counterpart is `CommReducer::reduce`.
+    """

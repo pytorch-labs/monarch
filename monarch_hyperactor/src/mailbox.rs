@@ -18,6 +18,10 @@ use hyperactor::OncePortRef;
 use hyperactor::PortHandle;
 use hyperactor::PortId;
 use hyperactor::PortRef;
+use hyperactor::accum::Accumulator;
+use hyperactor::accum::CommReducer;
+use hyperactor::accum::ReducerFactory;
+use hyperactor::accum::ReducerSpec;
 use hyperactor::attrs::Attrs;
 use hyperactor::data::Serialized;
 use hyperactor::mailbox::MailboxSender;
@@ -30,6 +34,7 @@ use hyperactor::message::Bindings;
 use hyperactor::message::Unbind;
 use hyperactor_mesh::actor_mesh::Cast;
 use hyperactor_mesh::comm::multicast::CastRank;
+use monarch_types::PickledPyObject;
 use pyo3::exceptions::PyEOFError;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
@@ -80,6 +85,26 @@ impl PyMailbox {
             },
         )?;
         PyTuple::new(py, vec![handle.into_any(), receiver.into_any()])
+    }
+
+    fn open_accum_port<'py>(
+        &self,
+        py: Python<'py>,
+        accumulator: PyObject,
+    ) -> PyResult<Bound<'py, PyTuple>> {
+        let py_accumulator = PythonAccumulator::new(py, accumulator)?;
+        let (handle, receiver) = self.inner.open_accum_port(py_accumulator);
+        let handle = Py::new(py, PythonPortHandle { inner: handle })?;
+        let receiver = Py::new(
+            py,
+            PythonPortReceiver {
+                inner: Arc::new(tokio::sync::Mutex::new(receiver)),
+            },
+        )?;
+        Ok(PyTuple::new_bound(
+            py,
+            vec![handle.into_any(), receiver.into_any()],
+        ))
     }
 
     pub(super) fn post(&self, dest: &PyActorId, message: &PythonMessage) -> PyResult<()> {
@@ -434,6 +459,95 @@ impl Bind for EitherPortRef {
             EitherPortRef::Unbounded(port_ref) => port_ref.inner.bind(bindings),
             EitherPortRef::Once(once_port_ref) => once_port_ref.inner.bind(bindings),
         }
+    }
+}
+
+#[derive(Debug, Named)]
+#[named(dump = false)]
+struct PythonReducer(PyObject);
+
+impl PythonReducer {
+    fn new(params: Option<Serialized>) -> anyhow::Result<Self> {
+        let p = params.ok_or_else(|| anyhow::anyhow!("params cannot be None"))?;
+        let obj: PickledPyObject = p.deserialized()?;
+        Ok(Python::with_gil(|py: Python<'_>| -> PyResult<Self> {
+            let unpickled = obj.unpickle(py)?;
+            Ok(Self(unpickled.unbind()))
+        })?)
+    }
+}
+
+impl CommReducer for PythonReducer {
+    type Update = PythonMessage;
+
+    fn reduce(&self, left: Self::Update, right: Self::Update) -> anyhow::Result<Self::Update> {
+        Python::with_gil(|py: Python<'_>| {
+            let result = self.0.call(py, (left, right), None)?;
+            Ok(result.extract::<PythonMessage>(py)?)
+        })
+    }
+}
+
+struct PythonAccumulator {
+    accumulator: PyObject,
+    reducer: Option<Serialized>,
+}
+
+impl PythonAccumulator {
+    fn new<'py>(py: Python<'py>, accumulator: PyObject) -> PyResult<Self> {
+        let py_reducer = accumulator.getattr(py, "reducer")?;
+        let reducer: Option<Serialized> = if py_reducer.is_none(py) {
+            None
+        } else {
+            let pickled = PickledPyObject::cloudpickle(py_reducer.bind(py))?;
+            Some(
+                Serialized::serialize(&pickled)
+                    .map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
+            )
+        };
+
+        Ok(Self {
+            accumulator,
+            reducer,
+        })
+    }
+}
+
+impl Accumulator for PythonAccumulator {
+    type State = PythonMessage;
+    type Update = PythonMessage;
+
+    fn accumulate(&self, state: &mut Self::State, update: Self::Update) -> anyhow::Result<()> {
+        Python::with_gil(|py: Python<'_>| {
+            // Initialize state if it is empty.
+            if state.message.is_empty() && state.method.is_empty() {
+                *state = self
+                    .accumulator
+                    .getattr(py, "initial_state")?
+                    .extract::<PythonMessage>(py)?;
+            }
+
+            // TODO(pzhang) Make accumulate consumes state and update, and returns
+            // a new state. That will avoid this clone.
+            let old_state = state.clone();
+            let result = self.accumulator.call(py, (old_state, update), None)?;
+            *state = result.extract::<PythonMessage>(py)?;
+            Ok(())
+        })
+    }
+
+    fn reducer_spec(&self) -> Option<ReducerSpec> {
+        self.reducer.as_ref().map(|r| ReducerSpec {
+            typehash: <PythonReducer as Named>::typehash(),
+            builder_params: Some(r.clone()),
+        })
+    }
+}
+
+inventory::submit! {
+    ReducerFactory {
+        typehash_f: <PythonReducer as Named>::typehash,
+        builder_f: |params| Ok(Box::new(PythonReducer::new(params)?)),
     }
 }
 

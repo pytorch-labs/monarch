@@ -813,7 +813,7 @@ impl<M: RemoteMessage> PortRef<M> {
 
     /// The caller attests that the provided PortId can be
     /// converted to a reachable, typed port reference.
-    pub(crate) fn attest_reducible(port_id: PortId, reducer_spec: Option<ReducerSpec>) -> Self {
+    pub fn attest_reducible(port_id: PortId, reducer_spec: Option<ReducerSpec>) -> Self {
         Self {
             port_id,
             reducer_spec,
