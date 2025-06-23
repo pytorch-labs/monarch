@@ -186,8 +186,8 @@ impl CommActor {
         // of to the original ports provided by parent.
         message
             .data_mut()
-            .visit_mut::<UnboundPort>(|UnboundPort(port_id, reducer_typehash)| {
-                let split = port_id.split(this, reducer_typehash.clone());
+            .visit_mut::<UnboundPort>(|UnboundPort(port_id, reducer_spec)| {
+                let split = port_id.split(this, reducer_spec.clone())?;
 
                 #[cfg(test)]
                 tests::collect_split_port(port_id, &split, deliver_here);
@@ -509,7 +509,7 @@ mod tests {
     use hyperactor::PortRef;
     use hyperactor::accum;
     use hyperactor::accum::Accumulator;
-    use hyperactor::accum::CommReducer;
+    use hyperactor::accum::ReducerSpec;
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
     use hyperactor::config;
@@ -703,25 +703,21 @@ mod tests {
         reply_tos: Vec<(PortRef<u64>, PortRef<MyReply>)>,
     }
 
-    // Placeholder to make compiler happy.
-    #[derive(Debug, Clone, Serialize, Deserialize, Named)]
-    struct NonReducer;
-    impl CommReducer for NonReducer {
-        type Update = u64;
-
-        fn reduce(&self, _left: Self::Update, _right: Self::Update) -> Self::Update {
-            unimplemented!()
-        }
-    }
-
     struct NoneAccumulator;
 
     impl Accumulator for NoneAccumulator {
         type State = u64;
         type Update = u64;
-        type Reducer = NonReducer;
 
-        fn accumulate(&self, _state: &mut Self::State, _update: Self::Update) {
+        fn accumulate(
+            &self,
+            _state: &mut Self::State,
+            _update: Self::Update,
+        ) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+
+        fn reducer_spec(&self) -> Option<ReducerSpec> {
             unimplemented!()
         }
     }
