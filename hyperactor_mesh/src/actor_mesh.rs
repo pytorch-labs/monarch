@@ -72,7 +72,6 @@ pub trait ActorMesh: Mesh {
             self.proc_mesh().client().actor_id().clone(),
             DestinationPort::new::<Self::Actor, Cast<M>>(self.name().to_string()),
             message,
-            None, // TODO: reducer typehash
         )?;
 
         // Sub-set the selection to the selection that represents the mesh's view
@@ -551,6 +550,7 @@ mod tests {
     use hyperactor::mailbox::Undeliverable;
     use hyperactor::message::Bind;
     use hyperactor::message::Unbind;
+    use hyperactor::reference::UnboundPort;
     use ndslice::shape;
 
     use super::*;
@@ -1056,13 +1056,15 @@ mod tests {
     #[test]
     fn test_cast_bind_unbind() {
         let port_id2 = id!(world[0].client[0][2]);
+        let port2 = PortRef::attest(port_id2.clone());
         let port_id4 = id!(world[1].client[0][4]);
+        let port4 = PortRef::attest(port_id4.clone());
         let message = MyNamedStruct {
             field0: 0,
             field1: "hello".to_string(),
-            field2: PortRef::attest(port_id2.clone()),
+            field2: port2.clone(),
             field3: true,
-            field4: PortRef::attest(port_id4.clone()),
+            field4: port4.clone(),
         };
 
         let rank = CastRank(3);
@@ -1076,8 +1078,8 @@ mod tests {
         let mut bindings = Bindings::default();
         cast.unbind(&mut bindings).unwrap();
         let mut expected = Bindings::default();
-        expected.push_back(&port_id2).unwrap();
-        expected.push_back(&port_id4).unwrap();
+        expected.push_back(&UnboundPort::from(&port2)).unwrap();
+        expected.push_back(&UnboundPort::from(&port4)).unwrap();
         expected.push_back(&cast.rank).unwrap();
         assert_eq!(bindings, expected);
 
@@ -1089,9 +1091,15 @@ mod tests {
         let new_port_id4 = id!(world[1].comm[0][423]);
         assert_ne!(port_id4, new_port_id4);
         assert_ne!(new_port_id2, new_port_id4);
+        let new_port2 = PortRef::<String>::attest(new_port_id2.clone());
+        let new_port4 = PortRef::<u64>::attest(new_port_id4.clone());
         let mut new_bindings = Bindings::default();
-        new_bindings.push_back(&new_port_id2).unwrap();
-        new_bindings.push_back(&new_port_id4).unwrap();
+        new_bindings
+            .push_back(&UnboundPort::from(&new_port2))
+            .unwrap();
+        new_bindings
+            .push_back(&UnboundPort::from(&new_port4))
+            .unwrap();
         new_bindings.push_back(&new_rank).unwrap();
         cast.bind(&mut new_bindings).unwrap();
         assert_eq!(
@@ -1099,9 +1107,9 @@ mod tests {
             MyNamedStruct {
                 field0: 0,
                 field1: "hello".to_string(),
-                field2: PortRef::attest(new_port_id2.clone()),
+                field2: new_port2,
                 field3: true,
-                field4: PortRef::attest(new_port_id4.clone()),
+                field4: new_port4,
             },
         );
         assert_eq!(cast.rank.0, new_rank.0);
