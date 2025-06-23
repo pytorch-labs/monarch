@@ -17,6 +17,7 @@ async-trait = "0.1.86"
 bincode = "1.3.3"
 bitmaps = "3.2.1"
 enum-as-inner = "0.6.0"
+erased-serde = "0.3.27"
 futures = { version = "0.3.30", features = ["async-await", "compat"] }
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_mesh_macros = { version = "0.0.0", path = "../hyperactor_mesh_macros" }

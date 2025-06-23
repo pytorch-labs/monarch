@@ -11,6 +11,7 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use anyhow::Result;
+use future::Future;
 use futures::Stream;
 use futures::StreamExt;
 use futures::future;

@@ -61,6 +61,7 @@ use crate::actor::RemoteActor;
 use crate::actor::RemoteHandles;
 use crate::actor::Signal;
 use crate::actor::WeakActorHandle;
+use crate::attrs::Attrs;
 use crate::cap;
 use crate::clock::Clock;
 use crate::clock::ClockKind;
@@ -688,7 +689,7 @@ struct WorkCell<A: Actor + Send>(
     Box<
         dyn for<'a> FnOnce(
                 &'a mut A,
-                &'a Instance<A>,
+                &'a mut Instance<A>,
             )
                 -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + 'a + Send>>
             + Send
@@ -701,7 +702,7 @@ impl<A: Actor + Send> WorkCell<A> {
     fn new(
         f: impl for<'a> FnOnce(
             &'a mut A,
-            &'a Instance<A>,
+            &'a mut Instance<A>,
         )
             -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + 'a + Send>>
         + Send
@@ -715,9 +716,26 @@ impl<A: Actor + Send> WorkCell<A> {
     fn handle<'a>(
         self,
         actor: &'a mut A,
-        instance: &'a Instance<A>,
+        instance: &'a mut Instance<A>,
     ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + 'a>> {
         (self.0)(actor, instance)
+    }
+}
+
+/// Context for a message currently being handled by an Instance.
+pub struct InstanceMessageContext {
+    headers: Attrs,
+}
+
+impl InstanceMessageContext {
+    /// Construct a new InstanceMessageContext.
+    pub fn new(headers: Attrs) -> Self {
+        Self { headers }
+    }
+
+    /// Get a reference to the message headers.
+    pub fn headers(&self) -> &Attrs {
+        &self.headers
     }
 }
 
@@ -754,6 +772,9 @@ pub struct Instance<A: Actor> {
 
     /// The timestamp of when the currently active status was set.
     _last_status_change: Arc<tokio::time::Instant>,
+
+    /// The context associated with the message currently being handled.
+    message_context: Option<InstanceMessageContext>,
 }
 
 impl<A: Actor> Instance<A> {
@@ -804,6 +825,7 @@ impl<A: Actor> Instance<A> {
                 name = "created"
             )),
             _last_status_change: Arc::new(start),
+            message_context: None,
         }
     }
 
@@ -847,8 +869,8 @@ impl<A: Actor> Instance<A> {
     }
 
     /// Send a message to the actor running on the proc.
-    pub fn post(&self, port_id: PortId, message: Serialized) {
-        <Self as cap::sealed::CanSend>::post(self, port_id, message)
+    pub fn post(&self, port_id: PortId, headers: Attrs, message: Serialized) {
+        <Self as cap::sealed::CanSend>::post(self, port_id, headers, message)
     }
 
     /// Send a message to the actor itself with a delay usually to trigger some event.
@@ -1105,9 +1127,10 @@ impl<A: Actor> Instance<A> {
     }
 
     async unsafe fn handle_message<M: Message>(
-        &self,
+        &mut self,
         actor: &mut A,
         type_info: Option<&'static TypeInfo>,
+        headers: Attrs,
         message: M,
     ) -> Result<(), anyhow::Error>
     where
@@ -1129,7 +1152,11 @@ impl<A: Actor> Instance<A> {
             handler,
         ));
         let span = self.status_span.lock().unwrap().clone();
-        actor.handle(self, message).instrument(span).await
+
+        self.message_context = Some(InstanceMessageContext::new(headers));
+        let res = actor.handle(self, message).instrument(span).await;
+        self.message_context = None;
+        res
     }
 
     /// Return a handle port handle representing the actor's message
@@ -1182,11 +1209,16 @@ impl<A: Actor> Instance<A> {
 
         None
     }
+
+    /// Get the current message context, if there is one.
+    pub fn ctx(&self) -> Option<&InstanceMessageContext> {
+        self.message_context.as_ref()
+    }
 }
 
 impl<A: Actor> cap::sealed::CanSend for Instance<A> {
-    fn post(&self, dest: PortId, data: Serialized) {
-        let envelope = MessageEnvelope::new(self.self_id().clone(), dest, data);
+    fn post(&self, dest: PortId, headers: Attrs, data: Serialized) {
+        let envelope = MessageEnvelope::new(self.self_id().clone(), dest, data, headers);
         self.proc.post(envelope, self.ports.get());
     }
 }
@@ -1487,11 +1519,15 @@ impl<A: Actor> Ports<A> {
                 let type_info = TypeInfo::get_by_typeid(key);
                 let workq = self.workq.clone();
                 let actor_id = self.mailbox.actor_id().to_string();
-                let port = self.mailbox.open_enqueue_port(move |msg: M| {
-                    let work = WorkCell::new(move |actor: &mut A, instance: &Instance<A>| {
+                let port = self.mailbox.open_enqueue_port(move |headers, msg: M| {
+                    let work = WorkCell::new(move |actor: &mut A, instance: &mut Instance<A>| {
                         Box::pin(async move {
                             // SAFETY: we guarantee that the passed type_info is for type M.
-                            unsafe { instance.handle_message(actor, type_info, msg).await }
+                            unsafe {
+                                instance
+                                    .handle_message(actor, type_info, headers, msg)
+                                    .await
+                            }
                         })
                     });
                     MESSAGE_QUEUE_SIZE.add(

@@ -307,6 +307,7 @@ mod tests {
     use std::sync::Arc;
     use std::sync::Mutex;
 
+    use hyperactor::attrs::Attrs;
     use hyperactor::id;
     use hyperactor::mailbox::BoxedMailboxSender;
     use hyperactor::mailbox::Mailbox;
@@ -346,8 +347,13 @@ mod tests {
 
     // Helper function to create a test message envelope
     fn envelope(data: u64) -> MessageEnvelope {
-        MessageEnvelope::serialize(id!(world[0].sender), id!(world[0].receiver[0][1]), &data)
-            .unwrap()
+        MessageEnvelope::serialize(
+            id!(world[0].sender),
+            id!(world[0].receiver[0][1]),
+            &data,
+            Attrs::new(),
+        )
+        .unwrap()
     }
 
     fn return_handle() -> PortHandle<Undeliverable<MessageEnvelope>> {

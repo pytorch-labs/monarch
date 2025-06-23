@@ -366,10 +366,15 @@ pub(crate) mod test_util {
     use hyperactor::Handler;
     use hyperactor::Instance;
     use hyperactor::PortRef;
+    use hyperactor::attrs::declare_attrs;
     use hyperactor::message::Bind;
     use hyperactor::message::Unbind;
 
     use super::*;
+
+    declare_attrs! {
+        pub attr CAST_RANK: usize;
+    }
 
     // This can't be defined under a `#[cfg(test)]` because there needs to
     // be an entry in the spawnable actor registry in the executable
@@ -433,7 +438,7 @@ pub(crate) mod test_util {
             this: &Instance<Self>,
             GetRank(ok, reply): GetRank,
         ) -> Result<(), anyhow::Error> {
-            let rank = this.self_id().rank();
+            let rank = *this.ctx().unwrap().headers().get(CAST_RANK).unwrap();
             reply.send(this, rank)?;
             anyhow::ensure!(ok, "intentional error!"); // If `!ok` exit with `Err()`.
             Ok(())
@@ -541,6 +546,7 @@ mod tests {
     use hyperactor::PortRef;
     use hyperactor::ProcId;
     use hyperactor::WorldId;
+    use hyperactor::attrs::Attrs;
     use hyperactor::id;
     use hyperactor::mailbox::Undeliverable;
     use hyperactor::message::Bind;
@@ -563,6 +569,7 @@ mod tests {
             use $crate::sel;
             use $crate::proc_mesh::SharedSpawnable;
             use std::collections::VecDeque;
+            use hyperactor::data::Serialized;
 
             use super::*;
             use super::test_util::*;
@@ -835,6 +842,45 @@ mod tests {
                 assert_eq!(mesh.client().actor_id(), msg.sender());
                 assert_eq!(&bad_actor.actor_id().port_id(GetRank::port()), msg.dest());
 
+                // TODO: Stop the proc.
+            }
+
+            #[tokio::test]
+            async fn test_send_with_headers() {
+                let alloc = $allocator
+                    .allocate(AllocSpec {
+                        shape: shape! { replica = 1  },
+                        constraints: Default::default(),
+                    })
+                    .await
+                    .unwrap();
+
+                let mesh = ProcMesh::allocate(alloc).await.unwrap();
+                let (reply_port_handle, mut reply_port_receiver) = mesh.client().open_port::<usize>();
+                let reply_port = reply_port_handle.bind();
+
+                let actor_mesh: RootActorMesh<TestActor> = mesh.spawn("test", &()).await.unwrap();
+                let actor_ref = actor_mesh.get(0).unwrap();
+                let mut headers = Attrs::new();
+                headers.set(CAST_RANK, 0);
+                actor_ref.send_with_headers(mesh.client(), headers.clone(), GetRank(true, reply_port.clone())).unwrap();
+                assert_eq!(0, reply_port_receiver.recv().await.unwrap());
+
+                headers.set(CAST_RANK, 1);
+                actor_ref.port()
+                    .send_with_headers(mesh.client(), headers.clone(), GetRank(true, reply_port.clone()))
+                    .unwrap();
+                assert_eq!(1, reply_port_receiver.recv().await.unwrap());
+
+                headers.set(CAST_RANK, 2);
+                actor_ref.actor_id()
+                    .port_id(GetRank::port())
+                    .send_with_headers(
+                        mesh.client(),
+                        &Serialized::serialize(&GetRank(true, reply_port)).unwrap(),
+                        headers
+                    );
+                assert_eq!(2, reply_port_receiver.recv().await.unwrap());
                 // TODO: Stop the proc.
             }
         }

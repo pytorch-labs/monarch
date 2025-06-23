@@ -105,6 +105,7 @@ use crate::accum;
 use crate::accum::Accumulator;
 use crate::actor::Signal;
 use crate::actor::remote::USER_PORT_OFFSET;
+use crate::attrs::Attrs;
 use crate::cap;
 use crate::channel;
 use crate::channel::ChannelAddr;
@@ -174,7 +175,7 @@ pub enum DeliveryError {
 /// An envelope that carries a message destined to a remote actor.
 /// The envelope contains a serialized message along with its destination
 /// and sender.
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Named)]
+#[derive(Debug, Serialize, Deserialize, Clone, Named)]
 pub struct MessageEnvelope {
     /// The sender of this message.
     sender: ActorId,
@@ -187,23 +188,27 @@ pub struct MessageEnvelope {
 
     /// Error contains a delivery error when message delivery failed.
     error: Option<DeliveryError>,
+
+    /// Additional context for this message.
+    headers: Attrs,
     // TODO: add typename, source, seq, TTL, etc.
 }
 
 impl MessageEnvelope {
     /// Create a new envelope with the provided sender, destination, and message.
-    pub fn new(sender: ActorId, dest: PortId, data: Serialized) -> Self {
+    pub fn new(sender: ActorId, dest: PortId, data: Serialized, headers: Attrs) -> Self {
         Self {
             sender,
             dest,
             data,
             error: None,
+            headers,
         }
     }
 
     /// Create a new envelope whose sender ID is unknown.
     pub(crate) fn new_unknown(dest: PortId, data: Serialized) -> Self {
-        Self::new(id!(unknown[0].unknown), dest, data)
+        Self::new(id!(unknown[0].unknown), dest, data, Attrs::new())
     }
 
     /// Construct a new serialized value by serializing the provided T-typed value.
@@ -211,8 +216,10 @@ impl MessageEnvelope {
         source: ActorId,
         dest: PortId,
         value: &T,
+        headers: Attrs,
     ) -> Result<Self, bincode::Error> {
         Ok(Self {
+            headers,
             data: Serialized::serialize(value)?,
             sender: source,
             dest,
@@ -277,6 +284,7 @@ impl MessageEnvelope {
             dest,
             data,
             error,
+            headers,
         } = self;
 
         (
@@ -284,6 +292,7 @@ impl MessageEnvelope {
                 sender,
                 dest,
                 error,
+                headers,
             },
             data,
         )
@@ -294,6 +303,7 @@ impl MessageEnvelope {
             sender,
             dest,
             error,
+            headers,
         } = metadata;
 
         Self {
@@ -301,6 +311,7 @@ impl MessageEnvelope {
             dest,
             data,
             error,
+            headers,
         }
     }
 }
@@ -318,10 +329,13 @@ impl fmt::Display for MessageEnvelope {
     }
 }
 
-struct MessageMetadata {
+/// Metadata about a message sent via a MessageEnvelope.
+#[derive(Clone)]
+pub struct MessageMetadata {
     sender: ActorId,
     dest: PortId,
     error: Option<DeliveryError>,
+    headers: Attrs,
 }
 
 /// Errors that occur during mailbox operations. Each error is associated
@@ -1018,7 +1032,7 @@ impl Mailbox {
         let port_id = PortId(self.state.actor_id.clone(), port_index);
         let state = Mutex::new(A::State::default());
         let reducer_typehash = accum.reducer_typehash();
-        let enqueue = move |update: A::Update| {
+        let enqueue = move |_, update: A::Update| {
             let mut state = state.lock().unwrap();
             accum.accumulate(&mut state, update);
             let _ = sender.send(state.clone());
@@ -1046,7 +1060,7 @@ impl Mailbox {
     // TODO: consider making lifetime bound to Self instead.
     pub(crate) fn open_enqueue_port<M: Message>(
         &self,
-        enqueue: impl Fn(M) -> Result<(), anyhow::Error> + Send + Sync + 'static,
+        enqueue: impl Fn(Attrs, M) -> Result<(), anyhow::Error> + Send + Sync + 'static,
     ) -> PortHandle<M> {
         PortHandle {
             mailbox: self.clone(),
@@ -1214,6 +1228,12 @@ impl MailboxSender for Mailbox {
             ),
             Entry::Occupied(entry) => {
                 let (metadata, data) = envelope.open();
+                let MessageMetadata {
+                    headers,
+                    sender,
+                    dest,
+                    error: metadata_error,
+                } = metadata;
                 // We use the entry API here so that we can remove the
                 // entry while holding an (entry) reference. The DashMap
                 // documentation suggests that deadlocks are possible
@@ -1221,13 +1241,23 @@ impl MailboxSender for Mailbox {
                 // but surely this applies only to the same thread? This
                 // would also imply we have to be careful holding any
                 // sort of reference across .await points.
-                match entry.get().send_serialized(data) {
+                match entry.get().send_serialized(headers, data) {
                     Ok(false) => {
                         entry.remove();
                     }
                     Ok(true) => (),
-                    Err(SerializedSenderError { data, error }) => MessageEnvelope::seal(
-                        metadata, data,
+                    Err(SerializedSenderError {
+                        data,
+                        error,
+                        headers,
+                    }) => MessageEnvelope::seal(
+                        MessageMetadata {
+                            headers,
+                            sender,
+                            dest,
+                            error: metadata_error,
+                        },
+                        data,
                     )
                     .undeliverable(DeliveryError::Mailbox(format!("{}", error)), return_handle),
                 }
@@ -1243,7 +1273,7 @@ impl MailboxSender for Mailbox {
 static CAN_SEND_WARNED_MAILBOXES: OnceLock<DashSet<ActorId>> = OnceLock::new();
 
 impl cap::sealed::CanSend for Mailbox {
-    fn post(&self, dest: PortId, data: Serialized) {
+    fn post(&self, dest: PortId, headers: Attrs, data: Serialized) {
         let return_handle = self
             .lookup_sender::<Undeliverable<MessageEnvelope>>()
             .map_or_else(
@@ -1263,7 +1293,7 @@ impl cap::sealed::CanSend for Mailbox {
                 },
                 |sender| PortHandle::new(self.clone(), self.state.allocate_port(), sender),
             );
-        let envelope = MessageEnvelope::new(self.actor_id().clone(), dest, data);
+        let envelope = MessageEnvelope::new(self.actor_id().clone(), dest, data, headers);
         MailboxSender::post(self, envelope, return_handle);
     }
 }
@@ -1296,7 +1326,7 @@ impl cap::sealed::CanSplitPort for Mailbox {
     fn split(&self, port_id: PortId, reducer_typehash: Option<u64>) -> PortId {
         fn post(mailbox: &Mailbox, port_id: PortId, msg: Serialized) {
             mailbox.post(
-                MessageEnvelope::new(mailbox.actor_id().clone(), port_id, msg),
+                MessageEnvelope::new(mailbox.actor_id().clone(), port_id, msg, Attrs::new()),
                 // TODO(pzhang) figure out how to use upstream's return handle,
                 // instead of getting a new one like this.
                 // This is okay for now because upstream is currently also using
@@ -1393,7 +1423,7 @@ impl<M: Message> PortHandle<M> {
     /// Send a message to this port.
     #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     pub fn send(&self, message: M) -> Result<(), MailboxSenderError> {
-        self.sender.send(message).map_err(|err| {
+        self.sender.send(Attrs::new(), message).map_err(|err| {
             MailboxSenderError::new_unbound::<M>(
                 self.mailbox.actor_id().clone(),
                 MailboxSenderErrorKind::Other(err),
@@ -1633,6 +1663,8 @@ impl<M> Drop for OncePortReceiver<M> {
 
 /// Error that that occur during SerializedSender's send operation.
 pub struct SerializedSenderError {
+    /// The headers associated with the message.
+    pub headers: Attrs,
     /// The message was tried to send.
     pub data: Serialized,
     /// The mailbox sender error that occurred.
@@ -1658,7 +1690,11 @@ trait SerializedSender: Send + Sync {
     /// Send_serialized returns true whenever the port remains valid
     /// after the send operation.
     #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SerializedSender`.
-    fn send_serialized(&self, serialized: Serialized) -> Result<bool, SerializedSenderError>;
+    fn send_serialized(
+        &self,
+        headers: Attrs,
+        serialized: Serialized,
+    ) -> Result<bool, SerializedSenderError>;
 }
 
 /// A sender to an M-typed unbounded port.
@@ -1666,14 +1702,14 @@ pub(crate) enum UnboundedPortSender<M: Message> {
     /// Send directly to the mpsc queue.
     Mpsc(mpsc::UnboundedSender<M>),
     /// Use the provided function to enqueue the item.
-    Func(Arc<dyn Fn(M) -> Result<(), anyhow::Error> + Send + Sync>),
+    Func(Arc<dyn Fn(Attrs, M) -> Result<(), anyhow::Error> + Send + Sync>),
 }
 
 impl<M: Message> UnboundedPortSender<M> {
-    fn send(&self, message: M) -> Result<(), anyhow::Error> {
+    fn send(&self, headers: Attrs, message: M) -> Result<(), anyhow::Error> {
         match self {
             Self::Mpsc(sender) => sender.send(message).map_err(anyhow::Error::from),
-            Self::Func(func) => func(message),
+            Self::Func(func) => func(headers, message),
         }
     }
 }
@@ -1714,8 +1750,8 @@ impl<M: Message> UnboundedSender<M> {
     }
 
     #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
-    fn send(&self, message: M) -> Result<(), MailboxSenderError> {
-        self.sender.send(message).map_err(|err| {
+    fn send(&self, headers: Attrs, message: M) -> Result<(), MailboxSenderError> {
+        self.sender.send(headers, message).map_err(|err| {
             MailboxSenderError::new_bound(self.port_id.clone(), MailboxSenderErrorKind::Other(err))
         })
     }
@@ -1738,18 +1774,23 @@ impl<M: RemoteMessage> SerializedSender for UnboundedSender<M> {
         self
     }
 
-    fn send_serialized(&self, serialized: Serialized) -> Result<bool, SerializedSenderError> {
+    fn send_serialized(
+        &self,
+        headers: Attrs,
+        serialized: Serialized,
+    ) -> Result<bool, SerializedSenderError> {
         match serialized.deserialized() {
             Ok(message) => {
-                self.sender
-                    .send(message)
-                    .map_err(|err| SerializedSenderError {
+                self.sender.send(headers.clone(), message).map_err(|err| {
+                    SerializedSenderError {
                         data: serialized,
                         error: MailboxSenderError::new_bound(
                             self.port_id.clone(),
                             MailboxSenderErrorKind::Other(err),
                         ),
-                    })?;
+                        headers,
+                    }
+                })?;
 
                 Ok(true)
             }
@@ -1759,6 +1800,7 @@ impl<M: RemoteMessage> SerializedSender for UnboundedSender<M> {
                     self.port_id.clone(),
                     MailboxSenderErrorKind::Deserialize(M::typename(), err),
                 ),
+                headers,
             }),
         }
     }
@@ -1824,11 +1866,16 @@ impl<M: RemoteMessage> SerializedSender for OnceSender<M> {
         self
     }
 
-    fn send_serialized(&self, serialized: Serialized) -> Result<bool, SerializedSenderError> {
+    fn send_serialized(
+        &self,
+        headers: Attrs,
+        serialized: Serialized,
+    ) -> Result<bool, SerializedSenderError> {
         match serialized.deserialized() {
             Ok(message) => self.send_once(message).map_err(|e| SerializedSenderError {
                 data: serialized,
                 error: e,
+                headers,
             }),
             Err(err) => Err(SerializedSenderError {
                 data: serialized,
@@ -1836,6 +1883,7 @@ impl<M: RemoteMessage> SerializedSender for OnceSender<M> {
                     self.port_id.clone(),
                     MailboxSenderErrorKind::Deserialize(M::typename(), err),
                 ),
+                headers,
             }),
         }
     }
@@ -1852,13 +1900,18 @@ impl SerializedSender for UntypedUnboundedSender {
         self
     }
 
-    fn send_serialized(&self, serialized: Serialized) -> Result<bool, SerializedSenderError> {
+    fn send_serialized(
+        &self,
+        headers: Attrs,
+        serialized: Serialized,
+    ) -> Result<bool, SerializedSenderError> {
         (self.sender)(serialized).map_err(|(data, err)| SerializedSenderError {
             data,
             error: MailboxSenderError::new_bound(
                 self.port_id.clone(),
                 MailboxSenderErrorKind::Other(err),
             ),
+            headers,
         })?;
 
         Ok(true)
@@ -2594,7 +2647,7 @@ mod tests {
 
         let count = Arc::new(AtomicUsize::new(0));
         let count_clone = count.clone();
-        let port = mbox.open_enqueue_port(move |n| {
+        let port = mbox.open_enqueue_port(move |_, n| {
             count_clone.fetch_add(n, Ordering::SeqCst);
             Ok(())
         });
@@ -2638,6 +2691,7 @@ mod tests {
                 a: 123,
                 b: "hello".into(),
             },
+            Attrs::new(),
         )
         .unwrap();
 
@@ -2680,6 +2734,7 @@ mod tests {
             foo.actor_id().clone(),
             PortId(id!(corge[0].bar), 9999u64),
             Serialized::serialize(&1u64).unwrap(),
+            Attrs::new(),
         );
         return_handle.send(Undeliverable(message)).unwrap();
 
@@ -2711,6 +2766,7 @@ mod tests {
             id!(foo[0].bar),
             PortId(id!(baz[0].corge), 9999u64),
             Serialized::serialize(&1u64).unwrap(),
+            Attrs::new(),
         );
         return_handle.send(Undeliverable(envelope.clone())).unwrap();
         // Check we receive the undelivered message.

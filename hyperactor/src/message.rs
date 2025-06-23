@@ -222,7 +222,7 @@ impl<M: Bind> IndexedErasedUnbound<M> {
         M: RemoteMessage,
     {
         let mailbox_clone = mailbox.clone();
-        let port_handle = mailbox.open_enqueue_port::<IndexedErasedUnbound<M>>(move |m| {
+        let port_handle = mailbox.open_enqueue_port::<IndexedErasedUnbound<M>>(move |_, m| {
             let bound_m = m.downcast()?.bind()?;
             actor_ref.send(&mailbox_clone, bound_m)?;
             Ok(())

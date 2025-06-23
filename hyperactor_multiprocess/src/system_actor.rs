@@ -1815,6 +1815,7 @@ mod tests {
     use anyhow::Result;
     use hyperactor::PortId;
     use hyperactor::actor::ActorStatus;
+    use hyperactor::attrs::Attrs;
     use hyperactor::channel;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::channel::Rx;
@@ -1941,6 +1942,7 @@ mod tests {
                 local_proc_mbox.actor_id().clone(),
                 local_u64_port.bind().port_id().clone(),
                 Serialized::serialize(&123u64).unwrap(),
+                Attrs::new(),
             ),
             monitored_return_handle(),
         );
@@ -2832,6 +2834,7 @@ mod tests {
             src_id,
             PortId(id!(proc[1].actor), 9999u64),
             Serialized::serialize(&1u64).unwrap(),
+            Attrs::new(),
         ));
 
         let envelope = rx.recv().await.unwrap();

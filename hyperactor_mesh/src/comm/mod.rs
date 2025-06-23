@@ -22,6 +22,7 @@ use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::PortId;
 use hyperactor::WorldId;
+use hyperactor::attrs::Attrs;
 use hyperactor::data::Serialized;
 use ndslice::Slice;
 use ndslice::selection::routing::RoutingFrame;
@@ -207,6 +208,7 @@ impl CommActor {
                     .proc_id()
                     .actor_id(message.dest_port().actor_name(), 0)
                     .port_id(message.dest_port().port()),
+                Attrs::new(),
                 Serialized::serialize(message.data())?,
             );
         }

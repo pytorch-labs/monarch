@@ -17,6 +17,7 @@ use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Named;
 use hyperactor::actor::ActorHandle;
+use hyperactor::attrs::Attrs;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::data::Serialized;
 use hyperactor_multiprocess::proc_actor::ProcActor;
@@ -111,7 +112,7 @@ impl ControllerMessageHandler for SimControllerActor {
         tracing::info!("controller send to ranks {:?}: {}", ranks, message);
         self.worker_actor_ref
             .port::<WorkerMessage>()
-            .send_serialized(this, message);
+            .send_serialized(this, message, Attrs::new());
         Ok(())
     }
 

@@ -10,6 +10,7 @@
 
 use anyhow::anyhow;
 use hyperactor::PortId;
+use hyperactor::attrs::Attrs;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::Tx;
 use hyperactor::channel::dial;
@@ -49,7 +50,7 @@ fn wrap_operational_message(operational_message: OperationalMessage) -> MessageE
     // a dummy port ID. We are delivering message with low level mailbox.
     // The port ID is not used.
     let port_id = PortId(id!(simulator[0].actor), 0);
-    MessageEnvelope::new(sender_id, port_id, serialized_proxy_message)
+    MessageEnvelope::new(sender_id, port_id, serialized_proxy_message, Attrs::new())
 }
 
 #[pyfunction]

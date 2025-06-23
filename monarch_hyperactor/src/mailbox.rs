@@ -18,6 +18,7 @@ use hyperactor::OncePortRef;
 use hyperactor::PortHandle;
 use hyperactor::PortId;
 use hyperactor::PortRef;
+use hyperactor::attrs::Attrs;
 use hyperactor::data::Serialized;
 use hyperactor::mailbox::MailboxSender;
 use hyperactor::mailbox::MessageEnvelope;
@@ -89,7 +90,12 @@ impl PyMailbox {
                 message, err
             ))
         })?;
-        let envelope = MessageEnvelope::new(self.inner.actor_id().clone(), port_id, message);
+        let envelope = MessageEnvelope::new(
+            self.inner.actor_id().clone(),
+            port_id,
+            message,
+            Attrs::new(),
+        );
         self.inner.post(envelope, monitored_return_handle());
         Ok(())
     }
@@ -113,7 +119,12 @@ impl PyMailbox {
                 message, err
             ))
         })?;
-        let envelope = MessageEnvelope::new(self.inner.actor_id().clone(), port_id, message);
+        let envelope = MessageEnvelope::new(
+            self.inner.actor_id().clone(),
+            port_id,
+            message,
+            Attrs::new(),
+        );
         self.inner.post(envelope, monitored_return_handle());
         Ok(())
     }

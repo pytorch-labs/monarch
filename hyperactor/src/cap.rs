@@ -35,11 +35,12 @@ pub(crate) mod sealed {
     use crate::PortId;
     use crate::actor::Actor;
     use crate::actor::ActorHandle;
+    use crate::attrs::Attrs;
     use crate::data::Serialized;
     use crate::mailbox::Mailbox;
 
     pub trait CanSend: Send + Sync {
-        fn post(&self, dest: PortId, data: Serialized);
+        fn post(&self, dest: PortId, headers: Attrs, data: Serialized);
     }
 
     pub trait CanOpenPort: Send + Sync {
