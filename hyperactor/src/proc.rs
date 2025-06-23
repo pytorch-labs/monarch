@@ -52,6 +52,7 @@ use crate::Handler;
 use crate::Message;
 use crate::Named;
 use crate::RemoteMessage;
+use crate::accum::ReducerSpec;
 use crate::actor::ActorError;
 use crate::actor::ActorErrorKind;
 use crate::actor::ActorHandle;
@@ -1230,8 +1231,8 @@ impl<A: Actor> cap::sealed::CanOpenPort for Instance<A> {
 }
 
 impl<A: Actor> cap::sealed::CanSplitPort for Instance<A> {
-    fn split(&self, port_id: PortId, reducer_typehash: Option<u64>) -> PortId {
-        self.mailbox.split(port_id, reducer_typehash)
+    fn split(&self, port_id: PortId, reducer_spec: Option<ReducerSpec>) -> anyhow::Result<PortId> {
+        self.mailbox.split(port_id, reducer_spec)
     }
 }
 

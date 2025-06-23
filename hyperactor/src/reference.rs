@@ -42,6 +42,7 @@ use crate as hyperactor;
 use crate::Named;
 use crate::RemoteHandles;
 use crate::RemoteMessage;
+use crate::accum::ReducerSpec;
 use crate::actor::RemoteActor;
 use crate::attrs::Attrs;
 use crate::cap;
@@ -756,8 +757,12 @@ impl PortId {
 
     /// Split this port, returning a new port that relays messages to the port
     /// through a local proxy, which may coalesce messages.
-    pub fn split(&self, caps: &impl cap::CanSplitPort, reducer_typehash: Option<u64>) -> PortId {
-        caps.split(self.clone(), reducer_typehash)
+    pub fn split(
+        &self,
+        caps: &impl cap::CanSplitPort,
+        reducer_spec: Option<ReducerSpec>,
+    ) -> anyhow::Result<PortId> {
+        caps.split(self.clone(), reducer_spec)
     }
 }
 
@@ -791,7 +796,7 @@ pub struct PortRef<M: RemoteMessage> {
         Ord = "ignore",
         Hash = "ignore"
     )]
-    reducer_typehash: Option<u64>,
+    reducer_spec: Option<ReducerSpec>,
     phantom: PhantomData<M>,
 }
 
@@ -801,17 +806,17 @@ impl<M: RemoteMessage> PortRef<M> {
     pub fn attest(port_id: PortId) -> Self {
         Self {
             port_id,
-            reducer_typehash: None,
+            reducer_spec: None,
             phantom: PhantomData,
         }
     }
 
     /// The caller attests that the provided PortId can be
     /// converted to a reachable, typed port reference.
-    pub(crate) fn attest_reducible(port_id: PortId, reducer_typehash: Option<u64>) -> Self {
+    pub(crate) fn attest_reducible(port_id: PortId, reducer_spec: Option<ReducerSpec>) -> Self {
         Self {
             port_id,
-            reducer_typehash,
+            reducer_spec,
             phantom: PhantomData,
         }
     }
@@ -824,8 +829,8 @@ impl<M: RemoteMessage> PortRef<M> {
 
     /// The typehash of this port's reducer, if any. Reducers
     /// may be used to coalesce messages sent to a port.
-    pub fn reducer_typehash(&self) -> &Option<u64> {
-        &self.reducer_typehash
+    pub fn reducer_spec(&self) -> &Option<ReducerSpec> {
+        &self.reducer_spec
     }
 
     /// This port's ID.
@@ -887,7 +892,7 @@ impl<M: RemoteMessage> Clone for PortRef<M> {
     fn clone(&self) -> Self {
         Self {
             port_id: self.port_id.clone(),
-            reducer_typehash: self.reducer_typehash.clone(),
+            reducer_spec: self.reducer_spec.clone(),
             phantom: PhantomData,
         }
     }
@@ -907,7 +912,7 @@ impl<M: RemoteMessage> Named for PortRef<M> {
 
 /// The parameters extracted from [`PortRef`] to [`Bindings`].
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Named)]
-pub struct UnboundPort(pub PortId, pub Option<u64>);
+pub struct UnboundPort(pub PortId, pub Option<ReducerSpec>);
 
 impl UnboundPort {
     /// Update the port id of this binding.
@@ -918,7 +923,7 @@ impl UnboundPort {
 
 impl<M: RemoteMessage> From<&PortRef<M>> for UnboundPort {
     fn from(port_ref: &PortRef<M>) -> Self {
-        UnboundPort(port_ref.port_id.clone(), port_ref.reducer_typehash.clone())
+        UnboundPort(port_ref.port_id.clone(), port_ref.reducer_spec.clone())
     }
 }
 
@@ -932,7 +937,7 @@ impl<M: RemoteMessage> Bind for PortRef<M> {
     fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
         let bound = bindings.try_pop_front::<UnboundPort>()?;
         self.port_id = bound.0;
-        self.reducer_typehash = bound.1;
+        self.reducer_spec = bound.1;
         Ok(())
     }
 }

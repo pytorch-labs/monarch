@@ -33,6 +33,7 @@ pub(crate) mod sealed {
     use async_trait::async_trait;
 
     use crate::PortId;
+    use crate::accum::ReducerSpec;
     use crate::actor::Actor;
     use crate::actor::ActorHandle;
     use crate::attrs::Attrs;
@@ -48,7 +49,11 @@ pub(crate) mod sealed {
     }
 
     pub trait CanSplitPort: Send + Sync {
-        fn split(&self, port_id: PortId, reducer: Option<u64>) -> PortId;
+        fn split(
+            &self,
+            port_id: PortId,
+            reducer_spec: Option<ReducerSpec>,
+        ) -> anyhow::Result<PortId>;
     }
 
     #[async_trait]

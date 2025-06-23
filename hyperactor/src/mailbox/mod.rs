@@ -103,6 +103,7 @@ use crate::OncePortRef;
 use crate::PortRef;
 use crate::accum;
 use crate::accum::Accumulator;
+use crate::accum::ReducerSpec;
 use crate::actor::Signal;
 use crate::actor::remote::USER_PORT_OFFSET;
 use crate::attrs::Attrs;
@@ -1031,10 +1032,10 @@ impl Mailbox {
         let (sender, receiver) = mpsc::unbounded_channel::<A::State>();
         let port_id = PortId(self.state.actor_id.clone(), port_index);
         let state = Mutex::new(A::State::default());
-        let reducer_typehash = accum.reducer_typehash();
+        let reducer_spec = accum.reducer_spec();
         let enqueue = move |_, update: A::Update| {
             let mut state = state.lock().unwrap();
-            accum.accumulate(&mut state, update);
+            accum.accumulate(&mut state, update)?;
             let _ = sender.send(state.clone());
             Ok(())
         };
@@ -1044,7 +1045,7 @@ impl Mailbox {
                 port_index,
                 sender: UnboundedPortSender::Func(Arc::new(enqueue)),
                 bound: Arc::new(OnceLock::new()),
-                reducer_typehash: Some(reducer_typehash),
+                reducer_spec,
             },
             PortReceiver::new(
                 receiver,
@@ -1067,7 +1068,7 @@ impl Mailbox {
             port_index: self.state.allocate_port(),
             sender: UnboundedPortSender::Func(Arc::new(enqueue)),
             bound: Arc::new(OnceLock::new()),
-            reducer_typehash: None,
+            reducer_spec: None,
         }
     }
 
@@ -1323,7 +1324,7 @@ impl SplitPortBuffer {
 }
 
 impl cap::sealed::CanSplitPort for Mailbox {
-    fn split(&self, port_id: PortId, reducer_typehash: Option<u64>) -> PortId {
+    fn split(&self, port_id: PortId, reducer_spec: Option<ReducerSpec>) -> anyhow::Result<PortId> {
         fn post(mailbox: &Mailbox, port_id: PortId, msg: Serialized) {
             mailbox.post(
                 MessageEnvelope::new(mailbox.actor_id().clone(), port_id, msg, Attrs::new()),
@@ -1338,7 +1339,15 @@ impl cap::sealed::CanSplitPort for Mailbox {
         let port_index = self.state.allocate_port();
         let split_port = self.actor_id().port_id(port_index);
         let mailbox = self.clone();
-        let reducer = reducer_typehash.and_then(accum::resolve_reducer);
+        let reducer = reducer_spec
+            .map(
+                |ReducerSpec {
+                     typehash,
+                     builder_params,
+                 }| { accum::resolve_reducer(typehash, builder_params) },
+            )
+            .transpose()?
+            .flatten();
         let enqueue: Box<
             dyn Fn(Serialized) -> Result<(), (Serialized, anyhow::Error)> + Send + Sync,
         > = match reducer {
@@ -1374,7 +1383,7 @@ impl cap::sealed::CanSplitPort for Mailbox {
                 port_id: split_port.clone(),
             },
         );
-        split_port
+        Ok(split_port)
     }
 }
 
@@ -1399,7 +1408,7 @@ pub struct PortHandle<M: Message> {
     bound: Arc<OnceLock<PortId>>,
     // Typehash of an optional reducer. When it's defined, we include it in port
     /// references to optionally enable incremental accumulation.
-    reducer_typehash: Option<u64>,
+    reducer_spec: Option<ReducerSpec>,
 }
 
 impl<M: Message> PortHandle<M> {
@@ -1409,7 +1418,7 @@ impl<M: Message> PortHandle<M> {
             port_index,
             sender,
             bound: Arc::new(OnceLock::new()),
-            reducer_typehash: None,
+            reducer_spec: None,
         }
     }
 
@@ -1439,7 +1448,7 @@ impl<M: RemoteMessage> PortHandle<M> {
             self.bound
                 .get_or_init(|| self.mailbox.bind(self).port_id().clone())
                 .clone(),
-            self.reducer_typehash.clone(),
+            self.reducer_spec.clone(),
         )
     }
 
@@ -1457,7 +1466,7 @@ impl<M: Message> Clone for PortHandle<M> {
             port_index: self.port_index,
             sender: self.sender.clone(),
             bound: self.bound.clone(),
-            reducer_typehash: self.reducer_typehash.clone(),
+            reducer_spec: self.reducer_spec.clone(),
         }
     }
 }
@@ -2377,18 +2386,18 @@ mod tests {
         // accum port could have reducer typehash
         {
             let accumulator = accum::max::<u64>();
-            let reducer_typehash = accumulator.reducer_typehash();
+            let reducer_spec = accumulator.reducer_spec().unwrap();
             let (port, _) = mbox.open_accum_port(accum::max::<u64>());
-            assert_eq!(port.reducer_typehash, Some(reducer_typehash),);
+            assert_eq!(port.reducer_spec, Some(reducer_spec.clone()));
             let port_ref = port.bind();
-            assert_eq!(port_ref.reducer_typehash(), &Some(reducer_typehash));
+            assert_eq!(port_ref.reducer_spec(), &Some(reducer_spec));
         }
         // normal port should not have reducer typehash
         {
             let (port, _) = mbox.open_port::<u64>();
-            assert_eq!(port.reducer_typehash, None);
+            assert_eq!(port.reducer_spec, None);
             let port_ref = port.bind();
-            assert_eq!(port_ref.reducer_typehash(), &None);
+            assert_eq!(port_ref.reducer_spec(), &None);
         }
     }
 
@@ -2949,7 +2958,7 @@ mod tests {
         port_id2_1: PortId,
     }
 
-    async fn setup_split_port_ids(reducer_typehash: Option<u64>) -> Setup {
+    async fn setup_split_port_ids(reducer_spec: Option<ReducerSpec>) -> Setup {
         let muxer = MailboxMuxer::new();
         let actor0 = Mailbox::new(id!(test[0].actor), BoxedMailboxSender::new(muxer.clone()));
         let actor1 = Mailbox::new(id!(test[1].actor1), BoxedMailboxSender::new(muxer.clone()));
@@ -2961,11 +2970,11 @@ mod tests {
         let port_id = port_handle.bind().port_id().clone();
 
         // Split it twice on actor1
-        let port_id1 = port_id.split(&actor1, reducer_typehash.clone());
-        let port_id2 = port_id.split(&actor1, reducer_typehash.clone());
+        let port_id1 = port_id.split(&actor1, reducer_spec.clone()).unwrap();
+        let port_id2 = port_id.split(&actor1, reducer_spec.clone()).unwrap();
 
         // A split port id can also be split
-        let port_id2_1 = port_id2.split(&actor1, reducer_typehash);
+        let port_id2_1 = port_id2.split(&actor1, reducer_spec).unwrap();
 
         Setup {
             receiver,
@@ -3038,7 +3047,7 @@ mod tests {
         let _config_guard = config.override_key(crate::config::SPLIT_MAX_BUFFER_SIZE, 1);
 
         let sum_accumulator = accum::sum::<u64>();
-        let reducer_typehash = sum_accumulator.reducer_typehash();
+        let reducer_spec = sum_accumulator.reducer_spec();
         let Setup {
             mut receiver,
             actor0,
@@ -3047,7 +3056,7 @@ mod tests {
             port_id1,
             port_id2,
             port_id2_1,
-        } = setup_split_port_ids(Some(reducer_typehash)).await;
+        } = setup_split_port_ids(reducer_spec).await;
         post(&actor0, port_id.clone(), 4);
         post(&actor1, port_id1.clone(), 2);
         post(&actor1, port_id2.clone(), 3);
@@ -3075,8 +3084,8 @@ mod tests {
         let (port_handle, mut receiver) = actor.open_port::<u64>();
         let port_id = port_handle.bind().port_id().clone();
         // Split it
-        let reducer_typehash = accum::sum::<u64>().reducer_typehash();
-        let split_port_id = port_id.split(&actor, Some(reducer_typehash));
+        let reducer_spec = accum::sum::<u64>().reducer_spec();
+        let split_port_id = port_id.split(&actor, reducer_spec).unwrap();
 
         // Send 9 messages.
         for msg in [1, 5, 3, 4, 2, 91, 92, 93, 94] {
