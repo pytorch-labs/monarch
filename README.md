@@ -13,7 +13,7 @@ PyTorch, but at cluster scale.
 
 Note: Monarch is currently only supported on Linux systems
 
-## Installation
+## Installati
 
 `pip install torchmonarch-nightly`
 
