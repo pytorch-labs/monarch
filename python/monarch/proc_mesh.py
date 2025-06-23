@@ -38,7 +38,7 @@ from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyPr
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape, Slice
 from monarch.actor_mesh import _Actor, _ActorMeshRefImpl, Actor, ActorMeshRef
 
-from monarch.code_sync import RsyncMeshClient
+from monarch.code_sync import RemoteWorkspace, RsyncMeshClient
 from monarch.common._device_utils import _local_device_count
 from monarch.common.device_mesh import DeviceMesh
 from monarch.common.shape import MeshTrait
@@ -194,7 +194,8 @@ class ProcMesh(MeshTrait):
                 shape=workspace_shape,
                 # TODO(agallagher): Is there a better way to infer/set the local
                 # workspace dir, rather than use PWD?
-                workspace=os.getcwd(),
+                local_workspace=os.getcwd(),
+                remote_workspace=RemoteWorkspace.FromEnvVar("WORKSPACE_DIR"),
             )
         await self._rsync_mesh_client.sync_workspace()
 

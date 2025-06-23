@@ -158,8 +158,16 @@ impl RsyncDaemon {
     }
 }
 
+#[derive(Clone, Debug, Named, Serialize, Deserialize)]
+pub enum Workspace {
+    Constant(PathBuf),
+    FromEnvVar(String),
+}
+
 #[derive(Debug, Named, Serialize, Deserialize)]
-pub struct RsyncParams {}
+pub struct RsyncParams {
+    pub workspace: Workspace,
+}
 
 #[derive(Debug)]
 #[hyperactor::export(
@@ -178,12 +186,12 @@ pub struct RsyncActor {
 impl Actor for RsyncActor {
     type Params = RsyncParams;
 
-    async fn new(RsyncParams {}: Self::Params) -> Result<Self> {
-        let daemon = RsyncDaemon::spawn(
-            TcpListener::bind(("::1", 0)).await?,
-            &PathBuf::from(std::env::var("WORKSPACE_DIR")?),
-        )
-        .await?;
+    async fn new(RsyncParams { workspace }: Self::Params) -> Result<Self> {
+        let workspace = match workspace {
+            Workspace::Constant(p) => p,
+            Workspace::FromEnvVar(v) => PathBuf::from(std::env::var(v)?),
+        };
+        let daemon = RsyncDaemon::spawn(TcpListener::bind(("::1", 0)).await?, &workspace).await?;
         Ok(Self { daemon })
     }
 }

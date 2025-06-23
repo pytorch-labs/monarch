@@ -10,6 +10,18 @@ from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
 
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape
 
+class RemoteWorkspace:
+    """
+    Python binding for the Rust RemoteWorkspace enum.
+    """
+    @final
+    class Constant(RemoteWorkspace):
+        def __init__(self, path) -> None: ...
+
+    @final
+    class FromEnvVar(RemoteWorkspace):
+        def __init__(self, var) -> None: ...
+
 @final
 class RsyncMeshClient:
     """
@@ -19,6 +31,7 @@ class RsyncMeshClient:
     def spawn_blocking(
         proc_mesh: ProcMesh,
         shape: Shape,
-        workspace: str,
+        local_workspace: str,
+        remote_workspace: RemoteWorkspace,
     ) -> RsyncMeshClient: ...
     async def sync_workspace(self) -> None: ...

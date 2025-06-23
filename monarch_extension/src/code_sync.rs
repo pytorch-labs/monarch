@@ -23,6 +23,22 @@ use pyo3::Bound;
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
 
+#[pyclass(frozen, module = "monarch._rust_bindings.monarch_extension.code_sync")]
+#[derive(Clone, Debug)]
+enum RemoteWorkspace {
+    Constant(PathBuf),
+    FromEnvVar(String),
+}
+
+impl From<RemoteWorkspace> for rsync::Workspace {
+    fn from(workspace: RemoteWorkspace) -> rsync::Workspace {
+        match workspace {
+            RemoteWorkspace::Constant(v) => rsync::Workspace::Constant(v),
+            RemoteWorkspace::FromEnvVar(v) => rsync::Workspace::FromEnvVar(v),
+        }
+    }
+}
+
 #[pyclass(
     frozen,
     name = "RsyncMeshClient",
@@ -37,21 +53,29 @@ pub struct RsyncMeshClient {
 #[pymethods]
 impl RsyncMeshClient {
     #[staticmethod]
-    #[pyo3(signature = (*, proc_mesh, shape, workspace))]
+    #[pyo3(signature = (*, proc_mesh, shape, local_workspace, remote_workspace))]
     fn spawn_blocking(
         py: Python,
         proc_mesh: &PyProcMesh,
         shape: &PyShape,
-        workspace: PathBuf,
+        local_workspace: PathBuf,
+        remote_workspace: RemoteWorkspace,
     ) -> PyResult<Self> {
         let proc_mesh = Arc::clone(&proc_mesh.inner);
         let shape = shape.get_inner().clone();
         signal_safe_block_on(py, async move {
-            let actor_mesh = proc_mesh.spawn("rsync", &rsync::RsyncParams {}).await?;
+            let actor_mesh = proc_mesh
+                .spawn(
+                    "rsync",
+                    &rsync::RsyncParams {
+                        workspace: remote_workspace.into(),
+                    },
+                )
+                .await?;
             Ok(Self {
                 actor_mesh: Arc::new(actor_mesh),
                 shape,
-                workspace,
+                workspace: local_workspace,
             })
         })?
     }
@@ -68,6 +92,7 @@ impl RsyncMeshClient {
 }
 
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_class::<RemoteWorkspace>()?;
     module.add_class::<RsyncMeshClient>()?;
     Ok(())
 }
