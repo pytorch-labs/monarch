@@ -28,6 +28,10 @@ if TYPE_CHECKING:
 import monarch
 from monarch import ActorFuture as Future
 
+# Conditionally import DeviceMesh and spawn_tensor_engine only if tensor_engine is available
+# pyre-ignore[21]
+from monarch._rust_bindings import has_tensor_engine
+
 from monarch._rust_bindings.hyperactor_extension.alloc import (  # @manual=//monarch/monarch_extension:monarch_extension  # @manual=//monarch/monarch_extension:monarch_extension
     Alloc,
     AllocConstraints,
@@ -40,10 +44,15 @@ from monarch.actor_mesh import _Actor, _ActorMeshRefImpl, Actor, ActorMeshRef
 
 from monarch.code_sync import RemoteWorkspace, RsyncMeshClient
 from monarch.common._device_utils import _local_device_count
-from monarch.common.device_mesh import DeviceMesh
 from monarch.common.shape import MeshTrait
-from monarch.mesh_controller import spawn_tensor_engine
 from monarch.rdma import RDMAManager
+
+if has_tensor_engine():
+    from monarch.common.device_mesh import DeviceMesh
+    from monarch.mesh_controller import spawn_tensor_engine
+else:
+    DeviceMesh = None
+    spawn_tensor_engine = None
 
 T = TypeVar("T")
 try:
@@ -159,6 +168,10 @@ class ProcMesh(MeshTrait):
 
     @property
     def _device_mesh(self) -> "DeviceMesh":
+        if spawn_tensor_engine is None:
+            raise RuntimeError(
+                "DeviceMesh is not available because tensor_engine was not compiled (USE_TENSOR_ENGINE=0)"
+            )
         if self._maybe_device_mesh is None:
             if self._mock_shape is not None:
                 raise NotImplementedError(
