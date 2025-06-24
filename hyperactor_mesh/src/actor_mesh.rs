@@ -13,13 +13,16 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use hyperactor::Actor;
+use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Message;
 use hyperactor::Named;
 use hyperactor::PortHandle;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
+use hyperactor::WorldId;
 use hyperactor::actor::RemoteActor;
+use hyperactor::cap;
 use hyperactor::mailbox::MailboxSenderError;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::message::Bind;
@@ -37,6 +40,7 @@ use ndslice::selection::ReifyView;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::CommActor;
 use crate::Mesh;
 use crate::comm::multicast::CastMessage;
 use crate::comm::multicast::CastMessageEnvelope;
@@ -45,6 +49,70 @@ use crate::comm::multicast::DestinationPort;
 use crate::comm::multicast::Uslice;
 use crate::metrics;
 use crate::proc_mesh::ProcMesh;
+use crate::reference::ActorMeshId;
+use crate::reference::ActorMeshRef;
+use crate::reference::ProcMeshId;
+
+/// Common implementation for ActorMeshes and ActorMeshRefs to cast an [`M`]-typed message
+#[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `CastError`.
+pub(crate) fn actor_mesh_cast<M: Castable + Clone, A>(
+    caps: &impl cap::CanSend,
+    actor_mesh_shape: &Shape,
+    proc_mesh_shape: &Shape,
+    actor_name: &str,
+    sender: &ActorId,
+    comm_actor_ref: &ActorRef<CommActor>,
+    selection: Selection,
+    message: M,
+) -> Result<(), CastError>
+where
+    A: RemoteHandles<Cast<M>> + RemoteHandles<IndexedErasedUnbound<Cast<M>>>,
+{
+    let _ = metrics::ACTOR_MESH_CAST_DURATION.start(hyperactor::kv_pairs!(
+        "message_type" => M::typename(),
+        "message_variant" => message.arm().unwrap_or_default(),
+    ));
+
+    let message = Cast {
+        rank: CastRank(usize::MAX),
+        shape: actor_mesh_shape.clone(),
+        message,
+    };
+    let message = CastMessageEnvelope::new(
+        sender.clone(),
+        DestinationPort::new::<A, Cast<M>>(actor_name.to_string()),
+        message,
+    )?;
+
+    // Sub-set the selection to the selection that represents the mesh's view
+    // of the root mesh. We need to do this because the comm actor uses the
+    // slice as the stream key; thus different sub-slices will result in potentially
+    // out of order delivery.
+    //
+    // TODO: We should repair this by introducing an explicit stream key, associated
+    // with the root mesh.
+    let selection_of_slice = proc_mesh_shape
+        .slice()
+        .reify_view(actor_mesh_shape.slice())
+        .expect("invalid slice");
+    let selection = dsl::intersection(selection, selection_of_slice);
+
+    comm_actor_ref.send(
+        caps,
+        CastMessage {
+            dest: Uslice {
+                // TODO: currently this slice is being used as the stream key
+                // in comm actor. We should change it to an explicit id, maintained
+                // by the root proc mesh.
+                slice: proc_mesh_shape.slice().clone(),
+                selection,
+            },
+            message,
+        },
+    )?;
+
+    Ok(())
+}
 
 /// A mesh of actors, all of which reside on the same [`ProcMesh`].
 pub trait ActorMesh: Mesh {
@@ -58,52 +126,16 @@ pub trait ActorMesh: Mesh {
     where
         Self::Actor: RemoteHandles<Cast<M>> + RemoteHandles<IndexedErasedUnbound<Cast<M>>>,
     {
-        let _ = metrics::ACTOR_MESH_CAST_DURATION.start(hyperactor::kv_pairs!(
-            "message_type" => M::typename(),
-            "message_variant" => message.arm().unwrap_or_default(),
-        ));
-
-        let message = Cast {
-            rank: CastRank(usize::MAX),
-            shape: self.shape().clone(),
-            message,
-        };
-        let message = CastMessageEnvelope::new(
-            self.proc_mesh().client().actor_id().clone(),
-            DestinationPort::new::<Self::Actor, Cast<M>>(self.name().to_string()),
-            message,
-        )?;
-
-        // Sub-set the selection to the selection that represents the mesh's view
-        // of the root mesh. We need to do this because the comm actor uses the
-        // slice as the stream key; thus different sub-slices will result in potentially
-        // out of order delivery.
-        //
-        // TODO: We should repair this by introducing an explicit stream key, associated
-        // with the root mesh.
-        let selection_of_slice = self
-            .proc_mesh()
-            .shape()
-            .slice()
-            .reify_view(self.shape().slice())
-            .expect("invalid slice");
-        let selection = dsl::intersection(selection, selection_of_slice);
-
-        self.proc_mesh().comm_actor().send(
+        actor_mesh_cast::<M, Self::Actor>(
             self.proc_mesh().client(),
-            CastMessage {
-                dest: Uslice {
-                    // TODO: currently this slice is being used as the stream key
-                    // in comm actor. We should change it to an explicit id, maintained
-                    // by the root proc mesh.
-                    slice: self.proc_mesh().shape().slice().clone(),
-                    selection,
-                },
-                message,
-            },
-        )?;
-
-        Ok(())
+            self.shape(),
+            self.proc_mesh().shape(),
+            self.name(),
+            self.proc_mesh().client().actor_id(),
+            self.proc_mesh().comm_actor(),
+            selection,
+            message,
+        )
     }
 
     /// The ProcMesh on top of which this actor mesh is spawned.
@@ -111,6 +143,22 @@ pub trait ActorMesh: Mesh {
 
     /// The name global name of actors in this mesh.
     fn name(&self) -> &str;
+
+    fn world_id(&self) -> &WorldId {
+        self.proc_mesh().world_id()
+    }
+
+    /// Get a serializeable reference to this mesh similar to ActorHandle::bind
+    fn bind(&self) -> ActorMeshRef<Self::Actor> {
+        ActorMeshRef::attest(
+            ActorMeshId(
+                ProcMeshId(self.world_id().to_string()),
+                self.name().to_string(),
+            ),
+            self.shape().clone(),
+            self.proc_mesh().shape().clone(),
+        )
+    }
 }
 
 /// Abstracts over shared and borrowed references to a [`ProcMesh`].

@@ -80,6 +80,7 @@ pub struct ProcMesh {
     client: Mailbox,
     client_undeliverable_receiver: Option<PortReceiver<Undeliverable<MessageEnvelope>>>,
     comm_actors: Vec<ActorRef<CommActor>>,
+    world_id: WorldId,
 }
 
 struct EventState {
@@ -279,6 +280,7 @@ impl ProcMesh {
         }
 
         let shape = alloc.shape().clone();
+        let world_id = alloc.world_id().clone();
 
         Ok(Self {
             event_state: Some(EventState {
@@ -295,6 +297,7 @@ impl ProcMesh {
             client,
             client_undeliverable_receiver: Some(client_undeliverable_receiver),
             comm_actors,
+            world_id,
         })
     }
 
@@ -402,6 +405,10 @@ impl ProcMesh {
 
     pub fn proc_id(&self) -> &ProcId {
         self.client_proc.proc_id()
+    }
+
+    pub fn world_id(&self) -> &WorldId {
+        &self.world_id
     }
 
     /// An event stream of proc events. Each ProcMesh can produce only one such
