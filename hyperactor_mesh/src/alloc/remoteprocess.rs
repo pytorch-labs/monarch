@@ -1004,6 +1004,7 @@ mod test {
 
     use hyperactor::ActorRef;
     use hyperactor::channel::ChannelRx;
+    use hyperactor::clock::ClockKind;
     use hyperactor::id;
     use ndslice::shape;
     use tokio::sync::oneshot;
@@ -1089,7 +1090,7 @@ mod test {
 
     #[timed_test::async_timed_test(timeout_secs = 5)]
     async fn test_simple() {
-        hyperactor_telemetry::initialize_logging();
+        hyperactor_telemetry::initialize_logging(ClockKind::default());
         let serve_addr = ChannelAddr::any(ChannelTransport::Unix);
         let bootstrap_addr = ChannelAddr::any(ChannelTransport::Unix);
         let (_, mut rx) = channel::serve(bootstrap_addr.clone()).await.unwrap();
@@ -1223,7 +1224,7 @@ mod test {
 
     #[timed_test::async_timed_test(timeout_secs = 15)]
     async fn test_normal_stop() {
-        hyperactor_telemetry::initialize_logging();
+        hyperactor_telemetry::initialize_logging(ClockKind::default());
         let serve_addr = ChannelAddr::any(ChannelTransport::Unix);
         let bootstrap_addr = ChannelAddr::any(ChannelTransport::Unix);
         let (_, mut rx) = channel::serve(bootstrap_addr.clone()).await.unwrap();
@@ -1297,7 +1298,7 @@ mod test {
 
     #[timed_test::async_timed_test(timeout_secs = 15)]
     async fn test_realloc() {
-        hyperactor_telemetry::initialize_logging();
+        hyperactor_telemetry::initialize_logging(ClockKind::default());
         let serve_addr = ChannelAddr::any(ChannelTransport::Unix);
         let bootstrap_addr = ChannelAddr::any(ChannelTransport::Unix);
         let (_, mut rx) = channel::serve(bootstrap_addr.clone()).await.unwrap();
@@ -1420,7 +1421,7 @@ mod test {
             Duration::from_secs(1),
         );
 
-        hyperactor_telemetry::initialize_logging();
+        hyperactor_telemetry::initialize_logging(ClockKind::default());
         let serve_addr = ChannelAddr::any(ChannelTransport::Unix);
         let bootstrap_addr = ChannelAddr::any(ChannelTransport::Unix);
         let (_, mut rx) = channel::serve(bootstrap_addr.clone()).await.unwrap();
@@ -1502,7 +1503,7 @@ mod test {
 
     #[timed_test::async_timed_test(timeout_secs = 15)]
     async fn test_inner_alloc_failure() {
-        hyperactor_telemetry::initialize_logging();
+        hyperactor_telemetry::initialize_logging(ClockKind::default());
         let serve_addr = ChannelAddr::any(ChannelTransport::Unix);
         let bootstrap_addr = ChannelAddr::any(ChannelTransport::Unix);
         let (_, mut rx) = channel::serve(bootstrap_addr.clone()).await.unwrap();
@@ -1584,6 +1585,7 @@ mod test {
 
 #[cfg(test)]
 mod test_alloc {
+    use hyperactor::clock::ClockKind;
     use ndslice::shape;
     use timed_test::async_timed_test;
 
@@ -1597,7 +1599,7 @@ mod test_alloc {
             hyperactor::config::MESSAGE_DELIVERY_TIMEOUT,
             Duration::from_secs(1),
         );
-        hyperactor_telemetry::initialize_logging();
+        hyperactor_telemetry::initialize_logging(ClockKind::default());
 
         let spec = AllocSpec {
             shape: shape!(host = 2, gpu = 2),
@@ -1718,7 +1720,7 @@ mod test_alloc {
             hyperactor::config::MESSAGE_DELIVERY_TIMEOUT,
             Duration::from_secs(1),
         );
-        hyperactor_telemetry::initialize_logging();
+        hyperactor_telemetry::initialize_logging(ClockKind::default());
 
         let spec = AllocSpec {
             shape: shape!(host = 2, gpu = 2),
@@ -1839,7 +1841,7 @@ mod test_alloc {
         unsafe {
             std::env::set_var("MONARCH_MESSAGE_DELIVERY_TIMEOUT_SECS", "1");
         }
-        hyperactor_telemetry::initialize_logging();
+        hyperactor_telemetry::initialize_logging(ClockKind::default());
 
         let spec = AllocSpec {
             shape: shape!(host = 2, gpu = 2),

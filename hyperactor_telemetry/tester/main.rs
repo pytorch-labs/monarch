@@ -6,6 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use hyperactor_telemetry::DefaultTelemetryClock;
 use hyperactor_telemetry::declare_static_counter;
 use hyperactor_telemetry::declare_static_gauge;
 use hyperactor_telemetry::declare_static_histogram;
@@ -23,6 +24,6 @@ fn something_an_actor_would_do() {
 
 fn main() {
     // Initialize logging with default configuration
-    initialize_logging();
+    initialize_logging(DefaultTelemetryClock {});
     tracing::info!("info log");
 }

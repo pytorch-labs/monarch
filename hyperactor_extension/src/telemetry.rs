@@ -10,6 +10,10 @@
 
 use std::cell::Cell;
 
+use hyperactor::clock::ClockKind;
+use hyperactor::clock::RealClock;
+use hyperactor::clock::SimClock;
+use hyperactor_telemetry::swap_telemetry_clock;
 use pyo3::prelude::*;
 use pyo3::types::PyTraceback;
 use tracing::span::EnteredSpan;
@@ -94,6 +98,18 @@ pub fn forward_to_tracing(py: Python, record: PyObject) -> PyResult<()> {
     }
     Ok(())
 }
+#[pyfunction]
+pub fn use_real_clock() -> PyResult<()> {
+    swap_telemetry_clock(ClockKind::Real(RealClock));
+    Ok(())
+}
+
+#[pyfunction]
+pub fn use_sim_clock() -> PyResult<()> {
+    println!("Using simulated clock");
+    swap_telemetry_clock(ClockKind::Sim(SimClock));
+    Ok(())
+}
 
 #[pyclass(
     unsendable,
@@ -152,6 +168,20 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
         "monarch._rust_bindings.hyperactor_extension.telemetry",
     )?;
     module.add_function(get_current_span_id_fn)?;
+
+    let use_real_clock_fn = wrap_pyfunction!(use_real_clock, module)?;
+    use_real_clock_fn.setattr(
+        "__module__",
+        "monarch._rust_bindings.hyperactor_extension.telemetry",
+    )?;
+    module.add_function(use_real_clock_fn)?;
+
+    let use_sim_clock_fn = wrap_pyfunction!(use_sim_clock, module)?;
+    use_sim_clock_fn.setattr(
+        "__module__",
+        "monarch._rust_bindings.hyperactor_extension.telemetry",
+    )?;
+    module.add_function(use_sim_clock_fn)?;
 
     module.add_class::<PySpan>()?;
     Ok(())

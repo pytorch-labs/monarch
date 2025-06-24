@@ -40,6 +40,7 @@ use std::io::IsTerminal;
 use std::io::Write;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Instant;
 
 use lazy_static::lazy_static;
@@ -62,6 +63,23 @@ use tracing_subscriber::filter::Targets;
 use tracing_subscriber::fmt;
 
 use crate::recorder::Recorder;
+
+pub trait TelemetryClock {
+    fn now(&self) -> tokio::time::Instant;
+    fn system_time_now(&self) -> std::time::SystemTime;
+}
+
+pub struct DefaultTelemetryClock {}
+
+impl TelemetryClock for DefaultTelemetryClock {
+    fn now(&self) -> tokio::time::Instant {
+        tokio::time::Instant::now()
+    }
+
+    fn system_time_now(&self) -> std::time::SystemTime {
+        std::time::SystemTime::now()
+    }
+}
 
 // Need to keep this around so that the tracing subscriber doesn't drop the writer.
 lazy_static! {
@@ -89,6 +107,8 @@ lazy_static! {
                 .finish(writer),
         );
     };
+    static ref TELEMETRY_CLOCK: Arc<Mutex<Box<dyn TelemetryClock + Send>>> =
+        { Arc::new(Mutex::new(Box::new(DefaultTelemetryClock {}))) };
 }
 
 /// The recorder singleton that is configured as a layer in the the default tracing
@@ -96,6 +116,12 @@ lazy_static! {
 pub fn recorder() -> &'static Recorder {
     static RECORDER: std::sync::OnceLock<Recorder> = std::sync::OnceLock::new();
     RECORDER.get_or_init(Recorder::new)
+}
+
+/// Hotswap the telemetry clock at runtime. This allows changing the clock implementation
+/// after initialization, which is useful for testing or switching between real and simulated time.
+pub fn swap_telemetry_clock(clock: impl TelemetryClock + Send + 'static) {
+    *TELEMETRY_CLOCK.lock().unwrap() = Box::new(clock);
 }
 
 /// Create key value pairs for use in opentelemetry. These pairs can be stored and used multiple
@@ -397,7 +423,8 @@ macro_rules! declare_static_histogram {
 /// scuba logging won't normally be enabled for a unit test unless we are specifically testing logging, so
 /// you don't need to worry about your tests being flakey due to scuba logging. You have to manually call initialize_logging()
 /// to get this behavior.
-pub fn initialize_logging() {
+pub fn initialize_logging(clock: impl TelemetryClock + Send + 'static) {
+    swap_telemetry_clock(clock);
     let glog_level = match env::Env::current() {
         env::Env::Local => "info",
         env::Env::MastEmulator => "info",

@@ -12,6 +12,7 @@ use std::sync::LazyLock;
 use std::sync::Mutex;
 use std::time::SystemTime;
 
+use hyperactor_telemetry::TelemetryClock;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -96,6 +97,22 @@ impl Clock for ClockKind {
         }
     }
     fn system_time_now(&self) -> SystemTime {
+        match self {
+            Self::Sim(clock) => clock.system_time_now(),
+            Self::Real(clock) => clock.system_time_now(),
+        }
+    }
+}
+
+impl TelemetryClock for ClockKind {
+    fn now(&self) -> tokio::time::Instant {
+        match self {
+            Self::Sim(clock) => clock.now(),
+            Self::Real(clock) => clock.now(),
+        }
+    }
+
+    fn system_time_now(&self) -> std::time::SystemTime {
         match self {
             Self::Sim(clock) => clock.system_time_now(),
             Self::Real(clock) => clock.system_time_now(),
