@@ -71,9 +71,9 @@ pub mod remote;
 /// Actors are assumed to be _deterministic_: that is, the state of an
 /// actor is determined by the set (and order) of messages it receives.
 #[async_trait]
-pub trait Actor: Sized + Send + Sync + Debug + 'static {
+pub trait Actor: Sized + Send + Debug + 'static {
     /// The type of initialization parameters accepted by this actor.
-    type Params: Send + Sync + 'static;
+    type Params: Send + 'static;
 
     /// Creates a new actor instance given its instantiation parameters.
     async fn new(params: Self::Params) -> Result<Self, anyhow::Error>;
