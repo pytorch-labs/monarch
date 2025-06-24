@@ -937,6 +937,19 @@ mod tests {
                 ProcEvent::Stopped(0, ProcStopReason::Killed(0, false))
             );
 
+            // Try to send a message to 'ping'. Since 'ping's mailbox
+            // is stopped, the send will timeout and fail.
+            let (unmonitored_done_tx, _) = mesh.client().open_once_port();
+            ping.send(
+                mesh.client(),
+                PingPongMessage(1, pong.clone(), unmonitored_done_tx.bind()),
+            )
+            .unwrap();
+
+            // The message will be returned!
+            let Undeliverable(msg) = undeliverable_msg_rx.recv().await.unwrap();
+            assert_eq!(msg.sender(), mesh.client().actor_id());
+
             // Get 'pong' to send 'ping' a message. Since 'ping's
             // mailbox is stopped, the send will timeout and fail.
             let (unmonitored_done_tx, _) = mesh.client().open_once_port();
