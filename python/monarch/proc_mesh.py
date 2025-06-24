@@ -98,7 +98,9 @@ class ProcMesh(MeshTrait):
         )
         return ProcMesh(self._proc_mesh, _mock_shape=shape, _device_mesh=device_mesh)
 
-    def spawn(self, name: str, Class: Type[T], *args: Any, **kwargs: Any) -> Future[T]:
+    def spawn(
+        self, name: str, Class: Type[T], *args: Any, **kwargs: Any
+    ) -> Future[ActorMeshRef[T]]:
         if self._mock_shape is not None:
             raise NotImplementedError("NYI: spawn on slice of a proc mesh.")
         return Future(

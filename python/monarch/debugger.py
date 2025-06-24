@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Tuple, Union
 
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
-from monarch.actor_mesh import Actor, endpoint
+from monarch.actor_mesh import Actor, ActorMeshRef, endpoint
 
 from monarch.pdb_wrapper import DebuggerWrite
 
@@ -370,7 +370,9 @@ class DebugClient(Actor):
         await session.debugger_write(write)
 
 
-async def init_debugging(actor_mesh: Actor) -> DebugClient:
+async def init_debugging(
+    actor_mesh: ActorMeshRef,
+) -> ActorMeshRef[DebugClient]:
     debugger_proc_mesh = await local_proc_mesh(gpus=1, hosts=1)
     debug_client_mesh = await debugger_proc_mesh.spawn("debug_client", DebugClient)
     await actor_mesh._set_debug_client.call(debug_client_mesh)
