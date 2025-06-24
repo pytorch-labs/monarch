@@ -40,9 +40,13 @@ impl FromPyObject<'_> for Layout {
     }
 }
 
-impl IntoPy<PyObject> for Layout {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        ffi::layout_to_py_object(self).into_py(py)
+impl<'py> IntoPyObject<'py> for Layout {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        ffi::layout_to_py_object(self).into_pyobject(py)
     }
 }
 
@@ -66,8 +70,8 @@ mod tests {
         let converted_type = Python::with_gil(|py| {
             // import torch to ensure torch.layout types are registered
             py.import("torch").unwrap();
-            let obj = layout.into_py(py);
-            obj.extract::<Layout>(py).unwrap()
+            let obj = layout.into_pyobject(py).unwrap();
+            obj.extract::<Layout>().unwrap()
         });
         assert_eq!(converted_type, Layout::Strided);
     }

@@ -273,7 +273,7 @@ impl Handler<Cast<AssignRankMessage>> for WorkerActor {
     ) -> anyhow::Result<()> {
         self.rank = message.rank.0;
         Python::with_gil(|py| {
-            let mesh_controller = py.import_bound("monarch.mesh_controller").unwrap();
+            let mesh_controller = py.import("monarch.mesh_controller").unwrap();
             let shape: PyShape = message.shape.into();
             let shape: Py<PyShape> = Py::new(py, shape).unwrap();
             let p: PyPoint = PyPoint::new(message.rank.0, shape);
@@ -1209,7 +1209,7 @@ mod tests {
     use monarch_messages::worker::WorkerMessageClient;
     use monarch_types::PickledPyObject;
     use monarch_types::PyTree;
-    use pyo3::IntoPy;
+    use pyo3::IntoPyObjectExt;
     use pyo3::Python;
     use pyo3::prelude::*;
     use pyo3::types::PyList;
@@ -1552,8 +1552,7 @@ mod tests {
                     .try_into()?;
                 let sort_list: PickledPyObject =
                     PyList::new(py, [65, 34, 79, 1, 5])?.into_any().try_into()?;
-                let mesh_ref: PickledPyObject =
-                    Ref { id: 5 }.into_py(py).into_bound(py).try_into()?;
+                let mesh_ref: PickledPyObject = Ref { id: 5 }.into_bound_py_any(py)?.try_into()?;
                 let dim: PickledPyObject = PyString::new(py, "x").into_any().try_into()?;
                 let layout: PickledPyObject = py.import("torch")?.getattr("strided")?.try_into()?;
                 let none: PickledPyObject = py.None().into_any().into_bound(py).try_into()?;
@@ -2128,7 +2127,7 @@ mod tests {
             .unwrap();
 
         let ref_arg: PickledPyObject =
-            Python::with_gil(|py| Ref { id: 2 }.into_py(py).into_bound(py).try_into())?;
+            Python::with_gil(|py| Ref { id: 2 }.into_bound_py_any(py)?.try_into())?;
 
         worker_handle
             .command_group(
@@ -2233,8 +2232,8 @@ mod tests {
         ) = Python::with_gil(|py| {
             PyResult::Ok((
                 PyList::new(py, [2, 3])?.into_any().try_into()?,
-                Ref { id: 2 }.into_py(py).into_bound(py).try_into()?,
-                Ref { id: 4 }.into_py(py).into_bound(py).try_into()?,
+                Ref { id: 2 }.into_bound_py_any(py)?.try_into()?,
+                Ref { id: 4 }.into_bound_py_any(py)?.try_into()?,
             ))
         })?;
 
@@ -2447,7 +2446,7 @@ mod tests {
             .collect();
 
         let remote_proc_grp_ref: PickledPyObject =
-            Python::with_gil(|py| Ref { id: 2 }.into_py(py).into_bound(py).try_into())?;
+            Python::with_gil(|py| Ref { id: 2 }.into_bound_py_any(py)?.try_into())?;
 
         let unique_id = UniqueId::new()?;
         let messages = vec![

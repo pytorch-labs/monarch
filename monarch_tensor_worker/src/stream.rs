@@ -555,8 +555,8 @@ enum PyArg<'a> {
 }
 
 /// Serialize into a `PyObject`.
-impl<'b> TryIntoPyObjectUnsafe<PyAny> for &PyArg<'b> {
-    unsafe fn try_to_object_unsafe<'a>(self, py: Python<'a>) -> PyResult<Bound<'a, PyAny>> {
+impl<'py> TryIntoPyObjectUnsafe<'py, PyAny> for &PyArg<'py> {
+    unsafe fn try_to_object_unsafe(self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         match self {
             // SAFETY: This inherits the unsafety of `rvalue_to_ivalue` (see comment
             // above).
@@ -1968,6 +1968,7 @@ mod tests {
     use monarch_messages::controller::ControllerMessage;
     use monarch_messages::worker::StreamCreationMode;
     use monarch_types::PickledPyObject;
+    use pyo3::IntoPyObjectExt;
     use timed_test::async_timed_test;
     use torch_sys::factory_float_tensor;
     use torch_sys::testing::allclose;
@@ -2052,12 +2053,11 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .unwrap();
-            let b = allclose(
+            allclose(
                 &factory_float_tensor(data, "cpu".try_into().unwrap()),
                 &actual.borrow(),
             )
-            .unwrap();
-            b
+            .unwrap()
         }
 
         async fn validate_dependent_error(
@@ -2121,8 +2121,9 @@ mod tests {
         seq: Seq,
         reference: Ref,
     ) {
-        let ref_to_send =
-            Python::with_gil(|py| PickledPyObject::pickle(reference.into_py(py).bind(py)).unwrap());
+        let ref_to_send = Python::with_gil(|py| {
+            PickledPyObject::pickle(&reference.into_bound_py_any(py).unwrap()).unwrap()
+        });
 
         stream_actor
             .send_value(

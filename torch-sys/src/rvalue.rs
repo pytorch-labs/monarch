@@ -9,8 +9,8 @@
 use derive_more::From;
 use derive_more::TryInto;
 use monarch_types::PickledPyObject;
-use monarch_types::TryIntoPyObject;
 use monarch_types::TryIntoPyObjectUnsafe;
+use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyNone;
@@ -119,24 +119,25 @@ impl From<IValue> for RValue {
     }
 }
 
-/// Convert into a `PyObject`.
-/// A "safe" conversion from RValue to Python object which fails at runtime if
-/// we see a tensor (which should use `try_to_object_unsafe`).
-impl TryIntoPyObject<PyAny> for &RValue {
-    fn try_to_object<'a>(self, py: Python<'a>) -> PyResult<Bound<'a, PyAny>> {
+impl<'py> IntoPyObject<'py> for RValue {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         match self {
-            RValue::Int(val) => IValue::from(*val).try_to_object(py),
-            RValue::IntList(val) => IValue::from(val.as_slice()).try_to_object(py),
-            RValue::Double(val) => IValue::from(*val).try_to_object(py),
-            RValue::Bool(val) => IValue::from(*val).try_to_object(py),
-            RValue::String(val) => IValue::from(val).try_to_object(py),
-            RValue::Device(val) => IValue::from(*val).try_to_object(py),
+            RValue::Int(val) => IValue::from(val).into_pyobject(py),
+            RValue::IntList(val) => IValue::from(val.as_slice()).into_pyobject(py),
+            RValue::Double(val) => IValue::from(val).into_pyobject(py),
+            RValue::Bool(val) => IValue::from(val).into_pyobject(py),
+            RValue::String(val) => IValue::from(&val).into_pyobject(py),
+            RValue::Device(val) => IValue::from(val).into_pyobject(py),
             // Avoid converting layout and scalar type into ivalues, as it appears
             // they just get converted to ints.
-            RValue::Layout(val) => Ok(val.clone().into_py(py).into_bound(py)),
-            RValue::ScalarType(val) => Ok(val.clone().into_py(py).into_bound(py)),
-            RValue::MemoryFormat(val) => Ok(val.clone().into_py(py).into_bound(py)),
-            RValue::None => Ok(PyNone::get(py).to_owned().into_any()),
+            RValue::Layout(val) => val.clone().into_pyobject(py),
+            RValue::ScalarType(val) => val.clone().into_pyobject(py),
+            RValue::MemoryFormat(val) => val.clone().into_pyobject(py),
+            RValue::None => PyNone::get(py).into_bound_py_any(py),
             RValue::PyObject(val) => val.unpickle(py),
             _ => Err(PyErr::new::<PyValueError, _>(format!(
                 "cannot safely create py object from {:?}",
@@ -147,20 +148,20 @@ impl TryIntoPyObject<PyAny> for &RValue {
 }
 
 /// Convert into a `PyObject`.
-impl TryIntoPyObjectUnsafe<PyAny> for &RValue {
-    unsafe fn try_to_object_unsafe<'a>(self, py: Python<'a>) -> PyResult<Bound<'a, PyAny>> {
+impl<'py> TryIntoPyObjectUnsafe<'py, PyAny> for &RValue {
+    unsafe fn try_to_object_unsafe(self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         match self {
             // Avoid converting layout, scalar type, memory format into ivalues, as it appears
             // they just get converted to ints.
             // None and PyObject are also not converted as there is no need to do so.
-            RValue::Layout(val) => Ok(val.clone().into_py(py).into_bound(py)),
-            RValue::ScalarType(val) => Ok(val.clone().into_py(py).into_bound(py)),
-            RValue::MemoryFormat(val) => Ok(val.clone().into_py(py).into_bound(py)),
-            RValue::None => Ok(PyNone::get(py).to_owned().into_any()),
+            RValue::Layout(val) => val.clone().into_pyobject(py),
+            RValue::ScalarType(val) => val.clone().into_pyobject(py),
+            RValue::MemoryFormat(val) => val.clone().into_pyobject(py),
+            RValue::None => PyNone::get(py).into_bound_py_any(py),
             RValue::PyObject(val) => val.unpickle(py),
             // SAFETY: This inherits the unsafety of `rvalue_to_ivalue` (see comment
             // above).
-            _ => unsafe { rvalue_to_ivalue(self).try_to_object(py) },
+            _ => unsafe { rvalue_to_ivalue(self).into_pyobject(py) },
         }
     }
 }
@@ -204,7 +205,7 @@ mod tests {
             // Define the Custom class inline
             py.run(c_str!("class Custom:\n    pass"), None, None)?;
 
-            let obj = py.eval_bound("Custom()", None, None)?;
+            let obj = py.eval(pyo3::ffi::c_str!("Custom()"), None, None)?;
             RValue::extract_bound(&obj)
         })?;
         // NOTE(agallagher): Among other things, verify this isn't accidentally

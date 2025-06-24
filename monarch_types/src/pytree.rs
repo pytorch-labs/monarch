@@ -8,7 +8,10 @@
 
 use pyo3::Bound;
 use pyo3::FromPyObject;
+use pyo3::IntoPyObject;
+use pyo3::IntoPyObjectExt;
 use pyo3::PyAny;
+use pyo3::PyErr;
 use pyo3::Python;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyTypeError;
@@ -24,7 +27,6 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::PickledPyObject;
-use crate::python::TryIntoPyObject;
 use crate::python::TryIntoPyObjectUnsafe;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -158,40 +160,48 @@ impl<T> From<T> for PyTree<T> {
     }
 }
 
-/// Serialize into a `PyObject`.
-impl<T> TryIntoPyObject<PyAny> for PyTree<T>
+impl<'py, T> IntoPyObject<'py> for PyTree<T>
 where
-    T: TryIntoPyObject<PyAny>,
+    T: IntoPyObject<'py>,
 {
-    fn try_to_object<'a>(self, py: Python<'a>) -> PyResult<Bound<'a, PyAny>> {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         PyTree::<T>::unflatten_impl(
             py,
             &self.treespec,
-            self.leaves.into_iter().map(|l| l.try_to_object(py)),
+            self.leaves.into_iter().map(|l| l.into_bound_py_any(py)),
+        )
+    }
+}
+
+impl<'a, 'py, T> IntoPyObject<'py> for &'a PyTree<T>
+where
+    &'a T: IntoPyObject<'py>,
+    T: 'a,
+{
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        PyTree::<T>::unflatten_impl(
+            py,
+            &self.treespec,
+            self.leaves.iter().map(|l| l.into_bound_py_any(py)),
         )
     }
 }
 
 /// Serialize into a `PyObject`.
-impl<T> TryIntoPyObject<PyAny> for &PyTree<T>
+impl<'a, 'py, T> TryIntoPyObjectUnsafe<'py, PyAny> for &'a PyTree<T>
 where
-    for<'a> &'a T: TryIntoPyObject<PyAny>,
+    &'a T: TryIntoPyObjectUnsafe<'py, PyAny>,
+    T: 'a,
 {
-    fn try_to_object<'a>(self, py: Python<'a>) -> PyResult<Bound<'a, PyAny>> {
-        PyTree::<T>::unflatten_impl(
-            py,
-            &self.treespec,
-            self.leaves.iter().map(|l| l.try_to_object(py)),
-        )
-    }
-}
-
-/// Serialize into a `PyObject`.
-impl<T> TryIntoPyObjectUnsafe<PyAny> for &PyTree<T>
-where
-    for<'a> &'a T: TryIntoPyObjectUnsafe<PyAny>,
-{
-    unsafe fn try_to_object_unsafe<'a>(self, py: Python<'a>) -> PyResult<Bound<'a, PyAny>> {
+    unsafe fn try_to_object_unsafe(self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         PyTree::<T>::unflatten_impl(
             py,
             &self.treespec,
@@ -253,12 +263,12 @@ impl<'a, T: FromPyObject<'a>> FromPyObject<'a> for PyTree<T> {
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
+    use pyo3::IntoPyObject;
     use pyo3::Python;
     use pyo3::ffi::c_str;
     use pyo3::py_run;
 
     use super::PyTree;
-    use crate::python::TryIntoPyObject;
 
     #[test]
     fn flatten_unflatten() -> Result<()> {
@@ -267,7 +277,7 @@ mod tests {
             let tree = py.eval(c_str!("[1, 2]"), None, None)?;
             let tree: PyTree<u64> = PyTree::flatten(&tree)?;
             assert_eq!(tree.leaves, vec![1u64, 2u64]);
-            let list = tree.try_to_object(py)?;
+            let list = tree.into_pyobject(py)?;
             py_run!(py, list, "assert list == [1, 2]");
             anyhow::Ok(())
         })?;

@@ -40,6 +40,7 @@ use monarch_messages::worker::WorkerParams;
 use monarch_tensor_worker::AssignRankMessage;
 use monarch_tensor_worker::WorkerActor;
 use ndslice::Slice;
+use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use tokio::sync::Mutex;
@@ -68,8 +69,7 @@ impl _Controller {
     ) -> PyResult<()> {
         for (seq, response) in responses {
             let message = crate::client::WorkerResponse::new(seq, response);
-            self.pending_messages
-                .push_back(message.into_pyobject(py)?.into_any().unbind());
+            self.pending_messages.push_back(message.into_py_any(py)?);
         }
         Ok(())
     }
@@ -90,9 +90,7 @@ impl _Controller {
                     action,
                 } => {
                     let dm = crate::client::DebuggerMessage::new(debugger_actor_id.into(), action)?
-                        .into_pyobject(py)?
-                        .into_any()
-                        .unbind();
+                        .into_py_any(py)?;
                     self.pending_messages.push_back(dm);
                 }
                 ControllerMessage::Status {

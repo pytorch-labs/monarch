@@ -20,6 +20,7 @@ use monarch_messages::debugger::DebuggerMessage;
 use monarch_tensor_worker::stream::CONTROLLER_ACTOR_REF;
 use monarch_tensor_worker::stream::PROC;
 use monarch_tensor_worker::stream::ROOT_ACTOR_ID;
+use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -112,10 +113,8 @@ impl PdbActor {
                 async move { instance.lock().await.next_message(None).await },
             )?;
         match result {
-            Ok(Some(DebuggerMessage::Action { action })) => {
-                Ok(action.into_pyobject(py)?.into_any().unbind())
-            }
-            Ok(None) => Ok(PyNone::get(py).as_any().clone().unbind()),
+            Ok(Some(DebuggerMessage::Action { action })) => action.into_py_any(py),
+            Ok(None) => PyNone::get(py).into_py_any(py),
             Err(err) => Err(PyRuntimeError::new_err(err.to_string())),
         }
     }

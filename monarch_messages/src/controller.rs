@@ -15,8 +15,8 @@ use hyperactor::RefClient;
 use hyperactor::data::Serialized;
 use hyperactor::reference::ActorId;
 use pyo3::FromPyObject;
-use pyo3::IntoPy;
-use pyo3::PyObject;
+use pyo3::IntoPyObject;
+use pyo3::IntoPyObjectExt;
 use pyo3::types::PyAnyMethods;
 use serde::Deserialize;
 use serde::Serialize;
@@ -110,9 +110,13 @@ impl FromPyObject<'_> for Seq {
     }
 }
 
-impl IntoPy<PyObject> for Seq {
-    fn into_py(self, py: pyo3::Python) -> PyObject {
-        self.0.into_py(py)
+impl<'py> IntoPyObject<'py> for Seq {
+    type Target = pyo3::PyAny;
+    type Output = pyo3::Bound<'py, Self::Target>;
+    type Error = pyo3::PyErr;
+
+    fn into_pyobject(self, py: pyo3::Python<'py>) -> Result<Self::Output, Self::Error> {
+        self.0.into_bound_py_any(py)
     }
 }
 

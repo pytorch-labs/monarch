@@ -41,9 +41,13 @@ impl FromPyObject<'_> for ScalarType {
     }
 }
 
-impl IntoPy<PyObject> for ScalarType {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        ffi::scalar_type_to_py_object(self).into_py(py)
+impl<'py> IntoPyObject<'py> for ScalarType {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        ffi::scalar_type_to_py_object(self).into_pyobject(py)
     }
 }
 
@@ -65,8 +69,8 @@ mod tests {
         let converted_type = Python::with_gil(|py| {
             // import torch to ensure torch.dtype types are registered
             py.import("torch").unwrap();
-            let obj = scalar_type.into_py(py);
-            obj.extract::<ScalarType>(py).unwrap()
+            let obj = scalar_type.into_pyobject(py).unwrap();
+            obj.extract::<ScalarType>().unwrap()
         });
         assert_eq!(converted_type, ScalarType::Float);
     }

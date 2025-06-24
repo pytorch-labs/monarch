@@ -10,7 +10,6 @@ use std::collections::HashMap;
 
 use monarch_messages::worker::ResolvableFunction;
 use monarch_types::PyTree;
-use monarch_types::TryIntoPyObject;
 use monarch_types::TryIntoPyObjectUnsafe;
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
@@ -60,7 +59,7 @@ impl PyPipe {
             // asserts that it is safe to use this unsafe method.
             unsafe { val.try_to_object_unsafe(py) }
         } else {
-            val.try_to_object(py)
+            val.into_pyobject(py)
         }
     }
 }
@@ -79,10 +78,10 @@ pub fn run_py_pipe(
         let mut py_args = vec![pipe_obj.into_bound(py).into_any()];
         py_args.extend(
             args.into_iter()
-                .map(|a| a.try_to_object(py))
+                .map(|a| a.into_pyobject(py))
                 .collect::<Result<Vec<_>, _>>()?,
         );
-        func.call(PyTuple::new(py, py_args)?, Some(&kwargs.try_to_object(py)?))?;
+        func.call(PyTuple::new(py, py_args)?, Some(&kwargs.into_pyobject(py)?))?;
         Ok(())
     })
 }

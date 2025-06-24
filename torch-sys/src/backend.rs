@@ -291,7 +291,7 @@ fn register(py: Python<'_>) -> PyResult<()> {
     let register_backend = backend.getattr("register_backend")?;
 
     // Create a Python callable from our Rust function
-    let create_backend = ffi::create_monarch_backend().into_py(py);
+    let create_backend = ffi::create_monarch_backend().into_pyobject(py)?;
 
     // We use the extended API so that callers can pass in the inner, pre-
     // initialized backend via `pg_options`.
@@ -315,7 +315,7 @@ fn init_process_group(py: Python<'_>, world_size: usize, rank: usize) -> PyResul
     let register_backend = backend.getattr("register_backend")?;
 
     // Create a Python callable from our Rust function
-    let create_backend = ffi::create_null_backend().into_py(py);
+    let create_backend = ffi::create_null_backend().into_pyobject(py)?;
 
     // We use the extended API so that callers can pass in the inner, pre-
     // initialized backend via `pg_options`.

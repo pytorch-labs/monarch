@@ -144,7 +144,7 @@ impl PickledMessageClientActor {
             .map_err(|err| PyRuntimeError::new_err(err.to_string()))?
             .into_iter()
             .map(|message| message.into_py_any(py))
-            .collect::<PyResult<Vec<PyObject>>>()?;
+            .collect::<PyResult<Vec<_>>>()?;
         PyList::new(py, messages)
     }
 
@@ -290,7 +290,7 @@ impl Actor for PythonActor {
         Ok(Python::with_gil(|py| -> Result<Self, SerializablePyErr> {
             let unpickled = actor_type.unpickle(py)?;
             let class_type: &Bound<'_, PyType> = unpickled.downcast()?;
-            let actor = class_type.call0()?.into_pyobject(py)?;
+            let actor: PyObject = class_type.call0()?.into_py_any(py)?;
 
             // Release the GIL so that the thread spawned below can acquire it.
             let task_locals = Python::allow_threads(py, || {
@@ -313,10 +313,7 @@ impl Actor for PythonActor {
                 rx.recv().unwrap()
             });
 
-            Ok(Self {
-                actor: actor.into(),
-                task_locals,
-            })
+            Ok(Self { actor, task_locals })
         })?)
     }
 }

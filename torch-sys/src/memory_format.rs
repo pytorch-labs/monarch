@@ -40,9 +40,13 @@ impl FromPyObject<'_> for MemoryFormat {
     }
 }
 
-impl IntoPy<PyObject> for MemoryFormat {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        ffi::memory_format_to_py_object(self).into_py(py)
+impl<'py> IntoPyObject<'py> for MemoryFormat {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        ffi::memory_format_to_py_object(self).into_pyobject(py)
     }
 }
 
@@ -65,8 +69,8 @@ mod tests {
         let converted_type = Python::with_gil(|py| {
             // import torch to ensure torch.layout types are registered
             py.import("torch").unwrap();
-            let obj = memory_format.into_py(py);
-            obj.extract::<MemoryFormat>(py).unwrap()
+            let obj = memory_format.into_pyobject(py).unwrap();
+            obj.extract::<MemoryFormat>().unwrap()
         });
         assert_eq!(converted_type, MemoryFormat::Contiguous);
     }

@@ -7,7 +7,6 @@
  */
 
 use cxx::type_id;
-use monarch_types::TryIntoPyObject;
 use pyo3::prelude::*;
 
 #[repr(transparent)]
@@ -46,17 +45,12 @@ impl<T> From<&Bound<'_, T>> for FFIPyObject {
     }
 }
 
-impl IntoPy<PyObject> for FFIPyObject {
-    #[inline]
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        // SAFETY: Pull in the `PyObject` from C/C++.
-        unsafe { PyObject::from_owned_ptr(py, self.0) }
-    }
-}
+impl<'py> IntoPyObject<'py> for FFIPyObject {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
 
-impl TryIntoPyObject<pyo3::PyAny> for FFIPyObject {
-    #[inline]
-    fn try_to_object<'a>(self, py: Python<'a>) -> PyResult<Bound<'a, PyAny>> {
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         // SAFETY: Pull in the `PyObject` from C/C++.
         Ok(unsafe { PyObject::from_owned_ptr(py, self.0) }.into_bound(py))
     }

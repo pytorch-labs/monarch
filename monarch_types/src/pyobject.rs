@@ -12,8 +12,6 @@ use pyo3::types::PyBytes;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::TryIntoPyObject;
-
 #[derive(Debug, Clone, Serialize, Deserialize, Named)]
 pub struct PickledPyObject {
     #[serde(with = "serde_bytes")]
@@ -72,8 +70,12 @@ impl FromPyObject<'_> for PickledPyObject {
     }
 }
 
-impl TryIntoPyObject<PyAny> for &PickledPyObject {
-    fn try_to_object<'a>(self, py: Python<'a>) -> PyResult<Bound<'a, PyAny>> {
+impl<'py> IntoPyObject<'py> for &PickledPyObject {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         self.unpickle(py)
     }
 }

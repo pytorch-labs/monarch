@@ -9,74 +9,31 @@
 use std::collections::HashMap;
 
 use pyo3::Bound;
+use pyo3::IntoPyObject;
+use pyo3::IntoPyObjectExt;
 use pyo3::PyAny;
 use pyo3::PyResult;
 use pyo3::Python;
-use pyo3::ToPyObject;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use pyo3::types::PyList;
 use pyo3::types::PyNone;
 use pyo3::types::PyTuple;
 use serde::Deserialize;
 use serde::Serialize;
 
-/// A fallible version of `ToPyAny`, which also consumes `self`.
-pub trait TryIntoPyObject<P> {
-    fn try_to_object<'a>(self, py: Python<'a>) -> PyResult<Bound<'a, P>>;
-}
-
-/// Blanket impl for `ToPyAny`.
-impl<T: ToPyObject> TryIntoPyObject<PyAny> for T {
-    fn try_to_object<'a>(self, py: Python<'a>) -> PyResult<Bound<'a, PyAny>> {
-        Ok(self.to_object(py).into_bound(py))
-    }
-}
-
-/// A variant of `TryIntoPyObject` used to wrap unsafe impls and propagates the
+/// A variant of `pyo3::IntoPyObject` used to wrap unsafe impls and propagates the
 /// unsafety to the caller.
-pub trait TryIntoPyObjectUnsafe<P> {
-    unsafe fn try_to_object_unsafe<'a>(self, py: Python<'a>) -> PyResult<Bound<'a, P>>;
+pub trait TryIntoPyObjectUnsafe<'py, P> {
+    unsafe fn try_to_object_unsafe(self, py: Python<'py>) -> PyResult<Bound<'py, P>>;
 }
 
 /// Helper impl for casting into args for python functions calls.
-impl<T> TryIntoPyObject<PyTuple> for &Vec<T>
+impl<'a, 'py, T> TryIntoPyObjectUnsafe<'py, PyTuple> for &'a Vec<T>
 where
-    for<'a> &'a T: TryIntoPyObject<PyAny>,
+    &'a T: TryIntoPyObjectUnsafe<'py, PyAny>,
+    T: 'a,
 {
-    fn try_to_object<'a>(self, py: Python<'a>) -> PyResult<Bound<'a, PyTuple>> {
-        PyTuple::new(
-            py,
-            self.iter()
-                // SAFETY: Safety requirements are propagated via the `unsafe`
-                // tag on this method.
-                .map(|v| v.try_to_object(py))
-                .collect::<Result<Vec<_>, _>>()?,
-        )
-    }
-}
-
-/// Helper impl for casting into kwargs for python functions calls.
-impl<K, V> TryIntoPyObject<PyDict> for &HashMap<K, V>
-where
-    K: ToPyObject,
-    for<'a> &'a V: TryIntoPyObject<PyAny>,
-{
-    fn try_to_object<'a>(self, py: Python<'a>) -> PyResult<Bound<'a, PyDict>> {
-        let mut elems = vec![];
-        for (key, val) in self {
-            elems.push((key.to_object(py), val.try_to_object(py)?));
-        }
-        PyDict::from_sequence(&PyList::new(py, elems)?.into_any())
-    }
-}
-
-/// Helper impl for casting into args for python functions calls.
-impl<T> TryIntoPyObjectUnsafe<PyTuple> for &Vec<T>
-where
-    for<'a> &'a T: TryIntoPyObjectUnsafe<PyAny>,
-{
-    unsafe fn try_to_object_unsafe<'a>(self, py: Python<'a>) -> PyResult<Bound<'a, PyTuple>> {
+    unsafe fn try_to_object_unsafe(self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         PyTuple::new(
             py,
             self.iter()
@@ -89,22 +46,21 @@ where
 }
 
 /// Helper impl for casting into kwargs for python functions calls.
-impl<K, V> TryIntoPyObjectUnsafe<PyDict> for &HashMap<K, V>
+impl<'a, 'py, K, V> TryIntoPyObjectUnsafe<'py, PyDict> for &'a HashMap<K, V>
 where
-    K: ToPyObject,
-    for<'a> &'a V: TryIntoPyObjectUnsafe<PyAny>,
+    &'a K: IntoPyObject<'py> + std::cmp::Eq + std::hash::Hash,
+    &'a V: TryIntoPyObjectUnsafe<'py, PyAny>,
+    K: 'a,
+    V: 'a,
 {
-    unsafe fn try_to_object_unsafe<'a>(self, py: Python<'a>) -> PyResult<Bound<'a, PyDict>> {
-        let mut elems = vec![];
+    unsafe fn try_to_object_unsafe(self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let dict = PyDict::new(py);
         for (key, val) in self {
-            elems.push((
-                key.to_object(py),
-                // SAFETY: Safety requirements are propagated via the `unsafe`
-                // tag on this method.
-                unsafe { val.try_to_object_unsafe(py) }?,
-            ));
+            // SAFETY: Safety requirements are propagated via the `unsafe`
+            // tag on this method.
+            dict.set_item(key, unsafe { val.try_to_object_unsafe(py) }?)?;
         }
-        PyDict::from_sequence(&PyList::new(py, elems)?.into_any())
+        Ok(dict)
     }
 }
 
@@ -127,7 +83,7 @@ impl SerializablePyErr {
         let mut f = inspect
             .call_method0("currentframe")
             .unwrap_or(PyNone::get(py).to_owned().into_any());
-        let mut tb: Bound<'_, PyAny> = err.traceback(py).to_object(py).into_bound(py);
+        let mut tb: Bound<'_, PyAny> = err.traceback(py).into_bound_py_any(py).unwrap();
         while !f.is_none() {
             let lasti = f.getattr("f_lasti").unwrap();
             let lineno = f.getattr("f_lineno").unwrap();

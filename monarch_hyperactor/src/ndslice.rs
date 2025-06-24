@@ -11,6 +11,7 @@ use std::hash::Hash;
 use std::hash::Hasher;
 use std::sync::Arc;
 
+use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyIndexError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -101,8 +102,8 @@ impl PySlice {
             Range::Single(index) => self
                 .inner
                 .get(index)
-                .map(|res| res.into_py(py))
-                .map_err(|err| PyIndexError::new_err(err.to_string())),
+                .map(|res| res.into_py_any(py))
+                .map_err(|err| PyIndexError::new_err(err.to_string()))?,
             Range::Slice(slice) => {
                 let indices =
                     slice.indices((self.inner.len() as std::os::raw::c_long).try_into()?)?;
@@ -120,7 +121,7 @@ impl PySlice {
                     );
                     i += step;
                 }
-                Ok(PyTuple::new(py, result)?.into_py(py))
+                PyTuple::new(py, result)?.into_py_any(py)
             }
         }
     }
@@ -166,7 +167,7 @@ impl PySlice {
     #[staticmethod]
     fn from_list(py: Python<'_>, ranks: Vec<usize>) -> PyResult<PyObject> {
         if ranks.is_empty() {
-            return Ok(PyList::empty(py).unbind().into_any());
+            return PyList::empty(py).into_py_any(py);
         }
         let mut ranks = ranks;
         ranks.sort();
@@ -189,7 +190,7 @@ impl PySlice {
             }
         }
         result.push(Self::new(offset, vec![size], vec![stride])?);
-        Ok(result.into_py(py))
+        result.into_py_any(py)
     }
 
     fn __repr__(&self) -> PyResult<String> {

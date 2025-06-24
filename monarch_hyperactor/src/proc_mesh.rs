@@ -17,6 +17,7 @@ use hyperactor_mesh::proc_mesh::ProcEvents;
 use hyperactor_mesh::proc_mesh::ProcMesh;
 use hyperactor_mesh::proc_mesh::SharedSpawnable;
 use monarch_types::PickledPyObject;
+use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use pyo3::types::PyType;
@@ -139,7 +140,7 @@ impl PyProcMesh {
                 },
                 _keepalive: keepalive,
             };
-            Ok(Python::with_gil(|py| python_actor_mesh.into_py(py)))
+            Python::with_gil(|py| python_actor_mesh.into_py_any(py))
         })
     }
 
@@ -161,7 +162,7 @@ impl PyProcMesh {
                 },
                 _keepalive: keepalive,
             };
-            Ok(Python::with_gil(|py| python_actor_mesh.into_py(py)))
+            Python::with_gil(|py| python_actor_mesh.into_py_any(py))
         })?
     }
 

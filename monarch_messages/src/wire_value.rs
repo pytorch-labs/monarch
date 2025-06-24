@@ -14,6 +14,7 @@ use enum_as_inner::EnumAsInner;
 use hyperactor::Named;
 use monarch_types::PickledPyObject;
 use monarch_types::TryIntoPyObjectUnsafe;
+use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBool;
@@ -140,28 +141,27 @@ impl FromPyObject<'_> for WireValue {
     }
 }
 
-impl TryIntoPyObjectUnsafe<PyAny> for WireValue {
-    unsafe fn try_to_object_unsafe(self, py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
-        let res = match self {
-            WireValue::Ref(ref_) => ref_.into_py(py).into_bound(py),
-            WireValue::RefList(ref_list) => ref_list.clone().into_py(py).into_bound(py),
-            WireValue::Int(int) => int.into_py(py).into_bound(py),
-            WireValue::IntList(int_list) => int_list.clone().into_py(py).into_bound(py),
-            WireValue::Double(double) => double.into_py(py).into_bound(py),
-            WireValue::Bool(bool_) => bool_.into_py(py).into_bound(py),
-            WireValue::String(string) => string.into_py(py).into_bound(py),
-            WireValue::Device(device) => device.into_py(py).into_bound(py),
-            WireValue::Layout(val) => val.into_py(py).into_bound(py),
-            WireValue::ScalarType(val) => val.into_py(py).into_bound(py),
-            WireValue::MemoryFormat(val) => val.into_py(py).into_bound(py),
-            WireValue::None(()) => PyNone::get(py).to_owned().into_any(),
-            WireValue::PyObject(val) => val.unpickle(py)?,
+impl<'py> TryIntoPyObjectUnsafe<'py, PyAny> for WireValue {
+    unsafe fn try_to_object_unsafe(self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        match self {
+            WireValue::Ref(ref_) => ref_.into_bound_py_any(py),
+            WireValue::RefList(ref_list) => ref_list.clone().into_bound_py_any(py),
+            WireValue::Int(int) => int.into_bound_py_any(py),
+            WireValue::IntList(int_list) => int_list.clone().into_bound_py_any(py),
+            WireValue::Double(double) => double.into_bound_py_any(py),
+            WireValue::Bool(bool_) => bool_.into_bound_py_any(py),
+            WireValue::String(string) => string.into_bound_py_any(py),
+            WireValue::Device(device) => device.into_bound_py_any(py),
+            WireValue::Layout(val) => val.into_bound_py_any(py),
+            WireValue::ScalarType(val) => val.into_bound_py_any(py),
+            WireValue::MemoryFormat(val) => val.into_bound_py_any(py),
+            WireValue::None(()) => PyNone::get(py).into_bound_py_any(py),
+            WireValue::PyObject(val) => val.unpickle(py),
             // SAFETY: WireValue is only used for serde between client and worker.
             // This function is used to access the args / kwargs of a function call
             // on the client side only.
-            WireValue::IValue(val) => unsafe { val.try_to_object_unsafe(py)? },
-        };
-        Ok(res)
+            WireValue::IValue(val) => unsafe { val.try_to_object_unsafe(py) },
+        }
     }
 }
 
@@ -304,7 +304,6 @@ mod tests {
     use anyhow::Result;
     use anyhow::bail;
     use paste::paste;
-    use pyo3::IntoPy;
     use pyo3::Python;
     use pyo3::ffi::c_str;
     use pyo3::types::PyDict;
@@ -350,7 +349,7 @@ class Referencable:
                     fn [<test_wire_value_from_py_$kind:snake:lower>]() -> Result<()> {
                             setup()?;
                             Python::with_gil(|py| {
-                                let actual = $input.into_py(py).into_any().extract::<WireValue>(py)?;
+                                let actual = $input.into_pyobject(py)?.extract::<WireValue>()?;
                                 assert_matches!(actual, WireValue::$kind(_));
                                 anyhow::Ok(())
                             })
@@ -361,8 +360,8 @@ class Referencable:
                 fn test_wire_value_from_py_none() -> Result<()> {
                     setup()?;
                     Python::with_gil(|py| {
-                        let obj: PyObject = PyNone::get(py).into_py(py);
-                        let actual = obj.extract::<WireValue>(py)?;
+                        let obj = PyNone::get(py).into_pyobject(py)?;
+                        let actual = obj.extract::<WireValue>()?;
                         assert_matches!(actual, WireValue::None(_));
                         anyhow::Ok(())
                     })

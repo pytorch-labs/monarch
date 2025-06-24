@@ -453,12 +453,12 @@ impl Factory {
 
     #[getter]
     fn dtype<'a>(&self, py: Python<'a>) -> PyResult<Bound<'a, PyAny>> {
-        Ok(self.dtype.into_py(py).into_bound(py))
+        self.dtype.into_pyobject(py)
     }
 
     #[getter]
     fn layout<'a>(&self, py: Python<'a>) -> PyResult<Bound<'a, PyAny>> {
-        Ok(self.layout.into_py(py).into_bound(py))
+        self.layout.into_pyobject(py)
     }
 
     #[getter]

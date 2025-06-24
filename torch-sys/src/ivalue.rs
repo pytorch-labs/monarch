@@ -12,7 +12,6 @@ use std::mem::MaybeUninit;
 
 use cxx::ExternType;
 use cxx::type_id;
-use monarch_types::TryIntoPyObject;
 use monarch_types::TryIntoPyObjectUnsafe;
 use paste::paste;
 use pyo3::exceptions::PyValueError;
@@ -162,10 +161,10 @@ impl CloneUnsafe for OpaqueIValue {
     }
 }
 
-impl TryIntoPyObjectUnsafe<PyAny> for OpaqueIValue {
-    unsafe fn try_to_object_unsafe<'a>(self, py: Python<'a>) -> PyResult<Bound<'a, PyAny>> {
+impl<'py> TryIntoPyObjectUnsafe<'py, PyAny> for OpaqueIValue {
+    unsafe fn try_to_object_unsafe(self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         // SAFETY: See discussion for `IValue::clone_unsafe`.
-        unsafe { self.ivalue() }.try_to_object(py)
+        unsafe { self.ivalue() }.into_pyobject(py)
     }
 }
 
@@ -391,11 +390,15 @@ impl fmt::Debug for IValue {
     }
 }
 
-impl TryIntoPyObject<PyAny> for IValue {
-    fn try_to_object<'a>(self, py: Python<'a>) -> PyResult<Bound<'a, PyAny>> {
+impl<'py> IntoPyObject<'py> for IValue {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         ffi::arbitrary_ivalue_to_py_object(self)
             .map_err(|e| PyValueError::new_err(format!("Failed converting to py: {}", e)))?
-            .try_to_object(py)
+            .into_pyobject(py)
     }
 }
 
@@ -514,7 +517,7 @@ mod tests {
                             // we clone here to use for the `assert_eq` at end.
                             let converted = unsafe { original.clone_unsafe() };
                             let converted = Python::with_gil(|py| {
-                                let py_object = converted.try_to_object(py).unwrap();
+                                let py_object = converted.into_pyobject(py).unwrap();
                                 anyhow::Ok(IValue::extract_bound(&py_object).unwrap())
                             }).unwrap();
                             assert!(ivalues_equal_with_tensor_equal(original, converted));

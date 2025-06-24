@@ -14,6 +14,7 @@ use cxx::ExternType;
 use cxx::type_id;
 use derive_more::From;
 use derive_more::Into;
+use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use regex::Regex;
@@ -152,9 +153,13 @@ impl FromPyObject<'_> for DeviceType {
     }
 }
 
-impl IntoPy<PyObject> for DeviceType {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        format!("{}", self).into_py(py)
+impl<'py> IntoPyObject<'py> for DeviceType {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        format!("{}", self).into_bound_py_any(py)
     }
 }
 
@@ -196,9 +201,13 @@ impl FromPyObject<'_> for DeviceIndex {
     }
 }
 
-impl IntoPy<PyObject> for DeviceIndex {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        self.0.into_py(py)
+impl<'py> IntoPyObject<'py> for DeviceIndex {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        self.0.into_bound_py_any(py)
     }
 }
 
@@ -357,9 +366,13 @@ impl FromPyObject<'_> for Device {
     }
 }
 
-impl IntoPy<PyObject> for Device {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        ffi::device_to_py_object(self).into_py(py)
+impl<'py> IntoPyObject<'py> for Device {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        ffi::device_to_py_object(self).into_pyobject(py)
     }
 }
 
@@ -402,8 +415,8 @@ mod tests {
         let actual = Python::with_gil(|py| {
             // import torch to ensure torch.dtype types are registered
             py.import("torch")?;
-            let obj = expected.clone().into_py(py);
-            obj.extract::<DeviceType>(py)
+            let obj = expected.clone().into_pyobject(py)?;
+            obj.extract::<DeviceType>()
         })?;
         assert_eq!(actual, expected);
         Ok(())
@@ -416,8 +429,8 @@ mod tests {
         let actual = Python::with_gil(|py| {
             // import torch to ensure torch.dtype types are registered
             py.import("torch")?;
-            let obj = expected.clone().into_py(py);
-            obj.extract::<DeviceIndex>(py)
+            let obj = expected.clone().into_pyobject(py)?;
+            obj.extract::<DeviceIndex>()
         })?;
         assert_eq!(actual, expected);
         Ok(())
@@ -430,8 +443,8 @@ mod tests {
         let actual = Python::with_gil(|py| {
             // import torch to ensure torch.dtype types are registered
             py.import("torch")?;
-            let obj = expected.clone().into_py(py);
-            obj.extract::<Device>(py)
+            let obj = expected.clone().into_pyobject(py)?;
+            obj.extract::<Device>()
         })?;
         assert_eq!(actual, expected);
         Ok(())

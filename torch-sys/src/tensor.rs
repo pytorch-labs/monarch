@@ -190,9 +190,13 @@ impl FromPyObject<'_> for Tensor {
     }
 }
 
-impl IntoPy<PyObject> for Tensor {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        ffi::tensor_to_py_object(self).into_py(py)
+impl<'py> IntoPyObject<'py> for Tensor {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        ffi::tensor_to_py_object(self).into_pyobject(py)
     }
 }
 
@@ -247,8 +251,8 @@ mod tests {
         let converted = Python::with_gil(|py| {
             // import torch to ensure torch.layout types are registered
             py.import("torch").unwrap();
-            let obj = deep_clone(&tensor).into_py(py);
-            obj.extract::<Tensor>(py).unwrap()
+            let obj = deep_clone(&tensor).into_pyobject(py).unwrap();
+            obj.extract::<Tensor>().unwrap()
         });
         assert_eq!(converted, tensor);
     }

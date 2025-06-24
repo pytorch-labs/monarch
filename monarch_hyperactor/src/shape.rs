@@ -8,6 +8,7 @@
 
 use ndslice::Shape;
 use ndslice::Slice;
+use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -61,7 +62,7 @@ impl PyShape {
         self.inner
             .coordinates(rank)
             .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))
-            .and_then(|x| PyDict::from_sequence(x.to_object(py).bind(py)))
+            .and_then(|x| PyDict::from_sequence(&x.into_bound_py_any(py)?))
     }
 
     #[pyo3(signature = (**kwargs))]
@@ -173,12 +174,12 @@ impl PyPoint {
     fn __len__(&self, py: Python) -> usize {
         self.shape.bind(py).get().__len__()
     }
-    fn __iter__<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+    fn __iter__<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
         self.shape
             .bind(py)
             .get()
             .labels()
-            .to_object(py)
+            .into_py_any(py)?
             .call_method0(py, "__iter__")
     }
     fn __reduce__<'py>(
