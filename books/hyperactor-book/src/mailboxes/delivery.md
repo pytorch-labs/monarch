@@ -26,13 +26,16 @@ pub struct MessageEnvelope {
 
     /// Error contains a delivery error when message delivery failed.
     error: Option<DeliveryError>,
+
+    /// Additional context for this message.
+    headers: Attrs,
 }
 ```
 
 `MessageEnvelope::new` creates a message envelope:
 ```rust
 impl MessageEnvelope {
-  fn new(sender: ActorId, dest: PortId, data: Serialized) -> Self { ... }
+  fn new(sender: ActorId, dest: PortId, data: Serialized, headers: Attrs) -> Self { ... }
 }
 ```
 `MessageEnvelope::new_unknown` creates a new envelope when we don't know who the sender is:
@@ -47,7 +50,7 @@ If a type `T` implements `Serialize` and `Named`, an envelope can be constructed
 ```rust
 impl MessageEnvelope {
   fn serialize<T: Serialize + Named>(
-      source: ActorId, dest: PortId, value: &T) -> Result<Self, bincode::Error> {
+      source: ActorId, dest: PortId, value: &T, headers: Attrs) -> Result<Self, bincode::Error> {
     Ok(Self {
          data: Serialized::serialize(value)?,
          sender: source,
