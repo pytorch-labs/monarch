@@ -20,6 +20,7 @@ use hyperactor::mailbox::BoxedMailboxSender;
 use hyperactor::mailbox::DialMailboxRouter;
 use hyperactor::mailbox::MailboxClient;
 use hyperactor::mailbox::MailboxServer;
+use hyperactor::mailbox::monitored_return_handle;
 use hyperactor::proc::Proc;
 
 pub mod client;
@@ -54,15 +55,18 @@ pub async fn spawn_actor<T: Actor + RemoteActor + Binds<T>>(
 
 /// Creates a remote client that can send message to actors in the remote addr.
 /// It is important to keep the client proc alive for the remote_client's lifetime.
-pub async fn create_remote_client(addr: ChannelAddr) -> Result<(Proc, Mailbox)> {
-    let remote_sender = MailboxClient::new(channel::dial(addr).unwrap());
+pub async fn create_remote_client(addr: ChannelAddr) -> Result<(Proc, Mailbox, ChannelAddr)> {
+    let remote_sender = MailboxClient::new(channel::dial(addr.clone()).unwrap());
     let client_proc_id = id!(client).random_user_proc();
     let client_proc = Proc::new(
         client_proc_id.clone(),
         BoxedMailboxSender::new(remote_sender),
     );
     let remote_client = client_proc.attach("client").unwrap();
-    Ok((client_proc, remote_client))
+
+    let (client_addr, rx) = channel::serve(ChannelAddr::any(addr.transport())).await?;
+    let _local_proc_serve_handle = client_proc.clone().serve(rx, monitored_return_handle());
+    Ok((client_proc, remote_client, client_addr))
 }
 
 pub mod test_utils {
