@@ -140,9 +140,8 @@ impl<'a> MessageParser<'a> {
             .try_iter()?
             .map(|x| {
                 let v = x?;
-                let vr: PyResult<u64> = v.extract();
-                if let Ok(v) = vr {
-                    Ok(v.into())
+                if v.is_instance_of::<pyo3::types::PyInt>() {
+                    Ok(v.extract::<u64>()?.into())
                 } else {
                     create_ref(v)
                 }

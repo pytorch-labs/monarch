@@ -4,12 +4,11 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-import asyncio
 import importlib.resources
 import subprocess
 
 import pytest
-from monarch.actor_mesh import Actor, ActorError, endpoint, send
+from monarch.actor_mesh import Actor, ActorError, endpoint
 
 from monarch.proc_mesh import proc_mesh
 
@@ -66,6 +65,24 @@ class BrokenPickleClass:
         self.__dict__.update(state)
 
 
+def _test_helper(cmd_args, timeout=180):
+    """Helper function to run a subprocess test and check its output."""
+    test_bin = importlib.resources.files("monarch.python.tests").joinpath("test_bin")
+    cmd = [str(test_bin)] + cmd_args
+    try:
+        print("running cmd", " ".join(cmd))
+        process = subprocess.run(cmd, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        print("timeout expired")
+        if e.stdout is not None:
+            print(e.stdout.decode())
+        if e.stderr is not None:
+            print(e.stderr.decode())
+        raise
+
+    return process
+
+
 @pytest.mark.parametrize(
     "actor_class",
     [ExceptionActor, ExceptionActorSync],
@@ -118,26 +135,14 @@ def test_actor_supervision(num_procs, sync_endpoint, sync_test_impl, endpoint_na
     to exit with a non-zero code, so the only way we can test it is via a
     subprocess harness.
     """
-    # Run the segfault test in a subprocess
-    test_bin = importlib.resources.files("monarch.python.tests").joinpath("test_bin")
-    cmd = [
-        str(test_bin),
+    cmd_args = [
         "error-endpoint",
         f"--num-procs={num_procs}",
         f"--sync-endpoint={sync_endpoint}",
         f"--sync-test-impl={sync_test_impl}",
         f"--endpoint-name={endpoint_name}",
     ]
-    try:
-        print("running cmd", " ".join(cmd))
-        process = subprocess.run(cmd, capture_output=True, timeout=180)
-    except subprocess.TimeoutExpired as e:
-        print("timeout expired")
-        if e.stdout is not None:
-            print(e.stdout.decode())
-        if e.stderr is not None:
-            print(e.stderr.decode())
-        raise
+    process = _test_helper(cmd_args)
 
     # Assert that the subprocess exited with a non-zero code
     assert "I actually ran" in process.stdout.decode()
@@ -152,22 +157,7 @@ def test_proc_mesh_bootstrap_error():
     """
     Test that attempts to spawn a ProcMesh with a failure during bootstrap.
     """
-    # Run the segfault test in a subprocess
-    test_bin = importlib.resources.files("monarch.python.tests").joinpath("test_bin")
-    cmd = [
-        str(test_bin),
-        "error-bootstrap",
-    ]
-    try:
-        print("running cmd", " ".join(cmd))
-        process = subprocess.run(cmd, capture_output=True, timeout=180)
-    except subprocess.TimeoutExpired as e:
-        print("timeout expired")
-        if e.stdout is not None:
-            print(e.stdout.decode())
-        if e.stderr is not None:
-            print(e.stderr.decode())
-        raise
+    process = _test_helper(["error-bootstrap"])
 
     # Assert that the subprocess exited with a non-zero code
     assert "I actually ran" in process.stdout.decode()
@@ -217,24 +207,89 @@ async def test_broken_pickle_class(raise_on_getstate, raise_on_setstate, num_pro
 @pytest.mark.oss_skip
 async def test_exception_after_wait_unmonitored():
     # Run the test in a subprocess
-    test_bin = importlib.resources.files("monarch.python.tests").joinpath("test_bin")
-    cmd = [
-        str(test_bin),
-        "error-unmonitored",
-    ]
-    try:
-        print("running cmd", " ".join(cmd))
-        process = subprocess.run(cmd, capture_output=True, timeout=180)
-    except subprocess.TimeoutExpired as e:
-        print("timeout expired")
-        if e.stdout is not None:
-            print(e.stdout.decode())
-        if e.stderr is not None:
-            print(e.stderr.decode())
-        raise
+    process = _test_helper(["error-unmonitored"])
 
     # Assert that the subprocess exited with a non-zero code
     assert "I actually ran" in process.stdout.decode()
+    assert (
+        process.returncode != 0
+    ), f"Expected non-zero exit code, got {process.returncode}"
+
+
+# oss_skip: importlib not pulling resource correctly in git CI, needs to be revisited
+@pytest.mark.oss_skip
+async def test_rust_error_on_client():
+    # Run the test in a subprocess
+    process = _test_helper(["error-client"])
+
+    # Assert that the subprocess exited with a non-zero code
+    assert "Exception: Alloc object already been used" in process.stderr.decode()
+    assert (
+        process.returncode != 0
+    ), f"Expected non-zero exit code, got {process.returncode}"
+
+
+# oss_skip: importlib not pulling resource correctly in git CI, needs to be revisited
+@pytest.mark.oss_skip
+@pytest.mark.parametrize("num_procs", [1, 2])
+@pytest.mark.parametrize(
+    "test_name_and_output",
+    [
+        (
+            "python_throws_error_on_tensor_worker",
+            [
+                "RuntimeError: remote function failed: Traceback (most recent call last):",
+                'x = d["b"]',
+                "KeyError: 'b'",
+            ],
+        ),
+        (
+            "python_returns_unexpected_value_to_rust_on_tensor_worker",
+            [
+                "Traceback of where the remote function was issued on controller (most recent call last):",
+                "in python_returns_unexpected_value_to_rust_on_tensor_worker",
+                "Traceback of where the remote function failed on worker (most recent call last):",
+                "in torch operator failed: torch operator error aten::add_() Expected a value of type 'Tensor' for argument 'self' but instead found type 'str'",
+            ],
+        ),
+        (
+            "rust_error_on_tensor_worker",
+            ["processing error: could not find recording: Ref {"],
+        ),
+        (
+            "rust_panic_on_tensor_worker",
+            [
+                "panic: __test_panic called",
+                "panicked at fbcode/monarch/monarch_messages/src/worker.rs",
+            ],
+        ),
+        (
+            "tensor_worker_remote_function_import_error",
+            [
+                "Traceback of where the remote function was issued on controller (most recent call last):",
+                "Traceback of where the remote function failed on worker (most recent call last):",
+                'in invalid remote function: failed to resolve function <function "monarch.worker._testing_throws_on_import._an_unusable_function">: Traceback (most recent call last):',
+            ],
+        ),
+    ],
+)
+def test_tensor_engine_errors(num_procs, test_name_and_output):
+    """
+    Test that an endpoint causing spontaenous process exit is handled by the supervisor.
+
+    Today, these events are delivered to the client and cause the client process
+    to exit with a non-zero code, so the only way we can test it is via a
+    subprocess harness.
+    """
+    cmd_args = [
+        "error-tensor-engine",
+        f"--num-procs={num_procs}",
+        f"--test-name={test_name_and_output[0]}",
+    ]
+    process = _test_helper(cmd_args)
+
+    for output in test_name_and_output[1]:
+        assert output in process.stderr.decode()
     assert (
         process.returncode != 0
     ), f"Expected non-zero exit code, got {process.returncode}"
