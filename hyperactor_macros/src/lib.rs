@@ -1589,9 +1589,10 @@ pub fn derive_bind(input: TokenStream) -> TokenStream {
         },
         _ => panic!("Bind can only be derived for structs and enums"),
     };
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
     let expand = quote! {
         #[automatically_derived]
-        impl hyperactor::message::Bind for #name {
+        impl #impl_generics hyperactor::message::Bind for #name #ty_generics #where_clause {
             fn bind(&mut self, bindings: &mut hyperactor::message::Bindings) -> anyhow::Result<()> {
                 #inner
                 Ok(())
@@ -1644,9 +1645,10 @@ pub fn derive_unbind(input: TokenStream) -> TokenStream {
         },
         _ => panic!("Unbind can only be derived for structs and enums"),
     };
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
     let expand = quote! {
         #[automatically_derived]
-        impl hyperactor::message::Unbind for #name {
+        impl #impl_generics hyperactor::message::Unbind for #name #ty_generics #where_clause {
             fn unbind(&self, bindings: &mut hyperactor::message::Bindings) -> anyhow::Result<()> {
                 #inner
                 Ok(())
