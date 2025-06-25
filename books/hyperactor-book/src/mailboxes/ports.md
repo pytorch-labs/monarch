@@ -21,7 +21,7 @@ enum UnboundedPortSender<M: Message> {
 - **`Mpsc`**: Sends messages into a tokio unbounded channel
 - **`Func`**: Custom logic, often used to enqueue messages onto actor work queues.
 
-Messages are sent via the `.send(message)` method, which forwards to either the internal channel or the configured function.
+Messages are sent via the `.send(headers, message)` method, which forwards to either the internal channel or the configured function.
 
 ## `PortHandle<M>`
 
@@ -385,8 +385,13 @@ Calling `.send_once(message)` on an `OnceSender` consumes the channel, and fails
 To enable uniform message routing, both `UnboundedSender` and `OnceSender` implement the `SerializedSender` trait:
 ```rust
 trait SerializedSender: Send + Sync {
-    fn send_serialized(&self, serialized: Serialized) -> Result<bool, SerializedSenderError>;
-}
+    fn as_any(&self) -> &dyn Any;
+    fn send_serialized(
+        &self,
+        headers: Attrs,
+        serialized: Serialized,
+    ) -> Result<bool, SerializedSenderError>;
+
 ```
 This trait lets the mailbox deliver a `Serialized` message (a type-erased, encoded payload) by:
 1. Deserializing the payload into a concrete `M` using `RemoteMessage` trait,
@@ -407,18 +412,24 @@ See the (Mailbox) [`State`](./mailbox.md#state) section for details on how the m
 Below is the canonical implementation of `SerializedSender` for `UnboundedSender<M>`:
 ```rust
 impl<M: RemoteMessage> SerializedSender for UnboundedSender<M> {
-    fn send_serialized(&self, serialized: Serialized) -> Result<bool, SerializedSenderError> {
+    fn send_serialized(
+        &self,
+        headers: Attrs,
+        serialized: Serialized,
+    ) -> Result<bool, SerializedSenderError> {
         match serialized.deserialized() {
             Ok(message) => {
-                self.sender
-                    .send(message)
-                    .map_err(|err| SerializedSenderError {
+                self.sender.send(headers.clone(), message).map_err(|err| {
+                    SerializedSenderError {
                         data: serialized,
                         error: MailboxSenderError::new_bound(
                             self.port_id.clone(),
                             MailboxSenderErrorKind::Other(err),
                         ),
-                    })?;
+                        headers,
+                    }
+                })?;
+
                 Ok(true)
             }
             Err(err) => Err(SerializedSenderError {
@@ -427,6 +438,7 @@ impl<M: RemoteMessage> SerializedSender for UnboundedSender<M> {
                     self.port_id.clone(),
                     MailboxSenderErrorKind::Deserialize(M::typename(), err),
                 ),
+                headers,
             }),
         }
     }
