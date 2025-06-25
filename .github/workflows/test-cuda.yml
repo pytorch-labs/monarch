@@ -48,5 +48,5 @@ jobs:
         install_wheel_from_artifact
 
         # Run CUDA tests
-        LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip" -n auto
+        LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip"
         python python/tests/test_mock_cuda.py
