@@ -87,7 +87,7 @@ impl GenericStateObject {
         &self.metadata
     }
 
-    pub fn data(&self) -> &str {
+    pub fn data(&self) -> &Serialized {
         &self.data
     }
 }

@@ -9,7 +9,6 @@
 use anyhow::Result;
 use clap::Parser;
 use hyperactor::channel::ChannelAddr;
-use hyperactor::id;
 use hyperactor_state::spawn_actor;
 use hyperactor_state::state_actor::StateActor;
 use tracing::Level;
@@ -40,12 +39,12 @@ async fn main() -> Result<()> {
     println!("\x1b[33m======= STATE ACTOR STARTING ========\x1b[0m");
 
     // Create a state actor
-    let actor_id = id!(state[0].state_actor[0]);
+    let proc_id = hyperactor::reference::ProcId(hyperactor::WorldId("state_server".to_string()), 0);
     let addr = args.address.clone();
 
     // Spawn the state actor
     let (local_addr, _state_actor_ref) =
-        spawn_actor::<StateActor>(addr, actor_id.clone(), ()).await?;
+        spawn_actor::<StateActor>(addr, proc_id, "state_actor", ()).await?;
 
     println!("State actor spawned at address: {:?}", local_addr);
 
