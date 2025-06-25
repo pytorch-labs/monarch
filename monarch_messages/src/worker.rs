@@ -20,14 +20,13 @@ use derive_more::From;
 use derive_more::TryInto;
 use enum_as_inner::EnumAsInner;
 use hyperactor::ActorRef;
+use hyperactor::Bind;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Named;
 use hyperactor::RefClient;
-use hyperactor::message::Bind;
-use hyperactor::message::Bindings;
+use hyperactor::Unbind;
 use hyperactor::message::IndexedErasedUnbound;
-use hyperactor::message::Unbind;
 use hyperactor::reference::ActorId;
 use monarch_types::SerializablePyErr;
 use ndslice::Slice;
@@ -564,7 +563,9 @@ impl From<Arc<CallFunctionError>> for ValueError {
     Deserialize,
     Debug,
     Named,
-    EnumAsInner
+    EnumAsInner,
+    Bind,
+    Unbind
 )]
 pub enum WorkerMessage {
     /// Initialize backend network state.
@@ -840,20 +841,6 @@ pub enum WorkerMessage {
         #[reply]
         response_port: hyperactor::OncePortRef<Option<Result<WireValue, ValueError>>>,
     },
-}
-
-// WorkerMessage currently has no accumulation reply port.
-// TODO(pzhang) add macro to auto implement these traits.
-impl Unbind for WorkerMessage {
-    fn unbind(&self, _bindings: &mut Bindings) -> anyhow::Result<()> {
-        Ok(())
-    }
-}
-
-impl Bind for WorkerMessage {
-    fn bind(&mut self, _bindings: &mut Bindings) -> anyhow::Result<()> {
-        Ok(())
-    }
 }
 
 /// The parameters to spawn a worker actor.

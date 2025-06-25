@@ -838,11 +838,6 @@ impl<M: RemoteMessage> PortRef<M> {
         &self.port_id
     }
 
-    /// Mutable reference to this port's ID.
-    pub fn port_id_mut(&mut self) -> &mut PortId {
-        &mut self.port_id
-    }
-
     /// Convert this PortRef into its corresponding port id.
     pub fn into_port_id(self) -> PortId {
         self.port_id

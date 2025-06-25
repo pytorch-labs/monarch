@@ -58,15 +58,14 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorRef;
+use hyperactor::Bind;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::OncePortRef;
 use hyperactor::PortRef;
-use hyperactor::message::Bind;
-use hyperactor::message::Bindings;
+use hyperactor::Unbind;
 use hyperactor::message::IndexedErasedUnbound;
-use hyperactor::message::Unbind;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_mesh::Mesh;
 use hyperactor_mesh::ProcMesh;
@@ -152,21 +151,8 @@ struct PsGetBuffers(pub usize, pub OncePortRef<(RdmaBuffer, RdmaBuffer)>);
 struct PsUpdate(pub OncePortRef<bool>);
 
 // Message to log actors' weights and gradients.
-#[derive(Debug, Serialize, Deserialize, Named, Clone)]
+#[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
 struct Log;
-
-// TODO(pzhang) replace the boilerplate Bind/Unbind impls with a macro.
-impl Bind for Log {
-    fn bind(&mut self, _bindings: &mut Bindings) -> anyhow::Result<()> {
-        Ok(())
-    }
-}
-
-impl Unbind for Log {
-    fn unbind(&self, _bindings: &mut Bindings) -> anyhow::Result<()> {
-        Ok(())
-    }
-}
 
 #[async_trait]
 impl Handler<PsGetBuffers> for ParameterServerActor {
@@ -291,64 +277,25 @@ impl Actor for WorkerActor {
 // - ActorRef<RdmaManagerActor>: the actor ref to the parameter server
 // - Vec<ActorRef<RdmaManagerActor>>: the list of RdmaManagerActors. Used for the worker to get
 //   given its casted rank.
-#[derive(Debug, Serialize, Deserialize, Named, Clone)]
+#[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
 pub struct WorkerInit(
     pub ActorRef<ParameterServerActor>,
     pub Vec<ActorRef<RdmaManagerActor>>,
 );
 
-// TODO(pzhang) replace the boilerplate Bind/Unbind impls with a macro.
-impl Bind for WorkerInit {
-    fn bind(&mut self, _bindings: &mut Bindings) -> anyhow::Result<()> {
-        Ok(())
-    }
-}
-
-impl Unbind for WorkerInit {
-    fn unbind(&self, _bindings: &mut Bindings) -> anyhow::Result<()> {
-        Ok(())
-    }
-}
-
 // Message to signal the worker to update its gradients and transmit them to the server.
 // The PortRef<bool> is used to notify the main process when the operation completes.
 // - Workers compute local gradients (weights + 1)
 // - Workers write these gradients to their assigned buffer on the parameter server using RDMA
-#[derive(Debug, Serialize, Deserialize, Named, Clone)]
-pub struct WorkerStep(PortRef<bool>);
-
-// TODO(pzhang) replace the boilerplate Bind/Unbind impls with a macro.
-impl Bind for WorkerStep {
-    fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        self.0.bind(bindings)
-    }
-}
-
-impl Unbind for WorkerStep {
-    fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        self.0.unbind(bindings)
-    }
-}
+#[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
+pub struct WorkerStep(#[binding(include)] PortRef<bool>);
 
 // Message to signal the worker to pull updated weights from the parameter server.
 // The PortRef<bool> is used to notify the main process when the operation completes.
 // - Workers read the updated weights from the parameter server using RDMA
 // - This happens after the parameter server has applied all gradients to update the weights
-#[derive(Debug, Serialize, Deserialize, Named, Clone)]
-pub struct WorkerUpdate(PortRef<bool>);
-
-// TODO(pzhang) replace the boilerplate Bind/Unbind impls with a macro.
-impl Bind for WorkerUpdate {
-    fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        self.0.bind(bindings)
-    }
-}
-
-impl Unbind for WorkerUpdate {
-    fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        self.0.unbind(bindings)
-    }
-}
+#[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
+pub struct WorkerUpdate(#[binding(include)] PortRef<bool>);
 
 #[async_trait]
 impl Handler<Cast<WorkerInit>> for WorkerActor {

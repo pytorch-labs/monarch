@@ -372,14 +372,13 @@ pub mod test_utils {
     use async_trait::async_trait;
     use hyperactor::Actor;
     use hyperactor::ActorId;
+    use hyperactor::Bind;
     use hyperactor::Handler;
     use hyperactor::Instance;
     use hyperactor::Named;
     use hyperactor::PortRef;
-    use hyperactor::message::Bind;
-    use hyperactor::message::Bindings;
+    use hyperactor::Unbind;
     use hyperactor::message::IndexedErasedUnbound;
-    use hyperactor::message::Unbind;
     use serde::Deserialize;
     use serde::Serialize;
 
@@ -392,55 +391,21 @@ pub mod test_utils {
         pub value: u64,
     }
 
-    #[derive(Debug, Named, Serialize, Deserialize, PartialEq, Clone)]
+    #[derive(Debug, Named, Serialize, Deserialize, PartialEq, Clone, Bind, Unbind)]
     #[named(dump = false)]
     pub enum TestMessage {
         Forward(String),
         CastAndReply {
             arg: String,
+            // Intentionally not including 0. As a result, this port will not be
+            // split.
+            // #[binding(include)]
             reply_to0: PortRef<String>,
+            #[binding(include)]
             reply_to1: PortRef<u64>,
+            #[binding(include)]
             reply_to2: PortRef<MyReply>,
         },
-    }
-
-    // TODO(pzhang) add macro to auto implement these traits.
-    impl Unbind for TestMessage {
-        fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
-            match &self {
-                TestMessage::Forward(_) => Ok(()),
-                TestMessage::CastAndReply {
-                    reply_to1,
-                    reply_to2,
-                    ..
-                } => {
-                    // Intentionally not visiting 0. As a result, this port
-                    // will not be split.
-                    reply_to1.unbind(bindings)?;
-                    reply_to2.unbind(bindings)?;
-                    Ok(())
-                }
-            }
-        }
-    }
-
-    impl Bind for TestMessage {
-        fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
-            match self {
-                TestMessage::Forward(_) => Ok(()),
-                TestMessage::CastAndReply {
-                    reply_to1,
-                    reply_to2,
-                    ..
-                } => {
-                    // Intentionally not visiting 0. As a result, this port
-                    // will not be split.
-                    reply_to1.bind(bindings)?;
-                    reply_to2.bind(bindings)?;
-                    Ok(())
-                }
-            }
-        }
     }
 
     #[derive(Debug)]
