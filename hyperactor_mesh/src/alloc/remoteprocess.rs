@@ -794,7 +794,7 @@ impl Alloc for RemoteProcessAlloc {
             if let Err(e) = self.ensure_started().await {
                 break Some(ProcState::Failed {
                     world_id: self.world_id.clone(),
-                    description: format!("failed to ensure started: {}", e),
+                    description: format!("failed to ensure started: {:#}", e),
                 });
             }
 

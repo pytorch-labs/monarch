@@ -520,6 +520,10 @@ class _Actor:
                 self.instance = Class(*args, **kwargs)
                 return None
 
+            if self.instance is None:
+                raise AssertionError(
+                    "__init__ failed earlier and no Actor object is available"
+                )
             the_method = getattr(self.instance, message.method)._method
 
             if inspect.iscoroutinefunction(the_method):
