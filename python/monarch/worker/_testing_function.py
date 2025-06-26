@@ -479,3 +479,13 @@ def test_pdb_actor():
     pdb_actor.send(DebuggerAction.Write(b"5678"))
     assert isinstance(pdb_actor.receive(), DebuggerAction.Detach)
     return torch.zeros(1)
+
+
+def throw_python_exception():
+    d = {"a": torch.tensor(1)}
+    x = d["b"]
+    return x
+
+
+def returns_a_string():
+    return "hello"

@@ -7,13 +7,24 @@
 import asyncio
 import ctypes
 import sys
+import time
 
 import click
+import monarch
+import torch
+from monarch._rust_bindings.hyperactor_extension.alloc import (
+    AllocConstraints,
+    AllocSpec,
+)
 
 from monarch._rust_bindings.monarch_extension.panic import panicking_function
 
 from monarch.actor_mesh import Actor, endpoint, send
-from monarch.proc_mesh import proc_mesh
+from monarch.common import messages
+from monarch.common._device_utils import _local_device_count
+from monarch.common.remote import remote
+from monarch.mesh_controller import spawn_tensor_engine
+from monarch.proc_mesh import proc_mesh, ProcMesh
 
 
 class ErrorActor(Actor):
@@ -92,8 +103,6 @@ def _run_error_test_sync(num_procs, sync_endpoint, endpoint_name):
 
 
 def _run_error_test(num_procs, sync_endpoint, endpoint_name):
-    import asyncio
-
     if sync_endpoint:
         actor_class = ErrorActorSync
     else:
@@ -122,6 +131,60 @@ def _run_error_test(num_procs, sync_endpoint, endpoint_name):
             await endpoint.call()
 
     asyncio.run(run_test())
+
+
+def python_throws_error_on_tensor_worker(_mesh):
+    throws = remote(
+        "monarch.worker._testing_function.throw_python_exception",
+        propagate=lambda: torch.tensor(1),
+    )
+    throws()
+    time.sleep(1)
+    torch.ones(())
+
+
+def python_returns_unexpected_value_to_rust_on_tensor_worker(_mesh):
+    actually_returns_a_string = remote(
+        "monarch.worker._testing_function.returns_a_string",
+        propagate=lambda: torch.tensor(1),
+    )
+    client_thinks_im_a_tensor = actually_returns_a_string()
+    client_thinks_im_a_tensor += 1
+    time.sleep(2)
+    torch.ones(())
+
+
+def rust_error_on_tensor_worker(mesh):
+    class _Recording:
+        def __init__(self):
+            self.ref = 0
+
+    # Trying to call a recording that doesn't exist will cause a rust error
+    # on the worker.
+    mesh._send(
+        messages.CallRecording(ident=0, recording=_Recording(), results=[], actuals=[])
+    )
+    time.sleep(1)
+    torch.rand(3, 4)
+
+
+def rust_panic_on_tensor_worker(_mesh):
+    # __test_panic is a special invocation for testing inside StreamActor
+    # that forces a panic
+    panic = remote("__test_panic", propagate=lambda: torch.ones(()))
+    panic()
+    time.sleep(1)
+    torch.rand(3, 4)
+
+
+def tensor_worker_remote_function_import_error(_mesh):
+    import_error = remote(
+        "monarch.worker._testing_throws_on_import._an_unusable_function",
+        propagate=lambda: torch.ones(()),
+    )
+    import_error()
+    time.sleep(1)
+    torch.ones(())
 
 
 @click.group()
@@ -174,6 +237,32 @@ async def _error_unmonitored():
 @main.command("error-unmonitored")
 def error_unmonitored():
     asyncio.run(_error_unmonitored())
+
+
+@main.command("error-client")
+def error_client():
+    gpus = _local_device_count()
+    spec = AllocSpec(AllocConstraints(), gpus=gpus, hosts=1)
+    allocator = monarch.LocalAllocator()
+    alloc = allocator.allocate(spec).get()
+    ProcMesh.from_alloc(alloc).get()
+    # Attempting to reuse alloc for a new proc mesh will cause a rust error.
+    ProcMesh.from_alloc(alloc).get()
+
+
+@main.command("error-tensor-engine")
+@click.option("--num-procs", type=int, required=True)
+@click.option("--test-name", type=str, required=True)
+def error_tensor_engine(num_procs, test_name):
+    print(f"Running tensor engine test: {num_procs=} {test_name=}")
+    proc = proc_mesh(gpus=num_procs).get()
+    mesh = spawn_tensor_engine(proc)
+    with mesh.activate():
+        test_func = globals().get(test_name)
+        if not test_func:
+            raise ValueError(f"Function {test_name} not found in the current module.")
+        test_func(mesh)
+    mesh.exit()
 
 
 if __name__ == "__main__":
