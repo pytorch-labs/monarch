@@ -439,7 +439,7 @@ std::mutex patchedMutex;
 
 void doPatch(const char* name, void** realFns, void* toPatch, void** ourFns) {
   std::lock_guard<std::mutex> guard(patchedMutex);
-  if (patched.contains(toPatch)) {
+  if (patched.count(toPatch)) {
     return;
   }
   patched.emplace(toPatch);
