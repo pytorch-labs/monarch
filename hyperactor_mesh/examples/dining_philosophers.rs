@@ -20,7 +20,6 @@ use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::Unbind;
-use hyperactor::message::IndexedErasedUnbound;
 use hyperactor_mesh::ProcMesh;
 use hyperactor_mesh::actor_mesh::ActorMesh;
 use hyperactor_mesh::actor_mesh::Cast;
@@ -49,8 +48,7 @@ enum ChopstickStatus {
 #[hyperactor::export(
     spawn = true,
     handlers = [
-        Cast<PhilosopherMessage>,
-        IndexedErasedUnbound<Cast<PhilosopherMessage>>,
+        Cast<PhilosopherMessage> { cast = true },
     ],
 )]
 struct PhilosopherActor {

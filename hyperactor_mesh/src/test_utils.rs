@@ -13,7 +13,6 @@ use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::Unbind;
-use hyperactor::message::IndexedErasedUnbound;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -28,8 +27,7 @@ pub struct EmptyMessage();
 #[hyperactor::export(
     handlers = [
         EmptyMessage,
-        Cast<EmptyMessage>,
-        IndexedErasedUnbound<Cast<EmptyMessage>>,
+        Cast<EmptyMessage> { cast = true },
     ],
 )]
 pub struct EmptyActor();

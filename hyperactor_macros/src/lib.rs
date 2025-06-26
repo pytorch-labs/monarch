@@ -1154,16 +1154,62 @@ pub fn named_derive(input: TokenStream) -> TokenStream {
     TokenStream::from(expanded)
 }
 
+struct HandlerSpec {
+    ty: Type,
+    cast: bool,
+}
+
+impl Parse for HandlerSpec {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let ty: Type = input.parse()?;
+
+        if input.peek(syn::token::Brace) {
+            let content;
+            syn::braced!(content in input);
+            let key: Ident = content.parse()?;
+            content.parse::<Token![=]>()?;
+            let expr: Expr = content.parse()?;
+
+            let cast = if key == "cast" {
+                if let Expr::Lit(ExprLit {
+                    lit: Lit::Bool(b), ..
+                }) = expr
+                {
+                    b.value
+                } else {
+                    return Err(syn::Error::new_spanned(expr, "expected boolean for `cast`"));
+                }
+            } else {
+                return Err(syn::Error::new_spanned(
+                    key,
+                    "unsupported field (expected `cast`)",
+                ));
+            };
+
+            Ok(HandlerSpec { ty, cast })
+        } else if input.is_empty() || input.peek(Token![,]) {
+            Ok(HandlerSpec { ty, cast: false })
+        } else {
+            // Something unexpected follows the type
+            let unexpected: proc_macro2::TokenTree = input.parse()?;
+            Err(syn::Error::new_spanned(
+                unexpected,
+                "unexpected token after type — expected `{ ... }` or nothing",
+            ))
+        }
+    }
+}
+
 /// Attribute Struct for [`fn export`] macro.
 struct ExportAttr {
     spawn: bool,
-    handlers: Vec<Type>,
+    handlers: Vec<HandlerSpec>,
 }
 
 impl Parse for ExportAttr {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut spawn = false;
-        let mut handlers = vec![];
+        let mut handlers: Vec<HandlerSpec> = vec![];
 
         while !input.is_empty() {
             let key: Ident = input.parse()?;
@@ -1185,14 +1231,8 @@ impl Parse for ExportAttr {
             } else if key == "handlers" {
                 let content;
                 bracketed!(content in input);
-                let types = content.parse_terminated(Type::parse, Token![,])?;
-                if types.is_empty() {
-                    return Err(syn::Error::new_spanned(
-                        types,
-                        "`handlers` must include at least one type",
-                    ));
-                }
-                handlers = types.into_iter().collect();
+                let raw_handlers = content.parse_terminated(HandlerSpec::parse, Token![,])?;
+                handlers = raw_handlers.into_iter().collect();
             } else {
                 return Err(syn::Error::new_spanned(
                     key,
@@ -1240,11 +1280,20 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
     let data_type_name = &input.ident;
 
     let ExportAttr { spawn, handlers } = parse_macro_input!(attr as ExportAttr);
+    let mut tys = Vec::new();
+    for HandlerSpec { ty, cast } in handlers {
+        if cast {
+            let wrapped = quote! { hyperactor::message::IndexedErasedUnbound<#ty> };
+            let wrapped_ty: Type = syn::parse2(wrapped).unwrap();
+            tys.push(wrapped_ty);
+        }
+        tys.push(ty);
+    }
 
     let mut handles = Vec::new();
     let mut bindings = Vec::new();
 
-    for ty in &handlers {
+    for ty in &tys {
         handles.push(quote! {
             impl hyperactor::actor::RemoteHandles<#ty> for #data_type_name {}
         });

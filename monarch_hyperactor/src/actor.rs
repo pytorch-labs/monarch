@@ -23,7 +23,6 @@ use hyperactor::Named;
 use hyperactor::forward;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
-use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::message::Unbind;
 use hyperactor_mesh::actor_mesh::Cast;
 use monarch_types::PickledPyObject;
@@ -268,8 +267,7 @@ impl PythonActorHandle {
     spawn = true,
     handlers = [
         PythonMessage,
-        Cast<PythonMessage>,
-        IndexedErasedUnbound<Cast<PythonMessage>>,
+        Cast<PythonMessage> { cast = true },
     ],
 )]
 pub(super) struct PythonActor {

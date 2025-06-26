@@ -431,14 +431,11 @@ pub(crate) mod test_util {
     #[hyperactor::export(
         spawn = true,
         handlers = [
-            Cast<Echo>,
-            Cast<GetRank>,
-            Cast<Error>,
+            Cast<Echo> { cast = true },
+            Cast<GetRank> { cast = true },
+            Cast<Error> { cast = true },
             GetRank,
             Relay,
-            IndexedErasedUnbound<Cast<Echo>>,
-            IndexedErasedUnbound<Cast<GetRank>>,
-            IndexedErasedUnbound<Cast<Error>>,
         ],
     )]
     pub struct TestActor;

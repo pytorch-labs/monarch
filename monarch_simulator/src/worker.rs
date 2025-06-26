@@ -24,7 +24,6 @@ use hyperactor::Named;
 use hyperactor::data::Serialized;
 use hyperactor::forward;
 use hyperactor::id;
-use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::reference::ActorId;
 use hyperactor::simnet::TorchOpEvent;
 use hyperactor::simnet::simnet_handle;
@@ -154,8 +153,7 @@ fn reduce_op<T: Clone + Default + Add<Output = T>>(
 #[hyperactor::export(
     spawn = true,
     handlers = [
-        WorkerMessage,
-        IndexedErasedUnbound<WorkerMessage>,
+        WorkerMessage { cast = true },
     ],
 )]
 pub struct WorkerActor {

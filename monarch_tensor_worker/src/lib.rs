@@ -158,10 +158,8 @@ enum Recording {
     handlers = [
         WorkerMessage,
         IndexedErasedUnbound<WorkerMessage>,
-        Cast<AssignRankMessage>,
-        Cast<WorkerMessage>,
-        IndexedErasedUnbound<Cast<AssignRankMessage>>,
-        IndexedErasedUnbound<Cast<WorkerMessage>>,
+        Cast<AssignRankMessage> { cast = true },
+        Cast<WorkerMessage> { cast = true },
     ],
 )]
 pub struct WorkerActor {

@@ -378,7 +378,6 @@ pub mod test_utils {
     use hyperactor::Named;
     use hyperactor::PortRef;
     use hyperactor::Unbind;
-    use hyperactor::message::IndexedErasedUnbound;
     use serde::Deserialize;
     use serde::Serialize;
 
@@ -412,10 +411,8 @@ pub mod test_utils {
     #[hyperactor::export(
         spawn = true,
         handlers = [
-            TestMessage,
-            Cast<TestMessage>,
-            IndexedErasedUnbound<TestMessage>,
-            IndexedErasedUnbound<Cast<TestMessage>>,
+            TestMessage { cast = true },
+            Cast<TestMessage> { cast = true },
         ],
     )]
     pub struct TestActor {

@@ -65,7 +65,6 @@ use hyperactor::Named;
 use hyperactor::OncePortRef;
 use hyperactor::PortRef;
 use hyperactor::Unbind;
-use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_mesh::Mesh;
 use hyperactor_mesh::ProcMesh;
@@ -226,14 +225,10 @@ impl Handler<Log> for ParameterServerActor {
 #[hyperactor::export(
     spawn = true,
     handlers = [
-        Cast<WorkerInit>,
-        IndexedErasedUnbound<Cast<WorkerInit>>,
-        Cast<WorkerStep>,
-        IndexedErasedUnbound<Cast<WorkerStep>>,
-        Cast<WorkerUpdate>,
-        IndexedErasedUnbound<Cast<WorkerUpdate>>,
-        Cast<Log>,
-        IndexedErasedUnbound<Cast<Log>>,
+        Cast<WorkerInit> { cast = true },
+        Cast<WorkerStep> { cast = true },
+        Cast<WorkerUpdate> { cast = true },
+        Cast<Log> { cast = true },
     ],
 )]
 pub struct WorkerActor {
