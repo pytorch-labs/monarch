@@ -82,6 +82,16 @@ where
     }
 }
 
+impl GenericStateObject {
+    pub fn metadata(&self) -> &StateMetadata {
+        &self.metadata
+    }
+
+    pub fn data(&self) -> &Serialized {
+        &self.data
+    }
+}
+
 /// Spec is the define the desired state of an object, defined by the user.
 pub trait Spec: Serialize + for<'de> Deserialize<'de> {}
 /// State is the current state of an object.

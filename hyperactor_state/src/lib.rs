@@ -22,14 +22,14 @@ use hyperactor::mailbox::MailboxClient;
 use hyperactor::mailbox::MailboxServer;
 use hyperactor::proc::Proc;
 
-mod client;
-mod object;
-mod state_actor;
+pub mod client;
+pub mod object;
+pub mod state_actor;
 
 /// Creates a state actor server at given address. Returns the server address and a handle to the
 /// state actor.
 #[allow(dead_code)]
-pub(crate) async fn spawn_actor<T: Actor + RemoteActor + Binds<T>>(
+pub async fn spawn_actor<T: Actor + RemoteActor + Binds<T>>(
     addr: ChannelAddr,
     proc_id: ProcId,
     actor_name: &str,
@@ -54,7 +54,7 @@ pub(crate) async fn spawn_actor<T: Actor + RemoteActor + Binds<T>>(
 
 /// Creates a remote client that can send message to actors in the remote addr.
 /// It is important to keep the client proc alive for the remote_client's lifetime.
-pub(crate) async fn create_remote_client(addr: ChannelAddr) -> Result<(Proc, Mailbox)> {
+pub async fn create_remote_client(addr: ChannelAddr) -> Result<(Proc, Mailbox)> {
     let remote_sender = MailboxClient::new(channel::dial(addr).unwrap());
     let client_proc_id = id!(client).random_user_proc();
     let client_proc = Proc::new(
@@ -65,15 +65,14 @@ pub(crate) async fn create_remote_client(addr: ChannelAddr) -> Result<(Proc, Mai
     Ok((client_proc, remote_client))
 }
 
-#[cfg(test)]
-pub(crate) mod test_utils {
+pub mod test_utils {
     use crate::object::GenericStateObject;
     use crate::object::LogSpec;
     use crate::object::LogState;
     use crate::object::StateMetadata;
     use crate::object::StateObject;
 
-    pub(crate) fn log_items(seq_low: usize, seq_high: usize) -> Vec<GenericStateObject> {
+    pub fn log_items(seq_low: usize, seq_high: usize) -> Vec<GenericStateObject> {
         let mut log_items = vec![];
         let metadata = StateMetadata {
             name: "test".to_string(),
