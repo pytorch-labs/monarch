@@ -43,12 +43,6 @@ impl Mailbox {
         let port_index = self.state.allocate_port();
         let (sender, receiver) = mpsc::unbounded_channel::<M>();
         let port_id = PortId(self.state.actor_id.clone(), port_index);
-        tracing::trace!(
-            name = "open_port",
-            "opening port for {} at {}",
-            self.state.actor_id,
-            port_id
-        );
         (
             PortHandle::new(self.clone(), port_index, UnboundedPortSender::Mpsc(sender)),
             PortReceiver::new(
@@ -180,13 +174,19 @@ impl MailboxSender for Mailbox {
             ),
             Entry::Occupied(entry) => {
                 let (metadata, data) = envelope.open();
-                match entry.get().send_serialized(data) {
+                let MessageMetadata {headers, sender, dest, error: metadata_error } = metadata;
+                match entry.get().send_serialized(headers, data) {
                     Ok(false) => {
                         entry.remove();
                     }
                     Ok(true) => (),
-                    Err(SerializedSenderError { data, error }) => MessageEnvelope::seal(
-                        metadata, data,
+                    Err(SerializedSenderError {
+                        data,
+                        error,
+                        headers,
+                    }) => MessageEnvelope::seal(
+                        MessageMetadata { headers, sender, dest, error: metadata_error },
+                        data,
                     )
                     .undeliverable(DeliveryError::Mailbox(format!("{}", error)), return_handle),
                 }
@@ -213,7 +213,7 @@ The mailbox uses the destination `PortId` to locate the bound port in its intern
 
 3. Deserialization and Delivery Attempt
 ```rust
-match entry.get().send_serialized(data)
+match entry.get().send_serialized(headers, data)
 ```
 If the port is found, the message is unsealed and passed to the corresponding `SerializedSender` (e.g., the `UnboundedSender` inserted during binding). This may succeed or fail:
   - `Ok(true)`: Message was delivered.
@@ -276,7 +276,7 @@ There are two distinct pathways by which a message can arrive at a `PortReceiver
 When you call `.send(msg)` on a `PortHandle<M>`, the message bypasses the `Mailbox` entirely and goes directly into the associated channel:
 ```text
 PortHandle<M>::send(msg)
-→ UnboundedPortSender<M>::send(msg)
+→ UnboundedPortSender<M>::send(Attrs::new(), msg)
 → underlying channel (mpsc::UnboundedSender<M>)
 → PortReceiver<M>::recv().await
 ```
@@ -287,8 +287,8 @@ When a message is wrapped in a `MessageEnvelope` and posted via `Mailbox::post`,
 ```text
 Mailbox::post(envelope, return_handle)
 → lookup State::ports[port_index]
-→ SerializedSender::send_serialized(bytes)
-→ UnboundedSender::send(M) // after deserialization
+→ SerializedSender::send_serialized(headers, bytes)
+→ UnboundedSender::send(headers, M) // after deserialization
 → mpsc channel
 → PortReceiver<M>::recv().await
 ```
@@ -320,28 +320,33 @@ impl<T: sealed::CanSend> CanSend for T {}
 The sealed version defines the core method:
 ```rust
 pub trait sealed::CanSend: Send + Sync {
-    fn post(&self, dest: PortId, data: Serialized);
+  fn post(&self, dest: PortId, headers: Attrs, data: Serialized);
 }
 ```
 Only internal types (e.g., `Mailbox`) implement this sealed trait, meaning only trusted components can obtain `CanSend`:
 ```rust
 impl cap::sealed::CanSend for Mailbox {
-    fn post(&self, dest: PortId, data: Serialized) {
+    fn post(&self, dest: PortId, headers: Attrs, data: Serialized) {
         let return_handle = self
             .lookup_sender::<Undeliverable<MessageEnvelope>>()
             .map_or_else(
                 || {
-                    let bt = std::backtrace::Backtrace::capture();
-                    tracing::warn!(
-                        actor_id = ?self.actor_id(),
-                        backtrace = ?bt,
-                        "Mailbox attempted to post a message without binding Undeliverable<MessageEnvelope>"
-                    );
+                    let actor_id = self.actor_id();
+                    if CAN_SEND_WARNED_MAILBOXES
+                        .get_or_init(DashSet::new)
+                        .insert(actor_id.clone()) {
+                        let bt = std::backtrace::Backtrace::capture();
+                        tracing::warn!(
+                            actor_id = ?actor_id,
+                            backtrace = ?bt,
+                            "mailbox attempted to post a message without binding Undeliverable<MessageEnvelope>"
+                        );
+                    }
                     monitored_return_handle()
                 },
-                |sender| PortHandle::new(self.clone(), u64::MAX, sender),
+                |sender| PortHandle::new(self.clone(), self.state.allocate_port(), sender),
             );
-        let envelope = MessageEnvelope::new(self.actor_id().clone(), dest, data);
+        let envelope = MessageEnvelope::new(self.actor_id().clone(), dest, data, headers);
         MailboxSender::post(self, envelope, return_handle);
     }
 }
