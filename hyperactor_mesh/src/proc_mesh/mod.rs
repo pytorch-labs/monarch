@@ -51,6 +51,8 @@ use crate::assign::Ranks;
 use crate::comm::CommActorMode;
 use crate::proc_mesh::mesh_agent::MeshAgent;
 use crate::proc_mesh::mesh_agent::MeshAgentMessageClient;
+use crate::reference::ProcMeshId;
+use crate::reference::ProcMeshRef;
 
 pub mod mesh_agent;
 
@@ -301,7 +303,7 @@ impl ProcMesh {
         })
     }
 
-    async fn spawn_on_procs<A: Actor + RemoteActor>(
+    pub(crate) async fn spawn_on_procs<A: Actor + RemoteActor>(
         this: &(impl cap::CanSend + cap::CanOpenPort),
         agents: impl IntoIterator<Item = ActorRef<MeshAgent>> + '_,
         actor_name: &str,
@@ -426,6 +428,16 @@ impl ProcMesh {
     }
     pub fn shape(&self) -> &Shape {
         &self.shape
+    }
+
+    /// Get a serializable reference to this mesh that
+    /// can be used to remotely spawn `Actor`s with
+    pub fn bind(&self) -> ProcMeshRef {
+        ProcMeshRef::attest(
+            ProcMeshId(self.world_id.to_string()),
+            self.shape.clone(),
+            self.ranks.clone(),
+        )
     }
 }
 

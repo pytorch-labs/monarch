@@ -11,14 +11,17 @@ use std::cmp::PartialOrd;
 use std::hash::Hash;
 use std::marker::PhantomData;
 
+use hyperactor::Actor;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Named;
 use hyperactor::ProcId;
 use hyperactor::RemoteHandles;
+use hyperactor::RemoteMessage;
 use hyperactor::WorldId;
 use hyperactor::actor::RemoteActor;
 use hyperactor::cap;
+use hyperactor::channel::ChannelAddr;
 use hyperactor::message::Castable;
 use hyperactor::message::IndexedErasedUnbound;
 use ndslice::Selection;
@@ -27,9 +30,11 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::CommActor;
+use crate::ProcMesh;
 use crate::actor_mesh::Cast;
 use crate::actor_mesh::CastError;
 use crate::actor_mesh::actor_mesh_cast;
+use crate::proc_mesh::mesh_agent::MeshAgent;
 
 #[macro_export]
 macro_rules! mesh_id {
@@ -164,6 +169,69 @@ impl<A: RemoteActor> PartialEq for ActorMeshRef<A> {
 }
 
 impl<A: RemoteActor> Eq for ActorMeshRef<A> {}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProcMeshRef {
+    mesh_id: ProcMeshId,
+    shape: Shape,
+    ranks: Vec<(ProcId, (ChannelAddr, ActorRef<MeshAgent>))>,
+}
+
+impl ProcMeshRef {
+    pub(crate) fn attest(
+        mesh_id: ProcMeshId,
+        shape: Shape,
+        ranks: Vec<(ProcId, (ChannelAddr, ActorRef<MeshAgent>))>,
+    ) -> Self {
+        Self {
+            mesh_id,
+            shape,
+            ranks,
+        }
+    }
+
+    /// Spawn an `ActorMesh` by launching the same actor type on all
+    /// agents, using the **same** parameters instance for every
+    /// actor.
+    ///
+    /// - `actor_name`: Name for all spawned actors.
+    /// - `params`: Reference to the parameter struct, reused for all
+    ///   actors.
+    ///
+    /// This will return an `ActorMeshRef` that
+    /// can be used to cast messages to `Actors` in the mesh.
+    pub async fn spawn<A: Actor + RemoteActor>(
+        &self,
+        caps: &(impl cap::CanSend + cap::CanOpenPort),
+        actor_name: &str,
+        params: &A::Params,
+    ) -> Result<ActorMeshRef<A>, anyhow::Error>
+    where
+        A::Params: RemoteMessage,
+    {
+        ProcMesh::spawn_on_procs::<A>(caps, self.agents(), actor_name, params).await?;
+
+        Ok(ActorMeshRef::attest(
+            ActorMeshId(self.mesh_id.clone(), actor_name.to_string()),
+            self.shape.clone(),
+            self.shape.clone(),
+        ))
+    }
+
+    fn agents(&self) -> impl Iterator<Item = ActorRef<MeshAgent>> + '_ {
+        self.ranks.iter().map(|(_, (_, agent))| agent.clone())
+    }
+
+    /// The `ProcMeshId`` of the `ProcMesh`
+    pub fn mesh_id(&self) -> &ProcMeshId {
+        &self.mesh_id
+    }
+
+    /// The shape of the `ProcMesh`.
+    pub fn shape(&self) -> &Shape {
+        &self.shape
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -315,6 +383,70 @@ mod tests {
 
         let ping_mesh_ref: ActorMeshRef<MeshPingPongActor> = ping_mesh.bind();
         let pong_mesh_ref: ActorMeshRef<MeshPingPongActor> = pong_mesh.bind();
+
+        let (done_tx, mut done_rx) = ping_proc_mesh.client().open_port::<bool>();
+        ping_mesh_ref
+            .cast(
+                ping_proc_mesh.client(),
+                sel!(?),
+                MeshPingPongMessage(10, pong_mesh_ref, done_tx.bind()),
+            )
+            .unwrap();
+
+        assert!(done_rx.recv().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_inter_mesh_ping_pong_proc_mesh_ref() {
+        let alloc_ping = LocalAllocator
+            .allocate(AllocSpec {
+                shape: shape(),
+                constraints: Default::default(),
+            })
+            .await
+            .unwrap();
+        let alloc_pong = LocalAllocator
+            .allocate(AllocSpec {
+                shape: shape(),
+                constraints: Default::default(),
+            })
+            .await
+            .unwrap();
+        let ping_proc_mesh = ProcMesh::allocate(alloc_ping).await.unwrap();
+        let ping_proc_mesh_ref = ping_proc_mesh.bind();
+        let ping_mesh_ref: ActorMeshRef<MeshPingPongActor> = ping_proc_mesh_ref
+            .spawn(
+                ping_proc_mesh.client(),
+                "ping",
+                &MeshPingPongActorParams {
+                    mesh_id: ActorMeshId(
+                        ProcMeshId(ping_proc_mesh.world_id().to_string()),
+                        "ping".to_string(),
+                    ),
+                    shape: ping_proc_mesh.shape().clone(),
+                    proc_mesh_shape: ping_proc_mesh.shape().clone(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let pong_proc_mesh = ProcMesh::allocate(alloc_pong).await.unwrap();
+        let pong_proc_mesh_ref = pong_proc_mesh.bind();
+        let pong_mesh_ref: ActorMeshRef<MeshPingPongActor> = pong_proc_mesh_ref
+            .spawn(
+                pong_proc_mesh.client(),
+                "pong",
+                &MeshPingPongActorParams {
+                    mesh_id: ActorMeshId(
+                        ProcMeshId(pong_proc_mesh.world_id().to_string()),
+                        "pong".to_string(),
+                    ),
+                    shape: pong_proc_mesh.shape().clone(),
+                    proc_mesh_shape: pong_proc_mesh.shape().clone(),
+                },
+            )
+            .await
+            .unwrap();
 
         let (done_tx, mut done_rx) = ping_proc_mesh.client().open_port::<bool>();
         ping_mesh_ref
