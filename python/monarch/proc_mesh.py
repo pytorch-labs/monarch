@@ -14,6 +14,7 @@ from typing import (
     Any,
     cast,
     Dict,
+    Generator,
     List,
     Optional,
     Sequence,
@@ -213,6 +214,12 @@ class ProcMesh(MeshTrait):
                 remote_workspace=RemoteWorkspace.FromEnvVar("WORKSPACE_DIR"),
             )
         await self._rsync_mesh_client.sync_workspace()
+
+    def stop(self) -> None:
+        self._proc_mesh.stop()
+
+    def __await__(self) -> Generator[None, None, None]:
+        return self._proc_mesh.wait_for_stop().__await__()
 
 
 async def local_proc_mesh_nonblocking(

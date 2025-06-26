@@ -414,6 +414,8 @@ impl ProcMesh {
     /// An event stream of proc events. Each ProcMesh can produce only one such
     /// stream, returning None after the first call.
     pub fn events(&mut self) -> Option<ProcEvents> {
+        let (stop_alloc_tx, stop_alloc_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+
         self.event_state.take().map(|event_state| ProcEvents {
             event_state,
             ranks: self
@@ -422,6 +424,8 @@ impl ProcMesh {
                 .enumerate()
                 .map(|(rank, (proc_id, _))| (proc_id.clone(), rank))
                 .collect(),
+            stop_alloc_tx,
+            stop_alloc_rx,
         })
     }
     pub fn shape(&self) -> &Shape {
@@ -457,6 +461,8 @@ impl fmt::Display for ProcEvent {
 pub struct ProcEvents {
     event_state: EventState,
     ranks: HashMap<ProcId, usize>,
+    stop_alloc_tx: tokio::sync::mpsc::UnboundedSender<()>,
+    stop_alloc_rx: tokio::sync::mpsc::UnboundedReceiver<()>,
 }
 
 impl ProcEvents {
@@ -491,8 +497,18 @@ impl ProcEvents {
                     };
                     break Some(ProcEvent::Crashed(*rank, actor_status.to_string()))
                 }
+                Some(_) = self.stop_alloc_rx.recv() => {
+                    if let Err(err) = self.event_state.alloc.stop_and_wait().await {
+                        tracing::error!("failed to stop alloc: {}", err);
+                    }
+                    break None;
+                }
             }
         }
+    }
+
+    pub fn stop_alloc_tx(&self) -> &tokio::sync::mpsc::UnboundedSender<()> {
+        &self.stop_alloc_tx
     }
 }
 
@@ -696,5 +712,27 @@ mod tests {
         );
 
         assert!(events.next().await.is_none());
+    }
+
+    #[tracing_test::traced_test]
+    #[tokio::test]
+    async fn test_proc_mesh_stop() {
+        let alloc_spec = AllocSpec {
+            shape: shape! { replica = 4 },
+            constraints: Default::default(),
+        };
+        let alloc = LocalAllocator.allocate(alloc_spec).await.unwrap();
+        let mut proc_mesh = ProcMesh::allocate(alloc).await.unwrap();
+
+        let _ = proc_mesh.spawn::<TestActor>("foo", &()).await.unwrap();
+        let _ = proc_mesh.spawn::<TestActor>("bar", &()).await.unwrap();
+
+        let mut proc_state = proc_mesh.events().unwrap();
+        let stop_sender = proc_state.stop_alloc_tx();
+        stop_sender.send(()).unwrap();
+
+        while (proc_state.next().await).is_some() {}
+
+        assert!(logs_contain("4 actors stopped"));
     }
 }

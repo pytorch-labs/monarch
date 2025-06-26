@@ -74,4 +74,20 @@ class ProcMesh:
         """
         ...
 
+    def stop(self) -> None:
+        """
+        Signals the `alloc` to stop all `Proc`s and the
+        `client`'s `Proc` to stop.
+        This returns immediately after the signal is sent.
+
+        Call `await wait_for_stop()` to wait until all the `Proc`s have completed stopping.
+        """
+        ...
+
+    async def wait_for_stop(self) -> None:
+        """
+        Wait for all `Proc`s in the `alloc` and the `client`'s `Proc` to stop.
+        """
+        ...
+
     def __repr__(self) -> str: ...

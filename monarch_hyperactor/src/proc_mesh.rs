@@ -34,6 +34,8 @@ use crate::shape::PyShape;
 pub struct PyProcMesh {
     pub inner: Arc<ProcMesh>,
     keepalive: Keepalive,
+    stop_signal_sender: tokio::sync::mpsc::UnboundedSender<()>,
+    stop_observer: tokio::sync::watch::Receiver<bool>,
 }
 fn allocate_proc_mesh<'py>(py: Python<'py>, alloc: &PyAlloc) -> PyResult<Bound<'py, PyAny>> {
     let alloc = match alloc.take() {
@@ -75,19 +77,25 @@ impl PyProcMesh {
     /// Create a new [`PyProcMesh`] with a monitor that crashes the
     /// process on any proc failure.
     fn monitored(mut proc_mesh: ProcMesh, world_id: WorldId) -> Self {
-        let monitor = tokio::spawn(Self::monitor_proc_mesh(
-            proc_mesh.events().unwrap(),
-            world_id,
-        ));
+        let events = proc_mesh.events().unwrap();
+        let stop_signal_sender = events.stop_alloc_tx().clone();
+        let (stopped_sender, stop_observer) = tokio::sync::watch::channel(false);
+        let monitor = tokio::spawn(Self::monitor_proc_mesh(events, world_id, stopped_sender));
         Self {
             inner: Arc::new(proc_mesh),
             keepalive: Keepalive::new(monitor),
+            stop_signal_sender,
+            stop_observer,
         }
     }
 
     /// Monitor the proc mesh for crashes. If a proc crashes, we print the reason
     /// to stderr and exit with code 1.
-    async fn monitor_proc_mesh(mut events: ProcEvents, world_id: WorldId) {
+    async fn monitor_proc_mesh(
+        mut events: ProcEvents,
+        world_id: WorldId,
+        stopped_sender: tokio::sync::watch::Sender<bool>,
+    ) {
         while let Some(event) = events.next().await {
             match event {
                 // A graceful stop should not be cause for alarm, but
@@ -99,6 +107,7 @@ impl PyProcMesh {
                 }
             }
         }
+        let _ = stopped_sender.send(true);
     }
 }
 
@@ -171,6 +180,27 @@ impl PyProcMesh {
         PyMailbox {
             inner: self.inner.client().clone(),
         }
+    }
+
+    fn stop(&mut self) -> PyResult<()> {
+        self.stop_signal_sender.send(()).map_err(|err| {
+            PyException::new_err(format!("Failed to send stop signal to alloc: {}", err))
+        })?;
+        self.inner.client_proc().destroy().map_err(|err| {
+            PyException::new_err(format!("Failed to destroy client proc: {}", err))
+        })?;
+        Ok(())
+    }
+
+    fn wait_for_stop<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let mut stop_observer = self.stop_observer.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            stop_observer
+                .wait_for(|stopped| *stopped)
+                .await
+                .map_err(|err| PyException::new_err(format!("Failed to wait for stop: {}", err)))?;
+            Ok(())
+        })
     }
 
     fn __repr__(&self) -> PyResult<String> {
