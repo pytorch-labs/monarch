@@ -288,11 +288,11 @@ class Endpoint(Generic[P, R]):
 
     def broadcast(self, *args: P.args, **kwargs: P.kwargs) -> None:
         """
-        Broadcast to all actors and wait for each to acknowledge receipt.
+        Fire-and-forget broadcast to all actors without waiting for actors to
+        acknowledge receipt.
 
-        This behaves like `cast`, but ensures that each actor has received and
-        processed the message by awaiting a response from each one. Does not
-        return any results.
+        In other words, the return of this method does not guarrantee the
+        delivery of the message.
         """
         # pyre-ignore
         send(self, args, kwargs)
