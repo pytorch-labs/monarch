@@ -41,7 +41,7 @@ pub struct Uslice {
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Named)]
 pub struct CastMessageEnvelope {
     /// The sender of this message.
-    sender: ActorId,
+    pub sender: ActorId,
     /// The destination port of the message. It could match multiple actors with
     /// rank wildcard.
     dest_port: DestinationPort,

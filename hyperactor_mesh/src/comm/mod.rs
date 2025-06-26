@@ -20,9 +20,14 @@ use hyperactor::ActorRef;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Named;
+use hyperactor::PortRef;
 use hyperactor::WorldId;
 use hyperactor::attrs::Attrs;
+use hyperactor::attrs::declare_attrs;
 use hyperactor::data::Serialized;
+use hyperactor::mailbox::DeliveryError;
+use hyperactor::mailbox::Undeliverable;
+use hyperactor::mailbox::UndeliverableMessageError;
 use hyperactor::reference::UnboundPort;
 use ndslice::Slice;
 use ndslice::selection::routing::RoutingFrame;
@@ -145,6 +150,10 @@ impl CommActorMode {
     }
 }
 
+declare_attrs! {
+    pub attr CAST_ORIGINATING_SENDER: ActorId;
+}
+
 #[async_trait]
 impl Actor for CommActor {
     type Params = CommActorParams;
@@ -155,6 +164,47 @@ impl Actor for CommActor {
             recv_state: HashMap::new(),
             mode: Default::default(),
         })
+    }
+
+    // This is an override of the default actor behavior.
+    async fn handle_undeliverable_message(
+        &mut self,
+        this: &Instance<Self>,
+        undelivered: hyperactor::mailbox::Undeliverable<hyperactor::mailbox::MessageEnvelope>,
+    ) -> Result<(), anyhow::Error> {
+        let Undeliverable(mut message_envelope) = undelivered;
+
+        // 1. Case delivery failure at a "forwarding" step.
+        if let Ok(ForwardMessage {
+            message: CastMessageEnvelope { sender, .. },
+            ..
+        }) = message_envelope.deserialized::<ForwardMessage>()
+        {
+            let return_port = PortRef::attest_message_port(&sender);
+            return_port
+                .send(this, Undeliverable(message_envelope.clone()))
+                .map_err(|err| {
+                    message_envelope
+                        .try_set_error(DeliveryError::BrokenLink(format!("send failure: {err}")));
+                    UndeliverableMessageError::return_failure(&message_envelope)
+                })?;
+            return Ok(());
+        }
+
+        // 2. Case delivery failure at a "deliver here" step.
+        if let Some(sender) = message_envelope.headers().get(CAST_ORIGINATING_SENDER) {
+            let return_port = PortRef::attest_message_port(sender);
+            return_port
+                .send(this, Undeliverable(message_envelope.clone()))
+                .map_err(|err| {
+                    message_envelope
+                        .try_set_error(DeliveryError::BrokenLink(format!("send failure: {err}")));
+                    UndeliverableMessageError::return_failure(&message_envelope)
+                })?;
+            return Ok(());
+        }
+
+        unreachable!()
     }
 }
 
@@ -181,6 +231,7 @@ impl CommActor {
         seq: usize,
         last_seqs: &mut HashMap<usize, usize>,
     ) -> Result<()> {
+        tracing::info!("sf: comm handle_message sender {:#?}", sender);
         // Split ports, if any, and update message with new ports. In this
         // way, children actors will reply to this comm actor's ports, instead
         // of to the original ports provided by parent.
@@ -202,6 +253,13 @@ impl CommActor {
                 *r = CastRank(mode.self_rank(this.self_id()));
                 Ok(())
             })?;
+
+            // Preserve the original sender in the headers so that if
+            // it turns out the message is returned undeliverable, we
+            // can recover it.
+            let mut headers = Attrs::new();
+            headers.set(CAST_ORIGINATING_SENDER, message.sender.clone());
+
             // TODO(pzhang) split reply ports so children can reply to this comm
             // actor instead of parent.
             this.post(
@@ -209,7 +267,7 @@ impl CommActor {
                     .proc_id()
                     .actor_id(message.dest_port().actor_name(), 0)
                     .port_id(message.dest_port().port()),
-                Attrs::new(),
+                headers,
                 Serialized::serialize(message.data())?,
             );
         }

@@ -248,6 +248,11 @@ impl MessageEnvelope {
         &self.dest
     }
 
+    /// The message headers.
+    pub fn headers(&self) -> &Attrs {
+        &self.headers
+    }
+
     /// Tells whether this is a signal message.
     pub fn is_signal(&self) -> bool {
         self.dest.index() == Signal::port()
@@ -2141,8 +2146,15 @@ impl MailboxSender for WeakMailboxRouter {
     }
 }
 
-/// A serializable [`MailboxRouter`]. It keeps a serializable address book so that
-/// the mailbox sender can be recovered.
+/// A dynamic mailbox router that supports remote delivery.
+///
+/// `DialMailboxRouter` maintains a runtime address book mapping
+/// references to `ChannelAddr`s. It holds a cache of active
+/// connections and forwards messages to the appropriate
+/// `MailboxClient`.
+///
+/// Messages sent to unknown destinations are routed to the `default`
+/// sender, if present.
 #[derive(Debug, Clone)]
 pub struct DialMailboxRouter {
     address_book: Arc<RwLock<BTreeMap<Reference, ChannelAddr>>>,

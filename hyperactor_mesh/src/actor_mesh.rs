@@ -974,12 +974,8 @@ mod tests {
             );
         }
 
-        // The intent is to emulate the behaviors of the Python
-        // interaction of T225230867 "process hangs when i send
-        // messages to a dead actor".
-        #[tracing_test::traced_test]
         #[tokio::test]
-        async fn test_behaviors_on_actor_error() {
+        async fn test_cast_failure() {
             use crate::alloc::ProcStopReason;
             use crate::proc_mesh::ProcEvent;
             use crate::sel;
@@ -994,6 +990,10 @@ mod tests {
 
             let stop = alloc.stopper();
             let mut mesh = ProcMesh::allocate(alloc).await.unwrap();
+            let mut undeliverable_rx = mesh
+                .client_undeliverable_receiver()
+                .take()
+                .expect("client_undeliverable_receiver should be available");
             let mut events = mesh.events().unwrap();
 
             let actor_mesh = mesh
@@ -1016,14 +1016,22 @@ mod tests {
                 ProcEvent::Crashed(0, reason) if reason.contains("intentional error!")
             );
 
-            // Uncomment this to cause an infinite hang.
-            /*
-            let (reply_handle, mut reply_receiver) = actor_mesh.open_port();
-                actor_mesh
-                    .cast(sel!(*), GetRank(false, reply_handle.bind()))
-                    .unwrap();
-            let rank = reply_receiver.recv().await.unwrap();
-            */
+            // Cast the message.
+            let (reply_handle, _) = actor_mesh.open_port();
+            actor_mesh
+                .cast(sel!(*), GetRank(false, reply_handle.bind()))
+                .unwrap();
+
+            // The message will be returned.
+            let Undeliverable(msg) = undeliverable_rx.recv().await.unwrap();
+            assert_eq!(
+                msg.sender(),
+                &ActorId(
+                    ProcId(actor_mesh.world_id().clone(), 0),
+                    "comm".to_owned(),
+                    0
+                )
+            );
 
             // Stop the mesh.
             stop();
