@@ -118,6 +118,8 @@ pub use hyperactor_macros::RefClient;
 #[doc(inline)]
 pub use hyperactor_macros::Unbind;
 #[doc(inline)]
+pub use hyperactor_macros::alias;
+#[doc(inline)]
 pub use hyperactor_macros::export;
 #[doc(inline)]
 pub use hyperactor_macros::forward;

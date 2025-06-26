@@ -13,7 +13,6 @@
 use derive_more::From;
 use hyperactor::Handler;
 use hyperactor::Named;
-use hyperactor::message::IndexedErasedUnbound;
 use pyo3::Bound;
 use pyo3::PyResult;
 use pyo3::types::PyModule;
@@ -58,6 +57,5 @@ pub enum DebuggerMessage {
 
 hyperactor::alias!(
     DebuggerActor,
-    DebuggerMessage,
-    IndexedErasedUnbound<DebuggerMessage>
+    DebuggerMessage { cast = true },
 );

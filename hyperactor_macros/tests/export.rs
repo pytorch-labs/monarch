@@ -93,8 +93,17 @@ impl Handler<u64> for TestActor {
     }
 }
 
+hyperactor::alias!(
+    TestActorAlias,
+    TestMessage { cast = true },
+    () { cast = true },
+    MyGeneric<()> { cast = true },
+    u64,
+);
+
 #[cfg(test)]
 mod tests {
+    use hyperactor::ActorRef;
     use hyperactor::PortRef;
     use hyperactor::message::ErasedUnbound;
     use hyperactor::message::IndexedErasedUnbound;
@@ -186,5 +195,48 @@ mod tests {
             port_ref.send(&client, indexed_msg).unwrap();
             assert_eq!(rx.recv().await.unwrap(), "MyGeneric<()>");
         }
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_ref_alias() {
+        let proc = Proc::local();
+        let client = proc.attach("client").unwrap();
+        let (tx, mut rx) = client.open_port();
+        let params = TestActorParams {
+            forward_port: tx.bind(),
+        };
+        let actor_handle = proc.spawn::<TestActor>("actor", params).await.unwrap();
+
+        actor_handle.send(123u64).unwrap();
+        actor_handle.send(TestMessage("foo".to_string())).unwrap();
+
+        let myref: ActorRef<TestActorAlias> = actor_handle.bind();
+        myref.port().send(&client, MyGeneric(())).unwrap();
+        myref
+            .port()
+            .send(&client, TestMessage("biz".to_string()))
+            .unwrap();
+        myref.port().send(&client, 999u64).unwrap();
+        myref.port().send(&client, ()).unwrap();
+        {
+            let erased_msg =
+                ErasedUnbound::try_from_message(TestMessage("bar".to_string())).unwrap();
+            let indexed_msg = IndexedErasedUnbound::<TestMessage>::from(erased_msg);
+            myref.port().send(&client, indexed_msg).unwrap();
+        }
+        {
+            let erased_msg = ErasedUnbound::try_from_message(()).unwrap();
+            let indexed_msg = IndexedErasedUnbound::<MyGeneric<()>>::from(erased_msg);
+            myref.port().send(&client, indexed_msg).unwrap();
+        }
+
+        assert_eq!(rx.recv().await.unwrap(), "u64: 123");
+        assert_eq!(rx.recv().await.unwrap(), "foo");
+        assert_eq!(rx.recv().await.unwrap(), "MyGeneric<()>");
+        assert_eq!(rx.recv().await.unwrap(), "biz");
+        assert_eq!(rx.recv().await.unwrap(), "u64: 999");
+        assert_eq!(rx.recv().await.unwrap(), "()");
+        assert_eq!(rx.recv().await.unwrap(), "bar");
+        assert_eq!(rx.recv().await.unwrap(), "MyGeneric<()>");
     }
 }

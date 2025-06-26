@@ -26,7 +26,6 @@ use hyperactor::Handler;
 use hyperactor::Named;
 use hyperactor::RefClient;
 use hyperactor::Unbind;
-use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::reference::ActorId;
 use monarch_types::SerializablePyErr;
 use ndslice::Slice;
@@ -862,6 +861,5 @@ pub struct WorkerParams {
 
 hyperactor::alias!(
     WorkerActor,
-    WorkerMessage,
-    IndexedErasedUnbound<WorkerMessage>
+    WorkerMessage { cast = true },
 );

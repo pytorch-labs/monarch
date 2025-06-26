@@ -1200,6 +1200,21 @@ impl Parse for HandlerSpec {
     }
 }
 
+impl HandlerSpec {
+    fn add_indexed(handlers: Vec<HandlerSpec>) -> Vec<Type> {
+        let mut tys = Vec::new();
+        for HandlerSpec { ty, cast } in handlers {
+            if cast {
+                let wrapped = quote! { hyperactor::message::IndexedErasedUnbound<#ty> };
+                let wrapped_ty: Type = syn::parse2(wrapped).unwrap();
+                tys.push(wrapped_ty);
+            }
+            tys.push(ty);
+        }
+        tys
+    }
+}
+
 /// Attribute Struct for [`fn export`] macro.
 struct ExportAttr {
     spawn: bool,
@@ -1280,15 +1295,7 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
     let data_type_name = &input.ident;
 
     let ExportAttr { spawn, handlers } = parse_macro_input!(attr as ExportAttr);
-    let mut tys = Vec::new();
-    for HandlerSpec { ty, cast } in handlers {
-        if cast {
-            let wrapped = quote! { hyperactor::message::IndexedErasedUnbound<#ty> };
-            let wrapped_ty: Type = syn::parse2(wrapped).unwrap();
-            tys.push(wrapped_ty);
-        }
-        tys.push(ty);
-    }
+    let tys = HandlerSpec::add_indexed(handlers);
 
     let mut handles = Vec::new();
     let mut bindings = Vec::new();
@@ -1329,6 +1336,67 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
             hyperactor::remote!(#data_type_name);
         });
     }
+
+    TokenStream::from(expanded)
+}
+
+/// Represents the full input to [`fn alias`].
+struct AliasInput {
+    alias: Ident,
+    handlers: Vec<HandlerSpec>,
+}
+
+impl syn::parse::Parse for AliasInput {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let alias: Ident = input.parse()?;
+        let _: Token![,] = input.parse()?;
+        let raw_handlers = input.parse_terminated(HandlerSpec::parse, Token![,])?;
+        let handlers = raw_handlers.into_iter().collect();
+        Ok(AliasInput { alias, handlers })
+    }
+}
+
+/// Create a [`RemoteActor`] handling a specific set of message types.
+/// This is used to create an [`ActorRef`] without having to depend on the
+/// actor's implementation. If the message type need to be cast, add `castable`
+/// flag to those types. e.g. the following example creats an alias with 5
+/// message types, and 4 of which need to be cast.
+///
+/// ```
+/// hyperactor::alias!(
+///     TestActorAlias,
+///     TestMessage { castable = true },
+///     () {castable = true },
+///     MyGeneric<()> {castable = true },
+///     u64,
+/// );
+/// ```
+#[proc_macro]
+pub fn alias(input: TokenStream) -> TokenStream {
+    let AliasInput { alias, handlers } = parse_macro_input!(input as AliasInput);
+    let tys = HandlerSpec::add_indexed(handlers);
+
+    let expanded = quote! {
+        #[doc = "The generated alias struct."]
+        #[derive(Debug, Named)]
+        #[named(dump = false)]
+        pub struct #alias;
+        impl hyperactor::actor::RemoteActor for #alias {}
+
+        impl<A> hyperactor::actor::Binds<A> for #alias
+        where
+            A: hyperactor::Actor #(+ hyperactor::Handler<#tys>)* {
+            fn bind(ports: &hyperactor::proc::Ports<A>) {
+                #(
+                    ports.bind::<#tys>();
+                )*
+            }
+        }
+
+        #(
+            impl hyperactor::actor::RemoteHandles<#tys> for #alias {}
+        )*
+    };
 
     TokenStream::from(expanded)
 }

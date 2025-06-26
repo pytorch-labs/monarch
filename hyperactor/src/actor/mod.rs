@@ -669,34 +669,6 @@ pub trait Binds<A: Actor>: RemoteActor {
 /// is handled by a specific actor type.
 pub trait RemoteHandles<M: RemoteMessage>: RemoteActor {}
 
-/// Create a [`RemoteActor`] handling a specific set of message types.
-/// This is used to create an [`ActorRef`] without having to
-/// depend on the actor's implementation.
-/// Currently only a single message type is supported. This
-/// restriction will be lifted once we enable multi-handle [`ActorRef`]s.
-#[macro_export(local_inner_macros)]
-macro_rules! alias {
-    ($alias:ident, $($message:ty),+) => {
-        #[doc = "The generated alias struct."]
-        #[derive(Debug, Named)]
-        #[named(dump = false)]
-        pub struct $alias;
-        impl $crate::actor::RemoteActor for $alias {}
-
-        impl<A> $crate::actor::Binds<A> for $alias
-        where
-            A: $crate::Actor $(+ $crate::actor::Handler<$message>)+ {
-            fn bind(ports: &$crate::proc::Ports<A>) {
-                $(
-                    ports.bind::<$message>();
-                )+
-            }
-        }
-
-        $(impl $crate::actor::RemoteHandles<$message> for $alias {})+
-    };
-}
-
 /// GangRefs are typed references to gangs.
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Hash, Ord)]
 pub struct GangRef<A: RemoteActor> {
@@ -1073,22 +1045,5 @@ mod tests {
         myref.port().send(&test.client, "bar".to_string()).unwrap();
         test.sync().await;
         assert_eq!(test.get_values(), (321u64, "bar".to_string()));
-    }
-
-    #[tokio::test]
-    async fn test_ref_alias() {
-        let test = MultiValuesTest::new().await;
-
-        test.send(123u64);
-        test.send("foo".to_string());
-
-        hyperactor::alias!(MyActorAlias, u64, String);
-
-        let myref: ActorRef<MyActorAlias> = test.handle.bind();
-        myref.port().send(&test.client, "biz".to_string()).unwrap();
-        myref.port().send(&test.client, 999u64).unwrap();
-
-        test.sync().await;
-        assert_eq!(test.get_values(), (999u64, "biz".to_string()));
     }
 }
