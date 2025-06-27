@@ -6,10 +6,15 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+// Silence warnings about unsafe blocks
+#[allow(clippy::undocumented_unsafe_blocks)]
 mod ibverbs_primitives;
 mod rdma_components;
 mod rdma_manager_actor;
 mod test_utils;
+
+#[macro_use]
+mod macros;
 
 pub use ibverbs_primitives::*;
 pub use rdma_components::*;
