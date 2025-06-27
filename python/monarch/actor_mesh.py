@@ -521,8 +521,21 @@ class _Actor:
                 return None
 
             if self.instance is None:
+                # This could happen because of the following reasons. Both
+                # indicates a possible bug in the framework:
+                # 1. the execution of the previous message for "__init__" failed,
+                #    but that error is not surfaced to the caller.
+                #      - TODO(T229200522): there is a known bug. fix it.
+                # 2. this message is delivered to this actor before the previous
+                #    message of "__init__" is delivered. Out-of-order delivery
+                #    should never happen. It indicates either a bug in the
+                #    message delivery mechanism, or the framework accidentally
+                #    mixed the usage of cast and direct send.
                 raise AssertionError(
-                    "__init__ failed earlier and no Actor object is available"
+                    f"""
+                    actor object is missing when executing method {message.method}
+                    on actor {mailbox.actor_id}
+                    """
                 )
             the_method = getattr(self.instance, message.method)._method
 
