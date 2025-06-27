@@ -21,6 +21,7 @@ hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_extension = { version = "0.0.0", path = "../hyperactor_extension" }
 hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }
 hyperactor_multiprocess = { version = "0.0.0", path = "../hyperactor_multiprocess" }
+libc = "0.2.139"
 monarch_hyperactor = { version = "0.0.0", path = "../monarch_hyperactor" }
 monarch_messages = { version = "0.0.0", path = "../monarch_messages", optional = true }
 monarch_simulator_lib = { version = "0.0.0", path = "../monarch_simulator", optional = true }
