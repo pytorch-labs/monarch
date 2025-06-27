@@ -509,11 +509,9 @@ impl Proc {
             .next()
     }
 
-    // Iterating over a proc's root actors signaling each to stop.
-    // Return the root actor IDs and status observers.
-    async fn destroy(
-        &mut self,
-    ) -> Result<HashMap<ActorId, watch::Receiver<ActorStatus>>, anyhow::Error> {
+    /// Iterating over a proc's root actors signaling each to stop.
+    /// Return the root actor IDs and status observers.
+    pub fn destroy(&self) -> Result<HashMap<ActorId, watch::Receiver<ActorStatus>>, anyhow::Error> {
         tracing::debug!("{}: proc stopping", self.proc_id());
 
         let mut statuses = HashMap::new();
@@ -550,7 +548,7 @@ impl Proc {
         timeout: Duration,
         skip_waiting: Option<&ActorId>,
     ) -> Result<(Vec<ActorId>, Vec<ActorId>), anyhow::Error> {
-        let mut statuses = self.destroy().await?;
+        let mut statuses = self.destroy()?;
         let waits: Vec<_> = statuses
             .iter_mut()
             .filter(|(actor_id, _)| Some(*actor_id) != skip_waiting)
