@@ -1271,7 +1271,7 @@ struct InstanceState {
     signal: PortHandle<Signal>,
 
     /// The actor's supervision port. This is used to send
-    /// supervision event to the actor.
+    /// supervision event to the actor (usually by its children).
     supervision_port: PortHandle<ActorSupervisionEvent>,
 
     /// An observer that stores the current status of the actor.

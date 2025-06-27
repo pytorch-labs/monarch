@@ -30,6 +30,7 @@ use hyperactor::mailbox::MailboxSenderError;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::message::Castable;
 use hyperactor::message::IndexedErasedUnbound;
+use hyperactor::supervision::ActorSupervisionEvent;
 use ndslice::Range;
 use ndslice::Selection;
 use ndslice::Shape;
@@ -39,6 +40,7 @@ use ndslice::dsl;
 use ndslice::selection::ReifyView;
 use serde::Deserialize;
 use serde::Serialize;
+use tokio::sync::mpsc;
 
 use crate::CommActor;
 use crate::Mesh;
@@ -186,26 +188,35 @@ pub struct RootActorMesh<'a, A: RemoteActor> {
     proc_mesh: ProcMeshRef<'a>,
     name: String,
     pub(crate) ranks: Vec<ActorRef<A>>, // temporary until we remove `ArcActorMesh`.
+    actor_supervision_rx: mpsc::UnboundedReceiver<ActorSupervisionEvent>,
 }
 
 impl<'a, A: RemoteActor> RootActorMesh<'a, A> {
-    pub(crate) fn new(proc_mesh: &'a ProcMesh, name: String, ranks: Vec<ActorRef<A>>) -> Self {
+    pub(crate) fn new(
+        proc_mesh: &'a ProcMesh,
+        name: String,
+        actor_supervision_rx: mpsc::UnboundedReceiver<ActorSupervisionEvent>,
+        ranks: Vec<ActorRef<A>>,
+    ) -> Self {
         Self {
             proc_mesh: ProcMeshRef::Borrowed(proc_mesh),
             name,
             ranks,
+            actor_supervision_rx,
         }
     }
 
     pub(crate) fn new_shared(
         proc_mesh: Arc<ProcMesh>,
         name: String,
+        actor_supervision_rx: mpsc::UnboundedReceiver<ActorSupervisionEvent>,
         ranks: Vec<ActorRef<A>>,
     ) -> Self {
         Self {
             proc_mesh: ProcMeshRef::Shared(proc_mesh),
             name,
             ranks,
+            actor_supervision_rx,
         }
     }
 
@@ -239,6 +250,24 @@ impl<'a, A: RemoteActor> RootActorMesh<'a, A> {
             }
         }
         Ok(())
+    }
+
+    /// An event stream of proc events. Each ProcMesh can produce only one such
+    /// stream, returning None after the first call.
+    pub async fn next(&mut self) -> Option<ActorSupervisionEvent> {
+        let result = self.actor_supervision_rx.recv().await;
+        match result.as_ref() {
+            Some(event) => {
+                tracing::debug!("Received supervision event: {event:?}");
+            }
+            None => {
+                tracing::info!(
+                    "Supervision stream for actor mesh {} was closed!",
+                    self.name
+                );
+            }
+        };
+        result
     }
 }
 
