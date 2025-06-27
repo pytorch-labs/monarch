@@ -7,6 +7,7 @@
  */
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use hyperactor::WorldId;
 use hyperactor_extension::alloc::PyAlloc;
@@ -20,7 +21,10 @@ use monarch_types::PickledPyObject;
 use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
+use pyo3::pycell::PyRef;
 use pyo3::types::PyType;
+use tokio::sync::Mutex;
+use tokio::sync::mpsc;
 
 use crate::actor_mesh::PythonActorMesh;
 use crate::mailbox::PyMailbox;
@@ -34,7 +38,11 @@ use crate::shape::PyShape;
 pub struct PyProcMesh {
     pub inner: Arc<ProcMesh>,
     keepalive: Keepalive,
+    proc_events: Arc<Mutex<ProcEvents>>,
+    stop_monitor_sender: mpsc::Sender<bool>,
+    user_monitor_registered: AtomicBool,
 }
+
 fn allocate_proc_mesh<'py>(py: Python<'py>, alloc: &PyAlloc) -> PyResult<Bound<'py, PyAny>> {
     let alloc = match alloc.take() {
         Some(alloc) => alloc,
@@ -75,27 +83,50 @@ impl PyProcMesh {
     /// Create a new [`PyProcMesh`] with a monitor that crashes the
     /// process on any proc failure.
     fn monitored(mut proc_mesh: ProcMesh, world_id: WorldId) -> Self {
-        let monitor = tokio::spawn(Self::monitor_proc_mesh(
-            proc_mesh.events().unwrap(),
+        let (sender, abort_receiver) = mpsc::channel::<bool>(1);
+        let proc_events = Arc::new(Mutex::new(proc_mesh.events().unwrap()));
+        let monitor = tokio::spawn(Self::default_proc_mesh_monitor(
+            proc_events.clone(),
             world_id,
+            abort_receiver,
         ));
         Self {
             inner: Arc::new(proc_mesh),
             keepalive: Keepalive::new(monitor),
+            proc_events,
+            stop_monitor_sender: sender,
+            user_monitor_registered: AtomicBool::new(false),
         }
     }
 
-    /// Monitor the proc mesh for crashes. If a proc crashes, we print the reason
+    /// The default monitor of the proc mesh for crashes. If a proc crashes, we print the reason
     /// to stderr and exit with code 1.
-    async fn monitor_proc_mesh(mut events: ProcEvents, world_id: WorldId) {
-        while let Some(event) = events.next().await {
-            match event {
-                // A graceful stop should not be cause for alarm, but
-                // everything else should be considered a crash.
-                ProcEvent::Stopped(_, ProcStopReason::Stopped) => continue,
-                event => {
-                    eprintln!("ProcMesh {}: {}", world_id, event);
-                    std::process::exit(1)
+    async fn default_proc_mesh_monitor(
+        events: Arc<Mutex<ProcEvents>>,
+        world_id: WorldId,
+        mut abort_receiver: mpsc::Receiver<bool>,
+    ) {
+        let mut proc_events = events.lock().await;
+        loop {
+            tokio::select! {
+                event = proc_events.next() => {
+                    if let Some(event) = event {
+                        match event {
+                            // A graceful stop should not be cause for alarm, but
+                            // everything else should be considered a crash.
+                            ProcEvent::Stopped(_, ProcStopReason::Stopped) => continue,
+                            event => {
+                                eprintln!("ProcMesh {}: {}", world_id, event);
+                                std::process::exit(1)
+                            }
+                        }
+                    }
+                }
+                _ = abort_receiver.recv() => {
+                    // The default monitor is aborted, this happens when user takes over
+                    // the monitoring responsibility.
+                    eprintln!("stop default supervision monitor for ProcMesh {}", world_id);
+                    break;
                 }
             }
         }
@@ -166,6 +197,32 @@ impl PyProcMesh {
         })?
     }
 
+    // User can call this to monitor the proc mesh events. This will override
+    // the default monitor that exits the client on process crash, so user can
+    // handle the process crash in their own way.
+    fn monitor<'py>(&mut self, py: Python<'py>) -> PyResult<PyObject> {
+        if self
+            .user_monitor_registered
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(PyException::new_err(
+                "user already registered a monitor for this proc mesh".to_string(),
+            ));
+        }
+
+        // Stop the default monitor
+        let monitor_abort = self.stop_monitor_sender.clone();
+        let proc_events = self.proc_events.clone();
+
+        Ok(pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            monitor_abort.send(true).await.unwrap();
+
+            // Create a new user monitor
+            Ok(PyProcMeshMonitor { proc_events })
+        })?
+        .into())
+    }
+
     #[getter]
     fn client(&self) -> PyMailbox {
         PyMailbox {
@@ -209,7 +266,64 @@ impl Drop for KeepaliveState {
     }
 }
 
+#[pyclass(
+    name = "ProcMeshMonitor",
+    module = "monarch._rust_bindings.monarch_hyperactor.proc_mesh"
+)]
+pub struct PyProcMeshMonitor {
+    proc_events: Arc<Mutex<ProcEvents>>,
+}
+
+#[pymethods]
+impl PyProcMeshMonitor {
+    fn __aiter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __anext__(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let events = self.proc_events.clone();
+        Ok(pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let mut proc_events = events.lock().await;
+            let event: Option<_> = proc_events.next().await;
+            match event {
+                Some(event) => Ok(PyProcEvent::from(event)),
+                None => Err(::pyo3::exceptions::PyStopAsyncIteration::new_err(
+                    "stop iteration",
+                )),
+            }
+        })?
+        .into())
+    }
+}
+
+#[pyclass(
+    name = "ProcEvent",
+    module = "monarch._rust_bindings.monarch_hyperactor.proc_mesh"
+)]
+pub enum PyProcEvent {
+    /// The proc of the given rank was stopped with the provided reason.
+    /// The arguments represent the rank id and stop reason.
+    #[pyo3(name = "Stopped")]
+    Stopped(usize, String),
+    /// The proc crashed, with the provided "reason". This is reserved for
+    /// unhandled supervision events.
+    /// The arguments represent the rank id and crash reason.
+    #[pyo3(name = "Crashed")]
+    Crashed(usize, String),
+}
+
+impl From<ProcEvent> for PyProcEvent {
+    fn from(event: ProcEvent) -> Self {
+        match event {
+            ProcEvent::Stopped(pid, reason) => PyProcEvent::Stopped(pid, reason.to_string()),
+            ProcEvent::Crashed(pid, reason) => PyProcEvent::Crashed(pid, reason),
+        }
+    }
+}
+
 pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResult<()> {
     hyperactor_mod.add_class::<PyProcMesh>()?;
+    hyperactor_mod.add_class::<PyProcMeshMonitor>()?;
+    hyperactor_mod.add_class::<PyProcEvent>()?;
     Ok(())
 }

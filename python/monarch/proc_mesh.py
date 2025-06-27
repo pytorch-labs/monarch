@@ -38,7 +38,10 @@ from monarch._rust_bindings.hyperactor_extension.alloc import (  # @manual=//mon
     AllocSpec,
 )
 from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
-from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyProcMesh
+from monarch._rust_bindings.monarch_hyperactor.proc_mesh import (
+    ProcMesh as HyProcMesh,
+    ProcMeshMonitor,
+)
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape, Slice
 from monarch.actor_mesh import _Actor, _ActorMeshRefImpl, Actor, ActorMeshRef
 
@@ -116,6 +119,24 @@ class ProcMesh(MeshTrait):
             lambda: self._spawn_nonblocking(name, Class, *args, **kwargs),
             lambda: self._spawn_blocking(name, Class, *args, **kwargs),
         )
+
+    async def monitor(self) -> ProcMeshMonitor:
+        """
+        Get a monitor (async iterator) of the proc mesh, it is used to
+        monitor the status of the proc mesh. This function can be called at most once.
+
+        Note: This API is experimental and subject to change.
+
+        Example:
+
+        async def monitor_loop(monitor):
+            async for event in monitor:
+                await handle_exception_event(event)
+
+        # Kick off in background
+        asyncio.create_task(monitor_loop(monitor))
+        """
+        return await self._proc_mesh.monitor()
 
     @classmethod
     def from_alloc(self, alloc: Alloc) -> Future["ProcMesh"]:

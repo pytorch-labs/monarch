@@ -6,7 +6,7 @@
 
 # pyre-strict
 
-from typing import final, Type
+from typing import AsyncIterator, final, Type
 
 from monarch._rust_bindings.hyperactor_extension.alloc import Alloc
 from monarch._rust_bindings.monarch_hyperactor.actor import Actor
@@ -58,6 +58,12 @@ class ProcMesh:
         """
         ...
 
+    async def monitor(self) -> ProcMeshMonitor:
+        """
+        Returns a supervision monitor for this mesh.
+        """
+        ...
+
     @property
     def client(self) -> Mailbox:
         """
@@ -75,3 +81,35 @@ class ProcMesh:
         ...
 
     def __repr__(self) -> str: ...
+
+@final
+class ProcMeshMonitor:
+    def __aiter__(self) -> AsyncIterator["ProcEvent"]:
+        """
+        Returns an async iterator for this monitor.
+        """
+        ...
+
+    async def __anext__(self) -> "ProcEvent":
+        """
+        Returns the next proc event in the proc mesh.
+        """
+        ...
+
+@final
+class ProcEvent:
+    @final
+    class Stopped:
+        """
+        A Stopped event.
+        """
+
+        ...
+
+    @final
+    class Crashed:
+        """
+        A Crashed event.
+        """
+
+        ...

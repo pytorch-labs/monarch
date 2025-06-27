@@ -9,9 +9,9 @@ import importlib.resources
 import subprocess
 
 import pytest
+from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcEvent
 from monarch.actor_mesh import Actor, ActorError, endpoint, send
-
-from monarch.proc_mesh import proc_mesh
+from monarch.proc_mesh import local_proc_mesh, proc_mesh
 
 
 class ExceptionActor(Actor):
@@ -238,3 +238,36 @@ async def test_exception_after_wait_unmonitored():
     assert (
         process.returncode != 0
     ), f"Expected non-zero exit code, got {process.returncode}"
+
+
+class ErrorActor(Actor):
+    def __init__(self, message):
+        raise RuntimeError("fail on init")
+
+    @endpoint
+    async def check(self) -> None:
+        pass
+
+
+async def test_proc_mesh_redundant_monitoring():
+    proc = await local_proc_mesh(hosts=1, gpus=1)
+    await proc.monitor()
+
+    with pytest.raises(
+        Exception, match="user already registered a monitor for this proc mesh"
+    ):
+        await proc.monitor()
+
+
+async def test_proc_mesh_monitoring():
+    proc = await local_proc_mesh(hosts=1, gpus=1)
+    monitor = await proc.monitor()
+
+    with pytest.raises(Exception):
+        e = await proc.spawn("error", ErrorActor, "failed to init the actor")
+        await asyncio.wait_for(e.check.call_one(), timeout=15)
+
+    event = await anext(monitor)
+    assert isinstance(event, ProcEvent.Crashed)
+    assert event[0] == 0  # check rank
+    assert "fail on init" in event[1]  # check error message
