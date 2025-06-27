@@ -232,7 +232,12 @@ impl<'a, A: RemoteActor> RootActorMesh<'a, A> {
         for ref slice in sel {
             for rank in slice.iter() {
                 let mut headers = Attrs::new();
-                set_cast_info_on_headers(&mut headers, rank, self.shape().clone());
+                set_cast_info_on_headers(
+                    &mut headers,
+                    rank,
+                    self.shape().clone(),
+                    self.proc_mesh.client().actor_id().clone(),
+                );
                 self.ranks[rank]
                     .send_with_headers(self.proc_mesh.client(), headers, message.clone())
                     .map_err(|err| CastError::MailboxSenderError(rank, err))?;
@@ -782,17 +787,17 @@ mod tests {
                 let actor_mesh: RootActorMesh<TestActor> = mesh.spawn("test", &()).await.unwrap();
                 let actor_ref = actor_mesh.get(0).unwrap();
                 let mut headers = Attrs::new();
-                set_cast_info_on_headers(&mut headers, 0, Shape::unity());
+                set_cast_info_on_headers(&mut headers, 0, Shape::unity(), mesh.client().actor_id().clone());
                 actor_ref.send_with_headers(mesh.client(), headers.clone(), GetRank(true, reply_port.clone())).unwrap();
                 assert_eq!(0, reply_port_receiver.recv().await.unwrap());
 
-                set_cast_info_on_headers(&mut headers, 1, Shape::unity());
+                set_cast_info_on_headers(&mut headers, 1, Shape::unity(), mesh.client().actor_id().clone());
                 actor_ref.port()
                     .send_with_headers(mesh.client(), headers.clone(), GetRank(true, reply_port.clone()))
                     .unwrap();
                 assert_eq!(1, reply_port_receiver.recv().await.unwrap());
 
-                set_cast_info_on_headers(&mut headers, 2, Shape::unity());
+                set_cast_info_on_headers(&mut headers, 2, Shape::unity(), mesh.client().actor_id().clone());
                 actor_ref.actor_id()
                     .port_id(GetRank::port())
                     .send_with_headers(
@@ -888,12 +893,8 @@ mod tests {
             );
         }
 
-        // The intent is to emulate the behaviors of the Python
-        // interaction of T225230867 "process hangs when i send
-        // messages to a dead actor".
-        #[tracing_test::traced_test]
         #[tokio::test]
-        async fn test_behaviors_on_actor_error() {
+        async fn test_cast_failure() {
             use crate::alloc::ProcStopReason;
             use crate::proc_mesh::ProcEvent;
             use crate::sel;
@@ -908,6 +909,10 @@ mod tests {
 
             let stop = alloc.stopper();
             let mut mesh = ProcMesh::allocate(alloc).await.unwrap();
+            let mut undeliverable_rx = mesh
+                .client_undeliverable_receiver()
+                .take()
+                .expect("client_undeliverable_receiver should be available");
             let mut events = mesh.events().unwrap();
 
             let actor_mesh = mesh
@@ -930,14 +935,22 @@ mod tests {
                 ProcEvent::Crashed(0, reason) if reason.contains("intentional error!")
             );
 
-            // Uncomment this to cause an infinite hang.
-            /*
-            let (reply_handle, mut reply_receiver) = actor_mesh.open_port();
-                actor_mesh
-                    .cast(sel!(*), GetRank(false, reply_handle.bind()))
-                    .unwrap();
-            let rank = reply_receiver.recv().await.unwrap();
-            */
+            // Cast the message.
+            let (reply_handle, _) = actor_mesh.open_port();
+            actor_mesh
+                .cast(sel!(*), GetRank(false, reply_handle.bind()))
+                .unwrap();
+
+            // The message will be returned.
+            let Undeliverable(msg) = undeliverable_rx.recv().await.unwrap();
+            assert_eq!(
+                msg.sender(),
+                &ActorId(
+                    ProcId(actor_mesh.world_id().clone(), 0),
+                    "comm".to_owned(),
+                    0
+                )
+            );
 
             // Stop the mesh.
             stop();

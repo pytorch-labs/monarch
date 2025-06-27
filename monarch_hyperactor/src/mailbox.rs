@@ -133,7 +133,12 @@ impl PyMailbox {
     ) -> PyResult<()> {
         let port_id = dest.inner.port_id(PythonMessage::port());
         let mut headers = Attrs::new();
-        set_cast_info_on_headers(&mut headers, rank, shape.inner.clone());
+        set_cast_info_on_headers(
+            &mut headers,
+            rank,
+            shape.inner.clone(),
+            self.inner.actor_id().clone(),
+        );
         let message = Serialized::serialize(message).map_err(|err| {
             PyRuntimeError::new_err(format!(
                 "failed to serialize message ({:?}) to Serialized: {}",

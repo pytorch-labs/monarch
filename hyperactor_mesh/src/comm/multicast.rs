@@ -91,6 +91,10 @@ impl CastMessageEnvelope {
         }
     }
 
+    pub(crate) fn sender(&self) -> &ActorId {
+        &self.sender
+    }
+
     pub(crate) fn dest_port(&self) -> &DestinationPort {
         &self.dest_port
     }
@@ -179,11 +183,14 @@ declare_attrs! {
     /// Used inside headers to store the shape of the
     /// actor mesh that a message was cast to.
     attr CAST_SHAPE: Shape;
+    /// Used inside headers to store the originating sender of a cast.
+    pub attr CAST_ORIGINATING_SENDER: ActorId;
 }
 
-pub fn set_cast_info_on_headers(headers: &mut Attrs, rank: usize, shape: Shape) {
+pub fn set_cast_info_on_headers(headers: &mut Attrs, rank: usize, shape: Shape, sender: ActorId) {
     headers.set(CAST_RANK, rank);
     headers.set(CAST_SHAPE, shape);
+    headers.set(CAST_ORIGINATING_SENDER, sender);
 }
 
 pub fn get_cast_info_from_headers(headers: &Attrs) -> Option<(usize, Shape)> {
