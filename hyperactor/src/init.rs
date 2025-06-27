@@ -8,16 +8,10 @@
 
 //! Utilities for launching hyperactor processes.
 
-use std::sync::LazyLock;
 use std::sync::OnceLock;
 
 use crate::clock::ClockKind;
 use crate::panic_handler;
-
-/// A global runtime used in binding async and sync code. Do not use for executing long running or
-/// compute intensive tasks.
-pub(crate) static RUNTIME: LazyLock<tokio::runtime::Runtime> =
-    LazyLock::new(|| tokio::runtime::Runtime::new().expect("failed to create global runtime"));
 
 /// Initialize the Hyperactor runtime. Specifically:
 /// - Set up panic handling, so that we get consistent panic stack traces in Actors.

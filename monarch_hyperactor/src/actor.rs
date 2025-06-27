@@ -38,6 +38,7 @@ use pyo3::types::PyType;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_bytes::ByteBuf;
+use tokio::runtime::Handle;
 use tokio::sync::Mutex;
 use tokio::sync::oneshot;
 
@@ -284,6 +285,8 @@ impl Actor for PythonActor {
     type Params = PickledPyObject;
 
     async fn new(actor_type: PickledPyObject) -> Result<Self, anyhow::Error> {
+        let runtime_handle = Handle::current();
+
         Ok(Python::with_gil(|py| -> Result<Self, SerializablePyErr> {
             let unpickled = actor_type.unpickle(py)?;
             let class_type: &Bound<'_, PyType> = unpickled.downcast()?;
@@ -292,21 +295,33 @@ impl Actor for PythonActor {
             // Release the GIL so that the thread spawned below can acquire it.
             let task_locals = Python::allow_threads(py, || {
                 let (tx, rx) = std::sync::mpsc::channel();
-                let _ = std::thread::spawn(move || {
-                    Python::with_gil(|py| {
-                        let asyncio = Python::import(py, "asyncio").unwrap();
-                        let event_loop = asyncio.call_method0("new_event_loop").unwrap();
-                        asyncio
-                            .call_method1("set_event_loop", (event_loop.clone(),))
-                            .unwrap();
 
-                        let task_locals = pyo3_async_runtimes::TaskLocals::new(event_loop.clone())
-                            .copy_context(py)
-                            .unwrap();
-                        tx.send(task_locals).unwrap();
-                        event_loop.call_method0("run_forever").unwrap();
+                // We spawn a new thread per PythonActor to drive an isolated
+                // asyncio event loop for it.
+                let _ = std::thread::Builder::new()
+                    .name("PythonActor".to_string())
+                    .spawn(move || {
+                        Python::with_gil(|py| {
+                            // Enter the tokio runtime context. This is necessary so
+                            // that things like `tokio::spawn` will work if called
+                            // from PythonActor message handlers.
+                            let _guard = Handle::enter(&runtime_handle);
+
+                            // Set up the event loop.
+                            let asyncio = Python::import(py, "asyncio").unwrap();
+                            let event_loop = asyncio.call_method0("new_event_loop").unwrap();
+                            asyncio
+                                .call_method1("set_event_loop", (event_loop.clone(),))
+                                .unwrap();
+
+                            let task_locals =
+                                pyo3_async_runtimes::TaskLocals::new(event_loop.clone())
+                                    .copy_context(py)
+                                    .unwrap();
+                            tx.send(task_locals).unwrap();
+                            event_loop.call_method0("run_forever").unwrap();
+                        });
                     });
-                });
                 rx.recv().unwrap()
             });
 

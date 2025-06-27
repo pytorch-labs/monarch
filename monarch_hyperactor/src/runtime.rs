@@ -35,7 +35,8 @@ thread_local! {
 }
 
 pub fn initialize(py: Python) -> Result<()> {
-    pyo3_async_runtimes::tokio::init_with_runtime(get_tokio_runtime())
+    let runtime = get_tokio_runtime();
+    pyo3_async_runtimes::tokio::init_with_runtime(runtime)
         .map_err(|_| anyhow!("failed to initialize py3 async runtime"))?;
 
     // Initialize thread local state to identify the main Python thread.
@@ -48,6 +49,10 @@ pub fn initialize(py: Python) -> Result<()> {
     );
     IS_MAIN_THREAD.set(true);
 
+    // Enter into the tokio runtime context. This makes functionality like
+    // `tokio::spawn` available from this thread.
+    // Leak the context guard so that we just stay in the context forever.
+    let _ = Box::leak(Box::new(runtime.handle().enter()));
     Ok(())
 }
 

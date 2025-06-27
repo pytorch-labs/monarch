@@ -38,7 +38,7 @@ impl<T: Message> Buffer<T> {
     {
         let (queue, mut next) = mpsc::unbounded_channel();
         let (last_processed, processed) = watch::channel(0);
-        crate::init::RUNTIME.spawn(async move {
+        tokio::spawn(async move {
             let mut seq = 0;
             while let Some((msg, return_handle)) = next.recv().await {
                 process(msg, return_handle).await;
