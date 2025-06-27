@@ -12,9 +12,9 @@ use anyhow::Result;
 use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorRef;
+use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
-use hyperactor::Instance;
 use hyperactor::Mailbox;
 use hyperactor::Named;
 use hyperactor::RefClient;
@@ -65,7 +65,7 @@ impl Actor for StateActor {
 impl StateMessageHandler for StateActor {
     async fn push_logs(
         &mut self,
-        _this: &Instance<Self>,
+        _this: &Context<Self>,
         logs: Vec<GenericStateObject>,
     ) -> Result<(), anyhow::Error> {
         for (subscriber, (_, remote_client)) in self.subscribers.iter() {
@@ -76,7 +76,7 @@ impl StateMessageHandler for StateActor {
 
     async fn subscribe_logs(
         &mut self,
-        _this: &Instance<Self>,
+        _this: &Context<Self>,
         addr: ChannelAddr,
         client_actor_ref: ActorRef<ClientActor>,
     ) -> Result<(), anyhow::Error> {

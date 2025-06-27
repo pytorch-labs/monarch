@@ -15,9 +15,9 @@ use std::fmt::Debug;
 use anyhow::Result;
 use async_trait::async_trait;
 use hyperactor::Actor;
+use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
-use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::OncePortRef;
 use hyperactor::RefClient;
@@ -108,7 +108,7 @@ impl Actor for GenericArgActor {
 #[async_trait]
 #[forward(GenericArgMessage<usize>)]
 impl GenericArgMessageHandler<usize> for GenericArgActor {
-    async fn variant(&mut self, _this: &Instance<Self>, _val: usize) -> Result<()> {
+    async fn variant(&mut self, _this: &Context<Self>, _val: usize) -> Result<()> {
         Ok(())
     }
 }

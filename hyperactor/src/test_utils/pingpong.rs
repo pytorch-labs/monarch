@@ -15,6 +15,7 @@ use serde::Serialize;
 use crate as hyperactor; // for macros
 use crate::Actor;
 use crate::ActorRef;
+use crate::Context;
 use crate::Handler;
 use crate::Instance;
 use crate::Named;
@@ -107,7 +108,7 @@ impl Handler<PingPongMessage> for PingPongActor {
     /// It also panics if TTL == 66 for testing purpose.
     async fn handle(
         &mut self,
-        this: &Instance<Self>,
+        this: &Context<Self>,
         PingPongMessage(ttl, pong_actor, done_port): PingPongMessage,
     ) -> anyhow::Result<()> {
         // PingPongActor sends the messages back and forth. When it's ttl = 0, it will stop.

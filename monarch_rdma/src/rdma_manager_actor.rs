@@ -33,6 +33,7 @@ use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
+use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
@@ -166,7 +167,7 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
     ///   the registered memory region's details. On failure, returns an error.
     async fn request_buffer(
         &mut self,
-        this: &Instance<Self>,
+        this: &Context<Self>,
         addr: usize,
         size: usize,
     ) -> Result<RdmaBuffer, anyhow::Error> {
@@ -197,7 +198,7 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
     ///   On failure, returns an error.
     async fn request_queue_pair(
         &mut self,
-        this: &Instance<Self>,
+        this: &Context<Self>,
         remote: ActorRef<RdmaManagerActor>,
     ) -> Result<RdmaQueuePair, anyhow::Error> {
         if !self.is_connected(this, remote.clone()).await? {
@@ -230,7 +231,7 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
     /// * `other` - The ActorRef of the remote actor to connect with
     async fn initialize_qp(
         &mut self,
-        _this: &Instance<Self>,
+        _this: &Context<Self>,
         other: ActorRef<RdmaManagerActor>,
     ) -> Result<bool, anyhow::Error> {
         let key = other.actor_id().clone();
@@ -253,7 +254,7 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
     /// * `bool` - True if connected, false otherwise
     async fn is_connected(
         &mut self,
-        _this: &Instance<Self>,
+        _this: &Context<Self>,
         other: ActorRef<RdmaManagerActor>,
     ) -> Result<bool, anyhow::Error> {
         tracing::debug!("checking if connected with {:?}", other);
@@ -275,7 +276,7 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
     /// * `endpoint` - Connection information needed to establish the RDMA connection
     async fn connect(
         &mut self,
-        _this: &Instance<Self>,
+        _this: &Context<Self>,
         other: ActorRef<RdmaManagerActor>,
         endpoint: RdmaQpInfo,
     ) -> Result<(), anyhow::Error> {
@@ -300,7 +301,7 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
     /// * `RdmaQpInfo` - Connection information needed for the RDMA connection
     async fn connection_info(
         &mut self,
-        _this: &Instance<Self>,
+        _this: &Context<Self>,
         other: ActorRef<RdmaManagerActor>,
     ) -> Result<RdmaQpInfo, anyhow::Error> {
         tracing::debug!("getting connection info with {:?}", other);

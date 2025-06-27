@@ -59,6 +59,7 @@ use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorRef;
 use hyperactor::Bind;
+use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Named;
@@ -73,7 +74,7 @@ use hyperactor_mesh::actor_mesh::ActorMesh;
 use hyperactor_mesh::alloc::AllocSpec;
 use hyperactor_mesh::alloc::Allocator;
 use hyperactor_mesh::alloc::ProcessAllocator;
-use hyperactor_mesh::comm::multicast::get_cast_info_from_headers_or_err;
+use hyperactor_mesh::comm::multicast::CastInfo;
 use monarch_rdma::IbverbsConfig;
 use monarch_rdma::RdmaBuffer;
 use monarch_rdma::RdmaManagerActor;
@@ -158,7 +159,7 @@ impl Handler<PsGetBuffers> for ParameterServerActor {
     /// Returns RdmaBuffers for weights data and gradients data. Creates handles if necessary.
     async fn handle(
         &mut self,
-        this: &Instance<Self>,
+        this: &Context<Self>,
         PsGetBuffers(rank, reply): PsGetBuffers,
     ) -> Result<(), anyhow::Error> {
         if self.weights_handle.is_none() {
@@ -193,7 +194,7 @@ impl Handler<PsUpdate> for ParameterServerActor {
     /// Updates the parameter server's weights, given data in the gradients buffers. Gradients are wiped afterwards.
     async fn handle(
         &mut self,
-        this: &Instance<Self>,
+        this: &Context<Self>,
         PsUpdate(reply): PsUpdate,
     ) -> Result<(), anyhow::Error> {
         for grad in self.grad_buffer_data.iter_mut() {
@@ -211,7 +212,7 @@ impl Handler<PsUpdate> for ParameterServerActor {
 #[async_trait]
 impl Handler<Log> for ParameterServerActor {
     /// Logs the server's weights and gradient buffer
-    async fn handle(&mut self, _this_: &Instance<Self>, _msg_: Log) -> Result<(), anyhow::Error> {
+    async fn handle(&mut self, _this_: &Context<Self>, _msg_: Log) -> Result<(), anyhow::Error> {
         println!(
             "[parameter server actor] weights: {:?}, grad_buffer: {:?}",
             self.weights_data, self.grad_buffer_data,
@@ -299,11 +300,10 @@ impl Handler<WorkerInit> for WorkerActor {
     /// 2) assigning the associated rdma manager
     async fn handle(
         &mut self,
-        this: &Instance<Self>,
+        this: &Context<Self>,
         WorkerInit(ps_ref, rdma_managers): WorkerInit,
     ) -> Result<(), anyhow::Error> {
-        // Instance::ctx() should always return a value when inside a handler.
-        let (rank, _) = get_cast_info_from_headers_or_err(this.ctx().unwrap().headers())?;
+        let (rank, _) = this.cast_info()?;
 
         println!("[worker_actor_{}] initializing", rank);
 
@@ -333,11 +333,10 @@ impl Handler<WorkerStep> for WorkerActor {
     /// 3) resetting the gradient to 0
     async fn handle(
         &mut self,
-        this: &Instance<Self>,
+        this: &Context<Self>,
         WorkerStep(reply): WorkerStep,
     ) -> Result<(), anyhow::Error> {
-        // Instance::ctx() should always return a value when inside a handler.
-        let (rank, _) = get_cast_info_from_headers_or_err(this.ctx().unwrap().headers())?;
+        let (rank, _) = this.cast_info()?;
 
         for (grad_value, weight) in self
             .local_gradients
@@ -383,11 +382,10 @@ impl Handler<WorkerUpdate> for WorkerActor {
     /// Pulls weights from the parameter server to the worker
     async fn handle(
         &mut self,
-        this: &Instance<Self>,
+        this: &Context<Self>,
         WorkerUpdate(reply): WorkerUpdate,
     ) -> Result<(), anyhow::Error> {
-        // Instance::ctx() should always return a value when inside a handler.
-        let (rank, _) = get_cast_info_from_headers_or_err(this.ctx().unwrap().headers())?;
+        let (rank, _) = this.cast_info()?;
 
         println!(
             "[worker_actor_{}] pulling new weights from parameter server (before: {:?})",
@@ -419,9 +417,8 @@ impl Handler<WorkerUpdate> for WorkerActor {
 #[async_trait]
 impl Handler<Log> for WorkerActor {
     /// Logs the worker's weights
-    async fn handle(&mut self, this: &Instance<Self>, _: Log) -> Result<(), anyhow::Error> {
-        // Instance::ctx() should always return a value when inside a handler.
-        let (rank, _) = get_cast_info_from_headers_or_err(this.ctx().unwrap().headers())?;
+    async fn handle(&mut self, this: &Context<Self>, _: Log) -> Result<(), anyhow::Error> {
+        let (rank, _) = this.cast_info()?;
         println!("[worker_actor_{}] weights: {:?}", rank, self.weights_data);
         Ok(())
     }

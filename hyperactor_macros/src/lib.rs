@@ -485,7 +485,7 @@ fn parse_message_enum(input: DeriveInput) -> Result<Vec<Message>, syn::Error> {
 /// #[async_trait]
 /// #[hyperactor::forward(ShoppingList)]
 /// impl ShoppingListHandler for ShoppingListActor {
-///     async fn add(&mut self, _this: &Instance<Self>, item: String) -> Result<(), anyhow::Error> {
+///     async fn add(&mut self, _this: &Context<Self>, item: String) -> Result<(), anyhow::Error> {
 ///         eprintln!("insert {}", item);
 ///         self.0.insert(item);
 ///         Ok(())
@@ -493,7 +493,7 @@ fn parse_message_enum(input: DeriveInput) -> Result<Vec<Message>, syn::Error> {
 ///
 ///     async fn remove(
 ///         &mut self,
-///         _this: &Instance<Self>,
+///         _this: &Context<Self>,
 ///         item: String,
 ///     ) -> Result<(), anyhow::Error> {
 ///         eprintln!("remove {}", item);
@@ -503,13 +503,13 @@ fn parse_message_enum(input: DeriveInput) -> Result<Vec<Message>, syn::Error> {
 ///
 ///     async fn exists(
 ///         &mut self,
-///         _this: &Instance<Self>,
+///         _this: &Context<Self>,
 ///         item: String,
 ///     ) -> Result<bool, anyhow::Error> {
 ///         Ok(self.0.contains(&item))
 ///     }
 ///
-///     async fn list(&mut self, _this: &Instance<Self>) -> Result<Vec<String>, anyhow::Error> {
+///     async fn list(&mut self, _this: &Context<Self>) -> Result<Vec<String>, anyhow::Error> {
 ///         Ok(self.0.iter().cloned().collect())
 ///     }
 /// }
@@ -621,7 +621,7 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
                     #[doc = "The generated handler method for this enum variant."]
                     async fn #variant_name_snake(
                         &mut self,
-                        this: &hyperactor::Instance<Self>,
+                        this: &hyperactor::Context<Self>,
                         #(#arg_names: #arg_types),*)
                         -> Result<#return_type, hyperactor::anyhow::Error>;
                 });
@@ -689,7 +689,7 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
                     #[doc = "The generated handler method for this enum variant."]
                     async fn #variant_name_snake(
                         &mut self,
-                        this: &hyperactor::Instance<Self>,
+                        this: &hyperactor::Context<Self>,
                         #(#arg_names: #arg_types),*)
                         -> Result<(), hyperactor::anyhow::Error>;
                 });
@@ -727,7 +727,7 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
             #[doc = "Handle the next message."]
             async fn handle(
                 &mut self,
-                this: &hyperactor::Instance<Self>,
+                this: &hyperactor::Context<Self>,
                 message: #name #ty_generics,
             ) -> hyperactor::anyhow::Result<()>  {
                  // Dispatch based on message type.
@@ -990,7 +990,7 @@ pub fn forward(attr: TokenStream, item: TokenStream) -> TokenStream {
         impl hyperactor::Handler<#message_type> for #self_type {
             async fn handle(
                 &mut self,
-                this: &hyperactor::Instance<Self>,
+                this: &hyperactor::Context<Self>,
                 message: #message_type,
             ) -> hyperactor::anyhow::Result<()> {
                 <Self as #trait_name>::handle(self, this, message).await

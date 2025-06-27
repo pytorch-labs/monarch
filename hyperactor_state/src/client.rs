@@ -9,8 +9,8 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use hyperactor::Actor;
+use hyperactor::Context;
 use hyperactor::Handler;
-use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor_macros::HandleClient;
 use hyperactor_macros::RefClient;
@@ -54,7 +54,7 @@ impl Actor for ClientActor {
 impl ClientMessageHandler for ClientActor {
     async fn push_logs(
         &mut self,
-        _this: &Instance<Self>,
+        _this: &Context<Self>,
         logs: Vec<GenericStateObject>,
     ) -> Result<(), anyhow::Error> {
         self.sender.send(logs).await?;

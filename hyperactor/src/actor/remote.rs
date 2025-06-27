@@ -139,8 +139,8 @@ mod tests {
 
     use super::*;
     use crate as hyperactor; // for macros
+    use crate::Context;
     use crate::Handler;
-    use crate::Instance;
 
     #[derive(Debug)]
     #[hyperactor::export(handlers = [()])]
@@ -161,7 +161,7 @@ mod tests {
 
     #[async_trait]
     impl Handler<()> for MyActor {
-        async fn handle(&mut self, _this: &Instance<Self>, _message: ()) -> anyhow::Result<()> {
+        async fn handle(&mut self, _this: &Context<Self>, _message: ()) -> anyhow::Result<()> {
             unimplemented!()
         }
     }

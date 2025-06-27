@@ -21,7 +21,6 @@ use async_trait::async_trait;
 use futures::try_join;
 use hyperactor::Actor;
 use hyperactor::Handler;
-use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
@@ -194,7 +193,7 @@ impl Actor for RsyncActor {
 impl Handler<Connect> for RsyncActor {
     async fn handle(
         &mut self,
-        this: &Instance<Self>,
+        this: &hyperactor::Context<Self>,
         message: Connect,
     ) -> Result<(), anyhow::Error> {
         let (mut local, mut stream) = try_join!(

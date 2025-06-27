@@ -235,7 +235,7 @@ impl Actor for WorkerActor {
 impl WorkerMessageHandler for WorkerActor {
     async fn backend_network_init(
         &mut self,
-        _this: &Instance<Self>,
+        _this: &hyperactor::Context<Self>,
         _unique_id: UniqueId,
     ) -> Result<()> {
         Ok(())
@@ -243,7 +243,7 @@ impl WorkerMessageHandler for WorkerActor {
 
     async fn backend_network_point_to_point_init(
         &mut self,
-        _this: &Instance<Self>,
+        _this: &hyperactor::Context<Self>,
         _from_stream: StreamRef,
         _to_stream: StreamRef,
     ) -> Result<()> {
@@ -252,7 +252,7 @@ impl WorkerMessageHandler for WorkerActor {
 
     async fn call_function(
         &mut self,
-        this: &Instance<Self>,
+        this: &hyperactor::Context<Self>,
         params: CallFunctionParams,
     ) -> Result<()> {
         tracing::info!("worker received call_function: {:#?}", &params);
@@ -314,7 +314,7 @@ impl WorkerMessageHandler for WorkerActor {
 
     async fn command_group(
         &mut self,
-        this: &Instance<Self>,
+        this: &hyperactor::Context<Self>,
         params: Vec<WorkerMessage>,
     ) -> Result<()> {
         for msg in params {
@@ -325,7 +325,7 @@ impl WorkerMessageHandler for WorkerActor {
 
     async fn create_stream(
         &mut self,
-        _this: &Instance<Self>,
+        _this: &hyperactor::Context<Self>,
         _result: StreamRef,
         _creation_mode: StreamCreationMode,
     ) -> Result<()> {
@@ -334,7 +334,7 @@ impl WorkerMessageHandler for WorkerActor {
 
     async fn create_device_mesh(
         &mut self,
-        _this: &Instance<Self>,
+        _this: &hyperactor::Context<Self>,
         result: Ref,
         names: Vec<String>,
         ranks: Slice,
@@ -346,7 +346,7 @@ impl WorkerMessageHandler for WorkerActor {
 
     async fn create_remote_process_group(
         &mut self,
-        _this: &Instance<Self>,
+        _this: &hyperactor::Context<Self>,
         _result: Ref,
         _device_mesh: Ref,
         _dims: Vec<String>,
@@ -356,7 +356,7 @@ impl WorkerMessageHandler for WorkerActor {
 
     async fn borrow_create(
         &mut self,
-        _this: &Instance<Self>,
+        _this: &hyperactor::Context<Self>,
         _result: Ref,
         _borrow_id: u64,
         _tensor_ref: Ref,
@@ -366,25 +366,41 @@ impl WorkerMessageHandler for WorkerActor {
         bail!("unimplemented: borrow_create")
     }
 
-    async fn borrow_first_use(&mut self, _this: &Instance<Self>, _borrow: u64) -> Result<()> {
+    async fn borrow_first_use(
+        &mut self,
+        _this: &hyperactor::Context<Self>,
+        _borrow: u64,
+    ) -> Result<()> {
         bail!("unimplemented: borrow_first_use")
     }
 
-    async fn borrow_last_use(&mut self, _this: &Instance<Self>, _borrow: u64) -> Result<()> {
+    async fn borrow_last_use(
+        &mut self,
+        _this: &hyperactor::Context<Self>,
+        _borrow: u64,
+    ) -> Result<()> {
         bail!("unimplemented: borrow_last_use")
     }
 
-    async fn borrow_drop(&mut self, _this: &Instance<Self>, _borrow_id: u64) -> Result<()> {
+    async fn borrow_drop(
+        &mut self,
+        _this: &hyperactor::Context<Self>,
+        _borrow_id: u64,
+    ) -> Result<()> {
         bail!("unimplemented: borrow_drop")
     }
 
-    async fn delete_refs(&mut self, _this: &Instance<Self>, _refs: Vec<Ref>) -> Result<()> {
+    async fn delete_refs(
+        &mut self,
+        _this: &hyperactor::Context<Self>,
+        _refs: Vec<Ref>,
+    ) -> Result<()> {
         Ok(())
     }
 
     async fn request_status(
         &mut self,
-        this: &Instance<Self>,
+        this: &hyperactor::Context<Self>,
         seq: Seq,
         controller: bool,
     ) -> Result<()> {
@@ -401,7 +417,7 @@ impl WorkerMessageHandler for WorkerActor {
 
     async fn reduce(
         &mut self,
-        _this: &Instance<Self>,
+        _this: &hyperactor::Context<Self>,
         result: Ref,
         local_tensor: Ref,
         factory: Factory,
@@ -490,7 +506,7 @@ impl WorkerMessageHandler for WorkerActor {
 
     async fn create_pipe(
         &mut self,
-        _this: &Instance<Self>,
+        _this: &hyperactor::Context<Self>,
         result: Ref,
         _key: String,
         _function: ResolvableFunction,
@@ -505,7 +521,7 @@ impl WorkerMessageHandler for WorkerActor {
 
     async fn send_tensor(
         &mut self,
-        _this: &Instance<Self>,
+        _this: &hyperactor::Context<Self>,
         _result: Ref,
         _from_ranks: Slice,
         _to_ranks: Slice,
@@ -519,7 +535,7 @@ impl WorkerMessageHandler for WorkerActor {
 
     async fn exit(
         &mut self,
-        _this: &Instance<Self>,
+        _this: &hyperactor::Context<Self>,
         _error: Option<(Option<ActorId>, String)>,
     ) -> Result<()> {
         Ok(())
@@ -527,7 +543,7 @@ impl WorkerMessageHandler for WorkerActor {
 
     async fn send_value(
         &mut self,
-        this: &Instance<Self>,
+        this: &hyperactor::Context<Self>,
         seq: Seq,
         _destination: Option<Ref>,
         _mutates: Vec<Ref>,
@@ -561,7 +577,7 @@ impl WorkerMessageHandler for WorkerActor {
 
     async fn split_comm(
         &mut self,
-        _this: &Instance<Self>,
+        _this: &hyperactor::Context<Self>,
         _dims: Vec<String>,
         _device_mesh: Ref,
         _stream_ref: StreamRef,
@@ -572,7 +588,7 @@ impl WorkerMessageHandler for WorkerActor {
 
     async fn split_comm_for_process_group(
         &mut self,
-        _this: &Instance<Self>,
+        _this: &hyperactor::Context<Self>,
         _remote_process_group_ref: Ref,
         _stream_ref: StreamRef,
         _config: Option<NcclConfig>,
@@ -582,7 +598,7 @@ impl WorkerMessageHandler for WorkerActor {
 
     async fn pipe_recv(
         &mut self,
-        _this: &Instance<Self>,
+        _this: &hyperactor::Context<Self>,
         _seq: Seq,
         results: Vec<Option<Ref>>,
         pipe: Ref,
@@ -603,7 +619,7 @@ impl WorkerMessageHandler for WorkerActor {
 
     async fn set_ref_unit_tests_only(
         &mut self,
-        _this: &Instance<Self>,
+        _this: &hyperactor::Context<Self>,
         _reference: Ref,
         _value: WireValue,
         _stream: StreamRef,
@@ -613,7 +629,7 @@ impl WorkerMessageHandler for WorkerActor {
 
     async fn get_ref_unit_tests_only(
         &mut self,
-        _this: &Instance<Self>,
+        _this: &hyperactor::Context<Self>,
         _ref_id: Ref,
         _stream: StreamRef,
     ) -> Result<Option<Result<WireValue, ValueError>>> {
@@ -622,7 +638,7 @@ impl WorkerMessageHandler for WorkerActor {
 
     async fn define_recording(
         &mut self,
-        _this: &Instance<Self>,
+        _this: &hyperactor::Context<Self>,
         _result: Ref,
         _nresults: usize,
         _nformals: usize,
@@ -635,7 +651,7 @@ impl WorkerMessageHandler for WorkerActor {
 
     async fn recording_formal(
         &mut self,
-        _this: &Instance<Self>,
+        _this: &hyperactor::Context<Self>,
         _result: Ref,
         _argument_index: usize,
         _stream: StreamRef,
@@ -645,7 +661,7 @@ impl WorkerMessageHandler for WorkerActor {
 
     async fn recording_result(
         &mut self,
-        _this: &Instance<Self>,
+        _this: &hyperactor::Context<Self>,
         _result: Ref,
         _output_index: usize,
         _stream: StreamRef,
@@ -655,7 +671,7 @@ impl WorkerMessageHandler for WorkerActor {
 
     async fn call_recording(
         &mut self,
-        _this: &Instance<Self>,
+        _this: &hyperactor::Context<Self>,
         _seq: Seq,
         _recording: Ref,
         _results: Vec<Ref>,

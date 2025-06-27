@@ -149,6 +149,7 @@ pub use mailbox::RemoteMessage;
 pub use opentelemetry;
 #[doc(hidden)]
 pub use paste::paste;
+pub use proc::Context;
 pub use proc::Instance;
 pub use reference::ActorId;
 pub use reference::ActorRef;

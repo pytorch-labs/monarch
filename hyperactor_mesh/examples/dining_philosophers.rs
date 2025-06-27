@@ -15,6 +15,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::Bind;
+use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Named;
@@ -25,7 +26,7 @@ use hyperactor_mesh::actor_mesh::ActorMesh;
 use hyperactor_mesh::alloc::AllocSpec;
 use hyperactor_mesh::alloc::Allocator;
 use hyperactor_mesh::alloc::LocalAllocator;
-use hyperactor_mesh::comm::multicast::get_cast_info_from_headers_or_err;
+use hyperactor_mesh::comm::multicast::CastInfo;
 use hyperactor_mesh::selection::dsl::all;
 use hyperactor_mesh::selection::dsl::true_;
 use hyperactor_mesh::shape;
@@ -138,11 +139,10 @@ impl PhilosopherActor {
 impl Handler<PhilosopherMessage> for PhilosopherActor {
     async fn handle(
         &mut self,
-        this: &Instance<Self>,
+        this: &Context<Self>,
         message: PhilosopherMessage,
     ) -> Result<(), anyhow::Error> {
-        // Instance::ctx() should always return a value when inside a handler.
-        let (rank, _) = get_cast_info_from_headers_or_err(this.ctx().unwrap().headers())?;
+        let (rank, _) = this.cast_info()?;
         self.rank = rank;
         match message {
             PhilosopherMessage::Start(waiter) => {

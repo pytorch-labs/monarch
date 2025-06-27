@@ -12,8 +12,8 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 
 use crate::Actor;
+use crate::Context;
 use crate::Handler;
-use crate::Instance;
 use crate::proc::Proc;
 use crate::supervision::ActorSupervisionEvent;
 
@@ -81,7 +81,7 @@ impl Actor for ProcSupervisionCoordinator {
 impl Handler<ActorSupervisionEvent> for ProcSupervisionCoordinator {
     async fn handle(
         &mut self,
-        _this: &Instance<Self>,
+        _this: &Context<Self>,
         msg: ActorSupervisionEvent,
     ) -> anyhow::Result<()> {
         tracing::debug!("in handler, handling supervision event");

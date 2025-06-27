@@ -18,6 +18,7 @@ use std::fmt;
 use std::future::Future;
 use std::hash::Hash;
 use std::hash::Hasher;
+use std::ops::Deref;
 use std::panic;
 use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
@@ -716,19 +717,28 @@ impl<A: Actor + Send> WorkCell<A> {
 }
 
 /// Context for a message currently being handled by an Instance.
-pub struct InstanceMessageContext {
+pub struct Context<'a, A: Actor> {
+    instance: &'a Instance<A>,
     headers: Attrs,
 }
 
-impl InstanceMessageContext {
-    /// Construct a new InstanceMessageContext.
-    pub fn new(headers: Attrs) -> Self {
-        Self { headers }
+impl<'a, A: Actor> Context<'a, A> {
+    /// Construct a new Context.
+    pub fn new(instance: &'a Instance<A>, headers: Attrs) -> Self {
+        Self { instance, headers }
     }
 
     /// Get a reference to the message headers.
     pub fn headers(&self) -> &Attrs {
         &self.headers
+    }
+}
+
+impl<A: Actor> Deref for Context<'_, A> {
+    type Target = Instance<A>;
+
+    fn deref(&self) -> &Self::Target {
+        self.instance
     }
 }
 
@@ -765,9 +775,6 @@ pub struct Instance<A: Actor> {
 
     /// The timestamp of when the currently active status was set.
     _last_status_change: Arc<tokio::time::Instant>,
-
-    /// The context associated with the message currently being handled.
-    message_context: Option<InstanceMessageContext>,
 }
 
 impl<A: Actor> Instance<A> {
@@ -820,7 +827,6 @@ impl<A: Actor> Instance<A> {
                 name = "created"
             )),
             _last_status_change: Arc::new(start),
-            message_context: None,
         }
     }
 
@@ -1142,10 +1148,11 @@ impl<A: Actor> Instance<A> {
         ));
         let span = self.status_span.lock().unwrap().clone();
 
-        self.message_context = Some(InstanceMessageContext::new(headers));
-        let res = actor.handle(self, message).instrument(span).await;
-        self.message_context = None;
-        res
+        let context = Context::new(self, headers);
+        // Pass a reference to the context to the handler, so that deref
+        // coercion allows the `this` argument to be treated exactly like
+        // &Instance<A>.
+        actor.handle(&context, message).instrument(span).await
     }
 
     /// Return a handle port handle representing the actor's message
@@ -1181,11 +1188,6 @@ impl<A: Actor> Instance<A> {
     /// The owning proc.
     pub fn proc(&self) -> &Proc {
         &self.proc
-    }
-
-    /// Get the current message context, if there is one.
-    pub fn ctx(&self) -> Option<&InstanceMessageContext> {
-        self.message_context.as_ref()
     }
 }
 
@@ -1226,6 +1228,40 @@ impl<A: Actor> cap::sealed::CanResolveActorRef for Instance<A> {
             .get(actor_ref.actor_id())?
             .upgrade()?
             .downcast_handle()
+    }
+}
+
+impl<A: Actor> cap::sealed::CanSend for Context<'_, A> {
+    fn post(&self, dest: PortId, headers: Attrs, data: Serialized) {
+        <Instance<A> as cap::sealed::CanSend>::post(self, dest, headers, data)
+    }
+}
+
+impl<A: Actor> cap::sealed::CanOpenPort for Context<'_, A> {
+    fn mailbox(&self) -> &Mailbox {
+        <Instance<A> as cap::sealed::CanOpenPort>::mailbox(self)
+    }
+}
+
+impl<A: Actor> cap::sealed::CanSplitPort for Context<'_, A> {
+    fn split(&self, port_id: PortId, reducer_spec: Option<ReducerSpec>) -> anyhow::Result<PortId> {
+        <Instance<A> as cap::sealed::CanSplitPort>::split(self, port_id, reducer_spec)
+    }
+}
+
+#[async_trait]
+impl<A: Actor> cap::sealed::CanSpawn for Context<'_, A> {
+    async fn spawn<C: Actor>(&self, params: C::Params) -> anyhow::Result<ActorHandle<C>> {
+        <Instance<A> as cap::sealed::CanSpawn>::spawn(self, params).await
+    }
+}
+
+impl<A: Actor> cap::sealed::CanResolveActorRef for Context<'_, A> {
+    fn resolve_actor_ref<R: RemoteActor + Actor>(
+        &self,
+        actor_ref: &ActorRef<R>,
+    ) -> Option<ActorHandle<R>> {
+        <Instance<A> as cap::sealed::CanResolveActorRef>::resolve_actor_ref(self, actor_ref)
     }
 }
 
@@ -1718,7 +1754,7 @@ mod tests {
     impl TestActorMessageHandler for TestActor {
         async fn reply(
             &mut self,
-            _this: &Instance<Self>,
+            _this: &crate::Context<Self>,
             sender: oneshot::Sender<()>,
         ) -> Result<(), anyhow::Error> {
             sender.send(()).unwrap();
@@ -1727,7 +1763,7 @@ mod tests {
 
         async fn wait(
             &mut self,
-            _this: &Instance<Self>,
+            _this: &crate::Context<Self>,
             sender: oneshot::Sender<()>,
             receiver: oneshot::Receiver<()>,
         ) -> Result<(), anyhow::Error> {
@@ -1738,7 +1774,7 @@ mod tests {
 
         async fn forward(
             &mut self,
-            _this: &Instance<Self>,
+            _this: &crate::Context<Self>,
             destination: ActorHandle<TestActor>,
             message: Box<TestActorMessage>,
         ) -> Result<(), anyhow::Error> {
@@ -1747,13 +1783,13 @@ mod tests {
             Ok(())
         }
 
-        async fn noop(&mut self, _this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        async fn noop(&mut self, _this: &crate::Context<Self>) -> Result<(), anyhow::Error> {
             Ok(())
         }
 
         async fn fail(
             &mut self,
-            _this: &Instance<Self>,
+            _this: &crate::Context<Self>,
             err: anyhow::Error,
         ) -> Result<(), anyhow::Error> {
             Err(err)
@@ -1761,7 +1797,7 @@ mod tests {
 
         async fn panic(
             &mut self,
-            _this: &Instance<Self>,
+            _this: &crate::Context<Self>,
             err_msg: String,
         ) -> Result<(), anyhow::Error> {
             panic!("{}", err_msg);
@@ -1769,7 +1805,7 @@ mod tests {
 
         async fn spawn(
             &mut self,
-            this: &Instance<Self>,
+            this: &crate::Context<Self>,
             reply: oneshot::Sender<ActorHandle<TestActor>>,
         ) -> Result<(), anyhow::Error> {
             let handle = <Self as Actor>::spawn(this, ()).await?;
@@ -1863,7 +1899,7 @@ mod tests {
     impl LookupTestMessageHandler for LookupTestActor {
         async fn actor_exists(
             &mut self,
-            this: &Instance<Self>,
+            this: &crate::Context<Self>,
             actor_ref: ActorRef<TestActor>,
         ) -> Result<bool, anyhow::Error> {
             Ok(actor_ref.downcast_handle(this).is_some())
@@ -2282,7 +2318,7 @@ mod tests {
         impl Handler<OncePortHandle<PortHandle<usize>>> for TestActor {
             async fn handle(
                 &mut self,
-                this: &Instance<Self>,
+                this: &crate::Context<Self>,
                 message: OncePortHandle<PortHandle<usize>>,
             ) -> anyhow::Result<()> {
                 message.send(this.port())?;
@@ -2294,7 +2330,7 @@ mod tests {
         impl Handler<usize> for TestActor {
             async fn handle(
                 &mut self,
-                _this: &Instance<Self>,
+                _this: &crate::Context<Self>,
                 message: usize,
             ) -> anyhow::Result<()> {
                 self.0.fetch_add(message, Ordering::SeqCst);
@@ -2389,7 +2425,7 @@ mod tests {
         impl Handler<String> for TestActor {
             async fn handle(
                 &mut self,
-                this: &Instance<Self>,
+                this: &crate::Context<Self>,
                 message: String,
             ) -> anyhow::Result<()> {
                 tracing::info!("{} received message: {}", this.self_id(), message);
@@ -2530,7 +2566,7 @@ mod tests {
         impl Handler<String> for LoggingActor {
             async fn handle(
                 &mut self,
-                _this: &Instance<Self>,
+                _this: &crate::Context<Self>,
                 message: String,
             ) -> anyhow::Result<()> {
                 tracing::info!("{}", message);
@@ -2540,7 +2576,11 @@ mod tests {
 
         #[async_trait]
         impl Handler<u64> for LoggingActor {
-            async fn handle(&mut self, _this: &Instance<Self>, message: u64) -> anyhow::Result<()> {
+            async fn handle(
+                &mut self,
+                _this: &crate::Context<Self>,
+                message: u64,
+            ) -> anyhow::Result<()> {
                 tracing::event!(Level::INFO, number = message);
                 Ok(())
             }
@@ -2550,7 +2590,7 @@ mod tests {
         impl Handler<Arc<Barrier>> for LoggingActor {
             async fn handle(
                 &mut self,
-                _this: &Instance<Self>,
+                _this: &crate::Context<Self>,
                 message: Arc<Barrier>,
             ) -> anyhow::Result<()> {
                 message.wait().await;
@@ -2562,7 +2602,7 @@ mod tests {
         impl Handler<Arc<(Barrier, Barrier)>> for LoggingActor {
             async fn handle(
                 &mut self,
-                _this: &Instance<Self>,
+                _this: &crate::Context<Self>,
                 barriers: Arc<(Barrier, Barrier)>,
             ) -> anyhow::Result<()> {
                 let inner = tracing::span!(Level::INFO, "child_span");

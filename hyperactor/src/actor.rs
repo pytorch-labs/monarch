@@ -49,6 +49,7 @@ use crate::mailbox::UndeliverableMessageError;
 use crate::mailbox::log::MessageLogError;
 use crate::message::Castable;
 use crate::message::IndexedErasedUnbound;
+use crate::proc::Context;
 use crate::proc::Instance;
 use crate::proc::InstanceCell;
 use crate::proc::Ports;
@@ -142,7 +143,7 @@ pub trait Actor: Sized + Send + Debug + 'static {
 #[async_trait]
 pub trait Handler<M>: Actor {
     /// Handle the next M-typed message.
-    async fn handle(&mut self, this: &Instance<Self>, message: M) -> Result<(), anyhow::Error>;
+    async fn handle(&mut self, this: &Context<Self>, message: M) -> Result<(), anyhow::Error>;
 }
 
 /// We provide this handler to indicate that actors can handle the [`Signal`] message.
@@ -151,7 +152,7 @@ pub trait Handler<M>: Actor {
 impl<A: Actor> Handler<Signal> for A {
     async fn handle(
         &mut self,
-        _this: &Instance<Self>,
+        _this: &Context<Self>,
         _message: Signal,
     ) -> Result<(), anyhow::Error> {
         unimplemented!("signal handler should not be called directly")
@@ -164,7 +165,7 @@ impl<A: Actor> Handler<Signal> for A {
 impl<A: Actor> Handler<Undeliverable<MessageEnvelope>> for A {
     async fn handle(
         &mut self,
-        this: &Instance<Self>,
+        this: &Context<Self>,
         message: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
         self.handle_undeliverable_message(this, message).await
@@ -181,7 +182,7 @@ where
 {
     async fn handle(
         &mut self,
-        this: &Instance<Self>,
+        this: &Context<Self>,
         msg: IndexedErasedUnbound<M>,
     ) -> anyhow::Result<()> {
         let message = msg.downcast()?.bind()?;
@@ -712,7 +713,7 @@ mod tests {
     impl Handler<u64> for EchoActor {
         async fn handle(
             &mut self,
-            this: &Instance<Self>,
+            this: &Context<Self>,
             message: u64,
         ) -> Result<(), anyhow::Error> {
             let Self(port) = self;
@@ -818,7 +819,7 @@ mod tests {
     impl Handler<OncePortHandle<bool>> for InitActor {
         async fn handle(
             &mut self,
-            _this: &Instance<Self>,
+            _this: &Context<Self>,
             port: OncePortHandle<bool>,
         ) -> Result<(), anyhow::Error> {
             port.send(self.0)?;
@@ -861,7 +862,7 @@ mod tests {
 
     #[async_trait]
     impl Handler<u64> for CheckpointActor {
-        async fn handle(&mut self, this: &Instance<Self>, value: u64) -> Result<(), anyhow::Error> {
+        async fn handle(&mut self, this: &Context<Self>, value: u64) -> Result<(), anyhow::Error> {
             self.sum += value;
             self.port.send(this, self.sum)?;
             Ok(())
@@ -946,7 +947,7 @@ mod tests {
     impl Handler<u64> for MultiActor {
         async fn handle(
             &mut self,
-            _this: &Instance<Self>,
+            _this: &Context<Self>,
             message: u64,
         ) -> Result<(), anyhow::Error> {
             let mut vals = self.0.lock().unwrap();
@@ -959,7 +960,7 @@ mod tests {
     impl Handler<String> for MultiActor {
         async fn handle(
             &mut self,
-            _this: &Instance<Self>,
+            _this: &Context<Self>,
             message: String,
         ) -> Result<(), anyhow::Error> {
             let mut vals = self.0.lock().unwrap();
@@ -972,7 +973,7 @@ mod tests {
     impl Handler<OncePortHandle<bool>> for MultiActor {
         async fn handle(
             &mut self,
-            _this: &Instance<Self>,
+            _this: &Context<Self>,
             message: OncePortHandle<bool>,
         ) -> Result<(), anyhow::Error> {
             message.send(true).unwrap();

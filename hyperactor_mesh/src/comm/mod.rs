@@ -17,11 +17,11 @@ use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
+use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::WorldId;
-use hyperactor::attrs::Attrs;
 use hyperactor::data::Serialized;
 use hyperactor::reference::UnboundPort;
 use ndslice::Slice;
@@ -172,7 +172,7 @@ impl CommActor {
     }
 
     fn handle_message(
-        this: &Instance<Self>,
+        this: &Context<Self>,
         mode: &CommActorMode,
         deliver_here: bool,
         next_steps: HashMap<usize, Vec<RoutingFrame>>,
@@ -198,7 +198,7 @@ impl CommActor {
 
         // Deliver message here, if necessary.
         if deliver_here {
-            let mut headers = Attrs::new();
+            let mut headers = this.headers().clone();
             set_cast_info_on_headers(
                 &mut headers,
                 mode.self_rank(this.self_id()),
@@ -244,7 +244,7 @@ impl CommActor {
 
 #[async_trait]
 impl Handler<CommActorMode> for CommActor {
-    async fn handle(&mut self, _this: &Instance<Self>, mode: CommActorMode) -> Result<()> {
+    async fn handle(&mut self, _this: &Context<Self>, mode: CommActorMode) -> Result<()> {
         self.mode = mode;
         Ok(())
     }
@@ -253,7 +253,7 @@ impl Handler<CommActorMode> for CommActor {
 // TODO(T218630526): reliable casting for mutable topology
 #[async_trait]
 impl Handler<CastMessage> for CommActor {
-    async fn handle(&mut self, this: &Instance<Self>, cast_message: CastMessage) -> Result<()> {
+    async fn handle(&mut self, this: &Context<Self>, cast_message: CastMessage) -> Result<()> {
         // Always forward the message to the root rank of the slice, casting starts from there.
         let slice = cast_message.dest.slice.clone();
         let selection = cast_message.dest.selection.clone();
@@ -283,7 +283,7 @@ impl Handler<CastMessage> for CommActor {
 
 #[async_trait]
 impl Handler<ForwardMessage> for CommActor {
-    async fn handle(&mut self, this: &Instance<Self>, fwd_message: ForwardMessage) -> Result<()> {
+    async fn handle(&mut self, this: &Context<Self>, fwd_message: ForwardMessage) -> Result<()> {
         let ForwardMessage {
             sender,
             dests,
@@ -375,8 +375,8 @@ pub mod test_utils {
     use hyperactor::Actor;
     use hyperactor::ActorId;
     use hyperactor::Bind;
+    use hyperactor::Context;
     use hyperactor::Handler;
-    use hyperactor::Instance;
     use hyperactor::Named;
     use hyperactor::PortRef;
     use hyperactor::Unbind;
@@ -438,7 +438,7 @@ pub mod test_utils {
 
     #[async_trait]
     impl Handler<TestMessage> for TestActor {
-        async fn handle(&mut self, this: &Instance<Self>, msg: TestMessage) -> anyhow::Result<()> {
+        async fn handle(&mut self, this: &Context<Self>, msg: TestMessage) -> anyhow::Result<()> {
             self.forward_port.send(this, msg)?;
             Ok(())
         }

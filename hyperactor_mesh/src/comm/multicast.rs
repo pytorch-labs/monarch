@@ -8,6 +8,8 @@
 
 //! The comm actor that provides message casting and result accumulation.
 
+use hyperactor::Actor;
+use hyperactor::Context;
 use hyperactor::Named;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
@@ -186,19 +188,33 @@ pub fn set_cast_info_on_headers(headers: &mut Attrs, rank: usize, shape: Shape) 
     headers.set(CAST_SHAPE, shape);
 }
 
-pub fn get_cast_info_from_headers(headers: &Attrs) -> Option<(usize, Shape)> {
-    headers
-        .get(CAST_RANK)
-        .map(|rank| headers.get(CAST_SHAPE).map(|shape| (*rank, shape.clone())))?
+pub trait CastInfo {
+    /// Get the cast rank and cast shape, returning an error
+    /// if the relevant info isn't available.
+    fn cast_info(&self) -> anyhow::Result<(usize, Shape)>;
+
+    /// Get the cast rank and cast shape, returning None
+    /// if the relevant info isn't available.
+    fn maybe_cast_info(&self) -> Option<(usize, Shape)>;
 }
 
-pub fn get_cast_info_from_headers_or_err(headers: &Attrs) -> anyhow::Result<(usize, Shape)> {
-    let rank = headers
-        .get(CAST_RANK)
-        .ok_or_else(|| anyhow::anyhow!("{} not found in headers", CAST_RANK.name()))?;
-    let shape = headers
-        .get(CAST_SHAPE)
-        .ok_or_else(|| anyhow::anyhow!("{} not found in headers", CAST_SHAPE.name()))?
-        .clone();
-    Ok((*rank, shape))
+impl<A: Actor> CastInfo for Context<'_, A> {
+    fn cast_info(&self) -> anyhow::Result<(usize, Shape)> {
+        let headers = self.headers();
+        let rank = headers
+            .get(CAST_RANK)
+            .ok_or_else(|| anyhow::anyhow!("{} not found in headers", CAST_RANK.name()))?;
+        let shape = headers
+            .get(CAST_SHAPE)
+            .ok_or_else(|| anyhow::anyhow!("{} not found in headers", CAST_SHAPE.name()))?
+            .clone();
+        Ok((*rank, shape))
+    }
+
+    fn maybe_cast_info(&self) -> Option<(usize, Shape)> {
+        let headers = self.headers();
+        headers
+            .get(CAST_RANK)
+            .map(|rank| headers.get(CAST_SHAPE).map(|shape| (*rank, shape.clone())))?
+    }
 }

@@ -252,8 +252,8 @@ mod tests {
     use async_trait::async_trait;
     use futures::try_join;
     use hyperactor::Actor;
+    use hyperactor::Context;
     use hyperactor::Handler;
-    use hyperactor::Instance;
     use hyperactor::proc::Proc;
     use tokio::io::AsyncReadExt;
     use tokio::io::AsyncWriteExt;
@@ -276,7 +276,7 @@ mod tests {
     impl Handler<Connect> for EchoActor {
         async fn handle(
             &mut self,
-            this: &Instance<Self>,
+            this: &Context<Self>,
             message: Connect,
         ) -> Result<(), anyhow::Error> {
             let (mut rd, mut wr) = accept(this, message).await?;

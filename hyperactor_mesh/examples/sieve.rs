@@ -18,8 +18,8 @@ use anyhow::Result;
 use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorRef;
+use hyperactor::Context;
 use hyperactor::Handler;
-use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor_mesh::Mesh;
@@ -72,7 +72,7 @@ pub struct SieveActor {
 
 #[async_trait]
 impl Handler<NextNumber> for SieveActor {
-    async fn handle(&mut self, this: &Instance<Self>, msg: NextNumber) -> Result<()> {
+    async fn handle(&mut self, this: &Context<Self>, msg: NextNumber) -> Result<()> {
         if msg.number % self.prime != 0 {
             match &self.next {
                 Some(next) => {

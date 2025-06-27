@@ -385,12 +385,12 @@ pub(crate) mod test_util {
     use std::collections::VecDeque;
 
     use anyhow::ensure;
+    use hyperactor::Context;
     use hyperactor::Handler;
-    use hyperactor::Instance;
     use hyperactor::PortRef;
 
     use super::*;
-    use crate::comm::multicast::get_cast_info_from_headers_or_err;
+    use crate::comm::multicast::CastInfo;
 
     // This can't be defined under a `#[cfg(test)]` because there needs to
     // be an entry in the spawnable actor registry in the executable
@@ -434,10 +434,10 @@ pub(crate) mod test_util {
     impl Handler<GetRank> for TestActor {
         async fn handle(
             &mut self,
-            this: &Instance<Self>,
+            this: &Context<Self>,
             GetRank(ok, reply): GetRank,
         ) -> Result<(), anyhow::Error> {
-            let (rank, _) = get_cast_info_from_headers_or_err(this.ctx().unwrap().headers())?;
+            let (rank, _) = this.cast_info()?;
             reply.send(this, rank)?;
             anyhow::ensure!(ok, "intentional error!"); // If `!ok` exit with `Err()`.
             Ok(())
@@ -451,7 +451,7 @@ pub(crate) mod test_util {
     impl Handler<Echo> for TestActor {
         async fn handle(
             &mut self,
-            this: &Instance<Self>,
+            this: &Context<Self>,
             message: Echo,
         ) -> Result<(), anyhow::Error> {
             let Echo(message, reply_port) = message;
@@ -467,7 +467,7 @@ pub(crate) mod test_util {
     impl Handler<Error> for TestActor {
         async fn handle(
             &mut self,
-            _this: &Instance<Self>,
+            _this: &Context<Self>,
             Error(error): Error,
         ) -> Result<(), anyhow::Error> {
             Err(anyhow::anyhow!("{}", error))
@@ -481,7 +481,7 @@ pub(crate) mod test_util {
     impl Handler<Relay> for TestActor {
         async fn handle(
             &mut self,
-            this: &Instance<Self>,
+            this: &Context<Self>,
             Relay(count, mut hops): Relay,
         ) -> Result<(), anyhow::Error> {
             ensure!(!hops.is_empty(), "relay must have at least one hop");

@@ -9,8 +9,8 @@
 use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::Bind;
+use hyperactor::Context;
 use hyperactor::Handler;
-use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::Unbind;
 use serde::Deserialize;
@@ -40,7 +40,7 @@ impl Actor for EmptyActor {
 
 #[async_trait]
 impl Handler<EmptyMessage> for EmptyActor {
-    async fn handle(&mut self, _: &Instance<Self>, _: EmptyMessage) -> Result<(), anyhow::Error> {
+    async fn handle(&mut self, _: &Context<Self>, _: EmptyMessage) -> Result<(), anyhow::Error> {
         Ok(())
     }
 }

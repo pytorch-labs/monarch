@@ -9,8 +9,8 @@
 use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::Bind;
+use hyperactor::Context;
 use hyperactor::Handler;
-use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::Unbind;
@@ -54,7 +54,7 @@ struct TestMessage(String);
 
 #[async_trait]
 impl Handler<TestMessage> for TestActor {
-    async fn handle(&mut self, this: &Instance<Self>, msg: TestMessage) -> anyhow::Result<()> {
+    async fn handle(&mut self, this: &Context<Self>, msg: TestMessage) -> anyhow::Result<()> {
         self.forward_port.send(this, msg.0)?;
         Ok(())
     }
@@ -71,7 +71,7 @@ impl<T: Named> Named for MyGeneric<T> {
 
 #[async_trait]
 impl Handler<()> for TestActor {
-    async fn handle(&mut self, this: &Instance<Self>, _msg: ()) -> anyhow::Result<()> {
+    async fn handle(&mut self, this: &Context<Self>, _msg: ()) -> anyhow::Result<()> {
         self.forward_port.send(this, "()".to_string())?;
         Ok(())
     }
@@ -79,7 +79,7 @@ impl Handler<()> for TestActor {
 
 #[async_trait]
 impl Handler<MyGeneric<()>> for TestActor {
-    async fn handle(&mut self, this: &Instance<Self>, _msg: MyGeneric<()>) -> anyhow::Result<()> {
+    async fn handle(&mut self, this: &Context<Self>, _msg: MyGeneric<()>) -> anyhow::Result<()> {
         self.forward_port.send(this, "MyGeneric<()>".to_string())?;
         Ok(())
     }
@@ -87,7 +87,7 @@ impl Handler<MyGeneric<()>> for TestActor {
 
 #[async_trait]
 impl Handler<u64> for TestActor {
-    async fn handle(&mut self, this: &Instance<Self>, msg: u64) -> anyhow::Result<()> {
+    async fn handle(&mut self, this: &Context<Self>, msg: u64) -> anyhow::Result<()> {
         self.forward_port.send(this, format!("u64: {msg}"))?;
         Ok(())
     }

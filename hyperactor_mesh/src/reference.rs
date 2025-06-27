@@ -168,8 +168,8 @@ impl<A: RemoteActor> Eq for ActorMeshRef<A> {}
 mod tests {
     use async_trait::async_trait;
     use hyperactor::Actor;
+    use hyperactor::Context;
     use hyperactor::Handler;
-    use hyperactor::Instance;
     use hyperactor::PortRef;
     use hyperactor::message::Bind;
     use hyperactor::message::Bindings;
@@ -232,7 +232,7 @@ mod tests {
     impl Handler<MeshPingPongMessage> for MeshPingPongActor {
         async fn handle(
             &mut self,
-            this: &Instance<Self>,
+            this: &Context<Self>,
             MeshPingPongMessage(ttl, sender_mesh, done_tx): MeshPingPongMessage,
         ) -> Result<(), anyhow::Error> {
             if ttl == 0 {

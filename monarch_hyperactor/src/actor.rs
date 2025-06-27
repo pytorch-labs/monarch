@@ -16,15 +16,15 @@ use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::ActorId;
+use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
-use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::forward;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::Unbind;
-use hyperactor_mesh::comm::multicast::get_cast_info_from_headers;
+use hyperactor_mesh::comm::multicast::CastInfo;
 use monarch_types::PickledPyObject;
 use monarch_types::SerializablePyErr;
 use pyo3::conversion::IntoPyObjectExt;
@@ -364,11 +364,7 @@ impl PanicFlag {
 
 #[async_trait]
 impl Handler<PythonMessage> for PythonActor {
-    async fn handle(
-        &mut self,
-        this: &Instance<Self>,
-        message: PythonMessage,
-    ) -> anyhow::Result<()> {
+    async fn handle(&mut self, this: &Context<Self>, message: PythonMessage) -> anyhow::Result<()> {
         let mailbox = PyMailbox {
             inner: this.mailbox_for_py().clone(),
         };
@@ -376,11 +372,8 @@ impl Handler<PythonMessage> for PythonActor {
         // See [Panics in async endpoints].
         let (sender, receiver) = oneshot::channel();
 
-        // Instance::ctx() should always return a value when inside a handler.
-        let ctx = this.ctx().unwrap();
-
         let future = Python::with_gil(|py| -> Result<_, SerializablePyErr> {
-            let awaitable = match get_cast_info_from_headers(ctx.headers()) {
+            let awaitable = match this.maybe_cast_info() {
                 Some((rank, shape)) => self.actor.call_method(
                     py,
                     "handle_cast",
@@ -477,7 +470,7 @@ impl Actor for AsyncEndpointTask {
 impl AsyncEndpointInvocationHandler for AsyncEndpointTask {
     async fn run(
         &mut self,
-        this: &Instance<Self>,
+        this: &Context<Self>,
         task: PythonTask,
         side_channel: oneshot::Receiver<PyObject>,
     ) -> anyhow::Result<()> {

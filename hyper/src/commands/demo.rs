@@ -12,6 +12,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use clap::Subcommand;
 use hyperactor::Actor;
+use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Named;
@@ -229,40 +230,29 @@ impl Actor for DemoActor {
 impl DemoMessageHandler for DemoActor {
     async fn echo(
         &mut self,
-        _this: &hyperactor::Instance<Self>,
+        _this: &Context<Self>,
         message: String,
     ) -> Result<String, anyhow::Error> {
         tracing::info!("demo: message: {}", message);
         Ok(message)
     }
 
-    async fn increment(
-        &mut self,
-        _this: &hyperactor::Instance<Self>,
-        num: u64,
-    ) -> Result<u64, anyhow::Error> {
+    async fn increment(&mut self, _this: &Context<Self>, num: u64) -> Result<u64, anyhow::Error> {
         tracing::info!("demo: increment: {}", num);
         Ok(num + 1)
     }
 
-    async fn panic(&mut self, _this: &hyperactor::Instance<Self>) -> Result<(), anyhow::Error> {
+    async fn panic(&mut self, _this: &Context<Self>) -> Result<(), anyhow::Error> {
         tracing::info!("demo: panic!");
         panic!()
     }
 
-    async fn spawn_child(
-        &mut self,
-        this: &hyperactor::Instance<Self>,
-    ) -> Result<ActorRef<Self>, anyhow::Error> {
+    async fn spawn_child(&mut self, this: &Context<Self>) -> Result<ActorRef<Self>, anyhow::Error> {
         tracing::info!("demo: spawn child");
         Ok(Self::spawn(this, ()).await?.bind())
     }
 
-    async fn error(
-        &mut self,
-        _this: &hyperactor::Instance<Self>,
-        message: String,
-    ) -> Result<(), anyhow::Error> {
+    async fn error(&mut self, _this: &Context<Self>, message: String) -> Result<(), anyhow::Error> {
         tracing::info!("demo: message: {}", message);
         anyhow::bail!("{}", message)
     }
