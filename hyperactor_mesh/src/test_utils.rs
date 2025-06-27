@@ -16,8 +16,6 @@ use hyperactor::Unbind;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::actor_mesh::Cast;
-
 /// Message that can be sent to an EmptyActor.
 #[derive(Serialize, Deserialize, Debug, Named, Clone, Bind, Unbind)]
 pub struct EmptyMessage();
@@ -26,8 +24,7 @@ pub struct EmptyMessage();
 #[derive(Debug, PartialEq)]
 #[hyperactor::export(
     handlers = [
-        EmptyMessage,
-        Cast<EmptyMessage> { cast = true },
+        EmptyMessage { cast = true },
     ],
 )]
 pub struct EmptyActor();
@@ -44,17 +41,6 @@ impl Actor for EmptyActor {
 #[async_trait]
 impl Handler<EmptyMessage> for EmptyActor {
     async fn handle(&mut self, _: &Instance<Self>, _: EmptyMessage) -> Result<(), anyhow::Error> {
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl Handler<Cast<EmptyMessage>> for EmptyActor {
-    async fn handle(
-        &mut self,
-        _: &Instance<Self>,
-        _: Cast<EmptyMessage>,
-    ) -> Result<(), anyhow::Error> {
         Ok(())
     }
 }

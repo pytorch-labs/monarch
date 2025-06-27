@@ -31,8 +31,8 @@ use serde::Serialize;
 
 use crate::comm::multicast::CastMessage;
 use crate::comm::multicast::CastMessageEnvelope;
-use crate::comm::multicast::CastRank;
 use crate::comm::multicast::ForwardMessage;
+use crate::comm::multicast::set_cast_info_on_headers;
 
 /// Parameters to initialize the CommActor
 #[derive(Debug, Clone, Serialize, Deserialize, Named, Default)]
@@ -198,10 +198,12 @@ impl CommActor {
 
         // Deliver message here, if necessary.
         if deliver_here {
-            message.data_mut().visit_mut::<CastRank>(|r| {
-                *r = CastRank(mode.self_rank(this.self_id()));
-                Ok(())
-            })?;
+            let mut headers = Attrs::new();
+            set_cast_info_on_headers(
+                &mut headers,
+                mode.self_rank(this.self_id()),
+                message.shape().clone(),
+            );
             // TODO(pzhang) split reply ports so children can reply to this comm
             // actor instead of parent.
             this.post(
@@ -209,7 +211,7 @@ impl CommActor {
                     .proc_id()
                     .actor_id(message.dest_port().actor_name(), 0)
                     .port_id(message.dest_port().port()),
-                Attrs::new(),
+                headers,
                 Serialized::serialize(message.data())?,
             );
         }
@@ -382,7 +384,6 @@ pub mod test_utils {
     use serde::Serialize;
 
     use super::*;
-    use crate::actor_mesh::Cast;
 
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Named)]
     pub struct MyReply {
@@ -412,7 +413,6 @@ pub mod test_utils {
         spawn = true,
         handlers = [
             TestMessage { cast = true },
-            Cast<TestMessage> { cast = true },
         ],
     )]
     pub struct TestActor {
@@ -441,17 +441,6 @@ pub mod test_utils {
         async fn handle(&mut self, this: &Instance<Self>, msg: TestMessage) -> anyhow::Result<()> {
             self.forward_port.send(this, msg)?;
             Ok(())
-        }
-    }
-
-    #[async_trait]
-    impl Handler<Cast<TestMessage>> for TestActor {
-        async fn handle(
-            &mut self,
-            this: &Instance<Self>,
-            msg: Cast<TestMessage>,
-        ) -> anyhow::Result<()> {
-            self.handle(this, msg.message).await
         }
     }
 }

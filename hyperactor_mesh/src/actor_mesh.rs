@@ -24,14 +24,12 @@ use hyperactor::RemoteMessage;
 use hyperactor::Unbind;
 use hyperactor::WorldId;
 use hyperactor::actor::RemoteActor;
+use hyperactor::attrs::Attrs;
 use hyperactor::cap;
 use hyperactor::mailbox::MailboxSenderError;
 use hyperactor::mailbox::PortReceiver;
-use hyperactor::message::Bind;
-use hyperactor::message::Bindings;
 use hyperactor::message::Castable;
 use hyperactor::message::IndexedErasedUnbound;
-use hyperactor::message::Unbind;
 use ndslice::Range;
 use ndslice::Selection;
 use ndslice::Shape;
@@ -46,9 +44,9 @@ use crate::CommActor;
 use crate::Mesh;
 use crate::comm::multicast::CastMessage;
 use crate::comm::multicast::CastMessageEnvelope;
-use crate::comm::multicast::CastRank;
 use crate::comm::multicast::DestinationPort;
 use crate::comm::multicast::Uslice;
+use crate::comm::multicast::set_cast_info_on_headers;
 use crate::metrics;
 use crate::proc_mesh::ProcMesh;
 use crate::reference::ActorMeshId;
@@ -68,22 +66,19 @@ pub(crate) fn actor_mesh_cast<M: Castable + Clone, A>(
     message: M,
 ) -> Result<(), CastError>
 where
-    A: RemoteHandles<Cast<M>> + RemoteHandles<IndexedErasedUnbound<Cast<M>>>,
+    A: RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,
 {
     let _ = metrics::ACTOR_MESH_CAST_DURATION.start(hyperactor::kv_pairs!(
         "message_type" => M::typename(),
         "message_variant" => message.arm().unwrap_or_default(),
     ));
 
-    let message = Cast {
-        rank: CastRank(usize::MAX),
-        shape: actor_mesh_shape.clone(),
-        message,
-    };
     let message = CastMessageEnvelope::new(
         sender.clone(),
-        DestinationPort::new::<A, Cast<M>>(actor_name.to_string()),
+        DestinationPort::new::<A, M>(actor_name.to_string()),
+        actor_mesh_shape.clone(),
         message,
+        None, // TODO: reducer typehash
     )?;
 
     // Sub-set the selection to the selection that represents the mesh's view
@@ -126,7 +121,7 @@ pub trait ActorMesh: Mesh {
     #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `CastError`.
     fn cast<M: Castable + Clone>(&self, selection: Selection, message: M) -> Result<(), CastError>
     where
-        Self::Actor: RemoteHandles<Cast<M>> + RemoteHandles<IndexedErasedUnbound<Cast<M>>>,
+        Self::Actor: RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,
     {
         actor_mesh_cast::<M, Self::Actor>(
             self.proc_mesh().client(),
@@ -228,7 +223,7 @@ impl<'a, A: RemoteActor> RootActorMesh<'a, A> {
         message: M,
     ) -> Result<(), CastError>
     where
-        A: RemoteHandles<Cast<M>> + RemoteHandles<IndexedErasedUnbound<Cast<M>>>,
+        A: RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,
     {
         let _ = metrics::ACTOR_MESH_CAST_DURATION.start(hyperactor::kv_pairs!(
             "message_type" => M::typename(),
@@ -236,13 +231,10 @@ impl<'a, A: RemoteActor> RootActorMesh<'a, A> {
         ));
         for ref slice in sel {
             for rank in slice.iter() {
-                let cast = Cast {
-                    rank: CastRank(rank),
-                    shape: self.shape().clone(),
-                    message: message.clone(),
-                };
+                let mut headers = Attrs::new();
+                set_cast_info_on_headers(&mut headers, rank, self.shape().clone());
                 self.ranks[rank]
-                    .send(self.proc_mesh.client(), cast)
+                    .send_with_headers(self.proc_mesh.client(), headers, message.clone())
                     .map_err(|err| CastError::MailboxSenderError(rank, err))?;
             }
         }
@@ -336,54 +328,6 @@ impl<A: RemoteActor> ActorMesh for SlicedActorMesh<'_, A> {
     }
 }
 
-/// A message wrapper used to deliver an `M`-typed payload to a single
-/// destination within an [`ActorMesh`].
-///
-/// `Cast<M>` is the per-recipient form of a broadcast or multicast
-/// issued via [`ActorMesh::cast`]. It carries the message payload
-/// along with the destination rank and its mesh coordinates.
-///
-/// `Cast<M>` implements [`Bind`] and [`Unbind`] generically, allowing
-/// bindings to propagate through both the payload and the routing
-/// metadata.
-///
-/// Actors that wish to receive routed `M`-typed messages should
-/// implement handlers for `Cast<M>`.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Cast<M> {
-    /// The rank of the receiving actor.
-    pub rank: CastRank,
-    /// The coordinates of the receiving actor in the actor mesh.
-    pub shape: Shape,
-    /// The message itself.
-    pub message: M,
-}
-
-impl<M: Unbind> Unbind for Cast<M> {
-    fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        self.message.unbind(bindings)?;
-        bindings.push_back::<CastRank>(&self.rank)?;
-        Ok(())
-    }
-}
-
-impl<M: Bind> Bind for Cast<M> {
-    fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        self.message.bind(bindings)?;
-        let bound = bindings.pop_front::<CastRank>()?.ok_or_else(|| {
-            anyhow::anyhow!("Cast requires a CastRank binding, but none was found")
-        })?;
-        self.rank = bound;
-        Ok(())
-    }
-}
-
-impl<M: Named> Named for Cast<M> {
-    fn typename() -> &'static str {
-        hyperactor::intern_typename!(Self, "hyperactor_mesh::actor_mesh::Cast<{}>", M)
-    }
-}
-
 /// The type of error of casting operations.
 #[derive(Debug, thiserror::Error)]
 pub enum CastError {
@@ -415,13 +359,9 @@ pub(crate) mod test_util {
     use hyperactor::Handler;
     use hyperactor::Instance;
     use hyperactor::PortRef;
-    use hyperactor::attrs::declare_attrs;
 
     use super::*;
-
-    declare_attrs! {
-        pub attr CAST_RANK: usize;
-    }
+    use crate::comm::multicast::get_cast_info_from_headers_or_err;
 
     // This can't be defined under a `#[cfg(test)]` because there needs to
     // be an entry in the spawnable actor registry in the executable
@@ -431,10 +371,9 @@ pub(crate) mod test_util {
     #[hyperactor::export(
         spawn = true,
         handlers = [
-            Cast<Echo> { cast = true },
-            Cast<GetRank> { cast = true },
-            Cast<Error> { cast = true },
-            GetRank,
+            Echo { cast = true },
+            GetRank { cast = true },
+            Error { cast = true },
             Relay,
         ],
     )]
@@ -469,25 +408,8 @@ pub(crate) mod test_util {
             this: &Instance<Self>,
             GetRank(ok, reply): GetRank,
         ) -> Result<(), anyhow::Error> {
-            let rank = *this.ctx().unwrap().headers().get(CAST_RANK).unwrap();
+            let (rank, _) = get_cast_info_from_headers_or_err(this.ctx().unwrap().headers())?;
             reply.send(this, rank)?;
-            anyhow::ensure!(ok, "intentional error!"); // If `!ok` exit with `Err()`.
-            Ok(())
-        }
-    }
-
-    #[async_trait]
-    impl Handler<Cast<GetRank>> for TestActor {
-        async fn handle(
-            &mut self,
-            this: &Instance<Self>,
-            Cast {
-                rank,
-                message: GetRank(ok, reply),
-                ..
-            }: Cast<GetRank>,
-        ) -> Result<(), anyhow::Error> {
-            reply.send(this, *rank)?;
             anyhow::ensure!(ok, "intentional error!"); // If `!ok` exit with `Err()`.
             Ok(())
         }
@@ -497,11 +419,11 @@ pub(crate) mod test_util {
     pub struct Echo(pub String, #[binding(include)] pub PortRef<String>);
 
     #[async_trait]
-    impl Handler<Cast<Echo>> for TestActor {
+    impl Handler<Echo> for TestActor {
         async fn handle(
             &mut self,
             this: &Instance<Self>,
-            Cast { message, .. }: Cast<Echo>,
+            message: Echo,
         ) -> Result<(), anyhow::Error> {
             let Echo(message, reply_port) = message;
             reply_port.send(this, message)?;
@@ -513,14 +435,11 @@ pub(crate) mod test_util {
     pub struct Error(pub String);
 
     #[async_trait]
-    impl Handler<Cast<Error>> for TestActor {
+    impl Handler<Error> for TestActor {
         async fn handle(
             &mut self,
             _this: &Instance<Self>,
-            Cast {
-                message: Error(error),
-                ..
-            }: Cast<Error>,
+            Error(error): Error,
         ) -> Result<(), anyhow::Error> {
             Err(anyhow::anyhow!("{}", error))
         }
@@ -552,12 +471,7 @@ mod tests {
     use hyperactor::ProcId;
     use hyperactor::WorldId;
     use hyperactor::attrs::Attrs;
-    use hyperactor::id;
     use hyperactor::mailbox::Undeliverable;
-    use hyperactor::message::Bind;
-    use hyperactor::message::Unbind;
-    use hyperactor::reference::UnboundPort;
-    use ndslice::shape;
 
     use super::*;
 
@@ -868,17 +782,17 @@ mod tests {
                 let actor_mesh: RootActorMesh<TestActor> = mesh.spawn("test", &()).await.unwrap();
                 let actor_ref = actor_mesh.get(0).unwrap();
                 let mut headers = Attrs::new();
-                headers.set(CAST_RANK, 0);
+                set_cast_info_on_headers(&mut headers, 0, Shape::unity());
                 actor_ref.send_with_headers(mesh.client(), headers.clone(), GetRank(true, reply_port.clone())).unwrap();
                 assert_eq!(0, reply_port_receiver.recv().await.unwrap());
 
-                headers.set(CAST_RANK, 1);
+                set_cast_info_on_headers(&mut headers, 1, Shape::unity());
                 actor_ref.port()
                     .send_with_headers(mesh.client(), headers.clone(), GetRank(true, reply_port.clone()))
                     .unwrap();
                 assert_eq!(1, reply_port_receiver.recv().await.unwrap());
 
-                headers.set(CAST_RANK, 2);
+                set_cast_info_on_headers(&mut headers, 2, Shape::unity());
                 actor_ref.actor_id()
                     .port_id(GetRank::port())
                     .send_with_headers(
@@ -1044,78 +958,5 @@ mod tests {
         actor_mesh_test_suite!(ProcessAllocator::new(Command::new(
             buck_resources::get("monarch/hyperactor_mesh/bootstrap").unwrap()
         )));
-    }
-
-    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
-    struct MyNamedStruct {
-        field0: u64,
-        field1: String,
-        #[binding(include)]
-        field2: PortRef<String>,
-        field3: bool,
-        #[binding(include)]
-        field4: hyperactor::PortRef<u64>,
-    }
-
-    #[test]
-    fn test_cast_bind_unbind() {
-        let port_id2 = id!(world[0].client[0][2]);
-        let port2 = PortRef::attest(port_id2.clone());
-        let port_id4 = id!(world[1].client[0][4]);
-        let port4 = PortRef::attest(port_id4.clone());
-        let message = MyNamedStruct {
-            field0: 0,
-            field1: "hello".to_string(),
-            field2: port2.clone(),
-            field3: true,
-            field4: port4.clone(),
-        };
-
-        let rank = CastRank(3);
-        let mut cast = Cast {
-            rank: rank.clone(),
-            shape: shape! { replica = 2, host = 4, gpu = 8 },
-            message: message.clone(),
-        };
-
-        // Verify Unbind is implemented correctly.
-        let mut bindings = Bindings::default();
-        cast.unbind(&mut bindings).unwrap();
-        let mut expected = Bindings::default();
-        expected.push_back(&UnboundPort::from(&port2)).unwrap();
-        expected.push_back(&UnboundPort::from(&port4)).unwrap();
-        expected.push_back(&cast.rank).unwrap();
-        assert_eq!(bindings, expected);
-
-        // Verify Bind is implemented correctly.
-        let new_rank = CastRank(11);
-        assert_ne!(rank.0, new_rank.0);
-        let new_port_id2 = id!(world[0].comm[0][213]);
-        assert_ne!(port_id2, new_port_id2);
-        let new_port_id4 = id!(world[1].comm[0][423]);
-        assert_ne!(port_id4, new_port_id4);
-        assert_ne!(new_port_id2, new_port_id4);
-        let new_port2 = PortRef::<String>::attest(new_port_id2.clone());
-        let new_port4 = PortRef::<u64>::attest(new_port_id4.clone());
-        let mut new_bindings = Bindings::default();
-        new_bindings
-            .push_back(&UnboundPort::from(&new_port2))
-            .unwrap();
-        new_bindings
-            .push_back(&UnboundPort::from(&new_port4))
-            .unwrap();
-        new_bindings.push_back(&new_rank).unwrap();
-        cast.bind(&mut new_bindings).unwrap();
-        assert_eq!(
-            cast.message,
-            MyNamedStruct {
-                field0: 0,
-                field1: "hello".to_string(),
-                field2: new_port2,
-                field3: true,
-                field4: new_port4,
-            },
-        );
-        assert_eq!(cast.rank.0, new_rank.0);
     }
 }

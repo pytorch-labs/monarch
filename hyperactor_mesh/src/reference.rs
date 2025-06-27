@@ -27,7 +27,6 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::CommActor;
-use crate::actor_mesh::Cast;
 use crate::actor_mesh::CastError;
 use crate::actor_mesh::actor_mesh_cast;
 
@@ -126,7 +125,7 @@ impl<A: RemoteActor> ActorMeshRef<A> {
         message: M,
     ) -> Result<(), CastError>
     where
-        A: RemoteHandles<Cast<M>> + RemoteHandles<IndexedErasedUnbound<Cast<M>>>,
+        A: RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,
     {
         let world_id = WorldId(self.mesh_id.0.0.clone());
         let comm_actor_id = ActorId(ProcId(world_id, 0), "comm".to_string(), 0);
@@ -201,10 +200,7 @@ mod tests {
     #[derive(Debug, Clone)]
     #[hyperactor::export(
         spawn = true,
-        handlers = [
-            Cast<MeshPingPongMessage>,
-            IndexedErasedUnbound<Cast<MeshPingPongMessage>>
-        ]
+        handlers = [MeshPingPongMessage { cast = true }],
     )]
     struct MeshPingPongActor {
         mesh_ref: ActorMeshRef<MeshPingPongActor>,
@@ -233,14 +229,11 @@ mod tests {
     }
 
     #[async_trait]
-    impl Handler<Cast<MeshPingPongMessage>> for MeshPingPongActor {
+    impl Handler<MeshPingPongMessage> for MeshPingPongActor {
         async fn handle(
             &mut self,
             this: &Instance<Self>,
-            Cast {
-                message: MeshPingPongMessage(ttl, sender_mesh, done_tx),
-                ..
-            }: Cast<MeshPingPongMessage>,
+            MeshPingPongMessage(ttl, sender_mesh, done_tx): MeshPingPongMessage,
         ) -> Result<(), anyhow::Error> {
             if ttl == 0 {
                 done_tx.send(this, true)?;

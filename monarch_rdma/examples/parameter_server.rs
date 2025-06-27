@@ -70,10 +70,10 @@ use hyperactor_mesh::Mesh;
 use hyperactor_mesh::ProcMesh;
 use hyperactor_mesh::RootActorMesh;
 use hyperactor_mesh::actor_mesh::ActorMesh;
-use hyperactor_mesh::actor_mesh::Cast;
 use hyperactor_mesh::alloc::AllocSpec;
 use hyperactor_mesh::alloc::Allocator;
 use hyperactor_mesh::alloc::ProcessAllocator;
+use hyperactor_mesh::comm::multicast::get_cast_info_from_headers_or_err;
 use monarch_rdma::IbverbsConfig;
 use monarch_rdma::RdmaBuffer;
 use monarch_rdma::RdmaManagerActor;
@@ -225,10 +225,10 @@ impl Handler<Log> for ParameterServerActor {
 #[hyperactor::export(
     spawn = true,
     handlers = [
-        Cast<WorkerInit> { cast = true },
-        Cast<WorkerStep> { cast = true },
-        Cast<WorkerUpdate> { cast = true },
-        Cast<Log> { cast = true },
+        WorkerInit { cast = true },
+        WorkerStep { cast = true },
+        WorkerUpdate { cast = true },
+        Log { cast = true },
     ],
 )]
 pub struct WorkerActor {
@@ -293,33 +293,32 @@ pub struct WorkerStep(#[binding(include)] PortRef<bool>);
 pub struct WorkerUpdate(#[binding(include)] PortRef<bool>);
 
 #[async_trait]
-impl Handler<Cast<WorkerInit>> for WorkerActor {
+impl Handler<WorkerInit> for WorkerActor {
     /// Initialize the worker. This involves:
     /// 1) getting RdmaBuffers from the parameter server
     /// 2) assigning the associated rdma manager
     async fn handle(
         &mut self,
         this: &Instance<Self>,
-        Cast {
-            rank,
-            message: WorkerInit(ps_ref, rdma_managers),
-            ..
-        }: Cast<WorkerInit>,
+        WorkerInit(ps_ref, rdma_managers): WorkerInit,
     ) -> Result<(), anyhow::Error> {
-        println!("[worker_actor_{}] initializing", *rank);
+        // Instance::ctx() should always return a value when inside a handler.
+        let (rank, _) = get_cast_info_from_headers_or_err(this.ctx().unwrap().headers())?;
+
+        println!("[worker_actor_{}] initializing", rank);
 
         let client = this.mailbox_for_py();
         let (handle, receiver) = client.open_once_port::<(RdmaBuffer, RdmaBuffer)>();
-        ps_ref.send(client, PsGetBuffers(*rank, handle.bind()))?;
+        ps_ref.send(client, PsGetBuffers(rank, handle.bind()))?;
         let (ps_weights_handle, ps_grad_handle) = receiver.recv().await?;
         self.ps_weights_handle = Some(ps_weights_handle);
         self.ps_grad_handle = Some(ps_grad_handle);
-        if let Some(rdma_manager) = rdma_managers.get(*rank) {
+        if let Some(rdma_manager) = rdma_managers.get(rank) {
             self.rdma_manager = Some(rdma_manager.clone());
         } else {
             return Err(anyhow::anyhow!(
                 "Invalid rank: {}. No RDMA manager found.",
-                *rank
+                rank
             ));
         }
         Ok(())
@@ -327,7 +326,7 @@ impl Handler<Cast<WorkerInit>> for WorkerActor {
 }
 
 #[async_trait]
-impl Handler<Cast<WorkerStep>> for WorkerActor {
+impl Handler<WorkerStep> for WorkerActor {
     /// Takes a worker step. This involves:
     /// 1) calculating the gradient (worker + 1)
     /// 2) transmitting it to the parameter server over rdma
@@ -335,12 +334,11 @@ impl Handler<Cast<WorkerStep>> for WorkerActor {
     async fn handle(
         &mut self,
         this: &Instance<Self>,
-        Cast {
-            rank,
-            message: WorkerStep(reply),
-            ..
-        }: Cast<WorkerStep>,
+        WorkerStep(reply): WorkerStep,
     ) -> Result<(), anyhow::Error> {
+        // Instance::ctx() should always return a value when inside a handler.
+        let (rank, _) = get_cast_info_from_headers_or_err(this.ctx().unwrap().headers())?;
+
         for (grad_value, weight) in self
             .local_gradients
             .iter_mut()
@@ -350,7 +348,7 @@ impl Handler<Cast<WorkerStep>> for WorkerActor {
         }
         println!(
             "[worker_actor_{}] pushing gradients {:?}",
-            *rank, self.local_gradients
+            rank, self.local_gradients
         );
 
         let owner_ref = self
@@ -381,20 +379,19 @@ impl Handler<Cast<WorkerStep>> for WorkerActor {
 }
 
 #[async_trait]
-impl Handler<Cast<WorkerUpdate>> for WorkerActor {
+impl Handler<WorkerUpdate> for WorkerActor {
     /// Pulls weights from the parameter server to the worker
     async fn handle(
         &mut self,
         this: &Instance<Self>,
-        Cast {
-            rank,
-            message: WorkerUpdate(reply),
-            ..
-        }: Cast<WorkerUpdate>,
+        WorkerUpdate(reply): WorkerUpdate,
     ) -> Result<(), anyhow::Error> {
+        // Instance::ctx() should always return a value when inside a handler.
+        let (rank, _) = get_cast_info_from_headers_or_err(this.ctx().unwrap().headers())?;
+
         println!(
             "[worker_actor_{}] pulling new weights from parameter server (before: {:?})",
-            *rank, self.weights_data,
+            rank, self.weights_data,
         );
         let mut lbuffer = self
             .rdma_manager
@@ -420,16 +417,12 @@ impl Handler<Cast<WorkerUpdate>> for WorkerActor {
 }
 
 #[async_trait]
-impl Handler<Cast<Log>> for WorkerActor {
+impl Handler<Log> for WorkerActor {
     /// Logs the worker's weights
-    async fn handle(
-        &mut self,
-        _this_: &Instance<Self>,
-        Cast {
-            rank, message: Log, ..
-        }: Cast<Log>,
-    ) -> Result<(), anyhow::Error> {
-        println!("[worker_actor_{}] weights: {:?}", *rank, self.weights_data);
+    async fn handle(&mut self, this: &Instance<Self>, _: Log) -> Result<(), anyhow::Error> {
+        // Instance::ctx() should always return a value when inside a handler.
+        let (rank, _) = get_cast_info_from_headers_or_err(this.ctx().unwrap().headers())?;
+        println!("[worker_actor_{}] weights: {:?}", rank, self.weights_data);
         Ok(())
     }
 }

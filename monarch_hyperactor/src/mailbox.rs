@@ -32,8 +32,7 @@ use hyperactor::mailbox::monitored_return_handle;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::Unbind;
-use hyperactor_mesh::actor_mesh::Cast;
-use hyperactor_mesh::comm::multicast::CastRank;
+use hyperactor_mesh::comm::multicast::set_cast_info_on_headers;
 use monarch_types::PickledPyObject;
 use pyo3::exceptions::PyEOFError;
 use pyo3::exceptions::PyRuntimeError;
@@ -132,24 +131,17 @@ impl PyMailbox {
         shape: &PyShape,
         message: &PythonMessage,
     ) -> PyResult<()> {
-        let port_id = dest.inner.port_id(Cast::<PythonMessage>::port());
-        let message = Cast {
-            rank: CastRank(rank),
-            shape: shape.inner.clone(),
-            message: message.clone(),
-        };
-        let message = Serialized::serialize(&message).map_err(|err| {
+        let port_id = dest.inner.port_id(PythonMessage::port());
+        let mut headers = Attrs::new();
+        set_cast_info_on_headers(&mut headers, rank, shape.inner.clone());
+        let message = Serialized::serialize(message).map_err(|err| {
             PyRuntimeError::new_err(format!(
                 "failed to serialize message ({:?}) to Serialized: {}",
                 message, err
             ))
         })?;
-        let envelope = MessageEnvelope::new(
-            self.inner.actor_id().clone(),
-            port_id,
-            message,
-            Attrs::new(),
-        );
+        let envelope =
+            MessageEnvelope::new(self.inner.actor_id().clone(), port_id, message, headers);
         self.inner.post(envelope, monitored_return_handle());
         Ok(())
     }

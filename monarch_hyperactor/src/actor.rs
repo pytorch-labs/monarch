@@ -24,7 +24,7 @@ use hyperactor::forward;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::Unbind;
-use hyperactor_mesh::actor_mesh::Cast;
+use hyperactor_mesh::comm::multicast::get_cast_info_from_headers;
 use monarch_types::PickledPyObject;
 use monarch_types::SerializablePyErr;
 use pyo3::conversion::IntoPyObjectExt;
@@ -266,8 +266,7 @@ impl PythonActorHandle {
 #[hyperactor::export(
     spawn = true,
     handlers = [
-        PythonMessage,
-        Cast<PythonMessage> { cast = true },
+        PythonMessage { cast = true },
     ],
 )]
 pub(super) struct PythonActor {
@@ -377,66 +376,38 @@ impl Handler<PythonMessage> for PythonActor {
         // See [Panics in async endpoints].
         let (sender, receiver) = oneshot::channel();
 
-        let future = Python::with_gil(|py| -> Result<_, SerializablePyErr> {
-            let awaitable = self.actor.call_method(
-                py,
-                "handle",
-                (
-                    mailbox,
-                    message,
-                    PanicFlag {
-                        sender: Some(sender),
-                    },
-                ),
-                None,
-            )?;
-            pyo3_async_runtimes::into_future_with_locals(
-                &self.task_locals,
-                awaitable.into_bound(py),
-            )
-            .map_err(|err| err.into())
-        })?;
-
-        // Spawn a child actor to await the Python handler method.
-        let handler = AsyncEndpointTask::spawn(this, ()).await?;
-        handler.run(this, PythonTask::new(future), receiver).await?;
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl Handler<Cast<PythonMessage>> for PythonActor {
-    async fn handle(
-        &mut self,
-        this: &Instance<Self>,
-        Cast {
-            message,
-            rank,
-            shape,
-        }: Cast<PythonMessage>,
-    ) -> anyhow::Result<()> {
-        let mailbox = PyMailbox {
-            inner: this.mailbox_for_py().clone(),
-        };
-        // Create a channel for signaling panics in async endpoints.
-        // See [Panics in async endpoints].
-        let (sender, receiver) = oneshot::channel();
+        // Instance::ctx() should always return a value when inside a handler.
+        let ctx = this.ctx().unwrap();
 
         let future = Python::with_gil(|py| -> Result<_, SerializablePyErr> {
-            let awaitable = self.actor.call_method(
-                py,
-                "handle_cast",
-                (
-                    mailbox,
-                    rank.0,
-                    PyShape::from(shape),
-                    message,
-                    PanicFlag {
-                        sender: Some(sender),
-                    },
-                ),
-                None,
-            )?;
+            let awaitable = match get_cast_info_from_headers(ctx.headers()) {
+                Some((rank, shape)) => self.actor.call_method(
+                    py,
+                    "handle_cast",
+                    (
+                        mailbox,
+                        rank,
+                        PyShape::from(shape),
+                        message,
+                        PanicFlag {
+                            sender: Some(sender),
+                        },
+                    ),
+                    None,
+                )?,
+                None => self.actor.call_method(
+                    py,
+                    "handle",
+                    (
+                        mailbox,
+                        message,
+                        PanicFlag {
+                            sender: Some(sender),
+                        },
+                    ),
+                    None,
+                )?,
+            };
 
             pyo3_async_runtimes::into_future_with_locals(
                 &self.task_locals,

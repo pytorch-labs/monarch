@@ -178,6 +178,19 @@ impl<T: Named + 'static, E: Named + 'static> Named for Result<T, E> {
     }
 }
 
+static SHAPE_CACHED_TYPEHASH: LazyLock<u64> =
+    LazyLock::new(|| cityhasher::hash(<ndslice::shape::Shape as Named>::typename()));
+
+impl Named for ndslice::shape::Shape {
+    fn typename() -> &'static str {
+        "ndslice::shape::Shape"
+    }
+
+    fn typehash() -> u64 {
+        *SHAPE_CACHED_TYPEHASH
+    }
+}
+
 /// Really internal, but needs to be exposed for macro.
 #[doc(hidden)]
 #[derive(Debug)]

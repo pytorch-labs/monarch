@@ -64,9 +64,8 @@ use hyperactor::Unbind;
 use hyperactor::actor::ActorHandle;
 use hyperactor::cap;
 use hyperactor::forward;
-use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::reference::ActorId;
-use hyperactor_mesh::actor_mesh::Cast;
+use hyperactor_mesh::comm::multicast::get_cast_info_from_headers_or_err;
 use itertools::Itertools;
 use monarch_hyperactor::shape::PyPoint;
 use monarch_hyperactor::shape::PyShape;
@@ -156,10 +155,8 @@ enum Recording {
 #[hyperactor::export(
     spawn = true,
     handlers = [
-        WorkerMessage,
-        IndexedErasedUnbound<WorkerMessage>,
-        Cast<AssignRankMessage> { cast = true },
-        Cast<WorkerMessage> { cast = true },
+        WorkerMessage {cast = true},
+        AssignRankMessage {cast = true},
     ],
 )]
 pub struct WorkerActor {
@@ -262,18 +259,16 @@ impl Actor for WorkerActor {
 }
 
 #[async_trait]
-impl Handler<Cast<AssignRankMessage>> for WorkerActor {
-    async fn handle(
-        &mut self,
-        this: &Instance<Self>,
-        message: Cast<AssignRankMessage>,
-    ) -> anyhow::Result<()> {
-        self.rank = message.rank.0;
+impl Handler<AssignRankMessage> for WorkerActor {
+    async fn handle(&mut self, this: &Instance<Self>, _: AssignRankMessage) -> anyhow::Result<()> {
+        // Instance::ctx() should always return a value when inside a handler.
+        let (rank, shape) = get_cast_info_from_headers_or_err(this.ctx().unwrap().headers())?;
+        self.rank = rank;
         Python::with_gil(|py| {
             let mesh_controller = py.import("monarch.mesh_controller").unwrap();
-            let shape: PyShape = message.shape.into();
+            let shape: PyShape = shape.into();
             let shape: Py<PyShape> = Py::new(py, shape).unwrap();
-            let p: PyPoint = PyPoint::new(message.rank.0, shape);
+            let p: PyPoint = PyPoint::new(rank, shape);
             mesh_controller
                 .call_method1("_initialize_env", (p, this.proc().proc_id().to_string()))
                 .unwrap();
@@ -287,17 +282,6 @@ impl Handler<Cast<AssignRankMessage>> for WorkerActor {
 #[derive(Handler, Clone, Serialize, Deserialize, Debug, Named, Bind, Unbind)]
 pub enum AssignRankMessage {
     AssignRank(),
-}
-
-#[async_trait]
-impl Handler<Cast<WorkerMessage>> for WorkerActor {
-    async fn handle(
-        &mut self,
-        this: &Instance<Self>,
-        message: Cast<WorkerMessage>,
-    ) -> anyhow::Result<()> {
-        WorkerMessageHandler::handle(self, this, message.message).await
-    }
 }
 
 #[async_trait]

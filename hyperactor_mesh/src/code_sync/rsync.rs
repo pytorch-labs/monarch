@@ -25,7 +25,6 @@ use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
-use hyperactor::message::IndexedErasedUnbound;
 use nix::sys::signal;
 use nix::sys::signal::Signal;
 use nix::unistd::Pid;
@@ -39,7 +38,6 @@ use tokio::process::Child;
 use tokio::process::Command;
 
 use crate::actor_mesh::ActorMesh;
-use crate::actor_mesh::Cast;
 use crate::connect::Connect;
 use crate::connect::accept;
 use crate::connect::connect_mesh;
@@ -172,11 +170,7 @@ pub struct RsyncParams {
 #[derive(Debug)]
 #[hyperactor::export(
     spawn = true,
-    handlers = [
-        Connect,
-        Cast<Connect>,
-        IndexedErasedUnbound<Cast<Connect>>,
-    ],
+    handlers = [Connect { cast = true }],
 )]
 pub struct RsyncActor {
     daemon: RsyncDaemon,
@@ -212,17 +206,6 @@ impl Handler<Connect> for RsyncActor {
         )?;
         tokio::io::copy_bidirectional(&mut local, &mut stream).await?;
         Ok(())
-    }
-}
-
-#[async_trait]
-impl Handler<Cast<Connect>> for RsyncActor {
-    async fn handle(
-        &mut self,
-        this: &Instance<Self>,
-        message: Cast<Connect>,
-    ) -> anyhow::Result<()> {
-        <Self as Handler<Connect>>::handle(self, this, message.message).await
     }
 }
 

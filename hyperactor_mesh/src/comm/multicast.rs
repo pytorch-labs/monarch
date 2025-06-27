@@ -8,17 +8,18 @@
 
 //! The comm actor that provides message casting and result accumulation.
 
-use std::ops::Deref;
-
 use hyperactor::Named;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
 use hyperactor::actor::RemoteActor;
+use hyperactor::attrs::Attrs;
 use hyperactor::data::Serialized;
+use hyperactor::declare_attrs;
 use hyperactor::message::Castable;
 use hyperactor::message::ErasedUnbound;
 use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::reference::ActorId;
+use ndslice::Shape;
 use ndslice::Slice;
 use ndslice::selection::Selection;
 use ndslice::selection::routing::RoutingFrame;
@@ -47,6 +48,10 @@ pub struct CastMessageEnvelope {
     dest_port: DestinationPort,
     /// The serialized message.
     data: ErasedUnbound,
+    /// typehash of the reducer used to accumulate the message in split ports.
+    pub reducer_typehash: Option<u64>,
+    /// The shape of the cast.
+    shape: Shape,
 }
 
 impl CastMessageEnvelope {
@@ -54,24 +59,35 @@ impl CastMessageEnvelope {
     pub fn new<T: Castable + Serialize + Named>(
         sender: ActorId,
         dest_port: DestinationPort,
+        shape: Shape,
         message: T,
+        reducer_typehash: Option<u64>,
     ) -> Result<Self, anyhow::Error> {
         let data = ErasedUnbound::try_from_message(message)?;
         Ok(Self {
             sender,
             dest_port,
             data,
+            reducer_typehash,
+            shape,
         })
     }
 
     /// Create a new CastMessageEnvelope from serialized data. Only use this
     /// when the message do not contain reply ports. Or it does but you are okay
     /// with the destination actors reply to the client actor directly.
-    pub fn from_serialized(sender: ActorId, dest_port: DestinationPort, data: Serialized) -> Self {
+    pub fn from_serialized(
+        sender: ActorId,
+        dest_port: DestinationPort,
+        shape: Shape,
+        data: Serialized,
+    ) -> Self {
         Self {
             sender,
             dest_port,
             data: ErasedUnbound::new(data),
+            reducer_typehash: None,
+            shape,
         }
     }
 
@@ -85,6 +101,10 @@ impl CastMessageEnvelope {
 
     pub(crate) fn data_mut(&mut self) -> &mut ErasedUnbound {
         &mut self.data
+    }
+
+    pub(crate) fn shape(&self) -> &Shape {
+        &self.shape
     }
 }
 
@@ -152,14 +172,33 @@ pub(crate) struct ForwardMessage {
     pub(crate) message: CastMessageEnvelope,
 }
 
-/// This type is re-bound by the comm actor to contain the message destination rank.
-#[derive(Clone, Debug, Named, Serialize, Deserialize)]
-pub struct CastRank(pub usize);
+declare_attrs! {
+    /// Used inside headers for cast messages to store
+    /// the rank of the receiver.
+    attr CAST_RANK: usize;
+    /// Used inside headers to store the shape of the
+    /// actor mesh that a message was cast to.
+    attr CAST_SHAPE: Shape;
+}
 
-impl Deref for CastRank {
-    type Target = usize;
+pub fn set_cast_info_on_headers(headers: &mut Attrs, rank: usize, shape: Shape) {
+    headers.set(CAST_RANK, rank);
+    headers.set(CAST_SHAPE, shape);
+}
 
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
+pub fn get_cast_info_from_headers(headers: &Attrs) -> Option<(usize, Shape)> {
+    headers
+        .get(CAST_RANK)
+        .map(|rank| headers.get(CAST_SHAPE).map(|shape| (*rank, shape.clone())))?
+}
+
+pub fn get_cast_info_from_headers_or_err(headers: &Attrs) -> anyhow::Result<(usize, Shape)> {
+    let rank = headers
+        .get(CAST_RANK)
+        .ok_or_else(|| anyhow::anyhow!("{} not found in headers", CAST_RANK.name()))?;
+    let shape = headers
+        .get(CAST_SHAPE)
+        .ok_or_else(|| anyhow::anyhow!("{} not found in headers", CAST_SHAPE.name()))?
+        .clone();
+    Ok((*rank, shape))
 }

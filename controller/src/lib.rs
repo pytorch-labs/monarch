@@ -59,6 +59,7 @@ use monarch_messages::worker::Ref;
 use monarch_messages::worker::WorkerActor;
 use monarch_messages::worker::WorkerMessage;
 use ndslice::Selection;
+use ndslice::Shape;
 use ndslice::Slice;
 use ndslice::reshape::Limit;
 use ndslice::reshape::ReshapeSliceExt;
@@ -430,6 +431,8 @@ impl ControllerMessageHandler for ControllerActor {
                     .name()
                     .to_string(),
             ),
+            // Not reflective of the actual shape, but this is never actually used.
+            Shape::unity(),
             message,
         );
 

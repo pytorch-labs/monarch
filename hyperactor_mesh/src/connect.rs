@@ -43,7 +43,6 @@ use tokio::io::AsyncWrite;
 use tokio_util::io::StreamReader;
 
 use crate::actor_mesh::ActorMesh;
-use crate::actor_mesh::Cast;
 
 // Timeout for establishing a connection, used by both client and server.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -216,9 +215,7 @@ pub async fn connect_mesh<M, A>(
 ) -> Result<()>
 where
     M: ActorMesh<Actor = A>,
-    A: RemoteActor
-        + RemoteHandles<Cast<Connect>>
-        + RemoteHandles<IndexedErasedUnbound<Cast<Connect>>>,
+    A: RemoteActor + RemoteHandles<Connect> + RemoteHandles<IndexedErasedUnbound<Connect>>,
 {
     let client = actor_mesh.proc_mesh().client();
 

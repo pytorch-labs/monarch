@@ -22,10 +22,10 @@ use hyperactor::PortRef;
 use hyperactor::Unbind;
 use hyperactor_mesh::ProcMesh;
 use hyperactor_mesh::actor_mesh::ActorMesh;
-use hyperactor_mesh::actor_mesh::Cast;
 use hyperactor_mesh::alloc::AllocSpec;
 use hyperactor_mesh::alloc::Allocator;
 use hyperactor_mesh::alloc::LocalAllocator;
+use hyperactor_mesh::comm::multicast::get_cast_info_from_headers_or_err;
 use hyperactor_mesh::selection::dsl::all;
 use hyperactor_mesh::selection::dsl::true_;
 use hyperactor_mesh::shape;
@@ -48,7 +48,7 @@ enum ChopstickStatus {
 #[hyperactor::export(
     spawn = true,
     handlers = [
-        Cast<PhilosopherMessage> { cast = true },
+        PhilosopherMessage { cast = true },
     ],
 )]
 struct PhilosopherActor {
@@ -135,13 +135,15 @@ impl PhilosopherActor {
 }
 
 #[async_trait]
-impl Handler<Cast<PhilosopherMessage>> for PhilosopherActor {
+impl Handler<PhilosopherMessage> for PhilosopherActor {
     async fn handle(
         &mut self,
         this: &Instance<Self>,
-        Cast { rank, message, .. }: Cast<PhilosopherMessage>,
+        message: PhilosopherMessage,
     ) -> Result<(), anyhow::Error> {
-        self.rank = *rank;
+        // Instance::ctx() should always return a value when inside a handler.
+        let (rank, _) = get_cast_info_from_headers_or_err(this.ctx().unwrap().headers())?;
+        self.rank = rank;
         match message {
             PhilosopherMessage::Start(waiter) => {
                 self.waiter.set(waiter)?;
