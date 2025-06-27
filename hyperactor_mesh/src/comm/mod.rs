@@ -6,6 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use crate::comm::multicast::CAST_ORIGINATING_SENDER;
 pub mod multicast;
 
 use std::cmp::Ordering;
@@ -20,9 +21,13 @@ use hyperactor::ActorRef;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Named;
+use hyperactor::PortRef;
 use hyperactor::WorldId;
 use hyperactor::attrs::Attrs;
 use hyperactor::data::Serialized;
+use hyperactor::mailbox::DeliveryError;
+use hyperactor::mailbox::Undeliverable;
+use hyperactor::mailbox::UndeliverableMessageError;
 use hyperactor::reference::UnboundPort;
 use ndslice::Slice;
 use ndslice::selection::routing::RoutingFrame;
@@ -156,6 +161,46 @@ impl Actor for CommActor {
             mode: Default::default(),
         })
     }
+
+    // This is an override of the default actor behavior.
+    async fn handle_undeliverable_message(
+        &mut self,
+        this: &Instance<Self>,
+        undelivered: hyperactor::mailbox::Undeliverable<hyperactor::mailbox::MessageEnvelope>,
+    ) -> Result<(), anyhow::Error> {
+        let Undeliverable(mut message_envelope) = undelivered;
+
+        // 1. Case delivery failure at a "forwarding" step.
+        if let Ok(ForwardMessage { message, .. }) =
+            message_envelope.deserialized::<ForwardMessage>()
+        {
+            let sender = message.sender();
+            let return_port = PortRef::attest_message_port(sender);
+            return_port
+                .send(this, Undeliverable(message_envelope.clone()))
+                .map_err(|err| {
+                    message_envelope
+                        .try_set_error(DeliveryError::BrokenLink(format!("send failure: {err}")));
+                    UndeliverableMessageError::return_failure(&message_envelope)
+                })?;
+            return Ok(());
+        }
+
+        // 2. Case delivery failure at a "deliver here" step.
+        if let Some(sender) = message_envelope.headers().get(CAST_ORIGINATING_SENDER) {
+            let return_port = PortRef::attest_message_port(sender);
+            return_port
+                .send(this, Undeliverable(message_envelope.clone()))
+                .map_err(|err| {
+                    message_envelope
+                        .try_set_error(DeliveryError::BrokenLink(format!("send failure: {err}")));
+                    UndeliverableMessageError::return_failure(&message_envelope)
+                })?;
+            return Ok(());
+        }
+
+        unreachable!()
+    }
 }
 
 impl CommActor {
@@ -203,6 +248,7 @@ impl CommActor {
                 &mut headers,
                 mode.self_rank(this.self_id()),
                 message.shape().clone(),
+                message.sender().clone(),
             );
             // TODO(pzhang) split reply ports so children can reply to this comm
             // actor instead of parent.
