@@ -1098,29 +1098,6 @@ impl FromStr for GangId {
     }
 }
 
-/// A reference to a remote port of a gang.
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Hash, Ord)]
-pub struct GangPortRef<M: RemoteMessage> {
-    gang_id: GangId,
-    phantom: PhantomData<M>,
-}
-
-impl<M: RemoteMessage> GangPortRef<M> {
-    /// The caller attests that the provided gang is reachable through the
-    /// provided remote message type's named port.
-    pub fn attest(gang_id: GangId) -> Self {
-        Self {
-            gang_id,
-            phantom: PhantomData,
-        }
-    }
-
-    /// Return the port ID for the provided rank
-    pub fn port_id(&self, rank: Index) -> PortId {
-        PortId(self.gang_id.actor_id(rank), M::port())
-    }
-}
-
 /// Chop implements a simple lexer on a fixed set of delimiters.
 fn chop<'a>(mut s: &'a str, delims: &'a [&'a str]) -> impl Iterator<Item = &'a str> + 'a {
     std::iter::from_fn(move || {
