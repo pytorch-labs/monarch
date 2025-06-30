@@ -8,10 +8,13 @@
 
 //! The clock allows us to control the behaviour of all time dependent events in both real and simulated time throughout the system
 
+use std::error::Error;
+use std::fmt;
 use std::sync::LazyLock;
 use std::sync::Mutex;
 use std::time::SystemTime;
 
+use futures::pin_mut;
 use hyperactor_telemetry::TelemetryClock;
 use serde::Deserialize;
 use serde::Serialize;
@@ -38,6 +41,21 @@ static SIM_TIME: LazyLock<SimTime> = LazyLock::new(|| {
     }
 });
 
+#[derive(Debug)]
+/// Errors returned by `Timeout`.
+///
+/// This error is returned when a timeout expires before the function was able
+/// to finish.
+pub struct TimeoutError;
+
+impl fmt::Display for TimeoutError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "deadline has elapsed")
+    }
+}
+
+impl Error for TimeoutError {}
+
 /// The Sleeps trait allows different implementations to control the behavior of sleep.
 pub trait Clock {
     /// Initiates a sleep for the specified duration
@@ -59,6 +77,17 @@ pub trait Clock {
     ) -> impl std::future::Future<Output = ()> + Send + Sync;
     /// Get the current system time according to the clock
     fn system_time_now(&self) -> SystemTime;
+    /// Require a future to complete within the specified duration
+    ///
+    /// if the future completes before the duration has elapsed, then the completed value is returned.
+    /// Otherwise, an error is returned and the future is canceled.
+    fn timeout<F, T>(
+        &self,
+        duration: tokio::time::Duration,
+        f: F,
+    ) -> impl std::future::Future<Output = Result<T, TimeoutError>> + Send
+    where
+        F: std::future::Future<Output = T> + Send;
 }
 
 /// An adapter that allows us to control the behaviour of sleep between performing a real sleep
@@ -100,6 +129,15 @@ impl Clock for ClockKind {
         match self {
             Self::Sim(clock) => clock.system_time_now(),
             Self::Real(clock) => clock.system_time_now(),
+        }
+    }
+    async fn timeout<F, T>(&self, duration: tokio::time::Duration, f: F) -> Result<T, TimeoutError>
+    where
+        F: std::future::Future<Output = T> + Send,
+    {
+        match self {
+            Self::Sim(clock) => clock.timeout(duration, f).await,
+            Self::Real(clock) => clock.timeout(duration, f).await,
         }
     }
 }
@@ -190,6 +228,33 @@ impl Clock for SimClock {
     fn system_time_now(&self) -> SystemTime {
         SIM_TIME.system_start.clone() + self.now().duration_since(SIM_TIME.start)
     }
+
+    async fn timeout<F, T>(&self, duration: tokio::time::Duration, f: F) -> Result<T, TimeoutError>
+    where
+        F: std::future::Future<Output = T>,
+    {
+        let mailbox = Mailbox::new_detached(id!(proc[0].proc).clone());
+        let (tx, deadline_rx) = mailbox.open_once_port::<()>();
+
+        simnet_handle()
+            .unwrap()
+            .send_event(SleepEvent::new(
+                tx.bind(),
+                mailbox,
+                duration.as_millis() as u64,
+            ))
+            .unwrap();
+
+        let fut = f;
+        pin_mut!(fut);
+
+        tokio::select! {
+            _ = deadline_rx.recv() => {
+                Err(TimeoutError)
+            }
+            res = &mut fut => Ok(res)
+        }
+    }
 }
 
 impl SimClock {
@@ -230,12 +295,23 @@ impl Clock for RealClock {
     fn system_time_now(&self) -> SystemTime {
         SystemTime::now()
     }
+    async fn timeout<F, T>(&self, duration: tokio::time::Duration, f: F) -> Result<T, TimeoutError>
+    where
+        F: std::future::Future<Output = T>,
+    {
+        tokio::time::timeout(duration, f)
+            .await
+            .map_err(|_| TimeoutError)
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::channel::ChannelAddr;
+    use crate::channel::ChannelTransport;
     use crate::clock::Clock;
     use crate::clock::SimClock;
+    use crate::simnet;
 
     #[tokio::test]
     async fn test_sim_clock_simple() {
@@ -259,5 +335,30 @@ mod tests {
             end.duration_since(start).unwrap(),
             tokio::time::Duration::from_secs(10)
         );
+    }
+
+    #[tokio::test]
+    async fn test_sim_timeout() {
+        simnet::start(
+            ChannelAddr::any(ChannelTransport::Unix),
+            ChannelAddr::any(ChannelTransport::Unix),
+            1000,
+        )
+        .unwrap();
+        let res = SimClock
+            .timeout(tokio::time::Duration::from_secs(10), async {
+                SimClock.sleep(tokio::time::Duration::from_secs(5)).await;
+                5
+            })
+            .await;
+        assert_eq!(res.unwrap(), 5);
+
+        let res = SimClock
+            .timeout(tokio::time::Duration::from_secs(10), async {
+                SimClock.sleep(tokio::time::Duration::from_secs(15)).await;
+                5
+            })
+            .await;
+        assert!(res.is_err());
     }
 }
