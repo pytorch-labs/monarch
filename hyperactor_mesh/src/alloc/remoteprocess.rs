@@ -1048,7 +1048,7 @@ mod test {
         }
     }
 
-    fn set_procstate_execptations(alloc: &mut MockAlloc, shape: Shape) {
+    fn set_procstate_expectations(alloc: &mut MockAlloc, shape: Shape) {
         let alloc_len = shape.slice().len();
         alloc.expect_shape().return_const(shape.clone());
         for i in 0..alloc_len {
@@ -1106,7 +1106,7 @@ mod test {
         alloc.expect_world_id().return_const(world_id.clone());
         alloc.expect_shape().return_const(spec.shape.clone());
 
-        set_procstate_execptations(&mut alloc, spec.shape.clone());
+        set_procstate_expectations(&mut alloc, spec.shape.clone());
 
         // final none
         alloc.expect_next().return_const(None);
@@ -1249,7 +1249,7 @@ mod test {
         alloc.alloc.expect_world_id().return_const(world_id.clone());
         alloc.alloc.expect_shape().return_const(spec.shape.clone());
 
-        set_procstate_execptations(&mut alloc.alloc, spec.shape.clone());
+        set_procstate_expectations(&mut alloc.alloc, spec.shape.clone());
 
         alloc.alloc.expect_next().return_const(None);
         alloc.alloc.expect_stop().times(1).return_once(|| Ok(()));
@@ -1326,7 +1326,7 @@ mod test {
             .return_const(world_id.clone());
         alloc1.alloc.expect_shape().return_const(spec.shape.clone());
 
-        set_procstate_execptations(&mut alloc1.alloc, spec.shape.clone());
+        set_procstate_expectations(&mut alloc1.alloc, spec.shape.clone());
         alloc1.alloc.expect_next().return_const(None);
         alloc1.alloc.expect_stop().times(1).return_once(|| Ok(()));
         // second allocation
@@ -1341,7 +1341,7 @@ mod test {
             .expect_world_id()
             .return_const(world_id.clone());
         alloc2.alloc.expect_shape().return_const(spec.shape.clone());
-        set_procstate_execptations(&mut alloc2.alloc, spec.shape.clone());
+        set_procstate_expectations(&mut alloc2.alloc, spec.shape.clone());
         alloc2.alloc.expect_next().return_const(None);
         alloc2.alloc.expect_stop().times(1).return_once(|| Ok(()));
 
@@ -1446,7 +1446,7 @@ mod test {
         alloc.alloc.expect_world_id().return_const(world_id.clone());
         alloc.alloc.expect_shape().return_const(spec.shape.clone());
 
-        set_procstate_execptations(&mut alloc.alloc, spec.shape.clone());
+        set_procstate_expectations(&mut alloc.alloc, spec.shape.clone());
 
         alloc.alloc.expect_next().return_const(None);
         // we expect a stop due to the failure

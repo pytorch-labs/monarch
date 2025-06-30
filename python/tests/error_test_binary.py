@@ -9,6 +9,7 @@ import ctypes
 import sys
 
 import click
+from monarch._rust_bindings.monarch_extension.blocking import blocking_function
 
 from monarch._rust_bindings.monarch_extension.panic import panicking_function
 
@@ -35,6 +36,11 @@ class ErrorActor(Actor):
     async def cause_panic(self) -> None:
         """Endpoint that calls a Rust function that panics."""
         panicking_function()
+
+    @endpoint
+    async def cause_stuck(self) -> None:
+        """Endpoint that causes the process to hang indefinitely."""
+        blocking_function()
 
     @endpoint
     async def await_then_error(self) -> None:
@@ -169,6 +175,28 @@ async def _error_unmonitored():
     # If an event is not delivered, the test will time out before this sleep
     # finishes.
     await asyncio.sleep(300)
+
+
+"""
+TODO: This test should be enabled when stop() is fully implemented.
+async def _error_unmonitored():
+    print("I actually ran")
+    sys.stdout.flush()
+
+    proc = await proc_mesh(gpus=1)
+    actor = await proc.spawn("error_actor", ErrorActor)
+
+    # fire and forget
+    send(actor.cause_stuck, (), {}, None, "all")
+    proc_mesh.stop()
+
+    # Wait. Eventually a supervision event will get propagated and the process
+    # will exit.
+    #
+    # If an event is not delivered, the test will time out before this sleep
+    # finishes.
+    await asyncio.sleep(300)
+"""
 
 
 @main.command("error-unmonitored")

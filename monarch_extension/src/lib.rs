@@ -24,6 +24,7 @@ mod simulator_client;
 #[cfg(feature = "tensor_engine")]
 mod tensor_worker;
 
+mod blocking;
 mod panic;
 use pyo3::prelude::*;
 
@@ -180,6 +181,11 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
     crate::panic::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_extension.panic",
+    )?)?;
+
+    crate::blocking::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_extension.blocking",
     )?)?;
 
     // Add feature detection function

@@ -235,10 +235,61 @@ pub trait Alloc {
 }
 
 pub mod test_utils {
+    use std::time::Duration;
+
+    use hyperactor::Actor;
+    use hyperactor::Context;
+    use hyperactor::Handler;
+    use hyperactor::Named;
+    use libc::atexit;
     use tokio::sync::broadcast::Receiver;
     use tokio::sync::broadcast::Sender;
 
     use super::*;
+
+    extern "C" fn exit_handler() {
+        loop {
+            #[allow(clippy::disallowed_methods)]
+            std::thread::sleep(Duration::from_secs(60));
+        }
+    }
+
+    // This can't be defined under a `#[cfg(test)]` because there needs to
+    // be an entry in the spawnable actor registry in the executable
+    // 'hyperactor_mesh_test_bootstrap' for the `tests::process` actor
+    // mesh test suite.
+    #[derive(Debug)]
+    #[hyperactor::export(
+        spawn = true,
+        handlers = [
+            Wait
+        ],
+    )]
+    pub struct TestActor;
+
+    #[async_trait]
+    impl Actor for TestActor {
+        type Params = ();
+
+        async fn new(_params: Self::Params) -> Result<Self, anyhow::Error> {
+            Ok(Self)
+        }
+    }
+
+    #[derive(Debug, Serialize, Deserialize, Named, Clone)]
+    pub struct Wait;
+
+    #[async_trait]
+    impl Handler<Wait> for TestActor {
+        async fn handle(&mut self, _: &Context<Self>, _: Wait) -> Result<(), anyhow::Error> {
+            // SAFETY:
+            // This is in order to simulate a process in tests that never exits.
+            unsafe {
+                atexit(exit_handler);
+            }
+            Ok(())
+        }
+    }
 
     /// Test wrapper around MockAlloc to allow us to block next() calls since
     /// mockall doesn't support returning futures.
@@ -309,12 +360,29 @@ pub mod test_utils {
 
 #[cfg(test)]
 pub(crate) mod testing {
+    use core::panic;
     use std::collections::HashMap;
     use std::collections::HashSet;
+    use std::time::Duration;
 
+    use hyperactor::Mailbox;
+    use hyperactor::actor::remote::Remote;
+    use hyperactor::channel;
+    use hyperactor::mailbox;
+    use hyperactor::mailbox::BoxedMailboxSender;
+    use hyperactor::mailbox::DialMailboxRouter;
+    use hyperactor::mailbox::IntoBoxedMailboxSender;
+    use hyperactor::mailbox::MailboxServer;
+    use hyperactor::mailbox::UndeliverableMailboxSender;
+    use hyperactor::proc::Proc;
+    use hyperactor::reference::Reference;
     use ndslice::shape;
+    use tokio::process::Command;
 
     use super::*;
+    use crate::alloc::test_utils::TestActor;
+    use crate::alloc::test_utils::Wait;
+    use crate::proc_mesh::mesh_agent::MeshAgentMessageClient;
 
     #[macro_export]
     macro_rules! alloc_test_suite {
@@ -371,6 +439,150 @@ pub(crate) mod testing {
         let mut stopped = HashSet::new();
         while let Some(ProcState::Stopped { proc_id, reason }) = alloc.next().await {
             assert_eq!(reason, ProcStopReason::Stopped);
+            stopped.insert(proc_id);
+        }
+        assert!(alloc.next().await.is_none());
+        assert_eq!(stopped, running);
+    }
+
+    async fn spawn_proc(
+        transport: ChannelTransport,
+    ) -> (DialMailboxRouter, Mailbox, Proc, ChannelAddr) {
+        let (router_channel_addr, router_rx) = channel::serve(ChannelAddr::any(transport.clone()))
+            .await
+            .unwrap();
+        let router =
+            DialMailboxRouter::new_with_default((UndeliverableMailboxSender {}).into_boxed());
+        router
+            .clone()
+            .serve(router_rx, mailbox::monitored_return_handle());
+
+        let client_proc_id = ProcId(WorldId("test_stuck".to_string()), 0);
+        let (client_proc_addr, client_rx) =
+            channel::serve(ChannelAddr::any(transport)).await.unwrap();
+        let client_proc = Proc::new(
+            client_proc_id.clone(),
+            BoxedMailboxSender::new(router.clone()),
+        );
+        client_proc
+            .clone()
+            .serve(client_rx, mailbox::monitored_return_handle());
+        router.bind(client_proc_id.clone().into(), client_proc_addr);
+        (
+            router,
+            client_proc.attach("test_proc").unwrap(),
+            client_proc,
+            router_channel_addr,
+        )
+    }
+
+    async fn spawn_test_actor(
+        rank: usize,
+        client_proc: &Proc,
+        client: &Mailbox,
+        router_channel_addr: ChannelAddr,
+        mesh_agent: ActorRef<MeshAgent>,
+    ) -> ActorRef<TestActor> {
+        let supervisor = client_proc.attach("supervisor").unwrap();
+        let (supervison_port, _) = supervisor.open_port();
+        let (config_handle, _) = client.open_port();
+        mesh_agent
+            .configure(
+                client,
+                rank,
+                router_channel_addr,
+                supervison_port.bind(),
+                HashMap::new(),
+                config_handle.bind(),
+            )
+            .await
+            .unwrap();
+        let remote = Remote::collect();
+        let actor_type = remote
+            .name_of::<TestActor>()
+            .ok_or(anyhow::anyhow!("actor not registered"))
+            .unwrap()
+            .to_string();
+        let params = &();
+        let (completed_handle, mut completed_receiver) = mailbox::open_port(client);
+        // gspawn actor
+        mesh_agent
+            .gspawn(
+                client,
+                actor_type,
+                "Stuck".to_string(),
+                bincode::serialize(params).unwrap(),
+                completed_handle.bind(),
+            )
+            .await
+            .unwrap();
+        let (_, actor_id) = completed_receiver.recv().await.unwrap();
+        ActorRef::attest(actor_id)
+    }
+
+    /// In order to simulate stuckness, we have to do two things:
+    /// An actor that is blocked forever AND
+    /// a proc that does not time out when it is asked to wait for
+    /// a stuck actor.
+    #[tokio::test]
+    async fn test_allocator_stuck_task() {
+        // Override config.
+        // Use temporary config for this test
+        let config = hyperactor::config::global::lock();
+        let _guard = config.override_key(
+            hyperactor::config::PROCESS_EXIT_TIMEOUT,
+            Duration::from_secs(1),
+        );
+
+        let command =
+            Command::new(buck_resources::get("monarch/hyperactor_mesh/bootstrap").unwrap());
+        let mut allocator = ProcessAllocator::new(command);
+        let mut alloc = allocator
+            .allocate(AllocSpec {
+                shape: shape! { replica = 1 },
+                constraints: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        // Get everything up into running state. We require that we get
+        let mut procs = HashMap::new();
+        let mut running = HashSet::new();
+        let mut actor_ref = None;
+        let (router, client, client_proc, router_addr) = spawn_proc(alloc.transport()).await;
+        while running.is_empty() {
+            match alloc.next().await.unwrap() {
+                ProcState::Created {
+                    proc_id, coords, ..
+                } => {
+                    procs.insert(proc_id, coords);
+                }
+                ProcState::Running {
+                    proc_id,
+                    mesh_agent,
+                    addr,
+                } => {
+                    router.bind(Reference::Proc(proc_id.clone()), addr.clone());
+
+                    assert!(procs.contains_key(&proc_id));
+                    assert!(!running.contains(&proc_id));
+
+                    actor_ref = Some(
+                        spawn_test_actor(0, &client_proc, &client, router_addr, mesh_agent).await,
+                    );
+                    running.insert(proc_id);
+                    break;
+                }
+                event => panic!("unexpected event: {:?}", event),
+            }
+        }
+        assert!(actor_ref.unwrap().send(&client, Wait).is_ok());
+
+        // There is a stuck actor! We should get a watchdog failure.
+        alloc.stop().await.unwrap();
+        let mut stopped = HashSet::new();
+        while let Some(ProcState::Stopped { proc_id, reason }) = alloc.next().await {
+            assert_eq!(reason, ProcStopReason::Watchdog);
             stopped.insert(proc_id);
         }
         assert!(alloc.next().await.is_none());

@@ -32,6 +32,9 @@ declare_attrs! {
     /// Message delivery timeout
     pub attr MESSAGE_DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
 
+    /// Timeout used by allocator for stopping a proc.
+    pub attr PROCESS_EXIT_TIMEOUT: Duration = Duration::from_secs(10);
+
     /// Message acknowledgment interval
     pub attr MESSAGE_ACK_TIME_INTERVAL: Duration = Duration::from_millis(500);
 

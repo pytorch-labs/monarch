@@ -103,6 +103,7 @@ impl IntoFuture for Handle {
 /// the group will be aborted if any task fails or if the group is aborted.
 ///
 /// The group is also aborted if the group itself is dropped.
+#[derive(Clone)]
 pub struct Group(Arc<Mutex<State>>);
 
 /// The status of a group. Groups start out in [`Status::Running`]
