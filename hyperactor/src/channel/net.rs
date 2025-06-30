@@ -2517,7 +2517,10 @@ mod tests {
 
     #[tracing_test::traced_test]
     async fn verify_tx_closed(tx_status: &mut watch::Receiver<TxStatus>, expected_log: &str) {
-        match tokio::time::timeout(Duration::from_secs(5), tx_status.changed()).await {
+        match RealClock
+            .timeout(Duration::from_secs(5), tx_status.changed())
+            .await
+        {
             Ok(Ok(())) => {
                 let current_status = *tx_status.borrow();
                 assert_eq!(current_status, TxStatus::Closed);

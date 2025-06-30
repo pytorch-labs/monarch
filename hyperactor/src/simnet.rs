@@ -902,8 +902,9 @@ impl SimNet {
                 break 'outer self.records.clone();
             }
 
-            while let Ok(Some((event, advanceable, time))) =
-                tokio::time::timeout(tokio::time::Duration::from_millis(1), event_rx.recv()).await
+            while let Ok(Some((event, advanceable, time))) = RealClock
+                .timeout(tokio::time::Duration::from_millis(1), event_rx.recv())
+                .await
             {
                 let scheduled_event = match time {
                     Some(time) => ScheduledEvent {

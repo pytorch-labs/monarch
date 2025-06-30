@@ -689,12 +689,14 @@ impl ProcMessageHandler for ProcActor {
             failed_actors: Vec::new(),
         };
 
-        match tokio::time::timeout(
-            // TODO: make the timeout configurable
-            Duration::from_secs(10),
-            self.params.supervisor_actor_ref.update(this, msg),
-        )
-        .await
+        match this
+            .clock()
+            .timeout(
+                // TODO: make the timeout configurable
+                Duration::from_secs(10),
+                self.params.supervisor_actor_ref.update(this, msg),
+            )
+            .await
         {
             Ok(_) => {
                 self.last_successful_supervision_update = this.clock().system_time_now();
@@ -1253,8 +1255,8 @@ mod tests {
         // Since we could get messages from both the periodic task and the
         // report from the failed actor, we need to poll for a while to make
         // sure we get the right message.
-        let result =
-            tokio::time::timeout(Duration::from_secs(5), async {
+        let result = RealClock
+            .timeout(Duration::from_secs(5), async {
                 loop {
                     match supervisor_supervision_receiver.recv().await {
                         Ok(ProcSupervisionMessage::Update(state, _port)) => {
@@ -1309,7 +1311,9 @@ mod tests {
         let proc_actor_id = bootstrap.proc_actor.actor_id().clone();
         let proc_actor_ref = ActorRef::<ProcActor>::attest(proc_actor_id);
 
-        let res = tokio::time::timeout(Duration::from_secs(5), proc_actor_ref.state(&client)).await;
+        let res = RealClock
+            .timeout(Duration::from_secs(5), proc_actor_ref.state(&client))
+            .await;
         // If ProcMessage's static Named port is not bound, this test will fail
         // due to timeout.
         assert!(res.is_ok());

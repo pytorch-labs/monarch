@@ -2748,7 +2748,8 @@ mod tests {
         // We expect message delivery failure prevents the game from
         // ending within the timeout.
         assert!(
-            tokio::time::timeout(tokio::time::Duration::from_secs(4), on_game_over.recv())
+            RealClock
+                .timeout(tokio::time::Duration::from_secs(4), on_game_over.recv())
                 .await
                 .is_err()
         );

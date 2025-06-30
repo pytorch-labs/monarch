@@ -534,10 +534,12 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
             let signal_port = self.signal_port.clone();
             let controller_id = controller_id.clone();
             let controller_error_sender = self.controller_error_sender.clone();
+            let clock = self.clock.clone();
 
             if check_staleness > Duration::from_secs(5) {
                 get_tokio_runtime().spawn(async move {
                     let _ = check_actor_supervision_state(
+                        clock,
                         mailbox,
                         signal_port,
                         controller_id.clone(),
@@ -579,7 +581,7 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
             }
             Some(timeout_msec) => {
                 // Blocking wait with a timeout.
-                match tokio::time::timeout(
+                match self.clock.timeout(
                     Duration::from_millis(timeout_msec),
                     self.message_receiver.recv(),
                 )
@@ -636,17 +638,19 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
 /// Check the supervision state of given actor from system actor. This will schedule itself to allow
 /// for periodic checks.
 async fn check_actor_supervision_state(
+    clock: ClockKind,
     mailbox: Mailbox,
     signal_port: PortHandle<Signal>,
     actor_id: ActorId,
     controller_error_sender: watch::Sender<String>,
 ) -> Result<()> {
-    match tokio::time::timeout(
-        // TODO: make the timeout configurable
-        tokio::time::Duration::from_secs(10),
-        SYSTEM_ACTOR_REF.state(&mailbox, WorldId(actor_id.world_name().into())),
-    )
-    .await
+    match clock
+        .timeout(
+            // TODO: make the timeout configurable
+            tokio::time::Duration::from_secs(10),
+            SYSTEM_ACTOR_REF.state(&mailbox, WorldId(actor_id.world_name().into())),
+        )
+        .await
     {
         Ok(Ok(Some(world_state))) => {
             // Check if the controller has failed supervision heartbeats

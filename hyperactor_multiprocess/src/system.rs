@@ -15,6 +15,7 @@ use hyperactor::actor::ActorError;
 use hyperactor::actor::ActorHandle;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
+use hyperactor::clock::Clock;
 use hyperactor::clock::ClockKind;
 use hyperactor::id;
 use hyperactor::mailbox::BoxedMailboxSender;
@@ -120,7 +121,7 @@ impl System {
             .unwrap();
         let timeout = hyperactor::config::global::get(hyperactor::config::MESSAGE_DELIVERY_TIMEOUT);
         loop {
-            let result = tokio::time::timeout(timeout, proc_rx.recv()).await?;
+            let result = proc.clock().timeout(timeout, proc_rx.recv()).await?;
             match result? {
                 ProcMessage::Joined() => break,
                 message => tracing::info!("proc message while joining: {:?}", message),
@@ -788,7 +789,8 @@ mod tests {
 
         // host actors should still be running.
         for bootstrap in host_proc_actors {
-            match tokio::time::timeout(Duration::from_secs(5), bootstrap.proc_actor.into_future())
+            match RealClock
+                .timeout(Duration::from_secs(5), bootstrap.proc_actor.into_future())
                 .await
             {
                 Ok(_) => {
@@ -799,11 +801,12 @@ mod tests {
         }
 
         // Verify the system actor not stopped.
-        match tokio::time::timeout(
-            Duration::from_secs(3),
-            system_handle.actor_handle.clone().into_future(),
-        )
-        .await
+        match RealClock
+            .timeout(
+                Duration::from_secs(3),
+                system_handle.actor_handle.clone().into_future(),
+            )
+            .await
         {
             Ok(_) => {
                 panic!("system actor shouldn't be stopped");

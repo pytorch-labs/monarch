@@ -66,6 +66,7 @@ use crate::attrs::Attrs;
 use crate::cap;
 use crate::clock::Clock;
 use crate::clock::ClockKind;
+use crate::clock::RealClock;
 use crate::data::Serialized;
 use crate::data::TypeInfo;
 use crate::mailbox::BoxedMailboxSender;
@@ -558,13 +559,16 @@ impl Proc {
             .map(|(actor_id, root)| {
                 let actor_id = actor_id.clone();
                 async move {
-                    tokio::time::timeout(
-                        timeout,
-                        root.wait_for(|state: &ActorStatus| matches!(*state, ActorStatus::Stopped)),
-                    )
-                    .await
-                    .ok()
-                    .map(|_| actor_id)
+                    RealClock
+                        .timeout(
+                            timeout,
+                            root.wait_for(|state: &ActorStatus| {
+                                matches!(*state, ActorStatus::Stopped)
+                            }),
+                        )
+                        .await
+                        .ok()
+                        .map(|_| actor_id)
                 }
             })
             .collect();

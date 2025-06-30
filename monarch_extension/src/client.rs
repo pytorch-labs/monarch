@@ -11,6 +11,8 @@ use std::sync::Arc;
 
 use hyperactor::ActorRef;
 use hyperactor::WorldId;
+use hyperactor::clock::Clock;
+use hyperactor::clock::RealClock;
 use hyperactor::data::Serialized;
 use hyperactor_multiprocess::system_actor::SYSTEM_ACTOR_REF;
 use hyperactor_multiprocess::system_actor::SystemMessageClient;
@@ -546,7 +548,7 @@ impl ClientActor {
                 .stop(&mailbox, worlds_ids, timeout, tx.bind())
                 .await?;
             let timeout = tokio::time::Duration::from_secs(10);
-            match tokio::time::timeout(timeout, rx.recv()).await {
+            match RealClock.timeout(timeout, rx.recv()).await {
                 Ok(result) => result.map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
                 Err(_) => {
                     tracing::info!(

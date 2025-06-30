@@ -2763,7 +2763,8 @@ mod tests {
         return_handle.send(Undeliverable(envelope.clone())).unwrap();
         // Check we receive the undelivered message.
         assert!(
-            tokio::time::timeout(tokio::time::Duration::from_secs(1), return_receiver.recv())
+            RealClock
+                .timeout(tokio::time::Duration::from_secs(1), return_receiver.recv())
                 .await
                 .is_ok()
         );
@@ -2780,7 +2781,8 @@ mod tests {
         });
         drop(return_handle);
         assert!(
-            tokio::time::timeout(tokio::time::Duration::from_secs(1), monitor_handle)
+            RealClock
+                .timeout(tokio::time::Duration::from_secs(1), monitor_handle)
                 .await
                 .is_ok()
         );
@@ -2873,7 +2875,8 @@ mod tests {
         {
             let (sender, mut receiver) = create_receiver::<u64>(coalesce);
             assert!(
-                tokio::time::timeout(tokio::time::Duration::from_secs(1), receiver.recv())
+                RealClock
+                    .timeout(tokio::time::Duration::from_secs(1), receiver.recv())
                     .await
                     .is_err()
             );
@@ -2905,7 +2908,8 @@ mod tests {
                 );
             } else {
                 assert!(
-                    tokio::time::timeout(tokio::time::Duration::from_secs(1), receiver.recv())
+                    RealClock
+                        .timeout(tokio::time::Duration::from_secs(1), receiver.recv())
                         .await
                         .is_err()
                 );
@@ -3013,16 +3017,17 @@ mod tests {
     ) -> anyhow::Result<Vec<u64>> {
         let mut messeges = vec![];
 
-        tokio::time::timeout(timeout_duration, async {
-            loop {
-                let msg = receiver.recv().await.unwrap();
-                messeges.push(msg);
-                if messeges.len() == expected_size {
-                    break;
+        RealClock
+            .timeout(timeout_duration, async {
+                loop {
+                    let msg = receiver.recv().await.unwrap();
+                    messeges.push(msg);
+                    if messeges.len() == expected_size {
+                        break;
+                    }
                 }
-            }
-        })
-        .await?;
+            })
+            .await?;
         Ok(messeges)
     }
 

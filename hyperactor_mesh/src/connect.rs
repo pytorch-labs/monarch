@@ -187,7 +187,7 @@ pub async fn accept<'a, C: CanOpenPort + CanSend>(
             return_conn: r_tx.bind(),
         },
     )?;
-    let wr = tokio::time::timeout(CONNECT_TIMEOUT, r_rx.recv()).await??;
+    let wr = RealClock.timeout(CONNECT_TIMEOUT, r_rx.recv()).await??;
     Ok((IoMsgRead::new(rx), IoMsgWrite::new(caps, wr)))
 }
 
@@ -200,7 +200,7 @@ pub async fn connect<C: CanOpenPort + CanSend>(
     let (tx, mut rx) = open_port::<Accept>(caps);
     port.send(caps, Connect { port: tx.bind() })?;
 
-    let connection = tokio::time::timeout(CONNECT_TIMEOUT, rx.recv()).await??;
+    let connection = RealClock.timeout(CONNECT_TIMEOUT, rx.recv()).await??;
     let (tx, rx) = open_port::<Io>(caps);
     connection.return_conn.send(caps, tx.bind())?;
 

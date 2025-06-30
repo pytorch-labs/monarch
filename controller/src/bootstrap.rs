@@ -566,19 +566,20 @@ async fn create_world(
     let timeout = hyperactor::config::global::get(hyperactor::config::MESSAGE_DELIVERY_TIMEOUT);
     tracing::info!("waiting for worker world {} to be alive", worker_world_id);
     loop {
-        let snapshot = tokio::time::timeout(timeout, async {
-            system_actor::SYSTEM_ACTOR_REF
-                .snapshot(
-                    &client,
-                    system_actor::SystemSnapshotFilter {
-                        worlds: vec![worker_world_id.clone()],
-                        world_labels: HashMap::new(),
-                        proc_labels: HashMap::new(),
-                    },
-                )
-                .await
-        })
-        .await?;
+        let snapshot = RealClock
+            .timeout(timeout, async {
+                system_actor::SYSTEM_ACTOR_REF
+                    .snapshot(
+                        &client,
+                        system_actor::SystemSnapshotFilter {
+                            worlds: vec![worker_world_id.clone()],
+                            world_labels: HashMap::new(),
+                            proc_labels: HashMap::new(),
+                        },
+                    )
+                    .await
+            })
+            .await?;
         let snapshot = snapshot?;
         if let Some(world) = snapshot.worlds.get(&worker_world_id) {
             if world.status.is_live() {

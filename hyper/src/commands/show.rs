@@ -16,6 +16,8 @@ use chrono::Local;
 use hyper::utils::system_address::SystemAddr;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
+use hyperactor::clock::Clock;
+use hyperactor::clock::RealClock;
 use hyperactor::proc::ActorTreeSnapshot;
 use hyperactor::reference::Index;
 use hyperactor::reference::Reference;
@@ -202,11 +204,12 @@ impl ShowCommand {
                                 ActorRef::attest(proc_id.actor_id("proc", 0));
                             (
                                 proc_id,
-                                tokio::time::timeout(
-                                    std::time::Duration::from_secs(5),
-                                    proc_ref.snapshot(&client.clone()),
-                                )
-                                .await,
+                                RealClock
+                                    .timeout(
+                                        std::time::Duration::from_secs(5),
+                                        proc_ref.snapshot(&client.clone()),
+                                    )
+                                    .await,
                             )
                         }
                     })

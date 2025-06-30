@@ -229,6 +229,7 @@ impl Clock for SimClock {
         SIM_TIME.system_start.clone() + self.now().duration_since(SIM_TIME.start)
     }
 
+    #[allow(clippy::disallowed_methods)]
     async fn timeout<F, T>(&self, duration: tokio::time::Duration, f: F) -> Result<T, TimeoutError>
     where
         F: std::future::Future<Output = T>,
@@ -295,6 +296,7 @@ impl Clock for RealClock {
     fn system_time_now(&self) -> SystemTime {
         SystemTime::now()
     }
+    #[allow(clippy::disallowed_methods)]
     async fn timeout<F, T>(&self, duration: tokio::time::Duration, f: F) -> Result<T, TimeoutError>
     where
         F: std::future::Future<Output = T>,

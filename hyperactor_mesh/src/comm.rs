@@ -856,15 +856,16 @@ mod tests {
         dur: Duration,
     ) -> anyhow::Result<()> {
         // timeout wraps the entire async block
-        tokio::time::timeout(dur, async {
-            loop {
-                let msg = receiver.recv().await.unwrap();
-                if msg == expected {
-                    break;
+        RealClock
+            .timeout(dur, async {
+                loop {
+                    let msg = receiver.recv().await.unwrap();
+                    if msg == expected {
+                        break;
+                    }
                 }
-            }
-        })
-        .await?;
+            })
+            .await?;
         Ok(())
     }
 
