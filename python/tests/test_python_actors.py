@@ -434,6 +434,7 @@ class DebugeeActor(Actor):
         return _debugee_actor_internal(rank)
 
 
+@pytest.mark.oss_skip  # pyre-ignore[56] TODO T229449782
 async def test_debug() -> None:
     input_mock = AsyncMock()
     input_mock.side_effect = [
