@@ -82,7 +82,6 @@ pub struct ProcMesh {
     #[allow(dead_code)] // will be used in subsequent diff
     client_proc: Proc,
     client: Mailbox,
-    client_undeliverable_receiver: Option<PortReceiver<Undeliverable<MessageEnvelope>>>,
     comm_actors: Vec<ActorRef<CommActor>>,
     world_id: WorldId,
 }
@@ -211,16 +210,25 @@ impl ProcMesh {
 
         // TODO: No actor bound to "supervisor" yet.
         let supervisor = client_proc.attach("supervisor")?;
-        let (supervison_port, supervision_events) = supervisor.open_port();
+        let (supervision_port, supervision_events) = supervisor.open_port();
 
         // Now, configure the full mesh, so that the local agents are
-        // wired up to our router. Bind an undeliverable message port
-        // in the client and return the port receiver.
+        // wired up to our router.
+        // TODO: No actor bound to "client" yet.
         // No actor bound to this "client" yet
         let client = client_proc.attach("client")?;
+        // Bind an undeliverable message port in the client.
         let (undeliverable_messages, client_undeliverable_receiver) =
             client.open_port::<Undeliverable<MessageEnvelope>>();
         undeliverable_messages.bind_to(Undeliverable::<MessageEnvelope>::port());
+        // Monitor undeliverable messages from the client and emit
+        // corresponding actor supervision events via the supervision
+        // port.
+        hyperactor::mailbox::supervise_undeliverable_messages(
+            client.actor_id().clone(),
+            supervision_port.clone(),
+            client_undeliverable_receiver,
+        );
 
         // Map of procs -> channel addresses
         let address_book: HashMap<_, _> = running
@@ -235,7 +243,7 @@ impl ProcMesh {
                     &client,
                     rank,
                     router_channel_addr.clone(),
-                    supervison_port.bind(),
+                    supervision_port.bind(),
                     address_book.clone(),
                     config_handle.bind(),
                 )
@@ -304,7 +312,6 @@ impl ProcMesh {
                 .collect(),
             client_proc,
             client,
-            client_undeliverable_receiver: Some(client_undeliverable_receiver),
             comm_actors,
             world_id,
         })
@@ -397,22 +404,6 @@ impl ProcMesh {
     /// A client used to communicate with any member of this mesh.
     pub fn client(&self) -> &Mailbox {
         &self.client
-    }
-
-    /// Returns a mutable reference to the client mailbox's
-    /// undeliverable message port receiver.
-    ///
-    /// This allows the caller to extract the
-    /// `PortReceiver<Undeliverable<MessageEnvelope>>` by calling
-    /// `.take()` on the returned `Option`, transferring ownership of
-    /// the receiver.
-    ///
-    /// Typically used to access the port bound by
-    /// `ProcMesh::allocate`.
-    pub fn client_undeliverable_receiver(
-        &mut self,
-    ) -> &mut Option<PortReceiver<Undeliverable<MessageEnvelope>>> {
-        &mut self.client_undeliverable_receiver
     }
 
     pub fn client_proc(&self) -> &Proc {
@@ -508,6 +499,9 @@ impl ProcEvents {
                 Ok(event) = self.event_state.supervision_events.recv() => {
                     let (actor_id, actor_status) = event.clone().into_inner();
                     let Some(rank) = self.ranks.get(actor_id.proc_id()) else {
+                        if actor_id.name() == "client" {
+                            break Some(ProcEvent::Crashed(0, actor_status.to_string()));
+                        }
                         tracing::warn!("received supervision event for unmapped actor {}", actor_id);
                         continue;
                     };
