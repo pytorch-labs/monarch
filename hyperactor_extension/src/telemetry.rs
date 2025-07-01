@@ -106,7 +106,6 @@ pub fn use_real_clock() -> PyResult<()> {
 
 #[pyfunction]
 pub fn use_sim_clock() -> PyResult<()> {
-    println!("Using simulated clock");
     swap_telemetry_clock(ClockKind::Sim(SimClock));
     Ok(())
 }
