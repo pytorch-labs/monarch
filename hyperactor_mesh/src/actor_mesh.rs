@@ -9,7 +9,6 @@
 #![allow(dead_code)] // until used publically
 
 use std::ops::Deref;
-use std::sync::Arc;
 
 use async_trait::async_trait;
 use hyperactor::Actor;
@@ -164,8 +163,8 @@ pub trait ActorMesh: Mesh {
 /// Given a shared ProcMesh, we can obtain a [`ActorMesh<'static, _>`]
 /// for it, useful when lifetime must be managed dynamically.
 enum ProcMeshRef<'a> {
-    /// The reference is shared with an [`Arc`].
-    Shared(Arc<ProcMesh>),
+    /// The reference is shared without requiring a reference.
+    Shared(Box<dyn Deref<Target = ProcMesh> + Sync + Send>),
     /// The reference is borrowed with a parameterized
     /// lifetime.
     Borrowed(&'a ProcMesh),
@@ -206,14 +205,14 @@ impl<'a, A: RemoteActor> RootActorMesh<'a, A> {
         }
     }
 
-    pub(crate) fn new_shared(
-        proc_mesh: Arc<ProcMesh>,
+    pub(crate) fn new_shared<D: Deref<Target = ProcMesh> + Send + Sync + 'static>(
+        proc_mesh: D,
         name: String,
         actor_supervision_rx: mpsc::UnboundedReceiver<ActorSupervisionEvent>,
         ranks: Vec<ActorRef<A>>,
     ) -> Self {
         Self {
-            proc_mesh: ProcMeshRef::Shared(proc_mesh),
+            proc_mesh: ProcMeshRef::Shared(Box::new(proc_mesh)),
             name,
             ranks,
             actor_supervision_rx,
@@ -499,6 +498,7 @@ pub(crate) mod test_util {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
 
     use hyperactor::ActorId;
     use hyperactor::PortRef;
