@@ -155,7 +155,7 @@ static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
 impl _Controller {
     #[new]
     fn new(py: Python, py_proc_mesh: &PyProcMesh) -> PyResult<Self> {
-        let proc_mesh = py_proc_mesh.inner.as_ref();
+        let proc_mesh = py_proc_mesh.try_inner()?;
         let id = NEXT_ID.fetch_add(1, atomic::Ordering::Relaxed);
         let controller_instance: InstanceWrapper<ControllerMessage> = InstanceWrapper::new(
             &PyProc::new_from_proc(proc_mesh.client_proc().clone()),
@@ -180,18 +180,17 @@ impl _Controller {
             controller_actor: controller_actor_ref,
         };
 
-        let py_proc_mesh = Arc::clone(&py_proc_mesh.inner);
+        let py_proc_mesh = py_proc_mesh.try_inner()?;
+        let shape = py_proc_mesh.shape().clone();
         let workers: anyhow::Result<SharedCell<RootActorMesh<'_, WorkerActor>>> =
             signal_safe_block_on(py, async move {
                 let workers = py_proc_mesh
-                    .clone()
                     .spawn(&format!("tensor_engine_workers_{}", id), &param)
                     .await?;
                 //workers.cast(ndslice::Selection::True, )?;
-                workers.borrow()?.cast_slices(
-                    vec![py_proc_mesh.shape().slice().clone()],
-                    AssignRankMessage::AssignRank(),
-                )?;
+                workers
+                    .borrow()?
+                    .cast_slices(vec![shape.slice().clone()], AssignRankMessage::AssignRank())?;
                 Ok(workers)
             })?;
         Ok(Self {

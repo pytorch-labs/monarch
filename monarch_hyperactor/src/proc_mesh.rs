@@ -27,10 +27,12 @@ use hyperactor_mesh::proc_mesh::ProcMesh;
 use hyperactor_mesh::proc_mesh::SharedSpawnable;
 use hyperactor_mesh::shared_cell::SharedCell;
 use hyperactor_mesh::shared_cell::SharedCellPool;
+use hyperactor_mesh::shared_cell::SharedCellRef;
 use monarch_types::PickledPyObject;
 use ndslice::Shape;
 use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyException;
+use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::pycell::PyRef;
 use pyo3::types::PyType;
@@ -44,7 +46,8 @@ use crate::shape::PyShape;
 
 // A wrapper around `ProcMesh` which keeps track of all `RootActorMesh`s that it spawns.
 pub struct TrackedProcMesh {
-    inner: Arc<ProcMesh>,
+    inner: SharedCellRef<ProcMesh>,
+    cell: SharedCell<ProcMesh>,
     children: SharedCellPool,
 }
 
@@ -62,8 +65,11 @@ impl Display for TrackedProcMesh {
 
 impl From<ProcMesh> for TrackedProcMesh {
     fn from(mesh: ProcMesh) -> Self {
+        let cell = SharedCell::from(mesh);
+        let inner = cell.borrow().unwrap();
         Self {
-            inner: Arc::new(mesh),
+            inner,
+            cell,
             children: SharedCellPool::new(),
         }
     }
@@ -78,7 +84,7 @@ impl TrackedProcMesh {
     where
         A::Params: RemoteMessage,
     {
-        let mesh = self.inner.clone();
+        let mesh = self.cell.borrow()?;
         let actor = mesh.spawn(actor_name, params).await?;
         Ok(self.children.insert(actor))
     }
@@ -94,6 +100,10 @@ impl TrackedProcMesh {
     pub fn client_proc(&self) -> &Proc {
         self.inner.client_proc()
     }
+
+    pub fn into_inner(self) -> (SharedCell<ProcMesh>, SharedCellPool) {
+        (self.cell, self.children)
+    }
 }
 
 #[pyclass(
@@ -101,7 +111,7 @@ impl TrackedProcMesh {
     module = "monarch._rust_bindings.monarch_hyperactor.proc_mesh"
 )]
 pub struct PyProcMesh {
-    pub inner: Arc<TrackedProcMesh>,
+    inner: SharedCell<TrackedProcMesh>,
     keepalive: Keepalive,
     proc_events: Arc<Mutex<ProcEvents>>,
     stop_monitor_sender: mpsc::Sender<bool>,
@@ -156,7 +166,7 @@ impl PyProcMesh {
             abort_receiver,
         ));
         Self {
-            inner: Arc::new(proc_mesh.into()),
+            inner: SharedCell::from(TrackedProcMesh::from(proc_mesh)),
             keepalive: Keepalive::new(monitor),
             proc_events,
             stop_monitor_sender: sender,
@@ -196,6 +206,12 @@ impl PyProcMesh {
             }
         }
     }
+
+    pub fn try_inner(&self) -> PyResult<SharedCellRef<TrackedProcMesh>> {
+        self.inner
+            .borrow()
+            .map_err(|_| PyRuntimeError::new_err("`ProcMesh` has already been stopped"))
+    }
 }
 
 #[pymethods]
@@ -225,7 +241,7 @@ impl PyProcMesh {
         actor: &Bound<'py, PyType>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let pickled_type = PickledPyObject::pickle(actor.as_any())?;
-        let proc_mesh = Arc::clone(&self.inner);
+        let proc_mesh = self.try_inner()?;
         let keepalive = self.keepalive.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let mailbox = proc_mesh.client().clone();
@@ -246,7 +262,7 @@ impl PyProcMesh {
         actor: &Bound<'py, PyType>,
     ) -> PyResult<PyObject> {
         let pickled_type = PickledPyObject::pickle(actor.as_any())?;
-        let proc_mesh = Arc::clone(&self.inner);
+        let proc_mesh = self.try_inner()?;
         let keepalive = self.keepalive.clone();
         signal_safe_block_on(py, async move {
             let mailbox = proc_mesh.client().clone();
@@ -287,19 +303,41 @@ impl PyProcMesh {
     }
 
     #[getter]
-    fn client(&self) -> PyMailbox {
-        PyMailbox {
-            inner: self.inner.client().clone(),
-        }
+    fn client(&self) -> PyResult<PyMailbox> {
+        Ok(PyMailbox {
+            inner: self.try_inner()?.client().clone(),
+        })
     }
 
     fn __repr__(&self) -> PyResult<String> {
-        Ok(format!("<ProcMesh {}>", self.inner))
+        Ok(format!("<ProcMesh {}>", *self.try_inner()?))
     }
 
     #[getter]
-    fn shape(&self) -> PyShape {
-        self.inner.shape().clone().into()
+    fn shape(&self) -> PyResult<PyShape> {
+        Ok(self.try_inner()?.shape().clone().into())
+    }
+
+    fn stop<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let tracked_proc_mesh = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            async {
+                // "Take" the proc mesh wrapper.  Once we do, it should be impossible for new
+                // actor meshes to be spawned.
+                let (proc_mesh, children) = tracked_proc_mesh
+                    .take()
+                    .await
+                    .map_err(|_| PyRuntimeError::new_err("`ProcMesh` has already been stopped"))?
+                    .into_inner();
+                // Now we discard all in-flight actor meshes.  After this, the `ProcMesh` should be "unused".
+                children.discard_all().await?;
+                // Finally, take ownership of the inner proc mesh, which will allowing dropping it.
+                let _proc_mesh = proc_mesh.take().await?;
+                anyhow::Ok(())
+            }
+            .await?;
+            PyResult::Ok(())
+        })
     }
 }
 
