@@ -228,12 +228,11 @@ impl PyProcMesh {
         let proc_mesh = Arc::clone(&self.inner);
         let keepalive = self.keepalive.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let mailbox = proc_mesh.client().clone();
             let actor_mesh = proc_mesh.spawn(&name, &pickled_type).await?;
             let python_actor_mesh = PythonActorMesh {
                 inner: actor_mesh,
-                client: PyMailbox {
-                    inner: proc_mesh.client().clone(),
-                },
+                client: PyMailbox { inner: mailbox },
                 _keepalive: keepalive,
             };
             Python::with_gil(|py| python_actor_mesh.into_py_any(py))
@@ -250,12 +249,11 @@ impl PyProcMesh {
         let proc_mesh = Arc::clone(&self.inner);
         let keepalive = self.keepalive.clone();
         signal_safe_block_on(py, async move {
+            let mailbox = proc_mesh.client().clone();
             let actor_mesh = proc_mesh.spawn(&name, &pickled_type).await?;
             let python_actor_mesh = PythonActorMesh {
                 inner: actor_mesh,
-                client: PyMailbox {
-                    inner: proc_mesh.client().clone(),
-                },
+                client: PyMailbox { inner: mailbox },
                 _keepalive: keepalive,
             };
             Python::with_gil(|py| python_actor_mesh.into_py_any(py))

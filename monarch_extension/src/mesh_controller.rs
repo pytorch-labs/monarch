@@ -184,6 +184,7 @@ impl _Controller {
         let workers: anyhow::Result<SharedCell<RootActorMesh<'_, WorkerActor>>> =
             signal_safe_block_on(py, async move {
                 let workers = py_proc_mesh
+                    .clone()
                     .spawn(&format!("tensor_engine_workers_{}", id), &param)
                     .await?;
                 //workers.cast(ndslice::Selection::True, )?;

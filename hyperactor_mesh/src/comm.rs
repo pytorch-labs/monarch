@@ -739,6 +739,7 @@ mod tests {
             forward_port: tx.bind(),
         };
         let actor_mesh = proc_mesh
+            .clone()
             .spawn::<TestActor>(dest_actor_name, &params)
             .await
             .unwrap();

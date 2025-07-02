@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt;
+use std::ops::Deref;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -532,7 +533,7 @@ impl ProcEvents {
 #[async_trait]
 pub trait SharedSpawnable {
     async fn spawn<A: Actor + RemoteActor>(
-        &self,
+        self,
         actor_name: &str,
         params: &A::Params,
     ) -> Result<RootActorMesh<'static, A>, anyhow::Error>
@@ -541,9 +542,9 @@ pub trait SharedSpawnable {
 }
 
 #[async_trait]
-impl SharedSpawnable for Arc<ProcMesh> {
+impl<D: Deref<Target = ProcMesh> + Send + Sync + 'static> SharedSpawnable for D {
     async fn spawn<A: Actor + RemoteActor>(
-        &self,
+        self,
         actor_name: &str,
         params: &A::Params,
     ) -> Result<RootActorMesh<'static, A>, anyhow::Error>
@@ -555,11 +556,13 @@ impl SharedSpawnable for Arc<ProcMesh> {
             // Instantiate supervision routing BEFORE spawning the actor mesh.
             self.actor_event_router.insert(actor_name.to_string(), tx);
         }
+        let ranks =
+            ProcMesh::spawn_on_procs::<A>(&self.client, self.agents(), actor_name, params).await?;
         Ok(RootActorMesh::new_shared(
-            Arc::clone(self),
+            self,
             actor_name.to_string(),
             rx,
-            ProcMesh::spawn_on_procs::<A>(&self.client, self.agents(), actor_name, params).await?,
+            ranks,
         ))
     }
 }
