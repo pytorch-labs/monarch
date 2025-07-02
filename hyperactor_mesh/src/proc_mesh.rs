@@ -526,6 +526,10 @@ impl ProcEvents {
             }
         }
     }
+
+    pub fn into_alloc(self) -> Box<dyn Alloc + Send + Sync> {
+        self.event_state.alloc
+    }
 }
 
 /// Spawns from shared ([`Arc`]) proc meshes, providing [`ActorMesh`]es with

@@ -192,6 +192,32 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
 
             self.assert_computed_world_size(values, world_size)
 
+    async def test_stop_proc_mesh(self) -> None:
+        spec = AllocSpec(AllocConstraints(), host=2, gpu=4)
+
+        # create 2x process-allocators (on their own bind addresses) to simulate 2 hosts
+        with remote_process_allocator() as host1, remote_process_allocator() as host2:
+            allocator = RemoteAllocator(
+                world_id="test_remote_allocator",
+                initializer=StaticRemoteAllocInitializer(host1, host2),
+                heartbeat_interval=_100_MILLISECONDS,
+            )
+            alloc = await allocator.allocate(spec)
+            proc_mesh = await ProcMesh.from_alloc(alloc)
+            actor = await proc_mesh.spawn("test_actor", TestActor)
+
+            await proc_mesh.stop()
+
+            with self.assertRaises(
+                RuntimeError, msg="`ProcMesh` has already been stopped"
+            ):
+                await proc_mesh.spawn("test_actor", TestActor)
+
+            # TODO(agallagher): It'd be nice to test that this just fails
+            # immediately, trying to access the wrapped actor mesh, but right
+            # now we doing casting without accessing the wrapped type.
+            del actor
+
     async def test_stacked_1d_meshes(self) -> None:
         # create two stacked actor meshes on the same host
         # each actor mesh running on separate process-allocators

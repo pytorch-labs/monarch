@@ -113,7 +113,7 @@ impl TrackedProcMesh {
 pub struct PyProcMesh {
     inner: SharedCell<TrackedProcMesh>,
     keepalive: Keepalive,
-    proc_events: Arc<Mutex<ProcEvents>>,
+    proc_events: SharedCell<Mutex<ProcEvents>>,
     stop_monitor_sender: mpsc::Sender<bool>,
     user_monitor_registered: AtomicBool,
 }
@@ -159,9 +159,11 @@ impl PyProcMesh {
     /// process on any proc failure.
     fn monitored(mut proc_mesh: ProcMesh, world_id: WorldId) -> Self {
         let (sender, abort_receiver) = mpsc::channel::<bool>(1);
-        let proc_events = Arc::new(Mutex::new(proc_mesh.events().unwrap()));
+        let proc_events = SharedCell::from(Mutex::new(proc_mesh.events().unwrap()));
         let monitor = tokio::spawn(Self::default_proc_mesh_monitor(
-            proc_events.clone(),
+            proc_events
+                .borrow()
+                .expect("borrowing immediately after creation"),
             world_id,
             abort_receiver,
         ));
@@ -177,7 +179,7 @@ impl PyProcMesh {
     /// The default monitor of the proc mesh for crashes. If a proc crashes, we print the reason
     /// to stderr and exit with code 1.
     async fn default_proc_mesh_monitor(
-        events: Arc<Mutex<ProcEvents>>,
+        events: SharedCellRef<Mutex<ProcEvents>>,
         world_id: WorldId,
         mut abort_receiver: mpsc::Receiver<bool>,
     ) {
@@ -197,7 +199,12 @@ impl PyProcMesh {
                         }
                     }
                 }
-                _ = abort_receiver.recv() => {
+                _ = async {
+                    tokio::select! {
+                        _ = events.preempted() => (),
+                        _ = abort_receiver.recv() => (),
+                    }
+                 } => {
                     // The default monitor is aborted, this happens when user takes over
                     // the monitoring responsibility.
                     eprintln!("stop default supervision monitor for ProcMesh {}", world_id);
@@ -320,6 +327,7 @@ impl PyProcMesh {
 
     fn stop<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let tracked_proc_mesh = self.inner.clone();
+        let proc_events = self.proc_events.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             async {
                 // "Take" the proc mesh wrapper.  Once we do, it should be impossible for new
@@ -333,6 +341,9 @@ impl PyProcMesh {
                 children.discard_all().await?;
                 // Finally, take ownership of the inner proc mesh, which will allowing dropping it.
                 let _proc_mesh = proc_mesh.take().await?;
+                // Grab the alloc back from `ProcEvents` and use that to stop the mesh.
+                let mut alloc = proc_events.take().await?.into_inner().into_alloc();
+                alloc.stop_and_wait().await?;
                 anyhow::Ok(())
             }
             .await?;
@@ -372,7 +383,7 @@ impl Drop for KeepaliveState {
     module = "monarch._rust_bindings.monarch_hyperactor.proc_mesh"
 )]
 pub struct PyProcMeshMonitor {
-    proc_events: Arc<Mutex<ProcEvents>>,
+    proc_events: SharedCell<Mutex<ProcEvents>>,
 }
 
 #[pymethods]
@@ -384,13 +395,22 @@ impl PyProcMeshMonitor {
     fn __anext__(&self, py: Python<'_>) -> PyResult<PyObject> {
         let events = self.proc_events.clone();
         Ok(pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let events = events
+                .borrow()
+                .map_err(|_| PyRuntimeError::new_err("`ProcEvents` is shutdown"))?;
             let mut proc_events = events.lock().await;
-            let event: Option<_> = proc_events.next().await;
-            match event {
-                Some(event) => Ok(PyProcEvent::from(event)),
-                None => Err(::pyo3::exceptions::PyStopAsyncIteration::new_err(
-                    "stop iteration",
-                )),
+            tokio::select! {
+                () = events.preempted() => {
+                    Err(PyRuntimeError::new_err("shutting down `ProcEvents`"))
+                },
+                event = proc_events.next() => {
+                    match event {
+                        Some(event) => Ok(PyProcEvent::from(event)),
+                        None => Err(::pyo3::exceptions::PyStopAsyncIteration::new_err(
+                            "stop iteration",
+                        )),
+                    }
+                }
             }
         })?
         .into())

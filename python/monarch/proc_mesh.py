@@ -245,6 +245,9 @@ class ProcMesh(MeshTrait):
             assert self._auto_reload_actor is not None
             await self._auto_reload_actor.reload.call()
 
+    async def stop(self) -> None:
+        await self._proc_mesh.stop()
+
 
 async def local_proc_mesh_nonblocking(
     *, gpus: Optional[int] = None, hosts: int = 1
