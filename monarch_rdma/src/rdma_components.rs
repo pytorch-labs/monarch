@@ -39,25 +39,27 @@
 //! 5. Perform RDMA operations (read/write)
 //! 6. Poll for completions
 //! 7. Resources are cleaned up when dropped
+
+use std::collections::HashMap;
 use std::ffi::CStr;
 use std::io::Error;
 use std::result::Result;
 use std::time::Duration;
 
-/// Direct access to low-level libibverbs FFI.
-use ffi::ibv_qp_type;
 use hyperactor::ActorRef;
 use hyperactor::Mailbox;
 use hyperactor::Named;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
-use ibverbs::Gid;
+/// Direct access to low-level libibverbs rdmacore_sys.
+use rdmacore_sys::ibv_qp_type;
 use serde::Deserialize;
 use serde::Serialize;
 
 use crate::RdmaDevice;
 use crate::RdmaManagerActor;
 use crate::RdmaManagerMessageClient;
+use crate::ibverbs_primitives::Gid;
 use crate::ibverbs_primitives::IbvWc;
 use crate::ibverbs_primitives::IbverbsConfig;
 use crate::ibverbs_primitives::RdmaMemoryRegionView;
@@ -67,6 +69,7 @@ use crate::ibverbs_primitives::RdmaQpInfo;
 #[derive(Debug, Serialize, Deserialize, Named, Clone)]
 pub struct RdmaBuffer {
     pub owner: ActorRef<RdmaManagerActor>,
+    pub mr_id: u32,
     pub lkey: u32,
     pub rkey: u32,
     pub addr: usize,
@@ -195,14 +198,13 @@ impl RdmaBuffer {
 ///
 /// * `context`: A pointer to the RDMA device context, representing the connection to the RDMA device.
 /// * `pd`: A pointer to the protection domain, which provides isolation between different connections.
-/// * `mr`: A pointer to the memory region, which must be registered with the RDMA device before use.
-/// * `config`: Configuration settings for the RDMA operations.
-/// * `lkey`: Local key for the memory region, used in local RDMA operations.
-/// * `rkey`: Remote key for the memory region, used when remote peers access this memory region.
+/// * `mr_map`: A map of memory region IDs to pointers, representing registered memory regions.
+/// * `counter`: A counter for generating unique memory region IDs.
 pub struct RdmaDomain {
-    pub context: *mut ffi::ibv_context,
-    pub pd: *mut ffi::ibv_pd,
-    mr: *mut ffi::ibv_mr,
+    pub context: *mut rdmacore_sys::ibv_context,
+    pub pd: *mut rdmacore_sys::ibv_pd,
+    mr_map: HashMap<u32, *mut rdmacore_sys::ibv_mr>,
+    counter: u32,
 }
 
 impl std::fmt::Debug for RdmaDomain {
@@ -210,22 +212,31 @@ impl std::fmt::Debug for RdmaDomain {
         f.debug_struct("RdmaDomain")
             .field("context", &format!("{:p}", self.context))
             .field("pd", &format!("{:p}", self.pd))
-            .field("mr", &format!("{:p}", self.mr))
+            .field("mr", &format!("{:?}", self.mr_map))
+            .field("counter", &self.counter)
             .finish()
     }
 }
 
 // SAFETY:
-// This function contains code marked unsafe as it interacts with the Rdma device through FFI calls.
+// This function contains code marked unsafe as it interacts with the Rdma device through rdmacore_sys calls.
 // RdmaDomain is `Send` because the raw pointers to ibverbs structs can be
 // accessed from any thread, and it is safe to drop `RdmaDomain` (and run the
 // ibverbs destructors) from any thread.
 unsafe impl Send for RdmaDomain {}
 
 // SAFETY:
-// This function contains code marked unsafe as it interacts with the Rdma device through FFI calls.
+// This function contains code marked unsafe as it interacts with the Rdma device through rdmacore_sys calls.
 // RdmaDomain is `Sync` because the underlying ibverbs APIs are thread-safe.
 unsafe impl Sync for RdmaDomain {}
+
+impl Drop for RdmaDomain {
+    fn drop(&mut self) {
+        unsafe {
+            rdmacore_sys::ibv_dealloc_pd(self.pd);
+        }
+    }
+}
 
 impl RdmaDomain {
     /// Creates a new RdmaDomain.
@@ -257,7 +268,7 @@ impl RdmaDomain {
     pub fn new(device: RdmaDevice) -> Result<Self, anyhow::Error> {
         tracing::debug!("creating RdmaDomain for device {}", device.name());
         // SAFETY:
-        // This code uses unsafe FFI calls to interact with the RDMA device, but is safe because:
+        // This code uses unsafe rdmacore_sys calls to interact with the RDMA device, but is safe because:
         // - All pointers are properly initialized and checked for null before use
         // - Memory registration follows the ibverbs API contract with proper access flags
         // - Resources are properly cleaned up in error cases to prevent leaks
@@ -266,7 +277,7 @@ impl RdmaDomain {
             // Get the device based on the provided RdmaDevice
             let device_name = device.name();
             let mut num_devices = 0i32;
-            let devices = ffi::ibv_get_device_list(&mut num_devices as *mut _);
+            let devices = rdmacore_sys::ibv_get_device_list(&mut num_devices as *mut _);
 
             if devices.is_null() || num_devices == 0 {
                 return Err(anyhow::anyhow!("no RDMA devices found"));
@@ -276,7 +287,8 @@ impl RdmaDomain {
             let mut device_ptr = std::ptr::null_mut();
             for i in 0..num_devices {
                 let dev = *devices.offset(i as isize);
-                let dev_name = CStr::from_ptr(ffi::ibv_get_device_name(dev)).to_string_lossy();
+                let dev_name =
+                    CStr::from_ptr(rdmacore_sys::ibv_get_device_name(dev)).to_string_lossy();
 
                 if dev_name == *device_name {
                     device_ptr = dev;
@@ -286,24 +298,24 @@ impl RdmaDomain {
 
             // If we didn't find the device, return an error
             if device_ptr.is_null() {
-                ffi::ibv_free_device_list(devices);
+                rdmacore_sys::ibv_free_device_list(devices);
                 return Err(anyhow::anyhow!("device '{}' not found", device_name));
             }
             tracing::info!("using RDMA device: {}", device_name);
 
             // Open device
-            let context = ffi::ibv_open_device(device_ptr);
+            let context = rdmacore_sys::ibv_open_device(device_ptr);
             if context.is_null() {
-                ffi::ibv_free_device_list(devices);
+                rdmacore_sys::ibv_free_device_list(devices);
                 let os_error = Error::last_os_error();
                 return Err(anyhow::anyhow!("failed to create context: {}", os_error));
             }
 
             // Create protection domain
-            let pd = ffi::ibv_alloc_pd(context);
+            let pd = rdmacore_sys::ibv_alloc_pd(context);
             if pd.is_null() {
-                ffi::ibv_close_device(context);
-                ffi::ibv_free_device_list(devices);
+                rdmacore_sys::ibv_close_device(context);
+                rdmacore_sys::ibv_free_device_list(devices);
                 let os_error = Error::last_os_error();
                 return Err(anyhow::anyhow!(
                     "failed to create protection domain (PD): {}",
@@ -312,38 +324,79 @@ impl RdmaDomain {
             }
 
             // Avoids memory leaks
-            ffi::ibv_free_device_list(devices);
+            rdmacore_sys::ibv_free_device_list(devices);
 
             Ok(RdmaDomain {
                 context,
                 pd,
-                mr: std::ptr::null_mut(),
+                mr_map: HashMap::new(),
+                counter: 0,
             })
         }
     }
 
-    fn register_mr(&mut self) -> Result<(), anyhow::Error> {
-        if self.mr.is_null() {
-            // SAFETY: This code uses unsafe FFI calls to interact with the RDMA device
+    fn register_mr(
+        &mut self,
+        addr: usize,
+        size: usize,
+    ) -> Result<RdmaMemoryRegionView, anyhow::Error> {
+        unsafe {
+            let mut mem_type: i32 = 0;
+            let ptr = addr as cuda_sys::CUdeviceptr;
+            let err = cuda_sys::cuPointerGetAttribute(
+                &mut mem_type as *mut _ as *mut std::ffi::c_void,
+                cuda_sys::CUpointer_attribute_enum::CU_POINTER_ATTRIBUTE_MEMORY_TYPE,
+                ptr,
+            );
+            let is_cuda = err == cuda_sys::CUresult::CUDA_SUCCESS;
+
+            let access = rdmacore_sys::ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
+                | rdmacore_sys::ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
+                | rdmacore_sys::ibv_access_flags::IBV_ACCESS_REMOTE_READ
+                | rdmacore_sys::ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC;
+
+            let mr;
+            if is_cuda {
+                let mut fd: i32 = -1;
+                cuda_sys::cuMemGetHandleForAddressRange(
+                    &mut fd as *mut i32 as *mut std::ffi::c_void,
+                    addr as cuda_sys::CUdeviceptr,
+                    size,
+                    cuda_sys::CUmemRangeHandleType::CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
+                    0,
+                );
+                mr = rdmacore_sys::ibv_reg_dmabuf_mr(self.pd, 0, size, 0, fd, access.0 as i32);
+            } else {
+                mr = rdmacore_sys::ibv_reg_mr(
+                    self.pd,
+                    addr as *mut std::ffi::c_void,
+                    size,
+                    access.0 as i32,
+                );
+            }
+
+            if mr.is_null() {
+                return Err(anyhow::anyhow!("failed to register memory region (MR)"));
+            }
+            let id = self.counter;
+            self.mr_map.insert(id, mr);
+            self.counter += 1;
+
+            Ok(RdmaMemoryRegionView {
+                id,
+                addr: (*mr).addr as usize,
+                size: (*mr).length,
+                lkey: (*mr).lkey,
+                rkey: (*mr).rkey,
+            })
+        }
+    }
+
+    fn deregister_mr(&mut self, id: u32) -> Result<(), anyhow::Error> {
+        let mr = self.mr_map.remove(&id);
+        if mr.is_some() {
             unsafe {
-                let mut access = ffi::ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
-                    | ffi::ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
-                    | ffi::ibv_access_flags::IBV_ACCESS_REMOTE_READ
-                    | ffi::ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC;
-
-                // TODO: this is CPU simplification, expand to support GPU.
-                access |= ffi::ibv_access_flags::IBV_ACCESS_ON_DEMAND;
-                let mr =
-                    ffi::ibv_reg_mr(self.pd, std::ptr::null_mut(), usize::MAX, access.0 as i32);
-
-                if mr.is_null() {
-                    let os_error = Error::last_os_error();
-                    return Err(anyhow::anyhow!(
-                        "failed to register memory region (MR): {}",
-                        os_error
-                    ));
-                }
-                self.mr = mr;
+                rdmacore_sys::ibv_dereg_mr(mr.expect("mr is required"));
             }
         }
         Ok(())
@@ -354,25 +407,14 @@ impl RdmaDomain {
         addr: usize,
         size: usize,
     ) -> Result<RdmaMemoryRegionView, anyhow::Error> {
-        self.register_mr()?;
-        // SAFETY: This code uses unsafe FFI calls to interact with the RDMA device
-        unsafe {
-            Ok(RdmaMemoryRegionView {
-                addr,
-                size,
-                lkey: (*self.mr).lkey,
-                rkey: (*self.mr).rkey,
-            })
-        }
+        let region_view = self.register_mr(addr, size)?;
+        Ok(region_view)
     }
 
     // Removes a specific address from memory region.   Currently we only support single address,
     // but in future we can expand/contract effective memory region.
-    pub fn unregister_buffer(
-        &mut self,
-        _buffer: RdmaMemoryRegionView,
-    ) -> Result<(), anyhow::Error> {
-        // noop on cpu
+    pub fn deregister_buffer(&mut self, buffer: RdmaBuffer) -> Result<(), anyhow::Error> {
+        self.deregister_mr(buffer.mr_id)?;
         Ok(())
     }
 }
@@ -403,9 +445,9 @@ impl RdmaDomain {
 
 #[derive(Debug, Serialize, Deserialize, Named, Clone)]
 pub struct RdmaQueuePair {
-    cq: usize,      // *mut ffi::ibv_cq,
-    qp: usize,      // *mut ffi::ibv_qp,
-    context: usize, // *mut ffi::ibv_context,
+    cq: usize,      // *mut rdmacore_sys::ibv_cq,
+    qp: usize,      // *mut rdmacore_sys::ibv_qp,
+    context: usize, // *mut rdmacore_sys::ibv_context,
     config: IbverbsConfig,
 }
 
@@ -431,19 +473,19 @@ impl RdmaQueuePair {
     /// * Completion queue (CQ) creation fails
     /// * Queue pair (QP) creation fails
     pub fn new(
-        context: *mut ffi::ibv_context,
-        pd: *mut ffi::ibv_pd,
+        context: *mut rdmacore_sys::ibv_context,
+        pd: *mut rdmacore_sys::ibv_pd,
         config: IbverbsConfig,
     ) -> Result<Self, anyhow::Error> {
         tracing::info!("creating an RdmaQueuePair from config {}", config);
         // SAFETY:
-        // This code uses unsafe FFI calls to interact with the RDMA device, but is safe because:
+        // This code uses unsafe rdmacore_sys calls to interact with the RDMA device, but is safe because:
         // - All pointers are properly initialized and checked for null before use
         // - Resources (CQ, QP) are created following the ibverbs API contract
         // - Error handling properly cleans up resources in failure cases
         // - The operations follow the documented RDMA protocol for queue pair initialization
         unsafe {
-            let cq = ffi::ibv_create_cq(
+            let cq = rdmacore_sys::ibv_create_cq(
                 context,
                 config.cq_entries,
                 std::ptr::null_mut(),
@@ -459,12 +501,12 @@ impl RdmaQueuePair {
             }
 
             // Create queue pair - note we currently share a CQ for both send and receive for simplicity.
-            let mut qp_init_attr = ffi::ibv_qp_init_attr {
+            let mut qp_init_attr = rdmacore_sys::ibv_qp_init_attr {
                 qp_context: std::ptr::null::<std::os::raw::c_void>() as *mut _,
                 send_cq: cq,
                 recv_cq: cq,
-                srq: std::ptr::null::<ffi::ibv_srq>() as *mut _,
-                cap: ffi::ibv_qp_cap {
+                srq: std::ptr::null::<rdmacore_sys::ibv_srq>() as *mut _,
+                cap: rdmacore_sys::ibv_qp_cap {
                     max_send_wr: config.max_send_wr,
                     max_recv_wr: config.max_recv_wr,
                     max_send_sge: config.max_send_sge,
@@ -475,9 +517,9 @@ impl RdmaQueuePair {
                 sq_sig_all: 0,
             };
 
-            let qp = ffi::ibv_create_qp(pd, &mut qp_init_attr);
+            let qp = rdmacore_sys::ibv_create_qp(pd, &mut qp_init_attr);
             if qp.is_null() {
-                ffi::ibv_destroy_cq(cq);
+                rdmacore_sys::ibv_destroy_cq(cq);
                 let os_error = Error::last_os_error();
                 return Err(anyhow::anyhow!(
                     "failed to create queue pair (QP): {}",
@@ -510,19 +552,19 @@ impl RdmaQueuePair {
     /// * GID query fails
     pub fn get_qp_info(&mut self) -> Result<RdmaQpInfo, anyhow::Error> {
         // SAFETY:
-        // This code uses unsafe FFI calls to query RDMA device information, but is safe because:
+        // This code uses unsafe rdmacore_sys calls to query RDMA device information, but is safe because:
         // - All pointers are properly initialized before use
         // - Port and GID queries follow the documented ibverbs API contract
         // - Error handling properly checks return codes from ibverbs functions
         // - The memory address provided is only stored, not dereferenced in this function
         unsafe {
-            let context = self.context as *mut ffi::ibv_context;
-            let qp = self.qp as *mut ffi::ibv_qp;
-            let mut port_attr = ffi::ibv_port_attr::default();
-            let errno = ffi::ibv_query_port(
+            let context = self.context as *mut rdmacore_sys::ibv_context;
+            let qp = self.qp as *mut rdmacore_sys::ibv_qp;
+            let mut port_attr = rdmacore_sys::ibv_port_attr::default();
+            let errno = rdmacore_sys::ibv_query_port(
                 context,
                 self.config.port_num,
-                &mut port_attr as *mut ffi::ibv_port_attr as *mut _,
+                &mut port_attr as *mut rdmacore_sys::ibv_port_attr as *mut _,
             );
             if errno != 0 {
                 let os_error = Error::last_os_error();
@@ -533,7 +575,7 @@ impl RdmaQueuePair {
             }
 
             let mut gid = Gid::default();
-            let ret = ffi::ibv_query_gid(
+            let ret = rdmacore_sys::ibv_query_gid(
                 context,
                 self.config.port_num,
                 i32::from(self.config.gid_index),
@@ -553,17 +595,18 @@ impl RdmaQueuePair {
     }
 
     pub fn state(&mut self) -> Result<u32, anyhow::Error> {
-        // SAFETY: This block interacts with the RDMA device through FFI calls.
+        // SAFETY: This block interacts with the RDMA device through rdmacore_sys calls.
         unsafe {
-            let qp = self.qp as *mut ffi::ibv_qp;
-            let mut qp_attr = ffi::ibv_qp_attr {
+            let qp = self.qp as *mut rdmacore_sys::ibv_qp;
+            let mut qp_attr = rdmacore_sys::ibv_qp_attr {
                 ..Default::default()
             };
-            let mut qp_init_attr = ffi::ibv_qp_init_attr {
+            let mut qp_init_attr = rdmacore_sys::ibv_qp_init_attr {
                 ..Default::default()
             };
-            let mask = ffi::ibv_qp_attr_mask::IBV_QP_STATE;
-            let errno = ffi::ibv_query_qp(qp, &mut qp_attr, mask.0 as i32, &mut qp_init_attr);
+            let mask = rdmacore_sys::ibv_qp_attr_mask::IBV_QP_STATE;
+            let errno =
+                rdmacore_sys::ibv_query_qp(qp, &mut qp_attr, mask.0 as i32, &mut qp_init_attr);
             if errno != 0 {
                 let os_error = Error::last_os_error();
                 return Err(anyhow::anyhow!("failed to query QP state: {}", os_error));
@@ -580,7 +623,7 @@ impl RdmaQueuePair {
     /// * `connection_info` - The remote connection info to connect to
     pub fn connect(&mut self, connection_info: &RdmaQpInfo) -> Result<(), anyhow::Error> {
         // SAFETY:
-        // This unsafe block is necessary because we're interacting with the RDMA device through FFI calls.
+        // This unsafe block is necessary because we're interacting with the RDMA device through rdmacore_sys calls.
         // The operations are safe because:
         // 1. We're following the documented ibverbs API contract
         // 2. All pointers used are properly initialized and owned by this struct
@@ -588,26 +631,26 @@ impl RdmaQueuePair {
         // 4. Memory access is properly bounded by the registered memory regions
         unsafe {
             // Transition to INIT
-            let qp = self.qp as *mut ffi::ibv_qp;
+            let qp = self.qp as *mut rdmacore_sys::ibv_qp;
 
-            let qp_access_flags = ffi::ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
-                | ffi::ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
-                | ffi::ibv_access_flags::IBV_ACCESS_REMOTE_READ;
+            let qp_access_flags = rdmacore_sys::ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
+                | rdmacore_sys::ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
+                | rdmacore_sys::ibv_access_flags::IBV_ACCESS_REMOTE_READ;
 
-            let mut qp_attr = ffi::ibv_qp_attr {
-                qp_state: ffi::ibv_qp_state::IBV_QPS_INIT,
+            let mut qp_attr = rdmacore_sys::ibv_qp_attr {
+                qp_state: rdmacore_sys::ibv_qp_state::IBV_QPS_INIT,
                 qp_access_flags: qp_access_flags.0,
                 pkey_index: self.config.pkey_index,
                 port_num: self.config.port_num,
                 ..Default::default()
             };
 
-            let mask = ffi::ibv_qp_attr_mask::IBV_QP_STATE
-                | ffi::ibv_qp_attr_mask::IBV_QP_PKEY_INDEX
-                | ffi::ibv_qp_attr_mask::IBV_QP_PORT
-                | ffi::ibv_qp_attr_mask::IBV_QP_ACCESS_FLAGS;
+            let mask = rdmacore_sys::ibv_qp_attr_mask::IBV_QP_STATE
+                | rdmacore_sys::ibv_qp_attr_mask::IBV_QP_PKEY_INDEX
+                | rdmacore_sys::ibv_qp_attr_mask::IBV_QP_PORT
+                | rdmacore_sys::ibv_qp_attr_mask::IBV_QP_ACCESS_FLAGS;
 
-            let errno = ffi::ibv_modify_qp(qp, &mut qp_attr, mask.0 as i32);
+            let errno = rdmacore_sys::ibv_modify_qp(qp, &mut qp_attr, mask.0 as i32);
             if errno != 0 {
                 let os_error = Error::last_os_error();
                 return Err(anyhow::anyhow!(
@@ -617,14 +660,14 @@ impl RdmaQueuePair {
             }
 
             // Transition to RTR (Ready to Receive)
-            let mut qp_attr = ffi::ibv_qp_attr {
-                qp_state: ffi::ibv_qp_state::IBV_QPS_RTR,
+            let mut qp_attr = rdmacore_sys::ibv_qp_attr {
+                qp_state: rdmacore_sys::ibv_qp_state::IBV_QPS_RTR,
                 path_mtu: self.config.path_mtu,
                 dest_qp_num: connection_info.qp_num,
                 rq_psn: connection_info.psn,
                 max_dest_rd_atomic: self.config.max_dest_rd_atomic,
                 min_rnr_timer: self.config.min_rnr_timer,
-                ah_attr: ffi::ibv_ah_attr {
+                ah_attr: rdmacore_sys::ibv_ah_attr {
                     dlid: connection_info.lid,
                     sl: 0,
                     src_path_bits: 0,
@@ -647,15 +690,15 @@ impl RdmaQueuePair {
                 qp_attr.ah_attr.is_global = 0;
             }
 
-            let mask = ffi::ibv_qp_attr_mask::IBV_QP_STATE
-                | ffi::ibv_qp_attr_mask::IBV_QP_AV
-                | ffi::ibv_qp_attr_mask::IBV_QP_PATH_MTU
-                | ffi::ibv_qp_attr_mask::IBV_QP_DEST_QPN
-                | ffi::ibv_qp_attr_mask::IBV_QP_RQ_PSN
-                | ffi::ibv_qp_attr_mask::IBV_QP_MAX_DEST_RD_ATOMIC
-                | ffi::ibv_qp_attr_mask::IBV_QP_MIN_RNR_TIMER;
+            let mask = rdmacore_sys::ibv_qp_attr_mask::IBV_QP_STATE
+                | rdmacore_sys::ibv_qp_attr_mask::IBV_QP_AV
+                | rdmacore_sys::ibv_qp_attr_mask::IBV_QP_PATH_MTU
+                | rdmacore_sys::ibv_qp_attr_mask::IBV_QP_DEST_QPN
+                | rdmacore_sys::ibv_qp_attr_mask::IBV_QP_RQ_PSN
+                | rdmacore_sys::ibv_qp_attr_mask::IBV_QP_MAX_DEST_RD_ATOMIC
+                | rdmacore_sys::ibv_qp_attr_mask::IBV_QP_MIN_RNR_TIMER;
 
-            let errno = ffi::ibv_modify_qp(qp, &mut qp_attr, mask.0 as i32);
+            let errno = rdmacore_sys::ibv_modify_qp(qp, &mut qp_attr, mask.0 as i32);
             if errno != 0 {
                 let os_error = Error::last_os_error();
                 return Err(anyhow::anyhow!(
@@ -665,8 +708,8 @@ impl RdmaQueuePair {
             }
 
             // Transition to RTS (Ready to Send)
-            let mut qp_attr = ffi::ibv_qp_attr {
-                qp_state: ffi::ibv_qp_state::IBV_QPS_RTS,
+            let mut qp_attr = rdmacore_sys::ibv_qp_attr {
+                qp_state: rdmacore_sys::ibv_qp_state::IBV_QPS_RTS,
                 sq_psn: self.config.psn,
                 max_rd_atomic: self.config.max_rd_atomic,
                 retry_cnt: self.config.retry_cnt,
@@ -675,14 +718,14 @@ impl RdmaQueuePair {
                 ..Default::default()
             };
 
-            let mask = ffi::ibv_qp_attr_mask::IBV_QP_STATE
-                | ffi::ibv_qp_attr_mask::IBV_QP_TIMEOUT
-                | ffi::ibv_qp_attr_mask::IBV_QP_RETRY_CNT
-                | ffi::ibv_qp_attr_mask::IBV_QP_SQ_PSN
-                | ffi::ibv_qp_attr_mask::IBV_QP_RNR_RETRY
-                | ffi::ibv_qp_attr_mask::IBV_QP_MAX_QP_RD_ATOMIC;
+            let mask = rdmacore_sys::ibv_qp_attr_mask::IBV_QP_STATE
+                | rdmacore_sys::ibv_qp_attr_mask::IBV_QP_TIMEOUT
+                | rdmacore_sys::ibv_qp_attr_mask::IBV_QP_RETRY_CNT
+                | rdmacore_sys::ibv_qp_attr_mask::IBV_QP_SQ_PSN
+                | rdmacore_sys::ibv_qp_attr_mask::IBV_QP_RNR_RETRY
+                | rdmacore_sys::ibv_qp_attr_mask::IBV_QP_MAX_QP_RD_ATOMIC;
 
-            let errno = ffi::ibv_modify_qp(qp, &mut qp_attr, mask.0 as i32);
+            let errno = rdmacore_sys::ibv_modify_qp(qp, &mut qp_attr, mask.0 as i32);
             if errno != 0 {
                 let os_error = Error::last_os_error();
                 return Err(anyhow::anyhow!(
@@ -752,28 +795,28 @@ impl RdmaQueuePair {
         rkey: u32,
     ) -> Result<(), anyhow::Error> {
         // SAFETY:
-        // This code uses unsafe FFI calls to post work requests to the RDMA device, but is safe because:
+        // This code uses unsafe rdmacore_sys calls to post work requests to the RDMA device, but is safe because:
         // - All pointers (send_sge, send_wr) are properly initialized on the stack before use
         // - The memory address in `local_addr` is not dereferenced, only passed to the device
         // - The remote connection info is verified to exist before accessing
         // - The ibverbs post_send operation follows the documented API contract
         // - Error codes from the device are properly checked and propagated
         unsafe {
-            let qp = self.qp as *mut ffi::ibv_qp;
-            let context = self.context as *mut ffi::ibv_context;
-            let mut send_sge = ffi::ibv_sge {
+            let qp = self.qp as *mut rdmacore_sys::ibv_qp;
+            let context = self.context as *mut rdmacore_sys::ibv_context;
+            let mut send_sge = rdmacore_sys::ibv_sge {
                 addr: laddr as u64,
                 length: length as u32,
                 lkey,
             };
 
             let send_flags = if signaled {
-                ffi::ibv_send_flags::IBV_SEND_SIGNALED.0
+                rdmacore_sys::ibv_send_flags::IBV_SEND_SIGNALED.0
             } else {
                 0
             };
 
-            let mut send_wr = ffi::ibv_send_wr {
+            let mut send_wr = rdmacore_sys::ibv_send_wr {
                 wr_id,
                 next: std::ptr::null_mut(),
                 sg_list: &mut send_sge as *mut _,
@@ -789,7 +832,7 @@ impl RdmaQueuePair {
             // Set remote address and rkey for RDMA operations
             send_wr.wr.rdma.remote_addr = raddr as u64;
             send_wr.wr.rdma.rkey = rkey;
-            let mut bad_send_wr: *mut ffi::ibv_send_wr = std::ptr::null_mut();
+            let mut bad_send_wr: *mut rdmacore_sys::ibv_send_wr = std::ptr::null_mut();
             let ops = &mut (*context).ops;
             let errno =
                 ops.post_send.as_mut().unwrap()(qp, &mut send_wr as *mut _, &mut bad_send_wr);
@@ -830,16 +873,16 @@ impl RdmaQueuePair {
     /// * `Err(e)` - An error occurred
     pub fn poll_completion(&self) -> Result<Option<IbvWc>, anyhow::Error> {
         // SAFETY:
-        // This code uses unsafe FFI calls to poll the completion queue, but is safe because:
+        // This code uses unsafe rdmacore_sys calls to poll the completion queue, but is safe because:
         // - The completion queue pointer is properly initialized and owned by this struct
         // - The work completion structure is properly zeroed before use
         // - We only access the completion queue through the documented ibverbs API
         // - Error codes from polling operations are properly checked and propagated
         // - The work completion validity is verified before returning it to the caller
         unsafe {
-            let context = self.context as *mut ffi::ibv_context;
-            let cq = self.cq as *mut ffi::ibv_cq;
-            let mut wc = std::mem::MaybeUninit::<ffi::ibv_wc>::zeroed().assume_init();
+            let context = self.context as *mut rdmacore_sys::ibv_context;
+            let cq = self.cq as *mut rdmacore_sys::ibv_cq;
+            let mut wc = std::mem::MaybeUninit::<rdmacore_sys::ibv_wc>::zeroed().assume_init();
             let ops = &mut (*context).ops;
 
             let ret = ops.poll_cq.as_mut().unwrap()(cq, 1, &mut wc);

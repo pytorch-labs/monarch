@@ -13,10 +13,12 @@ path = "parameter_server.rs"
 [[bin]]
 name = "parameter_server_bootstrap"
 path = "bootstrap.rs"
+test = false
 
 [[bin]]
 name = "parameter_server_example"
 path = "main.rs"
+test = false
 
 [dependencies]
 anyhow = "1.0.98"

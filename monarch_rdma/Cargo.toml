@@ -11,7 +11,6 @@ license = "BSD-3-Clause"
 anyhow = "1.0.98"
 async-trait = "0.1.86"
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
-ibverbs = "0.7.1"
 rand = { version = "0.8", features = ["small_rng"] }
 serde = { version = "1.0.185", features = ["derive", "rc"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
@@ -21,3 +20,7 @@ hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }
 ndslice = { version = "0.0.0", path = "../ndslice" }
 timed_test = { version = "0.0.0", path = "../timed_test" }
 tokio = { version = "1.45.0", features = ["full", "test-util", "tracing"] }
+
+[features]
+cuda = []
+default = ["cuda"]

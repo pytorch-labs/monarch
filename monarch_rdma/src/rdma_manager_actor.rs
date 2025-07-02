@@ -62,6 +62,9 @@ pub enum RdmaManagerMessage {
         /// `reply` - Reply channel to return the RDMA buffer handle
         reply: OncePortRef<RdmaBuffer>,
     },
+    ReleaseBuffer {
+        buffer: RdmaBuffer,
+    },
     RequestQueuePair {
         remote: ActorRef<RdmaManagerActor>,
         #[reply]
@@ -157,7 +160,7 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
     ///
     /// # Arguments
     ///
-    /// * `this` - The instance of the actor requesting the buffer.
+    /// * `this` - The context of the actor requesting the buffer.
     /// * `addr` - The starting address of the memory region to be registered.
     /// * `size` - The size of the memory region to be registered.
     ///
@@ -174,11 +177,36 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         let mr = self.domain.register_buffer(addr, size)?;
         Ok(RdmaBuffer {
             owner: this.bind().clone(),
+            mr_id: mr.id,
             addr: mr.addr,
             size: mr.size,
             rkey: mr.rkey,
             lkey: mr.lkey,
         })
+    }
+
+    /// Deregisters a buffer from the RDMA domain.
+    ///
+    /// This function removes the specified `RdmaBuffer` from the RDMA domain,
+    /// effectively releasing the resources associated with it.
+    ///
+    /// # Arguments
+    ///
+    /// * `_this` - The context of the actor releasing the buffer.
+    /// * `buffer` - The `RdmaBuffer` to be deregistered.
+    ///
+    /// # Returns
+    ///
+    /// * `Result<(), anyhow::Error>` - On success, returns `Ok(())`. On failure, returns an error.
+    async fn release_buffer(
+        &mut self,
+        _this: &Context<Self>,
+        buffer: RdmaBuffer,
+    ) -> Result<(), anyhow::Error> {
+        self.domain
+            .deregister_buffer(buffer)
+            .map_err(|e| anyhow::anyhow!("could not deregister buffer: {}", e))?;
+        Ok(())
     }
 
     /// Requests a queue pair for communication with a remote RDMA manager actor.
@@ -189,7 +217,7 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
     ///
     /// # Arguments
     ///
-    /// * `this` - The instance of the actor requesting the queue pair.
+    /// * `this` - The context of the actor requesting the queue pair.
     /// * `remote` - The ActorRef of the remote RDMA manager actor to communicate with.
     ///
     /// # Returns
@@ -222,7 +250,7 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
 
     /// Convenience utility to create a new RdmaQueuePair.
     ///
-    /// This initializes a new RDMA connection with another actor if one doesn't already exist.
+    /// This function initializes a new RDMA connection with another actor if one doesn't already exist.
     /// It creates a new RdmaQueuePair associated with the specified actor ID and adds it to the
     /// connection map.
     ///
@@ -245,13 +273,13 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         Ok(true)
     }
 
-    /// Checks if a connection exists with another actor
+    /// Checks if a connection exists with another actor.
     ///
     /// # Arguments
-    /// * `other` - The ActorRef of the actor to check connection with
+    /// * `other` - The ActorRef of the actor to check the connection with.
     ///
     /// # Returns
-    /// * `bool` - True if connected, false otherwise
+    /// * `bool` - Returns true if connected, false otherwise.
     async fn is_connected(
         &mut self,
         _this: &Context<Self>,
@@ -266,7 +294,7 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
             .get_mut(&other.actor_id().clone())
             .unwrap()
             .state()?;
-        Ok(qp_state == ffi::ibv_qp_state::IBV_QPS_RTS)
+        Ok(qp_state == rdmacore_sys::ibv_qp_state::IBV_QPS_RTS)
     }
 
     /// Establishes a connection with another actor
@@ -317,147 +345,15 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
 
 #[cfg(test)]
 mod tests {
-    use hyperactor::Mailbox;
-    use hyperactor_mesh::Mesh;
-    use hyperactor_mesh::ProcMesh;
-    use hyperactor_mesh::RootActorMesh;
-    use hyperactor_mesh::alloc::AllocSpec;
-    use hyperactor_mesh::alloc::Allocator;
-    use hyperactor_mesh::alloc::LocalAllocator;
-    use ndslice::shape;
-
     use super::*;
     use crate::ibverbs_primitives::get_all_devices;
-    use crate::test_utils::wait_for_completion;
+    use crate::test_utils::test_utils::RdmaManagerTestEnv;
+    use crate::test_utils::test_utils::wait_for_completion;
 
-    struct RdmaManagerTestEnv<'a> {
-        buffer1: Box<[u8]>,
-        buffer2: Box<[u8]>,
-        client_1: &'a Mailbox,
-        client_2: &'a Mailbox,
-        actor_1: ActorRef<RdmaManagerActor>,
-        actor_2: ActorRef<RdmaManagerActor>,
-        rdma_handle_1: RdmaBuffer,
-        rdma_handle_2: RdmaBuffer,
-    }
-
-    impl RdmaManagerTestEnv<'_> {
-        /// Sets up the RDMA test environment.
-        ///
-        /// This function initializes the RDMA test environment by setting up two actor meshes
-        /// with their respective RDMA configurations. It also prepares two buffers for testing
-        /// RDMA operations and fills the first buffer with test data.
-        ///
-        /// # Arguments
-        ///
-        /// * `buffer_size` - The size of the buffers to be used in the test.
-        /// * `devices` - Optional tuple specifying the indices of RDMA devices to use. If not provided, then
-        ///   both RDMAManagerActors will default to the first indexed RDMA device.
-        async fn setup(
-            buffer_size: usize,
-            devices: Option<(usize, usize)>,
-        ) -> Result<Self, anyhow::Error> {
-            let (config1, config2) = if let Some((dev1_idx, dev2_idx)) = devices {
-                let all_devices = get_all_devices();
-                if all_devices.len() < 5 {
-                    return Err(anyhow::anyhow!(
-                        "need at least 5 RDMA devices for this test"
-                    ));
-                }
-                (
-                    IbverbsConfig {
-                        device: all_devices.clone().into_iter().nth(dev1_idx).unwrap(),
-                        ..Default::default()
-                    },
-                    IbverbsConfig {
-                        device: all_devices.clone().into_iter().nth(dev2_idx).unwrap(),
-                        ..Default::default()
-                    },
-                )
-            } else {
-                (IbverbsConfig::default(), IbverbsConfig::default())
-            };
-
-            let alloc_1 = LocalAllocator
-                .allocate(AllocSpec {
-                    shape: shape! { proc = 1 },
-                    constraints: Default::default(),
-                })
-                .await
-                .unwrap();
-
-            let proc_mesh_1 = Box::leak(Box::new(ProcMesh::allocate(alloc_1).await.unwrap()));
-            let actor_mesh_1: RootActorMesh<'_, RdmaManagerActor> =
-                proc_mesh_1.spawn("rdma_manager", &config1).await.unwrap();
-
-            let alloc_2 = LocalAllocator
-                .allocate(AllocSpec {
-                    shape: shape! { proc = 1 },
-                    constraints: Default::default(),
-                })
-                .await
-                .unwrap();
-
-            let proc_mesh_2 = Box::leak(Box::new(ProcMesh::allocate(alloc_2).await.unwrap()));
-            let actor_mesh_2: RootActorMesh<'_, RdmaManagerActor> =
-                proc_mesh_2.spawn("rdma_manager", &config2).await.unwrap();
-
-            let mut buffer1 = vec![0u8; buffer_size].into_boxed_slice();
-            let buffer2 = vec![0u8; buffer_size].into_boxed_slice();
-
-            // Fill buffer1 with test data
-            for (i, val) in buffer1.iter_mut().enumerate() {
-                *val = (i % 256) as u8;
-            }
-
-            let actor_1 = actor_mesh_1.get(0).unwrap();
-            let actor_2 = actor_mesh_2.get(0).unwrap();
-
-            let rdma_handle_1 = actor_1
-                .request_buffer(
-                    proc_mesh_1.client(),
-                    buffer1.as_ptr() as usize,
-                    buffer1.len(),
-                )
-                .await?;
-            let rdma_handle_2 = actor_2
-                .request_buffer(
-                    proc_mesh_2.client(),
-                    buffer2.as_ptr() as usize,
-                    buffer2.len(),
-                )
-                .await?;
-            // Get keys from both actors.
-
-            Ok(Self {
-                buffer1,
-                buffer2,
-                client_1: proc_mesh_1.client(),
-                client_2: proc_mesh_2.client(),
-                actor_1,
-                actor_2,
-                rdma_handle_1,
-                rdma_handle_2,
-            })
-        }
-
-        async fn verify_buffers(&self, size: usize) -> Result<(), anyhow::Error> {
-            for i in 0..size {
-                assert_eq!(
-                    self.buffer1[i], self.buffer2[i],
-                    "data mismatch at position {}: {} != {}",
-                    i, self.buffer1[i], self.buffer2[i]
-                );
-            }
-            Ok(())
-        }
-    }
-
-    // Test that RDMA write can be performed between two actors on the same device.
     #[timed_test::async_timed_test(timeout_secs = 20)]
     async fn test_rdma_read_loopback() -> Result<(), anyhow::Error> {
         const BSIZE: usize = 32;
-        let env = RdmaManagerTestEnv::setup(BSIZE, Some((0, 0))).await?;
+        let env = RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_0"), ("cpu", "cpu")).await?;
         let mut qp_1 = env
             .actor_1
             .request_queue_pair(&env.client_1.clone(), env.actor_2.clone())
@@ -474,7 +370,7 @@ mod tests {
     #[timed_test::async_timed_test(timeout_secs = 20)]
     async fn test_rdma_write_loopback() -> Result<(), anyhow::Error> {
         const BSIZE: usize = 32;
-        let env = RdmaManagerTestEnv::setup(BSIZE, Some((0, 0))).await?;
+        let env = RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_0"), ("cpu", "cpu")).await?;
         let mut qp_1 = env
             .actor_1
             .request_queue_pair(&env.client_1.clone(), env.actor_2.clone())
@@ -499,7 +395,7 @@ mod tests {
             );
             return Ok(());
         }
-        let env = RdmaManagerTestEnv::setup(BSIZE, Some((0, 4))).await?;
+        let env = RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cpu", "cpu")).await?;
         let mut qp_1 = env
             .actor_1
             .request_queue_pair(&env.client_1.clone(), env.actor_2.clone())
@@ -524,7 +420,7 @@ mod tests {
             );
             return Ok(());
         }
-        let mut env = RdmaManagerTestEnv::setup(BSIZE, Some((0, 4))).await?;
+        let env = RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cpu", "cpu")).await?;
         let mut qp_1 = env
             .actor_1
             .request_queue_pair(&env.client_1.clone(), env.actor_2.clone())
@@ -535,6 +431,58 @@ mod tests {
         wait_for_completion(&qp_1, 2).await?;
 
         env.verify_buffers(BSIZE).await?;
+        env.cleanup().await?;
+        Ok(())
+    }
+
+    // Test that RDMA write can be performed between two actors on separate devices.
+    #[timed_test::async_timed_test(timeout_secs = 15)]
+    async fn test_rdma_write_separate_devices_cuda_vs_cpu() -> Result<(), anyhow::Error> {
+        const BSIZE: usize = 2 * 1024 * 1024; // minimum size for cuda
+        let devices = get_all_devices();
+        if devices.len() < 5 {
+            println!(
+                "skipping this test as it is only configured on H100 nodes with backend network"
+            );
+            return Ok(());
+        }
+        let env = RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cuda:0", "cpu")).await?;
+        let mut qp_1 = env
+            .actor_1
+            .request_queue_pair(&env.client_1.clone(), env.actor_2.clone())
+            .await?;
+        qp_1.put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
+
+        wait_for_completion(&qp_1, 5).await?;
+
+        env.verify_buffers(BSIZE).await?;
+        env.cleanup().await?;
+        Ok(())
+    }
+
+    // Test that RDMA write can be performed between two actors on separate devices.
+    #[timed_test::async_timed_test(timeout_secs = 15)]
+    async fn test_rdma_write_separate_devices_cuda_vs_cuda() -> Result<(), anyhow::Error> {
+        const BSIZE: usize = 2 * 1024 * 1024; // minimum size for cuda
+        let devices = get_all_devices();
+        if devices.len() < 5 {
+            println!(
+                "skipping this test as it is only configured on H100 nodes with backend network"
+            );
+            return Ok(());
+        }
+        let env =
+            RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cuda:0", "cuda:1")).await?;
+        let mut qp_1 = env
+            .actor_1
+            .request_queue_pair(&env.client_1.clone(), env.actor_2.clone())
+            .await?;
+        qp_1.put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
+
+        wait_for_completion(&qp_1, 5).await?;
+
+        env.verify_buffers(BSIZE).await?;
+        env.cleanup().await?;
         Ok(())
     }
 
@@ -549,7 +497,72 @@ mod tests {
             );
             return Ok(());
         }
-        let env = RdmaManagerTestEnv::setup(BSIZE, Some((0, 4))).await?;
+        let env = RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cpu", "cpu")).await?;
+        let mut rdma_handle_1 = env.rdma_handle_1.clone();
+        rdma_handle_1
+            .read_into(&env.client_1.clone(), env.rdma_handle_2.clone(), 2)
+            .await?;
+
+        env.verify_buffers(BSIZE).await?;
+        env.cleanup().await?;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 20)]
+    async fn test_rdma_read_into_cuda_vs_cpu() -> Result<(), anyhow::Error> {
+        const BSIZE: usize = 2 * 1024 * 1024; // minimum size for cuda
+        let devices = get_all_devices();
+        if devices.len() < 5 {
+            println!(
+                "skipping this test as it is only configured on H100 nodes with backend network"
+            );
+            return Ok(());
+        }
+        let env = RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cuda:0", "cpu")).await?;
+        let mut rdma_handle_1 = env.rdma_handle_1.clone();
+        rdma_handle_1
+            .read_into(&env.client_1.clone(), env.rdma_handle_2.clone(), 2)
+            .await?;
+
+        env.verify_buffers(BSIZE).await?;
+        env.cleanup().await?;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 20)]
+    async fn test_rdma_read_into_cuda_vs_cuda() -> Result<(), anyhow::Error> {
+        const BSIZE: usize = 2 * 1024 * 1024; // minimum size for cuda
+        let devices = get_all_devices();
+        if devices.len() < 5 {
+            println!(
+                "skipping this test as it is only configured on H100 nodes with backend network"
+            );
+            return Ok(());
+        }
+        let env =
+            RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cuda:0", "cuda:1")).await?;
+        let mut rdma_handle_1 = env.rdma_handle_1.clone();
+        rdma_handle_1
+            .read_into(&env.client_1.clone(), env.rdma_handle_2.clone(), 2)
+            .await?;
+
+        env.verify_buffers(BSIZE).await?;
+        env.cleanup().await?;
+        Ok(())
+    }
+
+    // Tests RdmaBufer's `read_into` API
+    #[timed_test::async_timed_test(timeout_secs = 20)]
+    async fn test_rdma_read_into_cuda() -> Result<(), anyhow::Error> {
+        const BSIZE: usize = 32;
+        let devices = get_all_devices();
+        if devices.len() < 5 {
+            println!(
+                "skipping this test as it is only configured on H100 nodes with backend network"
+            );
+            return Ok(());
+        }
+        let env = RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cuda:0", "cpu")).await?;
         let mut rdma_handle_1 = env.rdma_handle_1.clone();
         rdma_handle_1
             .read_into(&env.client_1.clone(), env.rdma_handle_2.clone(), 2)
@@ -570,7 +583,7 @@ mod tests {
             );
             return Ok(());
         }
-        let env = RdmaManagerTestEnv::setup(BSIZE, Some((0, 4))).await?;
+        let env = RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cpu", "cpu")).await?;
         let mut rdma_handle_1 = env.rdma_handle_1.clone();
         rdma_handle_1
             .write_from(&env.client_1.clone(), env.rdma_handle_2.clone(), 2)
