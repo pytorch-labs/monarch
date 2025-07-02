@@ -24,6 +24,7 @@ pub mod mesh_selection;
 mod metrics;
 pub mod proc_mesh;
 pub mod reference;
+pub mod shared_cell;
 pub mod shortuuid;
 pub mod test_utils;
 
