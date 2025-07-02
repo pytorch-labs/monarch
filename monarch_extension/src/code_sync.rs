@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use hyperactor_mesh::RootActorMesh;
 use hyperactor_mesh::SlicedActorMesh;
+use hyperactor_mesh::code_sync::WorkspaceLocation;
 use hyperactor_mesh::code_sync::rsync;
 use hyperactor_mesh::proc_mesh::SharedSpawnable;
 use hyperactor_mesh::shape::Shape;
@@ -20,22 +21,55 @@ use monarch_hyperactor::proc_mesh::PyProcMesh;
 use monarch_hyperactor::runtime::signal_safe_block_on;
 use monarch_hyperactor::shape::PyShape;
 use pyo3::Bound;
+use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3::types::PyBytes;
 use pyo3::types::PyModule;
+use serde::Deserialize;
+use serde::Serialize;
 
-#[pyclass(frozen, module = "monarch._rust_bindings.monarch_extension.code_sync")]
-#[derive(Clone, Debug)]
-enum RemoteWorkspace {
+#[pyclass(
+    frozen,
+    name = "WorkspaceLocation",
+    module = "monarch._rust_bindings.monarch_extension.code_sync"
+)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+enum PyWorkspaceLocation {
     Constant(PathBuf),
     FromEnvVar(String),
 }
 
-impl From<RemoteWorkspace> for rsync::Workspace {
-    fn from(workspace: RemoteWorkspace) -> rsync::Workspace {
+impl From<PyWorkspaceLocation> for WorkspaceLocation {
+    fn from(workspace: PyWorkspaceLocation) -> WorkspaceLocation {
         match workspace {
-            RemoteWorkspace::Constant(v) => rsync::Workspace::Constant(v),
-            RemoteWorkspace::FromEnvVar(v) => rsync::Workspace::FromEnvVar(v),
+            PyWorkspaceLocation::Constant(v) => WorkspaceLocation::Constant(v),
+            PyWorkspaceLocation::FromEnvVar(v) => WorkspaceLocation::FromEnvVar(v),
         }
+    }
+}
+
+#[pymethods]
+impl PyWorkspaceLocation {
+    #[staticmethod]
+    fn from_bytes(bytes: &Bound<'_, PyBytes>) -> PyResult<Self> {
+        bincode::deserialize(bytes.as_bytes())
+            .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))
+    }
+
+    fn __reduce__<'py>(
+        slf: &Bound<'py, Self>,
+    ) -> PyResult<(Bound<'py, PyAny>, (Bound<'py, PyBytes>,))> {
+        let bytes = bincode::serialize(&*slf.borrow())
+            .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
+        let py_bytes = PyBytes::new(slf.py(), &bytes);
+        Ok((slf.as_any().getattr("from_bytes")?, (py_bytes,)))
+    }
+
+    fn resolve(&self) -> PyResult<PathBuf> {
+        let loc: WorkspaceLocation = self.clone().into();
+        loc.resolve()
+            .map_err(|e| PyRuntimeError::new_err(format!("{}", e)))
     }
 }
 
@@ -59,7 +93,7 @@ impl RsyncMeshClient {
         proc_mesh: &PyProcMesh,
         shape: &PyShape,
         local_workspace: PathBuf,
-        remote_workspace: RemoteWorkspace,
+        remote_workspace: PyWorkspaceLocation,
     ) -> PyResult<Self> {
         let proc_mesh = Arc::clone(&proc_mesh.inner);
         let shape = shape.get_inner().clone();
@@ -92,7 +126,7 @@ impl RsyncMeshClient {
 }
 
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    module.add_class::<RemoteWorkspace>()?;
+    module.add_class::<PyWorkspaceLocation>()?;
     module.add_class::<RsyncMeshClient>()?;
     Ok(())
 }

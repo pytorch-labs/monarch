@@ -7,3 +7,6 @@
  */
 
 pub mod rsync;
+mod workspace;
+
+pub use workspace::WorkspaceLocation;

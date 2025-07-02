@@ -5,6 +5,6 @@
 # LICENSE file in the root directory of this source tree.
 
 from monarch._rust_bindings.monarch_extension.code_sync import (  # noqa: F401
-    RemoteWorkspace,
     RsyncMeshClient,
+    WorkspaceLocation,
 )
