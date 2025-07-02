@@ -11,6 +11,7 @@ use std::future::Future;
 use std::future::pending;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use hyperactor::Actor;
@@ -41,6 +42,7 @@ use serde_bytes::ByteBuf;
 use tokio::sync::Mutex;
 use tokio::sync::oneshot;
 
+use crate::config::SHARED_ASYNCIO_RUNTIME;
 use crate::mailbox::EitherPortRef;
 use crate::mailbox::PyMailbox;
 use crate::proc::InstanceWrapper;
@@ -275,8 +277,20 @@ pub(super) struct PythonActor {
     pub(super) actor: PyObject,
 
     /// Stores a reference to the Python event loop to run Python coroutines on.
-    /// We give each PythonActor its own even loop in its own thread.
-    task_locals: pyo3_async_runtimes::TaskLocals,
+    /// This is None when using single runtime mode, Some when using per-actor mode.
+    task_locals: Option<pyo3_async_runtimes::TaskLocals>,
+}
+
+impl PythonActor {
+    /// Get the TaskLocals to use for this actor.
+    /// Returns either the shared TaskLocals or this actor's own TaskLocals based on configuration.
+    fn get_task_locals(&self, py: Python) -> &pyo3_async_runtimes::TaskLocals {
+        self.task_locals.as_ref().unwrap_or_else(|| {
+            // Use shared TaskLocals
+            static SHARED_TASK_LOCALS: OnceLock<pyo3_async_runtimes::TaskLocals> = OnceLock::new();
+            Python::allow_threads(py, || SHARED_TASK_LOCALS.get_or_init(create_task_locals))
+        })
+    }
 }
 
 #[async_trait]
@@ -289,30 +303,34 @@ impl Actor for PythonActor {
             let class_type: &Bound<'_, PyType> = unpickled.downcast()?;
             let actor: PyObject = class_type.call0()?.into_py_any(py)?;
 
-            // Release the GIL so that the thread spawned below can acquire it.
-            let task_locals = Python::allow_threads(py, || {
-                let (tx, rx) = std::sync::mpsc::channel();
-                let _ = std::thread::spawn(move || {
-                    Python::with_gil(|py| {
-                        let asyncio = Python::import(py, "asyncio").unwrap();
-                        let event_loop = asyncio.call_method0("new_event_loop").unwrap();
-                        asyncio
-                            .call_method1("set_event_loop", (event_loop.clone(),))
-                            .unwrap();
-
-                        let task_locals = pyo3_async_runtimes::TaskLocals::new(event_loop.clone())
-                            .copy_context(py)
-                            .unwrap();
-                        tx.send(task_locals).unwrap();
-                        event_loop.call_method0("run_forever").unwrap();
-                    });
-                });
-                rx.recv().unwrap()
-            });
+            // Only create per-actor TaskLocals if not using shared runtime
+            let task_locals = (!hyperactor::config::global::get(SHARED_ASYNCIO_RUNTIME))
+                .then(|| Python::allow_threads(py, create_task_locals));
 
             Ok(Self { actor, task_locals })
         })?)
     }
+}
+
+/// Create a new TaskLocals with its own asyncio event loop in a dedicated thread.
+fn create_task_locals() -> pyo3_async_runtimes::TaskLocals {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _ = std::thread::spawn(move || {
+        Python::with_gil(|py| {
+            let asyncio = Python::import(py, "asyncio").unwrap();
+            let event_loop = asyncio.call_method0("new_event_loop").unwrap();
+            asyncio
+                .call_method1("set_event_loop", (event_loop.clone(),))
+                .unwrap();
+
+            let task_locals = pyo3_async_runtimes::TaskLocals::new(event_loop.clone())
+                .copy_context(py)
+                .unwrap();
+            tx.send(task_locals).unwrap();
+            event_loop.call_method0("run_forever").unwrap();
+        });
+    });
+    rx.recv().unwrap()
 }
 
 // [Panics in async endpoints]
@@ -403,7 +421,7 @@ impl Handler<PythonMessage> for PythonActor {
             };
 
             pyo3_async_runtimes::into_future_with_locals(
-                &self.task_locals,
+                self.get_task_locals(py),
                 awaitable.into_bound(py),
             )
             .map_err(|err| err.into())

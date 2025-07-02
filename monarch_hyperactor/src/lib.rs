@@ -13,6 +13,7 @@ pub mod actor_mesh;
 pub mod alloc;
 pub mod bootstrap;
 pub mod channel;
+pub mod config;
 pub mod mailbox;
 pub mod ndslice;
 pub mod proc;
