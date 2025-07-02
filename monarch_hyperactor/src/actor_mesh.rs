@@ -6,13 +6,14 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use std::sync::Arc;
-
 use hyperactor::ActorRef;
 use hyperactor_mesh::Mesh;
 use hyperactor_mesh::RootActorMesh;
 use hyperactor_mesh::actor_mesh::ActorMesh;
+use hyperactor_mesh::shared_cell::SharedCell;
+use hyperactor_mesh::shared_cell::SharedCellRef;
 use pyo3::exceptions::PyException;
+use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
 use crate::actor::PythonActor;
@@ -27,16 +28,24 @@ use crate::shape::PyShape;
     module = "monarch._rust_bindings.monarch_hyperactor.actor_mesh"
 )]
 pub struct PythonActorMesh {
-    pub(super) inner: Arc<RootActorMesh<'static, PythonActor>>,
+    pub(super) inner: SharedCell<RootActorMesh<'static, PythonActor>>,
     pub(super) client: PyMailbox,
     pub(super) _keepalive: Keepalive,
+}
+
+impl PythonActorMesh {
+    fn try_inner(&self) -> PyResult<SharedCellRef<RootActorMesh<'static, PythonActor>>> {
+        self.inner
+            .borrow()
+            .map_err(|_| PyRuntimeError::new_err("`PythonActorMesh` has already been stopped"))
+    }
 }
 
 #[pymethods]
 impl PythonActorMesh {
     fn cast(&self, message: &PythonMessage) -> PyResult<()> {
         use ndslice::selection::dsl::*;
-        self.inner
+        self.try_inner()?
             .cast(all(true_()), message.clone())
             .map_err(|err| PyException::new_err(err.to_string()))?;
         Ok(())
@@ -44,11 +53,12 @@ impl PythonActorMesh {
 
     // Consider defining a "PythonActorRef", which carries specifically
     // a reference to python message actors.
-    fn get(&self, rank: usize) -> Option<PyActorId> {
-        self.inner
+    fn get(&self, rank: usize) -> PyResult<Option<PyActorId>> {
+        Ok(self
+            .try_inner()?
             .get(rank)
             .map(ActorRef::into_actor_id)
-            .map(PyActorId::from)
+            .map(PyActorId::from))
     }
 
     #[getter]
@@ -57,8 +67,8 @@ impl PythonActorMesh {
     }
 
     #[getter]
-    fn shape(&self) -> PyShape {
-        PyShape::from(self.inner.shape().clone())
+    fn shape(&self) -> PyResult<PyShape> {
+        Ok(PyShape::from(self.try_inner()?.shape().clone()))
     }
 }
 pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResult<()> {
