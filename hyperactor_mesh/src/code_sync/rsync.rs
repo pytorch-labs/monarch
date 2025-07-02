@@ -37,6 +37,7 @@ use tokio::process::Child;
 use tokio::process::Command;
 
 use crate::actor_mesh::ActorMesh;
+use crate::code_sync::WorkspaceLocation;
 use crate::connect::Connect;
 use crate::connect::accept;
 use crate::connect::connect_mesh;
@@ -155,15 +156,9 @@ impl RsyncDaemon {
     }
 }
 
-#[derive(Clone, Debug, Named, Serialize, Deserialize)]
-pub enum Workspace {
-    Constant(PathBuf),
-    FromEnvVar(String),
-}
-
 #[derive(Debug, Named, Serialize, Deserialize)]
 pub struct RsyncParams {
-    pub workspace: Workspace,
+    pub workspace: WorkspaceLocation,
 }
 
 #[derive(Debug)]
@@ -180,10 +175,7 @@ impl Actor for RsyncActor {
     type Params = RsyncParams;
 
     async fn new(RsyncParams { workspace }: Self::Params) -> Result<Self> {
-        let workspace = match workspace {
-            Workspace::Constant(p) => p,
-            Workspace::FromEnvVar(v) => PathBuf::from(std::env::var(v)?),
-        };
+        let workspace = workspace.resolve()?;
         let daemon = RsyncDaemon::spawn(TcpListener::bind(("::1", 0)).await?, &workspace).await?;
         Ok(Self { daemon })
     }
