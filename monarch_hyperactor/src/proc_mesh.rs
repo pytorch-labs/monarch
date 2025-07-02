@@ -6,18 +6,29 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::fmt::Debug;
+use std::fmt::Display;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
+use hyperactor::Actor;
+use hyperactor::Mailbox;
+use hyperactor::RemoteMessage;
 use hyperactor::WorldId;
+use hyperactor::actor::RemoteActor;
+use hyperactor::proc::Proc;
 use hyperactor_extension::alloc::PyAlloc;
+use hyperactor_mesh::RootActorMesh;
 use hyperactor_mesh::alloc::Alloc;
 use hyperactor_mesh::alloc::ProcStopReason;
 use hyperactor_mesh::proc_mesh::ProcEvent;
 use hyperactor_mesh::proc_mesh::ProcEvents;
 use hyperactor_mesh::proc_mesh::ProcMesh;
 use hyperactor_mesh::proc_mesh::SharedSpawnable;
+use hyperactor_mesh::shared_cell::SharedCell;
+use hyperactor_mesh::shared_cell::SharedCellPool;
 use monarch_types::PickledPyObject;
+use ndslice::Shape;
 use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
@@ -31,12 +42,66 @@ use crate::mailbox::PyMailbox;
 use crate::runtime::signal_safe_block_on;
 use crate::shape::PyShape;
 
+// A wrapper around `ProcMesh` which keeps track of all `RootActorMesh`s that it spawns.
+pub struct TrackedProcMesh {
+    inner: Arc<ProcMesh>,
+    children: SharedCellPool,
+}
+
+impl Debug for TrackedProcMesh {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Debug::fmt(&*self.inner, f)
+    }
+}
+
+impl Display for TrackedProcMesh {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(&*self.inner, f)
+    }
+}
+
+impl From<ProcMesh> for TrackedProcMesh {
+    fn from(mesh: ProcMesh) -> Self {
+        Self {
+            inner: Arc::new(mesh),
+            children: SharedCellPool::new(),
+        }
+    }
+}
+
+impl TrackedProcMesh {
+    pub async fn spawn<A: Actor + RemoteActor>(
+        &self,
+        actor_name: &str,
+        params: &A::Params,
+    ) -> Result<SharedCell<RootActorMesh<'static, A>>, anyhow::Error>
+    where
+        A::Params: RemoteMessage,
+    {
+        let mesh = self.inner.clone();
+        let actor = mesh.spawn(actor_name, params).await?;
+        Ok(self.children.insert(actor))
+    }
+
+    pub fn client(&self) -> &Mailbox {
+        self.inner.client()
+    }
+
+    pub fn shape(&self) -> &Shape {
+        self.inner.shape()
+    }
+
+    pub fn client_proc(&self) -> &Proc {
+        self.inner.client_proc()
+    }
+}
+
 #[pyclass(
     name = "ProcMesh",
     module = "monarch._rust_bindings.monarch_hyperactor.proc_mesh"
 )]
 pub struct PyProcMesh {
-    pub inner: Arc<ProcMesh>,
+    pub inner: Arc<TrackedProcMesh>,
     keepalive: Keepalive,
     proc_events: Arc<Mutex<ProcEvents>>,
     stop_monitor_sender: mpsc::Sender<bool>,
@@ -91,7 +156,7 @@ impl PyProcMesh {
             abort_receiver,
         ));
         Self {
-            inner: Arc::new(proc_mesh),
+            inner: Arc::new(proc_mesh.into()),
             keepalive: Keepalive::new(monitor),
             proc_events,
             stop_monitor_sender: sender,
@@ -165,7 +230,7 @@ impl PyProcMesh {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let actor_mesh = proc_mesh.spawn(&name, &pickled_type).await?;
             let python_actor_mesh = PythonActorMesh {
-                inner: Arc::new(actor_mesh),
+                inner: actor_mesh,
                 client: PyMailbox {
                     inner: proc_mesh.client().clone(),
                 },
@@ -187,7 +252,7 @@ impl PyProcMesh {
         signal_safe_block_on(py, async move {
             let actor_mesh = proc_mesh.spawn(&name, &pickled_type).await?;
             let python_actor_mesh = PythonActorMesh {
-                inner: Arc::new(actor_mesh),
+                inner: actor_mesh,
                 client: PyMailbox {
                     inner: proc_mesh.client().clone(),
                 },
