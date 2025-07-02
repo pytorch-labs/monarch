@@ -208,7 +208,7 @@ impl PythonMessage {
     #[pyo3(signature = (method, message, response_port, rank))]
     fn new(
         method: String,
-        message: Vec<u8>,
+        message: &[u8],
         response_port: Option<EitherPortRef>,
         rank: Option<usize>,
     ) -> Self {
