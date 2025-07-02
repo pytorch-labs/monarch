@@ -44,8 +44,8 @@ from monarch._rust_bindings.monarch_hyperactor.proc_mesh import (
 )
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape, Slice
 from monarch.actor_mesh import _Actor, _ActorMeshRefImpl, Actor, ActorMeshRef
-
 from monarch.code_sync import RsyncMeshClient, WorkspaceLocation
+from monarch.code_sync.auto_reload import AutoReloadActor
 from monarch.common._device_utils import _local_device_count
 from monarch.common.shape import MeshTrait
 from monarch.rdma import RDMAManager
@@ -86,6 +86,7 @@ class ProcMesh(MeshTrait):
         self._mailbox: Mailbox = self._proc_mesh.client
         self._rdma_manager: Optional[RDMAManager] = None
         self._rsync_mesh_client: Optional[RsyncMeshClient] = None
+        self._auto_reload_actor: Optional[AutoReloadActor] = None
         self._maybe_device_mesh: Optional[DeviceMesh] = _device_mesh
         if _mock_shape is None:
             self._rdma_manager = self._spawn_blocking("rdma_manager", RDMAManager)
@@ -213,7 +214,7 @@ class ProcMesh(MeshTrait):
     def rank_tensors(self) -> Dict[str, "torch.Tensor"]:
         return self._device_mesh.ranks
 
-    async def sync_workspace(self) -> None:
+    async def sync_workspace(self, auto_reload: bool = False) -> None:
         if self._rsync_mesh_client is None:
             # TODO(agallagher): We need some way to configure and pass this
             # in -- right now we're assuming the `gpu` dimension, which isn't
@@ -233,7 +234,16 @@ class ProcMesh(MeshTrait):
                 local_workspace=os.getcwd(),
                 remote_workspace=WorkspaceLocation.FromEnvVar("WORKSPACE_DIR"),
             )
+            self._auto_reload_actor = self._spawn_blocking(
+                "auto_reload",
+                AutoReloadActor,
+                WorkspaceLocation.FromEnvVar("WORKSPACE_DIR"),
+            )
+        assert self._rsync_mesh_client is not None
         await self._rsync_mesh_client.sync_workspace()
+        if auto_reload:
+            assert self._auto_reload_actor is not None
+            await self._auto_reload_actor.reload.call()
 
 
 async def local_proc_mesh_nonblocking(
