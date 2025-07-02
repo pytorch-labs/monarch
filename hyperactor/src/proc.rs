@@ -1014,9 +1014,7 @@ impl<A: Actor> Instance<A> {
         while self.cell.child_count() > 0 {
             match self.signal_receiver.recv().await? {
                 Signal::ChildStopped(pid) => {
-                    if let Some(child) = self.cell.get_child(pid) {
-                        self.cell.unlink(&child);
-                    }
+                    assert!(self.cell.get_child(pid).is_none());
                 }
                 _ => (),
             }
@@ -1061,12 +1059,7 @@ impl<A: Actor> Instance<A> {
                             break 'messages;
                         },
                         Signal::ChildStopped(pid) => {
-                            let result = self.cell.get_child(pid);
-                            if let Some(child) = result {
-                                self.cell.unlink(&child);
-                            } else {
-                                tracing::debug!("received signal for unknown child pid {}", pid);
-                            }
+                            assert!(self.cell.get_child(pid).is_none());
                         },
                     }
                 }
