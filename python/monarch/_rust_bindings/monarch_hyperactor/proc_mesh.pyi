@@ -80,6 +80,12 @@ class ProcMesh:
         """
         ...
 
+    async def stop(self) -> None:
+        """
+        Stop the proc mesh.
+        """
+        ...
+
     def __repr__(self) -> str: ...
 
 @final

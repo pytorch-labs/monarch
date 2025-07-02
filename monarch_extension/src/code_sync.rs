@@ -9,7 +9,6 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use hyperactor_mesh::RootActorMesh;
 use hyperactor_mesh::SlicedActorMesh;
@@ -95,7 +94,7 @@ impl RsyncMeshClient {
         local_workspace: PathBuf,
         remote_workspace: PyWorkspaceLocation,
     ) -> PyResult<Self> {
-        let proc_mesh = Arc::clone(&proc_mesh.inner);
+        let proc_mesh = proc_mesh.try_inner()?;
         let shape = shape.get_inner().clone();
         signal_safe_block_on(py, async move {
             let actor_mesh = proc_mesh
