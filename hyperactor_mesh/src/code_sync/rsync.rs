@@ -18,12 +18,14 @@ use anyhow::Result;
 use anyhow::bail;
 use anyhow::ensure;
 use async_trait::async_trait;
+use futures::TryStreamExt;
 use futures::try_join;
 use hyperactor::Actor;
 use hyperactor::Handler;
 use hyperactor::Named;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
+use ndslice::dsl;
 use nix::sys::signal;
 use nix::sys::signal::Signal;
 use nix::unistd::Pid;
@@ -39,8 +41,8 @@ use tokio::process::Command;
 use crate::actor_mesh::ActorMesh;
 use crate::code_sync::WorkspaceLocation;
 use crate::connect::Connect;
+use crate::connect::ConnectStream;
 use crate::connect::accept;
-use crate::connect::connect_mesh;
 
 pub async fn do_rsync(addr: &SocketAddr, workspace: &Path) -> Result<()> {
     let output = Command::new("rsync")
@@ -204,22 +206,26 @@ pub async fn rsync_mesh<M>(actor_mesh: M, workspace: PathBuf) -> Result<()>
 where
     M: ActorMesh<Actor = RsyncActor>,
 {
-    connect_mesh(actor_mesh, async move |rd, wr| {
-        let workspace = workspace.clone();
-        let listener = TcpListener::bind(("::1", 0)).await?;
-        let addr = listener.local_addr()?;
-        let mut local = tokio::io::join(rd, wr);
-        try_join!(
-            async move { do_rsync(&addr, &workspace).await },
-            async move {
-                let (mut stream, _) = listener.accept().await?;
-                tokio::io::copy_bidirectional(&mut stream, &mut local).await?;
-                anyhow::Ok(())
-            },
-        )?;
-        anyhow::Ok(())
-    })
-    .await
+    let (connect, stream) = ConnectStream::for_mesh(&actor_mesh);
+    actor_mesh.cast(dsl::all(dsl::true_()), connect)?;
+    stream
+        .try_for_each_concurrent(None, |(rd, wr)| async {
+            let workspace = workspace.clone();
+            let listener = TcpListener::bind(("::1", 0)).await?;
+            let addr = listener.local_addr()?;
+            let mut local = tokio::io::join(rd, wr);
+            try_join!(
+                async move { do_rsync(&addr, &workspace).await },
+                async move {
+                    let (mut stream, _) = listener.accept().await?;
+                    tokio::io::copy_bidirectional(&mut stream, &mut local).await?;
+                    anyhow::Ok(())
+                },
+            )?;
+            anyhow::Ok(())
+        })
+        .await?;
+    Ok(())
 }
 
 #[cfg(test)]
