@@ -8,6 +8,7 @@
 
 use std::time::Duration;
 
+use futures::StreamExt;
 use hyperactor::ActorRef;
 use hyperactor::Named;
 use hyperactor::ProcId;
@@ -19,6 +20,7 @@ use hyperactor::channel::Tx;
 use hyperactor::mailbox::MailboxServer;
 use serde::Deserialize;
 use serde::Serialize;
+use signal_hook::consts::signal::SIGTERM;
 
 use crate::proc_mesh::mesh_agent::MeshAgent;
 
@@ -78,6 +80,9 @@ pub(crate) enum Allocator2Process {
 /// Use [`bootstrap_or_die`] to implement this behavior directly.
 pub async fn bootstrap() -> anyhow::Error {
     pub async fn go() -> Result<(), anyhow::Error> {
+        let mut signals =
+            signal_hook_tokio::Signals::new([SIGTERM]).expect("Failed to connect SIGHUP");
+
         let bootstrap_addr: ChannelAddr = std::env::var(BOOTSTRAP_ADDR_ENV)
             .map_err(|err| anyhow::anyhow!("read `{}`: {}", BOOTSTRAP_ADDR_ENV, err))?
             .parse()?;
@@ -100,45 +105,67 @@ pub async fn bootstrap() -> anyhow::Error {
 
         loop {
             let _ = hyperactor::tracing::info_span!("wait_for_next_message_from_mesh_agent");
-            match rx.recv().await? {
-                Allocator2Process::StartProc(proc_id, listen_transport) => {
-                    let (proc, mesh_agent) = MeshAgent::bootstrap(proc_id.clone()).await?;
-                    let (proc_addr, proc_rx) =
-                        channel::serve(ChannelAddr::any(listen_transport)).await?;
-                    // Undeliverable messages get forwarded to the mesh agent.
-                    let handle = proc.clone().serve(proc_rx, mesh_agent.port());
-                    drop(handle); // linter appeasement; it is safe to drop this future
-                    tx.send(Process2Allocator(
-                        bootstrap_index,
-                        Process2AllocatorMessage::StartedProc(
-                            proc_id.clone(),
-                            mesh_agent.bind(),
-                            proc_addr,
-                        ),
-                    ))
-                    .await?;
-                    procs.push(proc);
-                }
-                Allocator2Process::StopAndExit(code) => {
-                    tracing::info!("stopping procs with code {code}");
-                    for mut proc_to_stop in procs {
-                        if let Err(err) = proc_to_stop
-                            .destroy_and_wait(Duration::from_millis(10), None)
-                            .await
-                        {
-                            tracing::error!(
-                                "error while stopping proc {}: {}",
-                                proc_to_stop.proc_id(),
-                                err
-                            );
+            tokio::select! {
+                msg = rx.recv() => {
+                    match msg? {
+                        Allocator2Process::StartProc(proc_id, listen_transport) => {
+                            let (proc, mesh_agent) = MeshAgent::bootstrap(proc_id.clone()).await?;
+                            let (proc_addr, proc_rx) =
+                                channel::serve(ChannelAddr::any(listen_transport)).await?;
+                            // Undeliverable messages get forwarded to the mesh agent.
+                            let handle = proc.clone().serve(proc_rx, mesh_agent.port());
+                            drop(handle); // linter appeasement; it is safe to drop this future
+                            tx.send(Process2Allocator(
+                                bootstrap_index,
+                                Process2AllocatorMessage::StartedProc(
+                                    proc_id.clone(),
+                                    mesh_agent.bind(),
+                                    proc_addr,
+                                ),
+                            ))
+                            .await?;
+                            procs.push(proc);
+                        }
+                        Allocator2Process::StopAndExit(code) => {
+                            tracing::info!("stopping procs with code {code}");
+                            for mut proc_to_stop in procs {
+                                if let Err(err) = proc_to_stop
+                                    .destroy_and_wait(Duration::from_millis(10), None)
+                                    .await
+                                {
+                                    tracing::error!(
+                                        "error while stopping proc {}: {}",
+                                        proc_to_stop.proc_id(),
+                                        err
+                                    );
+                                }
+                            }
+                            tracing::info!("exiting with {code}");
+                            std::process::exit(code);
+                        }
+                        Allocator2Process::Exit(code) => {
+                            tracing::info!("exiting with {code}");
+                            std::process::exit(code);
                         }
                     }
-                    tracing::info!("exiting with {code}");
-                    std::process::exit(code);
                 }
-                Allocator2Process::Exit(code) => {
-                    tracing::info!("exiting with {code}");
-                    std::process::exit(code);
+                signal = signals.next() => {
+                    if signal.is_some_and(|sig| sig == SIGTERM) {
+                        tracing::info!("received SIGTERM, stopping procs");
+                        for mut proc_to_stop in procs {
+                            if let Err(err) = proc_to_stop
+                                .destroy_and_wait(Duration::from_millis(10), None)
+                                .await
+                            {
+                                tracing::error!(
+                                    "error while stopping proc {}: {}",
+                                    proc_to_stop.proc_id(),
+                                    err
+                                );
+                            }
+                        }
+                        std::process::exit(0);
+                    }
                 }
             }
         }
