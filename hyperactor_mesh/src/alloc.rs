@@ -13,6 +13,7 @@ pub mod local;
 pub(crate) mod logtailer;
 pub mod process;
 pub mod remoteprocess;
+pub mod state_actor_writer;
 
 use std::collections::HashMap;
 use std::fmt;

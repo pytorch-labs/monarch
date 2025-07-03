@@ -43,6 +43,8 @@ use super::AllocatorError;
 use super::ProcState;
 use super::ProcStopReason;
 use super::logtailer::LogTailer;
+use super::state_actor_writer::OutputTarget;
+use super::state_actor_writer::StateActorWriter;
 use crate::assign::Ranks;
 use crate::bootstrap;
 use crate::bootstrap::Allocator2Process;
@@ -143,18 +145,52 @@ impl Child {
     ) -> (Self, impl Future<Output = ProcStopReason>) {
         let (group, handle) = monitor::group();
         let (exit_flag, exit_guard) = flag::guarded();
+        let stop_reason = Arc::new(OnceLock::new());
 
+        // Use the StateActorWriter from the state_actor_writer module
+
+        // TODO(lky): enable state actor branch
+        let use_state_actor = false;
+
+        let (stdout_tee, stderr_tee): (
+            Box<dyn io::AsyncWrite + Send + Unpin + 'static>,
+            Box<dyn io::AsyncWrite + Send + Unpin + 'static>,
+        ) = if use_state_actor {
+            // Parse the state actor address
+            let state_actor_addr = match "tcp![::]:3000".parse::<ChannelAddr>() {
+                Ok(addr) => addr,
+                Err(e) => {
+                    tracing::warn!("Failed to parse state actor address: {}", e);
+                    // Create a dummy address that won't be used
+                    ChannelAddr::any(ChannelTransport::Unix)
+                }
+            };
+            (
+                Box::new(StateActorWriter::new(
+                    OutputTarget::Stdout,
+                    state_actor_addr.clone(),
+                )),
+                Box::new(StateActorWriter::new(
+                    OutputTarget::Stderr,
+                    state_actor_addr,
+                )),
+            )
+        } else {
+            (Box::new(io::stdout()), Box::new(io::stderr()))
+        };
+
+        // Create stdout and stderr LogTailers with the StateActorWriter
         let stdout = LogTailer::tee(
             MAX_TAIL_LOG_LINES,
             process.stdout.take().unwrap(),
-            io::stdout(),
+            stdout_tee,
         );
+
         let stderr = LogTailer::tee(
             MAX_TAIL_LOG_LINES,
             process.stderr.take().unwrap(),
-            io::stderr(),
+            stderr_tee,
         );
-        let stop_reason = Arc::new(OnceLock::new());
 
         let child = Self {
             channel: ChannelState::NotConnected,
@@ -249,6 +285,7 @@ impl Child {
         tokio::spawn(async move {
             let exit_timeout =
                 hyperactor::config::global::get(hyperactor::config::PROCESS_EXIT_TIMEOUT);
+            #[allow(clippy::disallowed_methods)]
             if tokio::time::timeout(exit_timeout, exit_flag).await.is_err() {
                 let _ = stop_reason.set(ProcStopReason::Watchdog);
                 group.fail();
