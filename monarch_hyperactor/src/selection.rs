@@ -20,6 +20,12 @@ pub struct PySelection {
     inner: Selection,
 }
 
+impl PySelection {
+    pub(crate) fn inner(&self) -> &Selection {
+        &self.inner
+    }
+}
+
 impl From<Selection> for PySelection {
     fn from(inner: Selection) -> Self {
         Self { inner }
@@ -41,6 +47,18 @@ impl PySelection {
         })?;
 
         Ok(PySelection::from(selection))
+    }
+
+    #[classmethod]
+    pub fn all(_cls: Bound<'_, PyType>) -> Self {
+        use ndslice::selection::dsl::*;
+        PySelection::from(all(true_()))
+    }
+
+    #[classmethod]
+    pub fn any(_cls: Bound<'_, PyType>) -> Self {
+        use ndslice::selection::dsl::*;
+        PySelection::from(any(true_()))
     }
 }
 

@@ -26,3 +26,15 @@ class Selection:
             ValueError: if the input string is not a valid selection expression.
         """
         ...
+    @classmethod
+    def all(cls) -> Selection:
+        """
+        Return a selection that selects all values in the shape.
+        """
+        ...
+    @classmethod
+    def any(cls) -> Selection:
+        """
+        Return a selection that selects a random value in the shape.
+        """
+        ...
