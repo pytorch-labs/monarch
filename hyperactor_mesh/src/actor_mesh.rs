@@ -155,6 +155,7 @@ pub trait ActorMesh: Mesh {
             ),
             self.shape().clone(),
             self.proc_mesh().shape().clone(),
+            self.proc_mesh().comm_actor().clone(),
         )
     }
 }
