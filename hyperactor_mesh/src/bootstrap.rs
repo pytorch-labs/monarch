@@ -16,6 +16,8 @@ use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::channel::Rx;
 use hyperactor::channel::Tx;
+use hyperactor::clock::Clock;
+use hyperactor::clock::RealClock;
 use hyperactor::mailbox::MailboxServer;
 use serde::Deserialize;
 use serde::Serialize;
@@ -44,6 +46,8 @@ pub(crate) enum Process2AllocatorMessage {
     /// after instruction by the allocator through the corresponding
     /// [`Allocator2Process`] message.
     StartedProc(ProcId, ActorRef<MeshAgent>, ChannelAddr),
+
+    Heartbeat,
 }
 
 /// Messages sent from the allocator to a process.
@@ -60,6 +64,43 @@ pub(crate) enum Allocator2Process {
     /// A request for the process to immediately exit with the provided
     /// exit code
     Exit(i32),
+}
+
+async fn heartbeat_task(bootstrap_index: usize, bootstrap_addr: ChannelAddr) {
+    let tx = match channel::dial(bootstrap_addr.clone()) {
+        Ok(tx) => tx,
+
+        Err(err) => {
+            tracing::error!(
+                "Failed to establish heartbeat connection to allocator, exiting! (addr: {:?}): {}",
+                bootstrap_addr,
+                err
+            );
+            std::process::exit(1);
+        }
+    };
+    tracing::info!(
+        "Heartbeat connection established to allocator (idx: {bootstrap_index}, addr: {bootstrap_addr:?})",
+    );
+    loop {
+        RealClock.sleep(Duration::from_secs(5)).await;
+
+        let result = tx
+            .send(Process2Allocator(
+                bootstrap_index,
+                Process2AllocatorMessage::Heartbeat,
+            ))
+            .await;
+
+        if let Err(err) = result {
+            tracing::error!(
+                "Heartbeat failed to allocator, exiting! (addr: {:?}): {}",
+                bootstrap_addr,
+                err
+            );
+            std::process::exit(1);
+        }
+    }
 }
 
 /// Entry point to processes managed by hyperactor_mesh. This advertises the process
@@ -86,15 +127,15 @@ pub async fn bootstrap() -> anyhow::Error {
             .parse()?;
         let listen_addr = ChannelAddr::any(bootstrap_addr.transport());
         let (serve_addr, mut rx) = channel::serve(listen_addr).await?;
-        let tx = channel::dial(bootstrap_addr)?;
+        let tx = channel::dial(bootstrap_addr.clone())?;
 
-        {
-            tx.send(Process2Allocator(
-                bootstrap_index,
-                Process2AllocatorMessage::Hello(serve_addr),
-            ))
-            .await?;
-        }
+        tx.send(Process2Allocator(
+            bootstrap_index,
+            Process2AllocatorMessage::Hello(serve_addr),
+        ))
+        .await?;
+
+        tokio::spawn(heartbeat_task(bootstrap_index, bootstrap_addr));
 
         let mut procs = Vec::new();
 

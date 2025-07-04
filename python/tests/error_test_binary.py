@@ -48,6 +48,13 @@ class ErrorActor(Actor):
         await asyncio.sleep(0.1)
         raise RuntimeError("oh noez")
 
+    @endpoint
+    async def get_pid(self) -> int:
+        """Endpoint that returns the process PID."""
+        import os
+
+        return os.getpid()
+
 
 class ErrorActorSync(Actor):
     """An actor that has endpoints cause segfaults."""
@@ -202,6 +209,49 @@ async def _error_unmonitored():
 @main.command("error-unmonitored")
 def error_unmonitored():
     asyncio.run(_error_unmonitored())
+
+
+async def _error_cleanup():
+    """Test function that spawns an 8 process procmesh and calls an endpoint that returns a normal exception."""
+    print("I actually ran")
+    sys.stdout.flush()
+
+    # Spawn an 8 process procmesh
+    proc = await proc_mesh(gpus=8)
+    error_actor = await proc.spawn("error_actor", ErrorActor)
+
+    print("Procmesh spawned, collecting child PIDs from actors")
+    sys.stdout.flush()
+
+    # Get PIDs from all actor processes
+    try:
+        # Call get_pid endpoint on all actors to collect their PIDs
+        pids = await error_actor.get_pid.call()
+        child_pids = [str(pid) for _, pid in pids]
+        print(f"CHILD_PIDS: {','.join(child_pids)}")
+    except Exception as e:
+        print(f"Error getting child PIDs from actors: {e}")
+        print("CHILD_PIDS: ")
+
+    sys.stdout.flush()
+
+    print("About to call endpoint that raises exception")
+    sys.stdout.flush()
+
+    # Call an endpoint that raises a normal exception
+    try:
+        await error_actor.await_then_error.call()
+    except Exception as e:
+        print(f"Expected exception caught: {e}")
+        sys.stdout.flush()
+        # Re-raise to cause the process to exit with non-zero code
+        raise
+
+
+@main.command("error-cleanup")
+def error_cleanup():
+    """Command that spawns an 8 process procmesh and calls an endpoint that returns a normal exception."""
+    asyncio.run(_error_cleanup())
 
 
 if __name__ == "__main__":

@@ -240,6 +240,127 @@ async def test_exception_after_wait_unmonitored():
     ), f"Expected non-zero exit code, got {process.returncode}"
 
 
+# oss_skip: importlib not pulling resource correctly in git CI, needs to be revisited
+@pytest.mark.oss_skip
+def test_python_actor_process_cleanup():
+    """
+    Test that PythonActor processes are cleaned up when the parent process dies.
+
+    This test spawns an 8 process procmesh and calls an endpoint that returns a normal exception,
+    then verifies that all spawned processes have been cleaned up after the spawned binary dies.
+    """
+    import os
+    import signal
+    import time
+
+    # Run the error-cleanup test in a subprocess
+    test_bin = importlib.resources.files("monarch.python.tests").joinpath("test_bin")
+    cmd = [
+        str(test_bin),
+        "error-cleanup",
+    ]
+
+    print("running cmd", " ".join(cmd))
+
+    # Start the subprocess
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        preexec_fn=os.setsid,  # Create a new process group
+    )
+
+    parent_pid = process.pid
+    print(f"Parent process started with PID: {parent_pid}")
+
+    # Read stdout line by line to get child PIDs
+    child_pids = []
+    test_actually_ran = False
+
+    try:
+        # Read stdout until we get the child PIDs or the process exits
+        while process.poll() is None:
+            line = process.stdout.readline()
+            if not line:
+                break
+
+            line = line.strip()
+            print(f"Subprocess output: {line}")
+
+            if "I actually ran" in line:
+                test_actually_ran = True
+            elif line.startswith("CHILD_PIDS: "):
+                # Parse child PIDs from the output
+                pids_str = line[len("CHILD_PIDS: ") :]  # noqa
+                if pids_str:
+                    child_pids = [
+                        int(pid.strip()) for pid in pids_str.split(",") if pid.strip()
+                    ]
+                    print(f"Extracted child PIDs: {child_pids}")
+                    break
+                else:
+                    raise AssertionError("No child PIDs found in output")
+    except Exception as e:
+        print(f"Error reading subprocess output: {e}")
+
+    # Wait for the parent to be killed
+    try:
+        process.wait(timeout=30)
+        print(f"Parent process exited with return code: {process.returncode}")
+    except subprocess.TimeoutExpired:
+        print("Parent process did not exit within timeout")
+        process.kill()
+        process.wait()
+
+    # Get remaining output
+    stdout, stderr = process.communicate()
+    stdout_str = stdout if stdout else ""
+    stderr_str = stderr if stderr else ""
+
+    print(f"Remaining stdout: {stdout_str}")
+    print(f"Stderr: {stderr_str}")
+
+    assert test_actually_ran, "Test binary did not run properly"
+    assert child_pids, "No child PIDs were collected from subprocess output"
+
+    # Wait for child processes to be cleaned up
+    print("Waiting for child processes to be cleaned up...")
+    cleanup_timeout = 120  # 60 seconds timeout
+    start_time = time.time()
+
+    def is_process_running(pid):
+        """Check if a process with the given PID is still running."""
+        try:
+            os.kill(pid, 0)  # Signal 0 doesn't kill, just checks if process exists
+            return True
+        except OSError:
+            return False
+
+    while time.time() - start_time < cleanup_timeout:
+        still_running = [pid for pid in child_pids if is_process_running(pid)]
+
+        if not still_running:
+            print("All child processes have been cleaned up!")
+            return
+
+        print(f"Still running child PIDs: {still_running}")
+        time.sleep(2)
+
+    # If we get here, some processes are still running
+    still_running = [pid for pid in child_pids if is_process_running(pid)]
+    if still_running:
+        # Try to clean up remaining processes
+        for pid in still_running:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+        raise AssertionError(
+            f"Child processes not cleaned up after {cleanup_timeout}s: {still_running}"
+        )
+
+
 class ErrorActor(Actor):
     def __init__(self, message):
         raise RuntimeError("fail on init")
