@@ -180,6 +180,28 @@ pub struct PythonMessage {
     rank: Option<usize>,
 }
 
+impl PythonMessage {
+    pub fn with_rank(self, rank: usize) -> PythonMessage {
+        PythonMessage {
+            rank: Some(rank),
+            ..self
+        }
+    }
+    pub fn new_from_buf(
+        method: String,
+        message: Vec<u8>,
+        response_port: Option<EitherPortRef>,
+        rank: Option<usize>,
+    ) -> Self {
+        Self {
+            method,
+            message: message.into(),
+            response_port,
+            rank,
+        }
+    }
+}
+
 impl std::fmt::Debug for PythonMessage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PythonMessage")
@@ -208,18 +230,13 @@ impl Bind for PythonMessage {
 impl PythonMessage {
     #[new]
     #[pyo3(signature = (method, message, response_port, rank))]
-    fn new(
+    pub fn new(
         method: String,
         message: &[u8],
         response_port: Option<EitherPortRef>,
         rank: Option<usize>,
     ) -> Self {
-        Self {
-            method,
-            message: ByteBuf::from(message),
-            response_port,
-            rank,
-        }
+        Self::new_from_buf(method, message.into(), response_port, rank)
     }
 
     #[getter]

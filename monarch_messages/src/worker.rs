@@ -234,18 +234,32 @@ impl FunctionPath {
     }
 
     pub fn resolve<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let (module_fqn, function_name) = self.path.rsplit_once(".").with_context(|| {
+        let (start, rest) = self.path.split_once(".").with_context(|| {
             format!(
                 "invalid function path {}: paths must be fully qualified",
                 self.path
             )
         })?;
-        let module = PyModule::import(py, module_fqn)?;
-        let mut function = module.getattr(function_name)?;
-        if function.hasattr("_remote_impl")? {
-            function = function.getattr("_remote_impl")?;
+        if start == "torch" {
+            let mut cur = py.import("torch")?.into_any();
+            for p in rest.split(".") {
+                cur = cur.getattr(p)?;
+            }
+            Ok(cur)
+        } else {
+            let (module_fqn, function_name) = self.path.rsplit_once(".").with_context(|| {
+                format!(
+                    "invalid function path {}: paths must be fully qualified",
+                    self.path
+                )
+            })?;
+            let module = PyModule::import(py, module_fqn)?;
+            let mut function = module.getattr(function_name)?;
+            if function.hasattr("_remote_impl")? {
+                function = function.getattr("_remote_impl")?;
+            }
+            Ok(function.downcast_into()?)
         }
-        Ok(function.downcast_into()?)
     }
 }
 

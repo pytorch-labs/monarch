@@ -8,7 +8,6 @@
 
 import functools
 import logging
-import warnings
 
 from logging import Logger
 from typing import (
@@ -29,7 +28,7 @@ import monarch.common.messages as messages
 
 import torch
 
-from monarch.common import _coalescing, device_mesh, messages, stream
+from monarch.common import _coalescing, device_mesh, stream
 
 if TYPE_CHECKING:
     from monarch.common.client import Client
@@ -61,8 +60,6 @@ logger: Logger = logging.getLogger(__name__)
 P = ParamSpec("P")
 R = TypeVar("R")
 T = TypeVar("T")
-
-Propagator = Callable | Literal["mocked", "cached", "inspect"] | None
 
 
 class Remote(Generic[P, R]):
@@ -180,15 +177,9 @@ def _call_on_shard_and_fetch(
     client: "Client" = mesh.client
     if _coalescing.is_active(client):
         raise NotImplementedError("NYI: fetching results during a coalescing block")
+    stream_ref = stream._active._to_ref(client)
     return client.fetch(
-        mesh,
-        stream._active._to_ref(client),
-        shard,
-        preprocess_message,
-        args,
-        kwargs,
-        mutates,
-        dtensors,
+        mesh, stream_ref, shard, preprocess_message, args, kwargs, mutates, dtensors
     )
 
 

@@ -25,9 +25,10 @@ from monarch import (
     Pipe,
     remote,
     remote_generator,
-    RemoteException,
+    RemoteException as OldRemoteException,
     Stream,
 )
+
 from monarch._testing import BackendType, TestingContext
 from monarch.builtins.log import log_remote
 from monarch.builtins.random import set_manual_seed_remote
@@ -35,6 +36,7 @@ from monarch.cached_remote_function import remote_autograd_function
 from monarch.common import remote as remote_module
 from monarch.common.device_mesh import DeviceMesh
 from monarch.common.remote import Remote
+from monarch.mesh_controller import RemoteException as NewRemoteException
 
 from monarch.opaque_module import OpaqueModule
 from monarch.opaque_object import opaque_method, OpaqueObject
@@ -56,6 +58,8 @@ from monarch.worker._testing_function import (
 )
 from monarch_supervisor.logging import fix_exception_lines
 from torch.distributed import ReduceOp
+
+RemoteException = (NewRemoteException, OldRemoteException)
 
 
 def custom_excepthook(exc_type, exc_value, exc_traceback):
@@ -326,7 +330,7 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
                 _ = fetch_shard(a).result(timeout=40)
 
     def test_set_device_inside_udf_fails_with_explanation(self, backend_type):
-        if backend_type == BackendType.PY:
+        if backend_type != BackendType.RS:
             pytest.skip("Python support not planned for this test")
         with self.local_device_mesh(2, 2, backend_type):
             t = set_device_udf(2)

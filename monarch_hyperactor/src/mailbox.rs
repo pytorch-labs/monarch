@@ -329,6 +329,11 @@ impl PythonPortRef {
     fn __repr__(&self) -> String {
         self.inner.to_string()
     }
+
+    #[getter]
+    fn port_id(&self) -> PyResult<PyPortId> {
+        Ok(self.inner.port_id().clone().into())
+    }
 }
 
 impl From<PortRef<PythonMessage>> for PythonPortRef {
@@ -470,6 +475,11 @@ impl PythonOncePortRef {
             .as_ref()
             .map_or("OncePortRef is already used".to_string(), |r| r.to_string())
     }
+
+    #[getter]
+    fn port_id(&self) -> PyResult<PyPortId> {
+        Ok(self.inner.as_ref().unwrap().port_id().clone().into())
+    }
 }
 
 impl From<OncePortRef<PythonMessage>> for PythonOncePortRef {
@@ -520,7 +530,7 @@ impl PythonOncePortReceiver {
     FromPyObject,
     IntoPyObject
 )]
-pub(super) enum EitherPortRef {
+pub enum EitherPortRef {
     Unbounded(PythonPortRef),
     Once(PythonOncePortRef),
 }

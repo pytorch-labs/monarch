@@ -186,6 +186,7 @@ pub struct WorkerActor {
     send_recv_comms: HashMap<(StreamRef, StreamRef), Arc<ActorHandle<NcclCommActor>>>,
     recordings: HashMap<Ref, Recording>,
     defining_recording: Option<Ref>,
+    respond_with_python_message: bool,
 }
 
 impl WorkerActor {
@@ -251,6 +252,7 @@ impl Actor for WorkerActor {
             send_recv_comms: HashMap::new(),
             recordings: HashMap::new(),
             defining_recording: None,
+            respond_with_python_message: false,
         })
     }
 
@@ -266,6 +268,7 @@ impl Handler<AssignRankMessage> for WorkerActor {
     ) -> anyhow::Result<()> {
         let (rank, shape) = this.cast_info()?;
         self.rank = rank;
+        self.respond_with_python_message = true;
         Python::with_gil(|py| {
             let mesh_controller = py.import("monarch.mesh_controller").unwrap();
             let shape: PyShape = shape.into();
@@ -449,6 +452,7 @@ impl WorkerMessageHandler for WorkerActor {
                 id: result,
                 device: self.device,
                 controller_actor: self.controller_actor.clone(),
+                respond_with_python_message: self.respond_with_python_message,
             },
         )
         .await?;

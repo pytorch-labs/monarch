@@ -228,3 +228,4 @@ def mock_mesh(hosts: int, gpus: int):
 class BackendType:
     PY = "py"
     RS = "rs"
+    MESH = "mesh"

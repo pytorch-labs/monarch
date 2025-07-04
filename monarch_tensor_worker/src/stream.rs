@@ -36,6 +36,7 @@ use hyperactor::mailbox::Mailbox;
 use hyperactor::mailbox::OncePortHandle;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::proc::Proc;
+use monarch_hyperactor::actor::PythonMessage;
 use monarch_messages::controller::ControllerMessageClient;
 use monarch_messages::controller::Seq;
 use monarch_messages::controller::WorkerError;
@@ -424,6 +425,7 @@ pub struct StreamActor {
     remote_process_groups: HashMap<Ref, PyObject>,
     recordings: HashMap<Ref, Recording>,
     active_recording: Option<RecordingState>,
+    respond_with_python_message: bool,
 }
 
 /// Parameters for creating a [`Stream`].
@@ -440,6 +442,7 @@ pub struct StreamParams {
     pub device: Option<CudaDevice>,
     /// Actor ref of the controller that created this stream.
     pub controller_actor: ActorRef<ControllerActor>,
+    pub respond_with_python_message: bool,
 }
 
 #[async_trait]
@@ -453,6 +456,7 @@ impl Actor for StreamActor {
             device,
             controller_actor,
             creation_mode,
+            respond_with_python_message,
         }: Self::Params,
     ) -> Result<Self> {
         Ok(Self {
@@ -467,6 +471,7 @@ impl Actor for StreamActor {
             remote_process_groups: HashMap::new(),
             recordings: HashMap::new(),
             active_recording: None,
+            respond_with_python_message,
         })
     }
 
@@ -710,7 +715,163 @@ impl StreamActor {
         })
     }
 
-    fn call_python_fn(
+    fn call_python_fn<'py>(
+        &mut self,
+        py: Python<'py>,
+        this: &Instance<Self>,
+        function: Option<ResolvableFunction>,
+        args: Vec<WireValue>,
+        kwargs: HashMap<String, WireValue>,
+        mutates: &[Ref],
+        device_meshes: HashMap<Ref, DeviceMesh>,
+        remote_process_groups: HashMap<
+            Ref,
+            (DeviceMesh, Vec<String>, Arc<ActorHandle<NcclCommActor>>),
+        >,
+    ) -> Result<Bound<'py, PyAny>, CallFunctionError> {
+        let function = function
+            .map(|function| {
+                function.resolve(py).map_err(|e| {
+                    CallFunctionError::InvalidRemoteFunction(format!(
+                        "failed to resolve function {}: {}",
+                        function,
+                        SerializablePyErr::from(py, &e)
+                    ))
+                })
+            })
+            .transpose()?;
+
+        let remote_process_groups = remote_process_groups
+            .into_iter()
+            .map(|(gref, (mesh, dims, comm))| {
+                let group = match self.remote_process_groups.entry(gref) {
+                    Entry::Occupied(ent) => ent.get().clone_ref(py),
+                    Entry::Vacant(ent) => {
+                        // We need to run `init_process_group` before any
+                        // remote process groups can get created.
+                        torch_sys::backend::ensure_init_process_group(
+                            py,
+                            self.world_size,
+                            self.rank,
+                        )?;
+
+                        // Create a backend object to wrap the comm and use
+                        // it to create a new torch group.
+                        let ranks = mesh.get_ranks_for_dim_slice(&dims)?;
+                        let group_size = ranks.len();
+                        let backend = CommBackend::new(
+                            comm,
+                            Mailbox::new_detached(this.self_id().clone()),
+                            self.rank,
+                            group_size,
+                            self.world_size,
+                        );
+                        ent.insert(torch_sys::backend::new_group(py, ranks, backend)?.unbind())
+                            .clone_ref(py)
+                    }
+                };
+                PyResult::Ok((gref, group))
+            })
+            .collect::<Result<HashMap<_, _>, _>>()
+            .map_err(SerializablePyErr::from_fn(py))?;
+
+        // SAFETY: We will be making an unchecked clone of each tensor to pass to to
+        // C++, so we need to hold a borrow of each input tensor for the duration of
+        // this function.
+        let mut multiborrow = MultiBorrow::new();
+
+        let resolve = |val: WireValue| {
+            val.into_py_object()
+                .map_err(|e| {
+                    CallFunctionError::UnsupportedArgType(
+                        format!("{:?}", function),
+                        format!("{:?}", e),
+                    )
+                })?
+                .unpickle(py)
+                .map_err(SerializablePyErr::from_fn(py))?
+                .extract::<PyTree<PyObject>>()
+                .map_err(SerializablePyErr::from_fn(py))?
+                .try_into_map(|obj| {
+                    Ok(if let Ok(ref_) = Ref::from_py_object(obj.bind(py)) {
+                        if let Some(mesh) = device_meshes.get(&ref_) {
+                            PyArg::DeviceMesh(mesh)
+                        } else if let Some(pg) = remote_process_groups.get(&ref_) {
+                            PyArg::PyObject(pg.clone_ref(py))
+                        } else {
+                            let rval = self.ref_to_rvalue(&ref_)?;
+                            PyArg::RValue(rval)
+                        }
+                    } else {
+                        PyArg::PyObject(obj)
+                    })
+                })
+        };
+
+        // Resolve refs
+        let py_args: Vec<PyTree<PyArg>> = args
+            .into_iter()
+            .map(resolve)
+            .collect::<Result<_, CallFunctionError>>()?;
+        let py_kwargs: HashMap<_, PyTree<PyArg>> = kwargs
+            .into_iter()
+            .map(|(k, object)| Ok((k, resolve(object)?)))
+            .collect::<Result<_, CallFunctionError>>()?;
+
+        // Add a shared-borrow for each rvalue reference.
+        py_args
+            .iter()
+            .chain(py_kwargs.values())
+            .flat_map(|o| o.iter())
+            .for_each(|arg| {
+                if let PyArg::RValue(rval) = arg {
+                    multiborrow.add(rval, BorrowType::Shared);
+                }
+            });
+
+        // Add mutable borrows for params we're mutating.
+        let mutates: Vec<_> = mutates
+            .iter()
+            .map(|r| self.ref_to_rvalue(r))
+            .collect::<Result<_, CallFunctionError>>()?;
+        mutates
+            .iter()
+            .for_each(|rval| multiborrow.add(rval, BorrowType::Mutable));
+
+        // Execute the borrow.
+        let _borrow = multiborrow.borrow()?;
+
+        // Call function.
+        // Use custom subscriber to route Worker messages to stdout.
+        let scoped_subscriber = Subscriber::builder().with_writer(std::io::stdout).finish();
+        let result: Bound<'_, PyAny> =
+            tracing::subscriber::with_default(scoped_subscriber, || {
+                // SAFETY: The borrows above guard the unchecked clones done by
+                // `rvalue_to_ivalue`. This may result in multiple mutable
+                // references to tensor data, but the Python side is responsible
+                // for making sure that is safe
+                // TODO(agallagher): The args/kwargs conversion traits generate
+                // the appropriate types here, but they get casted to `PyAny`.
+                // It'd be nice to make `TryToPyObjectUnsafe` take a template
+                // arg for the converted py object to avoid this downcast.
+                let args = unsafe { py_args.try_to_object_unsafe(py) }
+                    .map_err(SerializablePyErr::from_fn(py))?;
+                // SAFETY: above
+                let kwargs = &unsafe { py_kwargs.try_to_object_unsafe(py) }
+                    .map_err(SerializablePyErr::from_fn(py))?;
+
+                if let Some(function) = function {
+                    function
+                        .call(args, Some(kwargs))
+                        .map_err(SerializablePyErr::from_fn(py))
+                } else {
+                    Ok(args.get_item(0).unwrap())
+                }
+            })?;
+        Ok(result)
+    }
+
+    fn call_python_fn_pytree(
         &mut self,
         this: &Instance<Self>,
         function: ResolvableFunction,
@@ -724,147 +885,19 @@ impl StreamActor {
         >,
     ) -> Result<PyTree<RValue>, CallFunctionError> {
         Python::with_gil(|py| {
-            let function = function.resolve(py).map_err(|e| {
-                CallFunctionError::InvalidRemoteFunction(format!(
-                    "failed to resolve function {}: {}",
-                    function,
-                    SerializablePyErr::from(py, &e)
-                ))
-            })?;
-
-            let remote_process_groups = remote_process_groups
-                .into_iter()
-                .map(|(gref, (mesh, dims, comm))| {
-                    let group = match self.remote_process_groups.entry(gref) {
-                        Entry::Occupied(ent) => ent.get().clone_ref(py),
-                        Entry::Vacant(ent) => {
-                            // We need to run `init_process_group` before any
-                            // remote process groups can get created.
-                            torch_sys::backend::ensure_init_process_group(
-                                py,
-                                self.world_size,
-                                self.rank,
-                            )?;
-
-                            // Create a backend object to wrap the comm and use
-                            // it to create a new torch group.
-                            let ranks = mesh.get_ranks_for_dim_slice(&dims)?;
-                            let group_size = ranks.len();
-                            let backend = CommBackend::new(
-                                comm,
-                                Mailbox::new_detached(this.self_id().clone()),
-                                self.rank,
-                                group_size,
-                                self.world_size,
-                            );
-                            ent.insert(torch_sys::backend::new_group(py, ranks, backend)?.unbind())
-                                .clone_ref(py)
-                        }
-                    };
-                    PyResult::Ok((gref, group))
-                })
-                .collect::<Result<HashMap<_, _>, _>>()
-                .map_err(SerializablePyErr::from_fn(py))?;
-
-            // SAFETY: We will be making an unchecked clone of each tensor to pass to to
-            // C++, so we need to hold a borrow of each input tensor for the duration of
-            // this function.
-            let mut multiborrow = MultiBorrow::new();
-
-            let resolve = |val: WireValue| {
-                val.into_py_object()
-                    .map_err(|e| {
-                        CallFunctionError::UnsupportedArgType(
-                            format!("{:?}", function),
-                            format!("{:?}", e),
-                        )
-                    })?
-                    .unpickle(py)
-                    .map_err(SerializablePyErr::from_fn(py))?
-                    .extract::<PyTree<PyObject>>()
-                    .map_err(SerializablePyErr::from_fn(py))?
-                    .try_into_map(|obj| {
-                        Ok(if let Ok(ref_) = Ref::from_py_object(obj.bind(py)) {
-                            if let Some(mesh) = device_meshes.get(&ref_) {
-                                PyArg::DeviceMesh(mesh)
-                            } else if let Some(pg) = remote_process_groups.get(&ref_) {
-                                PyArg::PyObject(pg.clone_ref(py))
-                            } else {
-                                let rval = self.ref_to_rvalue(&ref_)?;
-                                PyArg::RValue(rval)
-                            }
-                        } else {
-                            PyArg::PyObject(obj)
-                        })
-                    })
-            };
-
-            // Resolve refs
-            let py_args: Vec<PyTree<PyArg>> = args
-                .into_iter()
-                .map(resolve)
-                .collect::<Result<_, CallFunctionError>>()?;
-            let py_kwargs: HashMap<_, PyTree<PyArg>> = kwargs
-                .into_iter()
-                .map(|(k, object)| Ok((k, resolve(object)?)))
-                .collect::<Result<_, CallFunctionError>>()?;
-
-            // Add a shared-borrow for each rvalue reference.
-            py_args
-                .iter()
-                .chain(py_kwargs.values())
-                .flat_map(|o| o.iter())
-                .for_each(|arg| {
-                    if let PyArg::RValue(rval) = arg {
-                        multiborrow.add(rval, BorrowType::Shared);
-                    }
-                });
-
-            // Add mutable borrows for params we're mutating.
-            let mutates: Vec<_> = mutates
-                .iter()
-                .map(|r| self.ref_to_rvalue(r))
-                .collect::<Result<_, CallFunctionError>>()?;
-            mutates
-                .iter()
-                .for_each(|rval| multiborrow.add(rval, BorrowType::Mutable));
-
-            // Execute the borrow.
-            let _borrow = multiborrow.borrow()?;
-
-            // Call function.
-            // Use custom subscriber to route Worker messages to stdout.
-            let scoped_subscriber = Subscriber::builder().with_writer(std::io::stdout).finish();
-            let result: Bound<'_, PyAny> =
-                tracing::subscriber::with_default(scoped_subscriber, || {
-                    function
-                        .call(
-                            // SAFETY: The borrows above guard the unchecked clones done by
-                            // `rvalue_to_ivalue`. This may result in multiple mutable
-                            // references to tensor data, but the Python side is responsible
-                            // for making sure that is safe
-                            // TODO(agallagher): The args/kwargs conversion traits generate
-                            // the appropriate types here, but they get casted to `PyAny`.
-                            // It'd be nice to make `TryToPyObjectUnsafe` take a template
-                            // arg for the converted py object to avoid this downcast.
-                            unsafe { py_args.try_to_object_unsafe(py) }
-                                .map_err(SerializablePyErr::from_fn(py))?,
-                            Some(
-                                // SAFETY: Same.
-                                &unsafe { py_kwargs.try_to_object_unsafe(py) }
-                                    .map_err(SerializablePyErr::from_fn(py))?,
-                            ),
-                        )
-                        .map_err(SerializablePyErr::from_fn(py))
-                })?;
-
-            // Parse the python result as an `Object`, which should preserve the
-            // original Python object structure, while providing access to the
-            // leaves as `RValue`s.
+            let result = self.call_python_fn(
+                py,
+                this,
+                Some(function),
+                args,
+                kwargs,
+                mutates,
+                device_meshes,
+                remote_process_groups,
+            )?;
             Ok(PyTree::<RValue>::extract_bound(&result).map_err(SerializablePyErr::from_fn(py))?)
         })
     }
-
     /// Retrieve `ref_` or create a fake value with the provided factory if it
     /// is an error. We use this for collective calls, where even if there was
     /// an upstream failure, we still have participate in the collective to
@@ -919,6 +952,79 @@ impl StreamActor {
         }
         Ok(None)
     }
+    async fn send_value_python_message(
+        &mut self,
+        this: &Instance<Self>,
+        seq: Seq,
+        worker_actor_id: ActorId,
+        mutates: Vec<Ref>,
+        function: Option<ResolvableFunction>,
+        args: Vec<WireValue>,
+        kwargs: HashMap<String, WireValue>,
+        device_meshes: HashMap<Ref, DeviceMesh>,
+    ) -> Result<()> {
+        let result = Python::with_gil(|py| {
+            let result = tokio::task::block_in_place(|| {
+                self.call_python_fn(
+                    py,
+                    this,
+                    function,
+                    args,
+                    kwargs,
+                    &mutates,
+                    device_meshes,
+                    HashMap::new(),
+                )
+            });
+            result
+                .map_err(|err| {
+                    let err = Arc::new(err);
+                    for ref_ in mutates {
+                        self.env.insert(ref_, Err(err.clone()));
+                    }
+                    let err = err.unwrap_dependent_error().unwrap_or(err);
+                    WorkerError {
+                        backtrace: format!("{:?}", err),
+                        worker_actor_id: worker_actor_id.clone(),
+                    }
+                })
+                .and_then(|result| -> Result<PythonMessage, WorkerError> {
+                    let pickle = py
+                        .import("monarch.actor_mesh")
+                        .unwrap()
+                        .getattr("_pickle")
+                        .unwrap();
+                    let data: Vec<u8> = pickle
+                        .call1((result,))
+                        .map_err(|pyerr| WorkerError {
+                            backtrace: SerializablePyErr::from(py, &pyerr).to_string(),
+                            worker_actor_id: worker_actor_id.clone(),
+                        })?
+                        .extract()
+                        .unwrap();
+                    Ok(PythonMessage::new_from_buf(
+                        "result".to_string(),
+                        data,
+                        None,
+                        Some(worker_actor_id.rank()),
+                    ))
+                })
+        });
+        match result {
+            Ok(value) => {
+                let ser = Serialized::serialize(&value).unwrap();
+                self.controller_actor
+                    .fetch_result(this, seq, Ok(ser))
+                    .await?;
+            }
+            Err(e) => {
+                self.controller_actor
+                    .remote_function_failed(this, seq, e)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -955,7 +1061,7 @@ impl StreamMessageHandler for StreamActor {
                 // Use block-in-place to allow nested callbacks to re-enter the
                 // runtime to run async code.
                 tokio::task::block_in_place(|| {
-                    self.call_python_fn(
+                    self.call_python_fn_pytree(
                         this,
                         params.function,
                         params.args,
@@ -1428,6 +1534,20 @@ impl StreamMessageHandler for StreamActor {
         device_meshes: HashMap<Ref, DeviceMesh>,
         pipe: Option<PortHandle<PipeMessage>>,
     ) -> Result<()> {
+        if self.respond_with_python_message && pipe.is_none() {
+            return self
+                .send_value_python_message(
+                    this,
+                    seq,
+                    worker_actor_id,
+                    mutates,
+                    function,
+                    args,
+                    kwargs,
+                    device_meshes,
+                )
+                .await;
+        }
         let result = if let Some(function) = function {
             // If a function was provided, use that to resolve the value.
             match function.as_torch_op() {
@@ -1457,7 +1577,7 @@ impl StreamMessageHandler for StreamActor {
                 // Use block-in-place to allow nested callbacks to re-enter the
                 // runtime to run async code.
                 _ => tokio::task::block_in_place(|| {
-                    self.call_python_fn(
+                    self.call_python_fn_pytree(
                         this,
                         function,
                         args,
@@ -2016,6 +2136,7 @@ mod tests {
                         id: 0.into(),
                         device: Some(CudaDevice::new(0.into())),
                         controller_actor: controller_actor.clone(),
+                        respond_with_python_message: false,
                     },
                 )
                 .await?;
@@ -2200,6 +2321,7 @@ mod tests {
             id: 0.into(),
             device: None,
             controller_actor: controller_ref,
+            respond_with_python_message: false,
         };
         let mut actor = StreamActor::new(param).await.unwrap();
 
@@ -3039,6 +3161,7 @@ mod tests {
                     id: 1.into(),
                     device: Some(CudaDevice::new(0.into())),
                     controller_actor: test_setup.controller_actor.clone(),
+                    respond_with_python_message: false,
                 },
             )
             .await?;
@@ -3656,6 +3779,7 @@ mod tests {
                     id: 1.into(),
                     device: Some(CudaDevice::new(1.into())),
                     controller_actor: test_setup.controller_actor.clone(),
+                    respond_with_python_message: false,
                 },
             )
             .await?;

@@ -7,6 +7,7 @@
 import monarch
 import pytest
 import torch
+from monarch import remote
 from monarch.mesh_controller import spawn_tensor_engine
 from monarch.proc_mesh import proc_mesh
 
@@ -31,6 +32,14 @@ def test_tensor_engine() -> None:
 
     assert torch.allclose(torch.zeros(3, 4), r)
     assert torch.allclose(torch.zeros(3, 4), f)
+
+    @remote(propagate=lambda x: x)
+    def nope(x):
+        raise ValueError("nope")
+
+    with pytest.raises(monarch.mesh_controller.RemoteException):
+        with dm.activate():
+            monarch.inspect(nope(torch.zeros(3, 4)))
 
     dm.exit()
 

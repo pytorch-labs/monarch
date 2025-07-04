@@ -111,7 +111,7 @@ impl TrackedProcMesh {
     module = "monarch._rust_bindings.monarch_hyperactor.proc_mesh"
 )]
 pub struct PyProcMesh {
-    inner: SharedCell<TrackedProcMesh>,
+    pub inner: SharedCell<TrackedProcMesh>,
     keepalive: Keepalive,
     proc_events: SharedCell<Mutex<ProcEvents>>,
     stop_monitor_sender: mpsc::Sender<bool>,

@@ -158,7 +158,8 @@ async def test_proc_mesh_rdma():
     x = await client_gpu.get_buffer.call_one()
     buffer_gpu = x.view(torch.float32).view(10, 10)
     assert torch.sum(buffer_gpu) == 0
-    assert buffer_gpu.device.type == "cuda"
+    # copying a tensor across hosts moves it to CPU
+    assert buffer_gpu.device.type == "cpu"
 
     # Modify server state again
     await server.update.call_one()

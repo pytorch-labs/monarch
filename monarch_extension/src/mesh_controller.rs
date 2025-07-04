@@ -9,291 +9,189 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::collections::VecDeque;
-use std::iter::repeat_n;
+use std::error::Error;
+use std::fmt::Debug;
+use std::fmt::Formatter;
+use std::ops::DerefMut;
 use std::sync;
 use std::sync::Arc;
 use std::sync::atomic;
 use std::sync::atomic::AtomicUsize;
 
+use async_trait::async_trait;
+use hyperactor::Actor;
+use hyperactor::ActorHandle;
 use hyperactor::ActorRef;
-use hyperactor::data::Serialized;
-use hyperactor_mesh::actor_mesh::ActorMesh;
+use hyperactor::Context;
+use hyperactor::HandleClient;
+use hyperactor::Handler;
+use hyperactor::Instance;
+use hyperactor::PortRef;
+use hyperactor::cap::CanSend;
+use hyperactor::mailbox::MailboxSenderError;
+use hyperactor_mesh::Mesh;
+use hyperactor_mesh::ProcMesh;
 use hyperactor_mesh::actor_mesh::RootActorMesh;
 use hyperactor_mesh::shared_cell::SharedCell;
+use hyperactor_mesh::shared_cell::SharedCellRef;
+use monarch_hyperactor::actor::PythonMessage;
+use monarch_hyperactor::mailbox::PyPortId;
 use monarch_hyperactor::ndslice::PySlice;
-use monarch_hyperactor::proc::InstanceWrapper;
-use monarch_hyperactor::proc::PyActorId;
-use monarch_hyperactor::proc::PyProc;
 use monarch_hyperactor::proc_mesh::PyProcMesh;
+use monarch_hyperactor::proc_mesh::TrackedProcMesh;
 use monarch_hyperactor::runtime::signal_safe_block_on;
-use monarch_messages::client::Exception;
 use monarch_messages::controller::ControllerActor;
 use monarch_messages::controller::ControllerMessage;
 use monarch_messages::controller::Seq;
-use monarch_messages::debugger::DebuggerAction;
-use monarch_messages::debugger::DebuggerActor;
-use monarch_messages::debugger::DebuggerMessage;
+use monarch_messages::controller::WorkerError;
 use monarch_messages::worker::Ref;
 use monarch_messages::worker::WorkerMessage;
 use monarch_messages::worker::WorkerParams;
 use monarch_tensor_worker::AssignRankMessage;
 use monarch_tensor_worker::WorkerActor;
 use ndslice::Slice;
-use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use tokio::sync::Mutex;
 
 use crate::convert::convert;
 
+pub(crate) fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_class::<_Controller>()?;
+    Ok(())
+}
+
+/// The rust-side implementation of monarch.mesh_controller.Controller
+/// It exports the API that interacts with the controller actor (MeshControllerActor)
 #[pyclass(
     subclass,
     module = "monarch._rust_bindings.monarch_extension.mesh_controller"
 )]
 struct _Controller {
-    controller_instance: Arc<Mutex<InstanceWrapper<ControllerMessage>>>,
-    workers: SharedCell<RootActorMesh<'static, WorkerActor>>,
-    pending_messages: VecDeque<PyObject>,
-    history: History,
-}
-
-impl _Controller {
-    fn add_responses(
-        &mut self,
-        py: Python<'_>,
-        responses: Vec<(
-            monarch_messages::controller::Seq,
-            Option<Result<hyperactor::data::Serialized, monarch_messages::client::Exception>>,
-        )>,
-    ) -> PyResult<()> {
-        for (seq, response) in responses {
-            let message = crate::client::WorkerResponse::new(seq, response);
-            self.pending_messages.push_back(message.into_py_any(py)?);
-        }
-        Ok(())
-    }
-    fn fill_messages<'py>(&mut self, py: Python<'py>, timeout_msec: Option<u64>) -> PyResult<()> {
-        let instance = self.controller_instance.clone();
-        let result = signal_safe_block_on(py, async move {
-            instance.lock().await.next_message(timeout_msec).await
-        })??;
-        result.map(|m| self.add_message(m)).transpose()?;
-        Ok(())
-    }
-
-    fn add_message(&mut self, message: ControllerMessage) -> PyResult<()> {
-        Python::with_gil(|py| -> PyResult<()> {
-            match message {
-                ControllerMessage::DebuggerMessage {
-                    debugger_actor_id,
-                    action,
-                } => {
-                    let dm = crate::client::DebuggerMessage::new(debugger_actor_id.into(), action)?
-                        .into_py_any(py)?;
-                    self.pending_messages.push_back(dm);
-                }
-                ControllerMessage::Status {
-                    seq,
-                    worker_actor_id,
-                    controller: false,
-                } => {
-                    let rank = worker_actor_id.rank();
-                    let responses = self.history.rank_completed(rank, seq);
-                    self.add_responses(py, responses)?;
-                }
-                ControllerMessage::RemoteFunctionFailed { seq, error } => {
-                    let responses = self
-                        .history
-                        .propagate_exception(seq, Exception::Error(seq, seq, error));
-                    self.add_responses(py, responses)?;
-                }
-                ControllerMessage::FetchResult {
-                    seq,
-                    value: Ok(value),
-                } => {
-                    self.history.set_result(seq, value);
-                }
-                ControllerMessage::FetchResult {
-                    seq,
-                    value: Err(error),
-                } => {
-                    let responses = self
-                        .history
-                        .propagate_exception(seq, Exception::Error(seq, seq, error));
-                    self.add_responses(py, responses)?;
-                }
-                message => {
-                    panic!("unexpected message: {:?}", message);
-                }
-            };
-            Ok(())
-        })
-    }
-    fn send_slice(&mut self, slice: Slice, message: WorkerMessage) -> PyResult<()> {
-        self.workers
-            .borrow()
-            .map_err(anyhow::Error::msg)?
-            .cast_slices(vec![slice], message)
-            .map_err(|err| PyErr::new::<PyValueError, _>(err.to_string()))
-        // let shape = Shape::new(
-        //     (0..slice.sizes().len()).map(|i| format!("d{i}")).collect(),
-        //     slice,
-        // )
-        // .unwrap();
-        // println!("SENDING TO {:?} {:?}", &shape, &message);
-        // let worker_slice = SlicedActorMesh::new(&self.workers, shape);
-        // worker_slice
-        //     .cast(ndslice::Selection::True, message)
-        //     .map_err(|err| PyErr::new::<PyValueError, _>(err.to_string()))
-    }
+    controller_handle: Arc<Mutex<ActorHandle<MeshControllerActor>>>,
+    all_ranks: Slice,
 }
 
 static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
+
+fn to_py_error<T>(e: T) -> PyErr
+where
+    T: Error,
+{
+    PyErr::new::<PyValueError, _>(e.to_string())
+}
 
 #[pymethods]
 impl _Controller {
     #[new]
     fn new(py: Python, py_proc_mesh: &PyProcMesh) -> PyResult<Self> {
-        let proc_mesh = py_proc_mesh.try_inner()?;
-        let id = NEXT_ID.fetch_add(1, atomic::Ordering::Relaxed);
-        let controller_instance: InstanceWrapper<ControllerMessage> = InstanceWrapper::new(
-            &PyProc::new_from_proc(proc_mesh.client_proc().clone()),
-            &format!("tensor_engine_controller_{}", id),
-        )?;
-
-        let controller_actor_ref =
-            ActorRef::<ControllerActor>::attest(controller_instance.actor_id().clone());
-
-        let slice = proc_mesh.shape().slice();
+        let proc_mesh: SharedCell<TrackedProcMesh> = py_proc_mesh.inner.clone();
+        let proc_mesh_ref = proc_mesh.borrow().unwrap();
+        let shape = proc_mesh_ref.shape();
+        let slice = shape.slice();
+        let all_ranks = shape.slice().clone();
         if !slice.is_contiguous() || slice.offset() != 0 {
             return Err(PyValueError::new_err(
                 "NYI: proc mesh for workers must be contiguous and start at offset 0",
             ));
         }
-        let world_size = slice.len();
-        let param = WorkerParams {
-            world_size,
-            // Rank assignment is consistent with proc indices.
-            rank: 0,
-            device_index: Some(0),
-            controller_actor: controller_actor_ref,
-        };
-
-        let py_proc_mesh = py_proc_mesh.try_inner()?;
-        let shape = py_proc_mesh.shape().clone();
-        let workers: anyhow::Result<SharedCell<RootActorMesh<'_, WorkerActor>>> =
+        let id = NEXT_ID.fetch_add(1, atomic::Ordering::Relaxed);
+        let controller_handle: Arc<Mutex<ActorHandle<MeshControllerActor>>> =
             signal_safe_block_on(py, async move {
-                let workers = py_proc_mesh
-                    .spawn(&format!("tensor_engine_workers_{}", id), &param)
+                let controller_handle = proc_mesh
+                    .borrow()
+                    .unwrap()
+                    .client_proc()
+                    .spawn(
+                        &format!("tensor_engine_controller_{}", id),
+                        MeshControllerActorParams { proc_mesh, id },
+                    )
                     .await?;
-                //workers.cast(ndslice::Selection::True, )?;
-                workers
-                    .borrow()?
-                    .cast_slices(vec![shape.slice().clone()], AssignRankMessage::AssignRank())?;
-                Ok(workers)
-            })?;
+                let r: Result<Arc<Mutex<ActorHandle<MeshControllerActor>>>, anyhow::Error> =
+                    Ok(Arc::new(Mutex::new(controller_handle)));
+                r
+            })??;
+
         Ok(Self {
-            workers: workers?,
-            controller_instance: Arc::new(Mutex::new(controller_instance)),
-            pending_messages: VecDeque::new(),
-            history: History::new(world_size),
+            controller_handle,
+            all_ranks,
         })
     }
 
+    #[pyo3(signature = (seq, defs, uses, response_port, tracebacks))]
     fn node<'py>(
         &mut self,
         seq: u64,
         defs: Bound<'py, PyAny>,
         uses: Bound<'py, PyAny>,
+        response_port: Option<(PyPortId, PySlice)>,
+        tracebacks: Py<PyAny>,
     ) -> PyResult<()> {
-        let failures = self.history.add_invocation(
-            seq.into(),
-            uses.try_iter()?
+        let response_port: Option<PortInfo> = response_port.map(|(port, ranks)| PortInfo {
+            port: PortRef::attest(port.into()),
+            ranks: ranks.into(),
+        });
+        let msg = ClientToControllerMessage::Node {
+            seq: seq.into(),
+            defs: defs
+                .try_iter()?
                 .map(|x| Ref::from_py_object(&x?))
                 .collect::<PyResult<Vec<Ref>>>()?,
-            defs.try_iter()?
+            uses: uses
+                .try_iter()?
                 .map(|x| Ref::from_py_object(&x?))
                 .collect::<PyResult<Vec<Ref>>>()?,
-        );
-        self.add_responses(defs.py(), failures)?;
-        Ok(())
+            tracebacks,
+            response_port,
+        };
+        self.controller_handle
+            .blocking_lock()
+            .send(msg)
+            .map_err(to_py_error)
     }
 
-    fn drop_refs(&mut self, refs: Vec<Ref>) {
-        self.history.drop_refs(refs);
+    fn drop_refs(&mut self, refs: Vec<Ref>) -> PyResult<()> {
+        self.controller_handle
+            .blocking_lock()
+            .send(ClientToControllerMessage::DropRefs { refs })
+            .map_err(to_py_error)
+    }
+
+    fn sync_at_exit(&mut self, port: PyPortId) -> PyResult<()> {
+        self.controller_handle
+            .blocking_lock()
+            .send(ClientToControllerMessage::SyncAtExit {
+                port: PortRef::attest(port.into()),
+            })
+            .map_err(to_py_error)
     }
 
     fn send<'py>(&mut self, ranks: Bound<'py, PyAny>, message: Bound<'py, PyAny>) -> PyResult<()> {
-        let message: WorkerMessage = convert(message)?;
-        if let Ok(slice) = ranks.extract::<PySlice>() {
-            self.send_slice(slice.into(), message)?;
+        let slices = if let Ok(slice) = ranks.extract::<PySlice>() {
+            vec![slice.into()]
         } else {
             let slices = ranks.extract::<Vec<PySlice>>()?;
-            for (slice, message) in slices.iter().zip(repeat_n(message, slices.len())) {
-                self.send_slice(slice.into(), message)?;
-            }
+            slices.iter().map(|x| x.into()).collect::<Vec<Slice>>()
         };
-        Ok(())
+        let message: WorkerMessage = convert(message)?;
+        self.controller_handle
+            .blocking_lock()
+            .send(ClientToControllerMessage::Send { slices, message })
+            .map_err(to_py_error)
     }
-
-    #[pyo3(signature = (*, timeout_msec = None))]
-    fn _get_next_message<'py>(
-        &mut self,
-        py: Python<'py>,
-        timeout_msec: Option<u64>,
-    ) -> PyResult<Option<PyObject>> {
-        if self.pending_messages.is_empty() {
-            self.fill_messages(py, timeout_msec)?;
-        }
-        Ok(self.pending_messages.pop_front())
+    fn _drain_and_stop(&mut self) -> PyResult<()> {
+        self.controller_handle
+            .blocking_lock()
+            .send(ClientToControllerMessage::Send {
+                slices: vec![self.all_ranks.clone()],
+                message: WorkerMessage::Exit { error: None },
+            })
+            .map_err(to_py_error)?;
+        self.controller_handle
+            .blocking_lock()
+            .drain_and_stop()
+            .map_err(to_py_error)
     }
-
-    fn _debugger_attach(&mut self, pdb_actor: PyActorId) -> PyResult<()> {
-        let pdb_actor: ActorRef<DebuggerActor> = ActorRef::attest(pdb_actor.into());
-        pdb_actor
-            .send(
-                self.controller_instance.blocking_lock().mailbox(),
-                DebuggerMessage::Action {
-                    action: DebuggerAction::Attach(),
-                },
-            )
-            .map_err(|err| PyErr::new::<PyValueError, _>(err.to_string()))?;
-        Ok(())
-    }
-
-    fn _debugger_write(&mut self, pdb_actor: PyActorId, bytes: Vec<u8>) -> PyResult<()> {
-        let pdb_actor: ActorRef<DebuggerActor> = ActorRef::attest(pdb_actor.into());
-        pdb_actor
-            .send(
-                self.controller_instance.blocking_lock().mailbox(),
-                DebuggerMessage::Action {
-                    action: DebuggerAction::Write { bytes },
-                },
-            )
-            .map_err(|err| PyErr::new::<PyValueError, _>(err.to_string()))?;
-        Ok(())
-    }
-    fn _drain_and_stop(&mut self, py: Python<'_>) -> PyResult<()> {
-        self.send_slice(
-            self.workers
-                .borrow()
-                .map_err(anyhow::Error::msg)?
-                .proc_mesh()
-                .shape()
-                .slice()
-                .clone(),
-            WorkerMessage::Exit { error: None },
-        )?;
-        let instance = self.controller_instance.clone();
-        let _ = signal_safe_block_on(py, async move { instance.lock().await.drain_and_stop() })??;
-        Ok(())
-    }
-}
-
-pub(crate) fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    module.add_class::<_Controller>()?;
-    Ok(())
 }
 
 /// An invocation tracks a discrete node in the graph of operations executed by
@@ -304,12 +202,26 @@ pub(crate) fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult
 
 #[derive(Debug)]
 enum Status {
-    Errored(Exception),
-    Complete(),
+    Errored {
+        exception: Arc<PythonMessage>,
+    },
+    Complete {},
 
     /// When incomplete this holds this list of users of this invocation,
     /// so a future error can be propagated to them.,
-    Incomplete(HashMap<Seq, Arc<sync::Mutex<Invocation>>>),
+    Incomplete {
+        users: HashMap<Seq, Arc<sync::Mutex<Invocation>>>,
+        results: Vec<PythonMessage>,
+    },
+}
+
+impl Status {
+    fn incomplete() -> Status {
+        Self::Incomplete {
+            users: HashMap::new(),
+            results: vec![],
+        }
+    }
 }
 #[derive(Debug)]
 struct Invocation {
@@ -320,85 +232,124 @@ struct Invocation {
     /// Result reported to a future if this invocation was a fetch
     /// Not all Invocations will be fetched so sometimes a Invocation will complete with
     /// both result and error == None
-    result: Option<Serialized>,
+    response_port: Option<PortInfo>,
+    tracebacks: Py<PyAny>,
 }
 
 impl Invocation {
-    fn new(seq: Seq) -> Self {
+    fn new(seq: Seq, tracebacks: Py<PyAny>, response_port: Option<PortInfo>) -> Self {
         Self {
             seq,
-            status: Status::Incomplete(HashMap::new()),
-            result: None,
+            status: Status::incomplete(),
+            response_port,
+            tracebacks,
         }
     }
 
-    fn add_user(&mut self, user: Arc<sync::Mutex<Invocation>>) {
+    fn add_user(
+        &mut self,
+        sender: &impl CanSend,
+        unreported_exception: &mut Option<Arc<PythonMessage>>,
+        user: Arc<sync::Mutex<Invocation>>,
+    ) -> Result<(), MailboxSenderError> {
         match &mut self.status {
-            Status::Complete() => {}
-            Status::Incomplete(users) => {
+            Status::Complete {} => {}
+            Status::Incomplete { users, .. } => {
                 let seq = user.lock().unwrap().seq;
                 users.insert(seq, user);
             }
-            Status::Errored(err) => {
-                user.lock().unwrap().set_exception(err.clone());
+            Status::Errored { exception } => {
+                user.lock().unwrap().set_exception(
+                    sender,
+                    unreported_exception,
+                    exception.clone(),
+                )?;
             }
         }
+        Ok(())
     }
 
     /// Invocation results can only go from valid to failed, or be
     /// set if the invocation result is empty.
-    fn set_result(&mut self, result: Serialized) {
-        if self.result.is_none() {
-            self.result = Some(result);
+    fn set_result(&mut self, result: PythonMessage) {
+        match &mut self.status {
+            Status::Incomplete { results, .. } => {
+                results.push(result);
+            }
+            Status::Errored { .. } => {}
+            Status::Complete {} => {
+                panic!("setting result on a complete seq");
+            }
         }
     }
 
-    fn succeed(&mut self) {
-        match self.status {
-            Status::Incomplete(_) => self.status = Status::Complete(),
-            _ => {}
+    fn complete(&mut self, sender: &impl CanSend) -> Result<(), MailboxSenderError> {
+        let old_status = std::mem::replace(&mut self.status, Status::Complete {});
+        match old_status {
+            Status::Incomplete { results, .. } => match &self.response_port {
+                Some(PortInfo { port, ranks }) => {
+                    assert!(ranks.len() == results.iter().len());
+                    for result in results.into_iter() {
+                        port.send(sender, result)?;
+                    }
+                }
+                None => {}
+            },
+            _ => {
+                self.status = old_status;
+            }
         }
+        Ok(())
     }
 
-    fn set_exception(&mut self, exception: Exception) -> Vec<Arc<sync::Mutex<Invocation>>> {
-        match exception {
-            Exception::Error(_, caused_by_new, error) => {
-                let err = Status::Errored(Exception::Error(self.seq, caused_by_new, error));
-                match &self.status {
-                    Status::Errored(Exception::Error(_, caused_by_current, _))
-                        if caused_by_new < *caused_by_current =>
-                    {
-                        self.status = err;
+    /// Changes the status of this invocation to an Errored. If this invocation was
+    /// Incomplete, it may have users that will also become errored. This function
+    /// will return those users so the error can be propagated. It does not autmoatically
+    /// propagate the error to avoid deep recursive invocations.
+    fn set_exception(
+        &mut self,
+        sender: &impl CanSend,
+        unreported_exception: &mut Option<Arc<PythonMessage>>,
+        exception: Arc<PythonMessage>,
+    ) -> Result<(), MailboxSenderError> {
+        let mut process =
+            |invocation: &mut Invocation, queue: &mut Vec<Arc<sync::Mutex<Invocation>>>| {
+                let err = Status::Errored {
+                    exception: exception.clone(),
+                };
+                let old_status = std::mem::replace(&mut invocation.status, err);
+                match old_status {
+                    Status::Incomplete { users, .. } => {
+                        match &invocation.response_port {
+                            Some(PortInfo { port, ranks }) => {
+                                *unreported_exception = None;
+                                for rank in ranks.iter() {
+                                    let msg = exception.as_ref().clone().with_rank(rank);
+                                    port.send(sender, msg)?;
+                                }
+                            }
+                            None => {}
+                        };
+                        queue.extend(users.into_values());
                     }
-                    Status::Incomplete(users) => {
-                        let users = users.values().cloned().collect();
-                        self.status = err;
-                        return users;
-                    }
-                    Status::Complete() => {
+                    Status::Complete {} => {
                         panic!("Complete invocation getting an exception set")
                     }
-                    _ => {}
+                    Status::Errored { .. } => invocation.status = old_status,
                 }
-            }
-            Exception::Failure(_) => {
-                tracing::error!(
-                    "system failures {:?} can never be assigned for an invocation",
-                    exception
-                );
-            }
+                Ok(())
+            };
+        let mut queue = vec![];
+        let mut visited = HashSet::new();
+        process(self, &mut queue)?;
+        while let Some(invocation) = queue.pop() {
+            let mut invocation = invocation.lock().unwrap();
+            if !visited.insert(invocation.seq) {
+                continue;
+            };
+            process(invocation.deref_mut(), &mut queue)?;
         }
-        vec![]
-    }
-
-    fn msg_result(&self) -> Option<Result<Serialized, Exception>> {
-        match &self.status {
-            Status::Complete() => self.result.clone().map(Ok),
-            Status::Errored(err) => Some(Err(err.clone())),
-            Status::Incomplete(_) => {
-                panic!("Incomplete invocation doesn't have a result yet")
-            }
-        }
+        Ok(())
     }
 }
 
@@ -423,6 +374,8 @@ struct History {
     // no new sequence numbers should be below this bound. use for
     // sanity checking.
     seq_lower_bound: Seq,
+    unreported_exception: Option<Arc<PythonMessage>>,
+    exit_port: Option<PortRef<PythonMessage>>,
 }
 
 /// A vector that keeps track of the minimum value.
@@ -473,6 +426,8 @@ impl History {
             invocation_for_ref: HashMap::new(),
             inflight_invocations: HashMap::new(),
             seq_lower_bound: 0.into(),
+            unreported_exception: None,
+            exit_port: None,
         }
     }
 
@@ -490,10 +445,13 @@ impl History {
     /// Add an invocation to the history.
     pub fn add_invocation(
         &mut self,
+        sender: &impl CanSend,
         seq: Seq,
         uses: Vec<Ref>,
         defs: Vec<Ref>,
-    ) -> Vec<(Seq, Option<Result<Serialized, Exception>>)> {
+        tracebacks: Py<PyAny>,
+        response_port: Option<PortInfo>,
+    ) -> Result<(), MailboxSenderError> {
         assert!(
             seq >= self.seq_lower_bound,
             "nonmonotonic seq: {:?}; current lower bound: {:?}",
@@ -501,76 +459,293 @@ impl History {
             self.seq_lower_bound,
         );
         self.seq_lower_bound = seq;
-        let invocation = Arc::new(sync::Mutex::new(Invocation::new(seq)));
+        let invocation = Arc::new(sync::Mutex::new(Invocation::new(
+            seq,
+            tracebacks,
+            response_port,
+        )));
         self.inflight_invocations.insert(seq, invocation.clone());
         for ref use_ in uses {
             let producer = self.invocation_for_ref.get(use_).unwrap();
-            producer.lock().unwrap().add_user(invocation.clone());
+            producer.lock().unwrap().add_user(
+                sender,
+                &mut self.unreported_exception,
+                invocation.clone(),
+            )?;
         }
 
         for def in defs {
             self.invocation_for_ref.insert(def, invocation.clone());
         }
-        let invocation = invocation.lock().unwrap();
-        if matches!(invocation.status, Status::Errored(_)) {
-            vec![(seq, invocation.msg_result())]
-        } else {
-            vec![]
-        }
+        Ok(())
     }
 
     /// Propagate worker error to the invocation with the given Seq. This will also propagate
     /// to all seqs that depend on this seq directly or indirectly.
     pub fn propagate_exception(
         &mut self,
+        sender: &impl CanSend,
         seq: Seq,
-        exception: Exception,
-    ) -> Vec<(Seq, Option<Result<Serialized, Exception>>)> {
-        let mut results = Vec::new();
+        exception: WorkerError,
+    ) -> Result<(), MailboxSenderError> {
+        // TODO: supplement PythonMessage with the stack trace we have in invocation
+        let rank = exception.worker_actor_id.rank();
+
         let invocation = self.inflight_invocations.get(&seq).unwrap().clone();
 
-        let mut queue: Vec<Arc<sync::Mutex<Invocation>>> = vec![invocation];
-        let mut visited = HashSet::new();
+        let python_message = Arc::new(Python::with_gil(|py| {
+            let traceback = invocation
+                .lock()
+                .unwrap()
+                .tracebacks
+                .bind(py)
+                .get_item(0)
+                .unwrap();
+            let remote_exception = py
+                .import("monarch.mesh_controller")
+                .unwrap()
+                .getattr("RemoteException")
+                .unwrap();
+            let pickle = py
+                .import("monarch.actor_mesh")
+                .unwrap()
+                .getattr("_pickle")
+                .unwrap();
+            let exe = remote_exception
+                .call1((exception.backtrace, traceback, rank))
+                .unwrap();
+            let data: Vec<u8> = pickle.call1((exe,)).unwrap().extract().unwrap();
+            PythonMessage::new_from_buf("exception".to_string(), data, None, Some(rank))
+        }));
 
-        while let Some(invocation) = queue.pop() {
-            let mut invocation = invocation.lock().unwrap();
-            if !visited.insert(invocation.seq) {
-                continue;
-            };
-            queue.extend(invocation.set_exception(exception.clone()));
-            results.push((seq, invocation.msg_result()));
+        let mut invocation = invocation.lock().unwrap();
+
+        if let Status::Incomplete { .. } = &invocation.status {
+            self.unreported_exception = Some(python_message.clone());
         }
-        results
+
+        invocation.set_exception(
+            sender,
+            &mut self.unreported_exception,
+            python_message.clone(),
+        )?;
+
+        Ok(())
     }
 
     /// Mark the given rank as completed up to but excluding the given Seq. This will also purge history for
     /// any Seqs that are no longer relevant (completed on all ranks).
     pub fn rank_completed(
         &mut self,
+        sender: &impl CanSend,
         rank: usize,
         seq: Seq,
-    ) -> Vec<(Seq, Option<Result<Serialized, Exception>>)> {
+    ) -> Result<(), MailboxSenderError> {
         self.first_incomplete_seqs.set(rank, seq);
         let prev = self.min_incomplete_seq;
         self.min_incomplete_seq = self.first_incomplete_seqs.min();
 
-        let mut results: Vec<(Seq, Option<Result<Serialized, Exception>>)> = Vec::new();
         for i in Seq::iter_between(prev, self.min_incomplete_seq) {
-            let invocation = self.inflight_invocations.remove(&i).unwrap();
-            let mut invocation = invocation.lock().unwrap();
-
-            if matches!(invocation.status, Status::Errored(_)) {
-                // we already reported output early when it errored
-                continue;
+            if let Some(invocation) = self.inflight_invocations.remove(&i) {
+                let mut invocation = invocation.lock().unwrap();
+                invocation.complete(sender)?;
             }
-            invocation.succeed();
-            results.push((i, invocation.msg_result()));
         }
-        results
+        if let Some(port) = &self.exit_port {
+            if self.min_incomplete_seq >= self.seq_lower_bound {
+                let result = match &self.unreported_exception {
+                    Some(exception) => exception.as_ref().clone(),
+                    None => {
+                        // the byte string is just a Python None
+                        PythonMessage::new("result".to_string(), b"\x80\x04N.", None, None)
+                    }
+                };
+                port.send(sender, result)?;
+                self.exit_port = None;
+            }
+        }
+        Ok(())
     }
 
-    pub fn set_result(&mut self, seq: Seq, result: Serialized) {
+    pub fn set_result(&mut self, seq: Seq, result: PythonMessage) {
         let invocation = self.inflight_invocations.get(&seq).unwrap();
         invocation.lock().unwrap().set_result(result);
+    }
+
+    fn report_exit(&mut self, port: PortRef<PythonMessage>) {
+        self.exit_port = Some(port);
+    }
+}
+
+#[derive(Debug)]
+struct PortInfo {
+    port: PortRef<PythonMessage>,
+    // the slice of ranks expected to respond
+    // to the port. used for error reporting.
+    ranks: Slice,
+}
+
+#[derive(Debug, Handler, HandleClient)]
+enum ClientToControllerMessage {
+    Send {
+        slices: Vec<Slice>,
+        message: WorkerMessage,
+    },
+    Node {
+        seq: Seq,
+        defs: Vec<Ref>,
+        uses: Vec<Ref>,
+        tracebacks: Py<PyAny>,
+        response_port: Option<PortInfo>,
+    },
+    DropRefs {
+        refs: Vec<Ref>,
+    },
+    SyncAtExit {
+        port: PortRef<PythonMessage>,
+    },
+}
+
+struct MeshControllerActor {
+    proc_mesh: SharedCell<TrackedProcMesh>,
+    workers: Option<SharedCell<RootActorMesh<'static, WorkerActor>>>,
+    history: History,
+    id: usize,
+}
+
+impl MeshControllerActor {
+    fn workers(&self) -> SharedCellRef<RootActorMesh<'static, WorkerActor>> {
+        self.workers.as_ref().unwrap().borrow().unwrap()
+    }
+}
+
+impl Debug for MeshControllerActor {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MeshControllerActor").finish()
+    }
+}
+
+struct MeshControllerActorParams {
+    proc_mesh: SharedCell<TrackedProcMesh>,
+    id: usize,
+}
+
+#[async_trait]
+impl Actor for MeshControllerActor {
+    type Params = MeshControllerActorParams;
+    async fn new(
+        MeshControllerActorParams { proc_mesh, id }: Self::Params,
+    ) -> Result<Self, anyhow::Error> {
+        let world_size = proc_mesh.borrow().unwrap().shape().slice().len();
+        Ok(MeshControllerActor {
+            proc_mesh: proc_mesh.clone(),
+            workers: None,
+            history: History::new(world_size),
+            id,
+        })
+    }
+    async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        let controller_actor_ref: ActorRef<ControllerActor> = this.bind();
+        let proc_mesh = self.proc_mesh.borrow().unwrap();
+        let slice = proc_mesh.shape().slice();
+        let world_size = slice.len();
+        let param = WorkerParams {
+            world_size,
+            // Rank assignment is consistent with proc indices.
+            rank: 0,
+            device_index: Some(0),
+            controller_actor: controller_actor_ref,
+        };
+
+        let workers = proc_mesh
+            .spawn(&format!("tensor_engine_workers_{}", self.id), &param)
+            .await?;
+        workers
+            .borrow()
+            .unwrap()
+            .cast_slices(vec![slice.clone()], AssignRankMessage::AssignRank())?;
+        self.workers = Some(workers);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<ControllerMessage> for MeshControllerActor {
+    async fn handle(
+        &mut self,
+        this: &Context<Self>,
+        message: ControllerMessage,
+    ) -> anyhow::Result<()> {
+        match message {
+            ControllerMessage::DebuggerMessage {
+                debugger_actor_id,
+                action,
+            } => {
+                let dm = crate::client::DebuggerMessage::new(debugger_actor_id.into(), action)?;
+                panic!("NYI: debugger message handling");
+            }
+            ControllerMessage::Status {
+                seq,
+                worker_actor_id,
+                controller: false,
+            } => {
+                let rank = worker_actor_id.rank();
+                self.history.rank_completed(this, rank, seq)?;
+            }
+            ControllerMessage::FetchResult {
+                seq,
+                value: Ok(value),
+            } => {
+                let msg: PythonMessage = value.deserialized().unwrap();
+                self.history.set_result(seq, msg);
+            }
+            ControllerMessage::RemoteFunctionFailed { seq, error } => {
+                self.history.propagate_exception(this, seq, error)?;
+            }
+            message => {
+                panic!("unexpected message: {:?}", message);
+            }
+        };
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<ClientToControllerMessage> for MeshControllerActor {
+    async fn handle(
+        &mut self,
+        this: &Context<Self>,
+        message: ClientToControllerMessage,
+    ) -> anyhow::Result<()> {
+        match message {
+            ClientToControllerMessage::Send { slices, message } => {
+                self.workers().cast_slices(slices, message)?;
+            }
+            ClientToControllerMessage::Node {
+                seq,
+                defs,
+                uses,
+                tracebacks,
+                response_port,
+            } => {
+                self.history
+                    .add_invocation(this, seq, uses, defs, tracebacks, response_port)?;
+            }
+            ClientToControllerMessage::DropRefs { refs } => {
+                self.history.drop_refs(refs);
+            }
+            ClientToControllerMessage::SyncAtExit { port } => {
+                let all_ranks = vec![self.workers().shape().slice().clone()];
+                self.workers().cast_slices(
+                    all_ranks,
+                    WorkerMessage::RequestStatus {
+                        seq: self.history.seq_lower_bound,
+                        controller: false,
+                    },
+                )?;
+                self.history.report_exit(port);
+            }
+        }
+        Ok(())
     }
 }

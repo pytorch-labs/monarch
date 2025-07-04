@@ -70,6 +70,9 @@ class PortRef:
     def send(self, mailbox: Mailbox, message: PythonMessage) -> None:
         """Send a single message to the port's receiver."""
         ...
+
+    @property
+    def port_id(self) -> PortId: ...
     def __repr__(self) -> str: ...
 
 @final
@@ -119,6 +122,9 @@ class OncePortRef:
     def send(self, mailbox: Mailbox, message: PythonMessage) -> None:
         """Send a single message to the port's receiver."""
         ...
+
+    @property
+    def port_id(self) -> PortId: ...
     def __repr__(self) -> str: ...
 
 @final
