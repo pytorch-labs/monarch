@@ -7,6 +7,8 @@
 import atexit
 import logging
 import os
+
+import pdb
 import traceback
 from collections import deque
 from logging import Logger
@@ -23,7 +25,6 @@ from typing import (
 )
 
 import torch.utils._python_dispatch
-
 from monarch._rust_bindings.monarch_extension import client
 from monarch._rust_bindings.monarch_extension.client import (  # @manual=//monarch/monarch_extension:monarch_extension
     WorldState,
@@ -40,6 +41,8 @@ from monarch.common.invocation import Seq
 from monarch.common.shape import NDSlice
 from monarch.common.stream import StreamRef
 from monarch.common.tensor import Tensor
+
+from monarch.tensor_worker_main import _set_trace
 
 if TYPE_CHECKING:
     from monarch._rust_bindings.monarch_hyperactor.proc_mesh import (
@@ -120,6 +123,7 @@ def _initialize_env(worker_point: Point, proc_id: str) -> None:
             "LOCAL_WORLD_SIZE": str(gpus_per_host),
         }
         os.environ.update(process_env)
+        pdb.set_trace = _set_trace
     except Exception:
         traceback.print_exc()
         raise

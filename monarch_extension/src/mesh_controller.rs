@@ -9,6 +9,7 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::error::Error;
 use std::fmt::Debug;
 use std::fmt::Formatter;
@@ -21,6 +22,7 @@ use std::sync::atomic::AtomicUsize;
 use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
+use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::HandleClient;
@@ -30,7 +32,6 @@ use hyperactor::PortRef;
 use hyperactor::cap::CanSend;
 use hyperactor::mailbox::MailboxSenderError;
 use hyperactor_mesh::Mesh;
-use hyperactor_mesh::ProcMesh;
 use hyperactor_mesh::actor_mesh::RootActorMesh;
 use hyperactor_mesh::shared_cell::SharedCell;
 use hyperactor_mesh::shared_cell::SharedCellRef;
@@ -44,6 +45,9 @@ use monarch_messages::controller::ControllerActor;
 use monarch_messages::controller::ControllerMessage;
 use monarch_messages::controller::Seq;
 use monarch_messages::controller::WorkerError;
+use monarch_messages::debugger::DebuggerAction;
+use monarch_messages::debugger::DebuggerActor;
+use monarch_messages::debugger::DebuggerMessage;
 use monarch_messages::worker::Ref;
 use monarch_messages::worker::WorkerMessage;
 use monarch_messages::worker::WorkerParams;
@@ -611,11 +615,83 @@ struct MeshControllerActor {
     workers: Option<SharedCell<RootActorMesh<'static, WorkerActor>>>,
     history: History,
     id: usize,
+    debugger_active: Option<ActorRef<DebuggerActor>>,
+    debugger_paused: VecDeque<ActorRef<DebuggerActor>>,
 }
 
 impl MeshControllerActor {
     fn workers(&self) -> SharedCellRef<RootActorMesh<'static, WorkerActor>> {
         self.workers.as_ref().unwrap().borrow().unwrap()
+    }
+    fn handle_debug(
+        &mut self,
+        this: &Context<Self>,
+        debugger_actor_id: ActorId,
+        action: DebuggerAction,
+    ) -> anyhow::Result<()> {
+        if matches!(action, DebuggerAction::Paused()) {
+            self.debugger_paused
+                .push_back(ActorRef::attest(debugger_actor_id));
+        } else {
+            let debugger_actor = self
+                .debugger_active
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("no active debugger"))?;
+            if debugger_actor_id != *debugger_actor.actor_id() {
+                anyhow::bail!("debugger action for wrong actor");
+            }
+            match action {
+                DebuggerAction::Detach() => {
+                    self.debugger_active = None;
+                }
+                DebuggerAction::Read { requested_size } => {
+                    Python::with_gil(|py| {
+                        let read = py
+                            .import("monarch.controller.debugger")
+                            .unwrap()
+                            .getattr("read")
+                            .unwrap();
+                        let bytes: Vec<u8> =
+                            read.call1((requested_size,)).unwrap().extract().unwrap();
+
+                        debugger_actor.send(
+                            this,
+                            DebuggerMessage::Action {
+                                action: DebuggerAction::Write { bytes },
+                            },
+                        )
+                    })?;
+                }
+                DebuggerAction::Write { bytes } => {
+                    Python::with_gil(|py| -> Result<(), anyhow::Error> {
+                        let write = py
+                            .import("monarch.controller.debugger")
+                            .unwrap()
+                            .getattr("write")
+                            .unwrap();
+                        write.call1((String::from_utf8(bytes)?,)).unwrap();
+                        Ok(())
+                    })?;
+                }
+                _ => {
+                    anyhow::bail!("unexpected action: {:?}", action);
+                }
+            }
+        }
+        if self.debugger_active.is_none() {
+            self.debugger_active = self.debugger_paused.pop_front().and_then(|pdb_actor| {
+                pdb_actor
+                    .send(
+                        this,
+                        DebuggerMessage::Action {
+                            action: DebuggerAction::Attach(),
+                        },
+                    )
+                    .map(|_| pdb_actor)
+                    .ok()
+            });
+        }
+        Ok(())
     }
 }
 
@@ -642,6 +718,8 @@ impl Actor for MeshControllerActor {
             workers: None,
             history: History::new(world_size),
             id,
+            debugger_active: None,
+            debugger_paused: VecDeque::new(),
         })
     }
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
@@ -681,8 +759,7 @@ impl Handler<ControllerMessage> for MeshControllerActor {
                 debugger_actor_id,
                 action,
             } => {
-                let dm = crate::client::DebuggerMessage::new(debugger_actor_id.into(), action)?;
-                panic!("NYI: debugger message handling");
+                self.handle_debug(this, debugger_actor_id, action)?;
             }
             ControllerMessage::Status {
                 seq,
