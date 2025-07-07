@@ -271,3 +271,32 @@ async def test_proc_mesh_monitoring():
     assert isinstance(event, ProcEvent.Crashed)
     assert event[0] == 0  # check rank
     assert "fail on init" in event[1]  # check error message
+
+
+class Worker(Actor):
+    @endpoint
+    def work(self):
+        raise ValueError("value error")
+
+
+class Manager(Actor):
+    @endpoint
+    async def init(self):
+        mesh = await proc_mesh(gpus=1)
+        self.workers = await mesh.spawn("Worker", Worker)
+
+    @endpoint
+    async def route(self):
+        return await self.workers.work.call_one()
+
+
+@pytest.mark.asyncio
+async def test_errors_propagated():
+    p_mesh = await proc_mesh(gpus=1)
+    mesh = await p_mesh.spawn("manager", Manager)
+
+    await mesh.init.call_one()
+
+    with pytest.raises(ActorError) as err_info:
+        await mesh.route.call_one()
+    assert "value error" in str(err_info.value)
