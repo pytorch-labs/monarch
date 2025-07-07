@@ -10,16 +10,15 @@ from typing import final
 
 from monarch._rust_bindings.monarch_hyperactor.actor import PythonMessage
 from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
-
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
-
+from monarch._rust_bindings.monarch_hyperactor.selection import Selection
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape
 
 @final
 class PythonActorMesh:
-    def cast(self, message: PythonMessage) -> None:
+    def cast(self, selection: Selection, message: PythonMessage) -> None:
         """
-        Cast a message to this mesh.
+        Cast a message to the selected actors in the mesh.
         """
 
     def get(self, rank: int) -> ActorId | None:

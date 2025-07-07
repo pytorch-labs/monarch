@@ -20,6 +20,12 @@ pub struct PySelection {
     inner: Selection,
 }
 
+impl PySelection {
+    pub(crate) fn inner(&self) -> &Selection {
+        &self.inner
+    }
+}
+
 impl From<Selection> for PySelection {
     fn from(inner: Selection) -> Self {
         Self { inner }
