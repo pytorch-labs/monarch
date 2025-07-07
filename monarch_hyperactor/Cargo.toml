@@ -23,7 +23,7 @@ inventory = "0.3.8"
 monarch_types = { version = "0.0.0", path = "../monarch_types" }
 ndslice = { version = "0.0.0", path = "../ndslice" }
 pyo3 = { version = "0.24", features = ["anyhow", "multiple-pymethods"] }
-pyo3-async-runtimes = { git = "https://github.com/PyO3/pyo3-async-runtimes", rev = "c5a3746f110b4d246556b0f6c29f5f555919eee3", features = ["attributes", "tokio-runtime"] }
+pyo3-async-runtimes = { version = "0.24", features = ["attributes", "tokio-runtime"] }
 serde = { version = "1.0.185", features = ["derive", "rc"] }
 serde_bytes = "0.11"
 thiserror = "2.0.12"
