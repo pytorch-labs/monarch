@@ -9,6 +9,17 @@
 // sections of code adapted from https://github.com/jonhoo/rust-ibverbs
 // Copyright (c) 2016 Jon Gjengset under MIT License (MIT)
 
+#[repr(C, align(4))]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct mlx5_wqe_ctrl_seg {
+    pub opmod_idx_opcode: u32,
+    pub qpn_ds: u32,
+    pub signature: u8,
+    pub dci_stream_channel_id: u16,
+    pub fm_ce_se: u8,
+    pub imm: u32,
+}
+
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct ibv_wc {
