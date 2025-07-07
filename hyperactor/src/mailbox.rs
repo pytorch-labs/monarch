@@ -89,6 +89,7 @@ use dashmap::DashMap;
 use dashmap::DashSet;
 use dashmap::mapref::entry::Entry;
 use futures::Sink;
+use futures::Stream;
 use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -1647,6 +1648,14 @@ impl<M> Drop for PortReceiver<M> {
         // error out if we have removed the receiver before serializing the port ref?
         // ("no longer live")?
         self.mailbox.inner.ports.remove(&self.port());
+    }
+}
+
+impl<M> Stream for PortReceiver<M> {
+    type Item = Result<M, MailboxError>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        std::pin::pin!(self.recv()).poll(cx).map(Some)
     }
 }
 
