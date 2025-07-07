@@ -1515,10 +1515,11 @@ impl InstanceCell {
 
 impl Drop for InstanceState {
     fn drop(&mut self) {
-        if self.maybe_unlink_parent().is_some() {
-            tracing::error!(
-                "instance {} was dropped with parent still linked",
-                self.actor_id
+        if let Some(parent) = self.maybe_unlink_parent() {
+            tracing::debug!(
+                "instance {} was dropped with parent {} still linked",
+                self.actor_id,
+                parent.actor_id()
             );
         }
         if self.proc.inner.instances.remove(&self.actor_id).is_none() {
