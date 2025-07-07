@@ -11,12 +11,9 @@ use std::cmp::PartialOrd;
 use std::hash::Hash;
 use std::marker::PhantomData;
 
-use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Named;
-use hyperactor::ProcId;
 use hyperactor::RemoteHandles;
-use hyperactor::WorldId;
 use hyperactor::actor::RemoteActor;
 use hyperactor::cap;
 use hyperactor::message::Castable;
@@ -79,6 +76,8 @@ pub struct ActorMeshRef<A: RemoteActor> {
     shape: Shape,
     /// The shape of the underlying Proc Mesh.
     proc_mesh_shape: Shape,
+    /// The reference to the comm actor of the underlying Proc Mesh.
+    comm_actor_ref: ActorRef<CommActor>,
     phantom: PhantomData<A>,
 }
 
@@ -87,11 +86,17 @@ impl<A: RemoteActor> ActorMeshRef<A> {
     /// typed reference.  This is usually invoked to provide a guarantee
     /// that an externally-provided mesh ID (e.g., through a command
     /// line argument) is a valid reference.
-    pub(crate) fn attest(mesh_id: ActorMeshId, shape: Shape, proc_mesh_shape: Shape) -> Self {
+    pub(crate) fn attest(
+        mesh_id: ActorMeshId,
+        shape: Shape,
+        proc_mesh_shape: Shape,
+        comm_actor_ref: ActorRef<CommActor>,
+    ) -> Self {
         Self {
             mesh_id,
             shape,
             proc_mesh_shape,
+            comm_actor_ref,
             phantom: PhantomData,
         }
     }
@@ -127,21 +132,16 @@ impl<A: RemoteActor> ActorMeshRef<A> {
     where
         A: RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,
     {
-        let world_id = WorldId(self.mesh_id.0.0.clone());
-        let comm_actor_id = ActorId(ProcId(world_id, 0), "comm".to_string(), 0);
-
         actor_mesh_cast::<M, A>(
             caps,
             self.shape(),
             self.proc_mesh_shape(),
             self.name(),
             caps.mailbox().actor_id(),
-            &ActorRef::<CommActor>::attest(comm_actor_id),
+            &self.comm_actor_ref,
             selection,
             message,
-        )?;
-
-        Ok(())
+        )
     }
 }
 
@@ -151,6 +151,7 @@ impl<A: RemoteActor> Clone for ActorMeshRef<A> {
             mesh_id: self.mesh_id.clone(),
             shape: self.shape.clone(),
             proc_mesh_shape: self.proc_mesh_shape.clone(),
+            comm_actor_ref: self.comm_actor_ref.clone(),
             phantom: PhantomData,
         }
     }
@@ -211,6 +212,7 @@ mod tests {
         mesh_id: ActorMeshId,
         shape: Shape,
         proc_mesh_shape: Shape,
+        comm_actor_ref: ActorRef<CommActor>,
     }
 
     #[async_trait]
@@ -223,6 +225,7 @@ mod tests {
                     params.mesh_id,
                     params.shape,
                     params.proc_mesh_shape,
+                    params.comm_actor_ref,
                 ),
             })
         }
@@ -284,6 +287,7 @@ mod tests {
                     ),
                     shape: ping_proc_mesh.shape().clone(),
                     proc_mesh_shape: ping_proc_mesh.shape().clone(),
+                    comm_actor_ref: ping_proc_mesh.comm_actor().clone(),
                 },
             )
             .await
@@ -301,6 +305,7 @@ mod tests {
                     ),
                     shape: pong_proc_mesh.shape().clone(),
                     proc_mesh_shape: pong_proc_mesh.shape().clone(),
+                    comm_actor_ref: pong_proc_mesh.comm_actor().clone(),
                 },
             )
             .await
