@@ -124,6 +124,8 @@ def _initialize_env(worker_point: Point, proc_id: str) -> None:
         }
         os.environ.update(process_env)
         pdb.set_trace = _set_trace
+        # workaround for set_manual_seed somehow not working if cuda is not initialized
+        torch.cuda.init()
     except Exception:
         traceback.print_exc()
         raise
@@ -248,7 +250,7 @@ class RemoteException(Exception):
             return (
                 f"A remote function has failed asynchronously on rank {self.rank}.\n"
                 f"Traceback of where the remote function was issued on controller (most recent call last):\n{controller_tb}"
-                f"Error as reported from worker!!!!!!!:\n{self.worker_error_string}"
+                f"Error as reported from worker:\n{self.worker_error_string}"
             )
         except Exception:
             traceback.print_exc()

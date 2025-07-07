@@ -299,7 +299,10 @@ async def proc_mesh_nonblocking(
 ) -> ProcMesh:
     if gpus is None:
         gpus = _local_device_count()
-    spec = AllocSpec(AllocConstraints(), gpus=gpus, hosts=hosts)
+    # gpus must come last in this order otherwise test_remote_function_all_gather
+    # because test_remote_function_all_gather expects that hosts comes before gpus
+    # in the order of the dimensions.
+    spec = AllocSpec(AllocConstraints(), hosts=hosts, gpus=gpus)
     env = env or {}
     cmd, args, base_env = _get_bootstrap_args()
     env.update(base_env)
@@ -313,7 +316,10 @@ def proc_mesh_blocking(
 ) -> ProcMesh:
     if gpus is None:
         gpus = _local_device_count()
-    spec = AllocSpec(AllocConstraints(), gpus=gpus, hosts=hosts)
+    # gpus must come last in this order otherwise test_remote_function_all_gather
+    # because test_remote_function_all_gather expects that hosts comes before gpus
+    # in the order of the dimensions.
+    spec = AllocSpec(AllocConstraints(), hosts=hosts, gpus=gpus)
     env = env or {}
     cmd, args, base_env = _get_bootstrap_args()
     env.update(base_env)
