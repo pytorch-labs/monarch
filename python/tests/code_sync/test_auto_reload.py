@@ -42,7 +42,6 @@ def importable_workspace() -> Generator[Path, Any, Any]:
 
 
 class TestAutoReloader(unittest.TestCase):
-    @pytest.mark.oss_skip  # pyre-ignore[56] TODO T229709067
     def test_source_change(self):
         with importable_workspace() as workspace:
             reloader = AutoReloader(workspace)
@@ -56,7 +55,11 @@ class TestAutoReloader(unittest.TestCase):
                 self.assertEqual(test_module.foo, 1)
 
                 write_text(filename, "foo = 2\nbar = 4\n")
-                os.remove(importlib.util.cache_from_source(filename))  # force recompile
+                try:
+                    # force recompile
+                    os.remove(importlib.util.cache_from_source(filename))
+                except FileNotFoundError:
+                    pass  # python may not always implicitly generate bytecode
 
                 self.assertEqual(
                     reloader.reload_changes(),
