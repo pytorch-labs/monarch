@@ -51,6 +51,7 @@ use crate::cap;
 use crate::data::Serialized;
 use crate::mailbox::MailboxSenderError;
 use crate::mailbox::MailboxSenderErrorKind;
+use crate::mailbox::PortSink;
 use crate::message::Bind;
 use crate::message::Bindings;
 use crate::message::Unbind;
@@ -892,6 +893,11 @@ impl<M: RemoteMessage> PortRef<M> {
     /// [`crate::actor::Instance`].
     pub fn send_serialized(&self, caps: &impl cap::CanSend, message: Serialized, headers: Attrs) {
         caps.post(self.port_id.clone(), headers, message);
+    }
+
+    /// Convert this port into a sink that can be used to send messages using the given capability.
+    pub fn into_sink<'a, C: cap::CanSend>(self, caps: &'a C) -> PortSink<'a, C, M> {
+        PortSink::new(caps, self)
     }
 }
 
