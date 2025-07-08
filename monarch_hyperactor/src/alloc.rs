@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use anyhow::anyhow;
@@ -16,19 +17,23 @@ use async_trait::async_trait;
 use hyperactor::WorldId;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
-use hyperactor_extension::alloc::PyAlloc;
-use hyperactor_extension::alloc::PyAllocSpec;
+use hyperactor_mesh::alloc::Alloc;
 use hyperactor_mesh::alloc::AllocConstraints;
 use hyperactor_mesh::alloc::AllocSpec;
 use hyperactor_mesh::alloc::Allocator;
 use hyperactor_mesh::alloc::AllocatorError;
 use hyperactor_mesh::alloc::LocalAllocator;
+use hyperactor_mesh::alloc::ProcState;
 use hyperactor_mesh::alloc::ProcessAllocator;
 use hyperactor_mesh::alloc::remoteprocess::RemoteProcessAlloc;
 use hyperactor_mesh::alloc::remoteprocess::RemoteProcessAllocHost;
 use hyperactor_mesh::alloc::remoteprocess::RemoteProcessAllocInitializer;
+use ndslice::Shape;
+use ndslice::Slice;
 use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
 use tokio::process::Command;
 
 use crate::channel::PyChannelAddr;
@@ -327,10 +332,149 @@ impl PyRemoteAllocator {
     }
 }
 
+/// A python class that wraps a Rust Alloc trait object. It represents what
+/// is shown on the python side. Internals are not exposed.
+/// It ensures that the Alloc is only used once (i.e. moved) in rust.
+#[pyclass(
+    name = "Alloc",
+    module = "monarch._src.actor._extension.monarch_hyperactor.alloc"
+)]
+pub struct PyAlloc {
+    pub inner: Arc<Mutex<Option<PyAllocWrapper>>>,
+}
+
+impl PyAlloc {
+    /// Create a new PyAlloc with provided boxed trait.
+    pub fn new(inner: Box<dyn Alloc + Sync + Send>) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(Some(PyAllocWrapper { inner }))),
+        }
+    }
+
+    /// Take the internal Alloc object.
+    pub fn take(&self) -> Option<PyAllocWrapper> {
+        self.inner.lock().unwrap().take()
+    }
+}
+
+#[pymethods]
+impl PyAlloc {
+    fn __repr__(&self) -> PyResult<String> {
+        let data = self.inner.lock().unwrap();
+        match &*data {
+            None => Ok("Alloc(None)".to_string()),
+            Some(wrapper) => Ok(format!("Alloc({})", wrapper.shape())),
+        }
+    }
+}
+
+/// Internal wrapper to translate from a dyn Alloc to an impl Alloc. Used
+/// to support polymorphism in the Python bindings.
+pub struct PyAllocWrapper {
+    inner: Box<dyn Alloc + Sync + Send>,
+}
+
+#[async_trait]
+impl Alloc for PyAllocWrapper {
+    async fn next(&mut self) -> Option<ProcState> {
+        self.inner.next().await
+    }
+
+    fn shape(&self) -> &Shape {
+        self.inner.shape()
+    }
+
+    fn world_id(&self) -> &WorldId {
+        self.inner.world_id()
+    }
+
+    fn transport(&self) -> ChannelTransport {
+        self.inner.transport()
+    }
+
+    async fn stop(&mut self) -> Result<(), AllocatorError> {
+        self.inner.stop().await
+    }
+}
+
+#[pyclass(
+    name = "AllocConstraints",
+    module = "monarch._src.actor._extension.monarch_hyperactor.alloc"
+)]
+pub struct PyAllocConstraints {
+    inner: AllocConstraints,
+}
+
+#[pymethods]
+impl PyAllocConstraints {
+    #[new]
+    #[pyo3(signature = (match_labels=None))]
+    fn new(match_labels: Option<HashMap<String, String>>) -> PyResult<Self> {
+        let mut constraints = AllocConstraints::default();
+        if let Some(match_lables) = match_labels {
+            constraints.match_labels = match_lables;
+        }
+
+        Ok(Self { inner: constraints })
+    }
+}
+
+#[pyclass(
+    name = "AllocSpec",
+    module = "monarch._src.actor._extension.monarch_hyperactor.alloc"
+)]
+pub struct PyAllocSpec {
+    pub inner: AllocSpec,
+}
+
+#[pymethods]
+impl PyAllocSpec {
+    #[new]
+    #[pyo3(signature = (constraints, **kwargs))]
+    fn new(constraints: &PyAllocConstraints, kwargs: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
+        let Some(kwargs) = kwargs else {
+            return Err(PyValueError::new_err(
+                "Shape must have at least one dimension",
+            ));
+        };
+        let shape_dict = kwargs.downcast::<PyDict>()?;
+
+        let mut keys = Vec::new();
+        let mut values = Vec::new();
+        for (key, value) in shape_dict {
+            keys.push(key.clone());
+            values.push(value.clone());
+        }
+
+        let shape = Shape::new(
+            keys.into_iter()
+                .map(|key| key.extract::<String>())
+                .collect::<PyResult<Vec<String>>>()?,
+            Slice::new_row_major(
+                values
+                    .into_iter()
+                    .map(|key| key.extract::<usize>())
+                    .collect::<PyResult<Vec<usize>>>()?,
+            ),
+        )
+        .map_err(|e| PyValueError::new_err(format!("Invalid shape: {:?}", e)))?;
+
+        Ok(Self {
+            inner: AllocSpec {
+                shape,
+                constraints: constraints.inner.clone(),
+            },
+        })
+    }
+}
+
 pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResult<()> {
     hyperactor_mod.add_class::<PyProcessAllocator>()?;
     hyperactor_mod.add_class::<PyLocalAllocator>()?;
     hyperactor_mod.add_class::<PyRemoteAllocator>()?;
+    hyperactor_mod.add_class::<PyAlloc>()?;
+    hyperactor_mod.add_class::<PyAllocConstraints>()?;
+    hyperactor_mod.add_class::<PyAllocSpec>()?;
 
     Ok(())
 }

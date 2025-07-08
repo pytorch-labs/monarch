@@ -22,7 +22,7 @@ from typing import (
     TypeVar,
 )
 
-from monarch._src.actor._extension.hyperactor_extension.alloc import (  # @manual=//monarch/actor_extension:actor_extension
+from monarch._src.actor._extension.monarch_hyperactor.alloc import (  # @manual=//monarch/actor_extension:actor_extension
     Alloc,
     AllocConstraints,
     AllocSpec,

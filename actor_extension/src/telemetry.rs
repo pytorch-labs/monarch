@@ -113,7 +113,7 @@ pub fn use_sim_clock() -> PyResult<()> {
 #[pyclass(
     unsendable,
     subclass,
-    module = "monarch._src.actor._extension.hyperactor_extension.telemetry"
+    module = "monarch._src.actor._extension.telemetry"
 )]
 struct PySpan {
     span: tracing::span::EnteredSpan,
@@ -140,46 +140,28 @@ use pyo3::types::PyModule;
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     // Register the forward_to_tracing function
     let f = wrap_pyfunction!(forward_to_tracing, module)?;
-    f.setattr(
-        "__module__",
-        "monarch._src.actor._extension.hyperactor_extension.telemetry",
-    )?;
+    f.setattr("__module__", "monarch._src.actor._extension.telemetry")?;
     module.add_function(f)?;
 
     // Register the span-related functions
     let enter_span_fn = wrap_pyfunction!(enter_span, module)?;
-    enter_span_fn.setattr(
-        "__module__",
-        "monarch._src.actor._extension.hyperactor_extension.telemetry",
-    )?;
+    enter_span_fn.setattr("__module__", "monarch._src.actor._extension.telemetry")?;
     module.add_function(enter_span_fn)?;
 
     let exit_span_fn = wrap_pyfunction!(exit_span, module)?;
-    exit_span_fn.setattr(
-        "__module__",
-        "monarch._src.actor._extension.hyperactor_extension.telemetry",
-    )?;
+    exit_span_fn.setattr("__module__", "monarch._src.actor._extension.telemetry")?;
     module.add_function(exit_span_fn)?;
 
     let get_current_span_id_fn = wrap_pyfunction!(get_current_span_id, module)?;
-    get_current_span_id_fn.setattr(
-        "__module__",
-        "monarch._src.actor._extension.hyperactor_extension.telemetry",
-    )?;
+    get_current_span_id_fn.setattr("__module__", "monarch._src.actor._extension.telemetry")?;
     module.add_function(get_current_span_id_fn)?;
 
     let use_real_clock_fn = wrap_pyfunction!(use_real_clock, module)?;
-    use_real_clock_fn.setattr(
-        "__module__",
-        "monarch._src.actor._extension.hyperactor_extension.telemetry",
-    )?;
+    use_real_clock_fn.setattr("__module__", "monarch._src.actor._extension.telemetry")?;
     module.add_function(use_real_clock_fn)?;
 
     let use_sim_clock_fn = wrap_pyfunction!(use_sim_clock, module)?;
-    use_sim_clock_fn.setattr(
-        "__module__",
-        "monarch._src.actor._extension.hyperactor_extension.telemetry",
-    )?;
+    use_sim_clock_fn.setattr("__module__", "monarch._src.actor._extension.telemetry")?;
     module.add_function(use_sim_clock_fn)?;
 
     module.add_class::<PySpan>()?;

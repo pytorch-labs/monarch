@@ -12,14 +12,14 @@ from typing import Callable, cast, final, Generic, TypeVar
 
 import monarch
 
-from monarch._src.actor._extension.hyperactor_extension.alloc import (
-    AllocConstraints,
-    AllocSpec,
-)
-
 from monarch._src.actor._extension.monarch_hyperactor.actor import (
     PanicFlag,
     PythonMessage,
+)
+
+from monarch._src.actor._extension.monarch_hyperactor.alloc import (
+    AllocConstraints,
+    AllocSpec,
 )
 
 from monarch._src.actor._extension.monarch_hyperactor.mailbox import (

@@ -15,6 +15,7 @@ use pyo3::prelude::*;
 mod blocking;
 mod code_sync;
 mod panic;
+mod telemetry;
 
 #[cfg(fbcode_build)]
 mod meta;
@@ -105,14 +106,7 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         module,
         "monarch_hyperactor.runtime",
     )?)?;
-    hyperactor_extension::alloc::register_python_bindings(&get_or_add_new_module(
-        module,
-        "hyperactor_extension.alloc",
-    )?)?;
-    hyperactor_extension::telemetry::register_python_bindings(&get_or_add_new_module(
-        module,
-        "hyperactor_extension.telemetry",
-    )?)?;
+    telemetry::register_python_bindings(&get_or_add_new_module(module, "telemetry")?)?;
     crate::panic::register_python_bindings(&get_or_add_new_module(module, "panic")?)?;
 
     crate::blocking::register_python_bindings(&get_or_add_new_module(module, "blocking")?)?;

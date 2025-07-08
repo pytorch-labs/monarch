@@ -13,14 +13,14 @@ import time
 
 import monarch
 
-from monarch._src.actor._extension.hyperactor_extension.alloc import (  # @manual=//monarch/monarch_extension:monarch_extension
-    AllocConstraints,
-    AllocSpec,
-)
-
 from monarch._src.actor._extension.monarch_hyperactor.actor import (
     PanicFlag,
     PythonMessage,
+)
+
+from monarch._src.actor._extension.monarch_hyperactor.alloc import (  # @manual=//monarch/monarch_extension:monarch_extension
+    AllocConstraints,
+    AllocSpec,
 )
 from monarch._src.actor._extension.monarch_hyperactor.mailbox import Mailbox
 from monarch._src.actor._extension.monarch_hyperactor.proc import ActorId

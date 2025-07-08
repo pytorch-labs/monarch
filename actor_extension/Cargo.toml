@@ -16,11 +16,12 @@ crate-type = ["cdylib"]
 anyhow = "1.0.98"
 bincode = "1.3.3"
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
-hyperactor_extension = { version = "0.0.0", path = "../hyperactor_extension" }
 hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }
+hyperactor_telemetry = { version = "0.0.0", path = "../hyperactor_telemetry" }
 libc = "0.2.139"
 monarch_hyperactor = { version = "0.0.0", path = "../monarch_hyperactor" }
 pyo3 = { version = "0.24", features = ["anyhow", "multiple-pymethods"] }
 pyo3-async-runtimes = { version = "0.24", features = ["attributes", "tokio-runtime"] }
 serde = { version = "1.0.185", features = ["derive", "rc"] }
 tokio = { version = "1.45.0", features = ["full", "test-util", "tracing"] }
+tracing = { version = "0.1.41", features = ["attributes", "valuable"] }

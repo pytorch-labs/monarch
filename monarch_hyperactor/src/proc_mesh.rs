@@ -17,7 +17,6 @@ use hyperactor::RemoteMessage;
 use hyperactor::WorldId;
 use hyperactor::actor::RemoteActor;
 use hyperactor::proc::Proc;
-use hyperactor_extension::alloc::PyAlloc;
 use hyperactor_mesh::RootActorMesh;
 use hyperactor_mesh::alloc::Alloc;
 use hyperactor_mesh::alloc::ProcStopReason;
@@ -40,6 +39,7 @@ use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 
 use crate::actor_mesh::PythonActorMesh;
+use crate::alloc::PyAlloc;
 use crate::mailbox::PyMailbox;
 use crate::runtime::signal_safe_block_on;
 use crate::shape::PyShape;

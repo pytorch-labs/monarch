@@ -10,9 +10,9 @@ import abc
 import logging
 from typing import final, Optional
 
-from monarch._src.actor._extension.hyperactor_extension.alloc import Alloc, AllocSpec
-
 from monarch._src.actor._extension.monarch_hyperactor.alloc import (
+    Alloc,
+    AllocSpec,
     LocalAllocatorBase,
     ProcessAllocatorBase,
     RemoteAllocatorBase,

@@ -9,7 +9,7 @@
 from unittest import IsolatedAsyncioTestCase
 
 from monarch import ProcessAllocator
-from monarch._src.actor._extension.hyperactor_extension.alloc import (  # @manual=//monarch/monarch_extension:monarch_extension
+from monarch._src.actor._extension.monarch_hyperactor.alloc import (  # @manual=//monarch/monarch_extension:monarch_extension
     AllocConstraints,
     AllocSpec,
 )

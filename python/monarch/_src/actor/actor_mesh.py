@@ -38,11 +38,6 @@ from typing import (
     TypeVar,
 )
 
-from monarch._src.actor._extension.hyperactor_extension.telemetry import (
-    enter_span,
-    exit_span,
-)
-
 from monarch._src.actor._extension.monarch_hyperactor.actor import (
     PanicFlag,
     PythonMessage,
@@ -60,6 +55,8 @@ from monarch._src.actor._extension.monarch_hyperactor.shape import (
     Point as HyPoint,
     Shape,
 )
+
+from monarch._src.actor._extension.telemetry import enter_span, exit_span
 
 from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator
 from monarch._src.actor.future import Future
