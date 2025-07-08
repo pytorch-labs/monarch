@@ -15,6 +15,8 @@ use hyperactor::Actor;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Bind;
+use hyperactor::GangId;
+use hyperactor::GangRef;
 use hyperactor::Message;
 use hyperactor::Named;
 use hyperactor::PortHandle;
@@ -144,6 +146,13 @@ pub trait ActorMesh: Mesh {
 
     fn world_id(&self) -> &WorldId {
         self.proc_mesh().world_id()
+    }
+
+    /// Iterate over all `ActorRef<Self::Actor>` in this mesh.
+    fn iter_actor_refs(&self) -> impl Iterator<Item = ActorRef<Self::Actor>> {
+        let gang: GangRef<Self::Actor> =
+            GangId(self.proc_mesh().world_id().clone(), self.name().to_string()).into();
+        self.shape().slice().iter().map(move |rank| gang.rank(rank))
     }
 
     /// Get a serializeable reference to this mesh similar to ActorHandle::bind
