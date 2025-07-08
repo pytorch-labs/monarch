@@ -545,8 +545,11 @@ class _Actor:
             args, kwargs = _unpickle(message.message, mailbox)
 
             if message.method == "__init__":
+                if port is None:
+                    raise AssertionError("response port is None for method __init__")
                 Class, *args = args
                 self.instance = Class(*args, **kwargs)
+                port.send("result", None)
                 return None
 
             if self.instance is None:
@@ -739,17 +742,26 @@ class ActorMeshRef(MeshTrait, Generic[T]):
         self,
         args: Iterable[Any],
         kwargs: Dict[str, Any],
-    ) -> None:
+    ) -> "Future[ValueMesh[None]]":
         async def null_func(*_args: Iterable[Any], **_kwargs: Dict[str, Any]) -> None:
             return None
 
-        ep = Endpoint(
+        ep: Endpoint[..., None] = Endpoint(
             self._actor_mesh_ref,
             "__init__",
             null_func,
             self._mailbox,
         )
-        send(ep, (self._class, *args), kwargs)
+        args_tuple = (self._class, *args)
+        # Use call because we want to confirm all actor objects are instantiated.
+        # Otherwise, we could hit the following scenario:
+        #   1. client spawned an actor mesh A, and pass its ref to a different
+        #      mesh B.
+        #   2. When B gets A's mesh, it will start to cast messages to A.
+        #   3. However, when B's message arrives at A, client's spawn message
+        #      might not arrive at A yet. Then processing  B's message will cause
+        #      "missing python object" exception.
+        return ep.call(*args_tuple, **kwargs)
 
     def __reduce_ex__(
         self, protocol: ...

@@ -163,7 +163,7 @@ class ProcMesh(MeshTrait):
         )
         # useful to have this separate, because eventually we can reconstitute ActorMeshRef objects across pickling by
         # doing `ActorMeshRef(Class, actor_handle)` but not calling _create.
-        service._create(args, kwargs)
+        service._create(args, kwargs).get()
         return cast(T, service)
 
     def __repr__(self) -> str:
@@ -188,7 +188,7 @@ class ProcMesh(MeshTrait):
         )
         # useful to have this separate, because eventually we can reconstitute ActorMeshRef objects across pickling by
         # doing `ActorMeshRef(Class, actor_handle)` but not calling _create.
-        service._create(args, kwargs)
+        await service._create(args, kwargs)
         return cast(T, service)
 
     @property
