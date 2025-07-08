@@ -1323,6 +1323,17 @@ impl cap::sealed::CanSend for Mailbox {
         MailboxSender::post(self, envelope, return_handle);
     }
 }
+impl cap::sealed::CanSend for &Mailbox {
+    fn post(&self, dest: PortId, headers: Attrs, data: Serialized) {
+        cap::sealed::CanSend::post(*self, dest, headers, data)
+    }
+}
+
+impl cap::sealed::CanOpenPort for &Mailbox {
+    fn mailbox(&self) -> &Mailbox {
+        self
+    }
+}
 
 impl cap::sealed::CanOpenPort for Mailbox {
     fn mailbox(&self) -> &Mailbox {
