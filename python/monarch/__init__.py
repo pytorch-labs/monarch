@@ -34,9 +34,9 @@ if TYPE_CHECKING:
     from monarch import timer
     from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator
     from monarch._src.actor.shape import NDSlice, Shape
-    from monarch.common._coalescing import coalescing
+    from monarch._src.tensor_engine.common._coalescing import coalescing
 
-    from monarch.common.device_mesh import (
+    from monarch._src.tensor_engine.common.device_mesh import (
         DeviceMesh,
         get_active_mesh,
         no_mesh,
@@ -45,17 +45,23 @@ if TYPE_CHECKING:
         to_mesh,
     )
 
-    from monarch.common.function import resolvers as function_resolvers
+    from monarch._src.tensor_engine.common.function import (
+        resolvers as function_resolvers,
+    )
 
-    from monarch.common.future import Future
+    from monarch._src.tensor_engine.common.future import Future
 
-    from monarch.common.invocation import RemoteException
-    from monarch.common.opaque_ref import OpaqueRef
-    from monarch.common.pipe import create_pipe, Pipe, remote_generator
-    from monarch.common.remote import remote
-    from monarch.common.selection import Selection
-    from monarch.common.stream import get_active_stream, Stream
-    from monarch.common.tensor import reduce, reduce_, Tensor
+    from monarch._src.tensor_engine.common.invocation import RemoteException
+    from monarch._src.tensor_engine.common.opaque_ref import OpaqueRef
+    from monarch._src.tensor_engine.common.pipe import (
+        create_pipe,
+        Pipe,
+        remote_generator,
+    )
+    from monarch._src.tensor_engine.common.remote import remote
+    from monarch._src.tensor_engine.common.selection import Selection
+    from monarch._src.tensor_engine.common.stream import get_active_stream, Stream
+    from monarch._src.tensor_engine.common.tensor import reduce, reduce_, Tensor
     from monarch.fetch import fetch_shard, inspect, show
     from monarch.gradient_generator import grad_function, grad_generator
     from monarch.notebook import mast_mesh, reserve_torchx as mast_reserve
@@ -72,29 +78,41 @@ if TYPE_CHECKING:
 
 
 _public_api = {
-    "coalescing": ("monarch.common._coalescing", "coalescing"),
-    "remote": ("monarch.common.remote", "remote"),
-    "DeviceMesh": ("monarch.common.device_mesh", "DeviceMesh"),
-    "get_active_mesh": ("monarch.common.device_mesh", "get_active_mesh"),
-    "no_mesh": ("monarch.common.device_mesh", "no_mesh"),
-    "RemoteProcessGroup": ("monarch.common.device_mesh", "RemoteProcessGroup"),
-    "function_resolvers": ("monarch.common.function", "resolvers"),
-    "Future": ("monarch.common.future", "Future"),
-    "RemoteException": ("monarch.common.invocation", "RemoteException"),
+    "coalescing": ("monarch._src.tensor_engine.common._coalescing", "coalescing"),
+    "remote": ("monarch._src.tensor_engine.common.remote", "remote"),
+    "DeviceMesh": ("monarch._src.tensor_engine.common.device_mesh", "DeviceMesh"),
+    "get_active_mesh": (
+        "monarch._src.tensor_engine.common.device_mesh",
+        "get_active_mesh",
+    ),
+    "no_mesh": ("monarch._src.tensor_engine.common.device_mesh", "no_mesh"),
+    "RemoteProcessGroup": (
+        "monarch._src.tensor_engine.common.device_mesh",
+        "RemoteProcessGroup",
+    ),
+    "function_resolvers": ("monarch._src.tensor_engine.common.function", "resolvers"),
+    "Future": ("monarch._src.tensor_engine.common.future", "Future"),
+    "RemoteException": (
+        "monarch._src.tensor_engine.common.invocation",
+        "RemoteException",
+    ),
     "Shape": ("monarch._src.actor.shape", "Shape"),
     "NDSlice": ("monarch._src.actor.shape", "NDSlice"),
-    "Selection": ("monarch.common.selection", "Selection"),
-    "OpaqueRef": ("monarch.common.opaque_ref", "OpaqueRef"),
-    "create_pipe": ("monarch.common.pipe", "create_pipe"),
-    "Pipe": ("monarch.common.pipe", "Pipe"),
-    "remote_generator": ("monarch.common.pipe", "remote_generator"),
-    "get_active_stream": ("monarch.common.stream", "get_active_stream"),
-    "Stream": ("monarch.common.stream", "Stream"),
-    "Tensor": ("monarch.common.tensor", "Tensor"),
-    "reduce": ("monarch.common.tensor", "reduce"),
-    "reduce_": ("monarch.common.tensor", "reduce_"),
-    "to_mesh": ("monarch.common.device_mesh", "to_mesh"),
-    "slice_mesh": ("monarch.common.device_mesh", "slice_mesh"),
+    "Selection": ("monarch._src.tensor_engine.common.selection", "Selection"),
+    "OpaqueRef": ("monarch._src.tensor_engine.common.opaque_ref", "OpaqueRef"),
+    "create_pipe": ("monarch._src.tensor_engine.common.pipe", "create_pipe"),
+    "Pipe": ("monarch._src.tensor_engine.common.pipe", "Pipe"),
+    "remote_generator": ("monarch._src.tensor_engine.common.pipe", "remote_generator"),
+    "get_active_stream": (
+        "monarch._src.tensor_engine.common.stream",
+        "get_active_stream",
+    ),
+    "Stream": ("monarch._src.tensor_engine.common.stream", "Stream"),
+    "Tensor": ("monarch._src.tensor_engine.common.tensor", "Tensor"),
+    "reduce": ("monarch._src.tensor_engine.common.tensor", "reduce"),
+    "reduce_": ("monarch._src.tensor_engine.common.tensor", "reduce_"),
+    "to_mesh": ("monarch._src.tensor_engine.common.device_mesh", "to_mesh"),
+    "slice_mesh": ("monarch._src.tensor_engine.common.device_mesh", "slice_mesh"),
     "call_on_shard_and_fetch": ("monarch.fetch", "call_on_shard_and_fetch"),
     "fetch_shard": ("monarch.fetch", "fetch_shard"),
     "inspect": ("monarch.fetch", "inspect"),

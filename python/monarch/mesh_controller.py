@@ -36,11 +36,11 @@ from monarch._src.actor._extension.monarch_hyperactor.proc import (  # @manual=/
 )
 from monarch._src.actor.actor_mesh import Port, PortTuple
 from monarch._src.actor.shape import NDSlice
-from monarch.common import messages
-from monarch.common.controller_api import TController
-from monarch.common.invocation import Seq
-from monarch.common.stream import StreamRef
-from monarch.common.tensor import Tensor
+from monarch._src.tensor_engine.common import messages
+from monarch._src.tensor_engine.common.controller_api import TController
+from monarch._src.tensor_engine.common.invocation import Seq
+from monarch._src.tensor_engine.common.stream import StreamRef
+from monarch._src.tensor_engine.common.tensor import Tensor
 
 from monarch.tensor_worker_main import _set_trace
 
@@ -52,11 +52,14 @@ if TYPE_CHECKING:
 
 from monarch._src.actor._extension.monarch_hyperactor.shape import Point
 
-from monarch.common.client import Client
-from monarch.common.controller_api import LogMessage, MessageResult
-from monarch.common.device_mesh import DeviceMesh
-from monarch.common.future import Future as OldFuture
-from monarch.common.invocation import DeviceException, RemoteException
+from monarch._src.tensor_engine.common.client import Client
+from monarch._src.tensor_engine.common.controller_api import LogMessage, MessageResult
+from monarch._src.tensor_engine.common.device_mesh import DeviceMesh
+from monarch._src.tensor_engine.common.future import Future as OldFuture
+from monarch._src.tensor_engine.common.invocation import (
+    DeviceException,
+    RemoteException,
+)
 from monarch.rust_local_mesh import _get_worker_exec_info
 
 logger: Logger = logging.getLogger(__name__)

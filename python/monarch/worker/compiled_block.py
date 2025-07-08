@@ -12,8 +12,8 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, TYPE_CHECKING
 
 import torch.fx
-from monarch.common.messages import DependentOnError
-from monarch.common.tree import tree_map
+from monarch._src.tensor_engine.common.messages import DependentOnError
+from monarch._src.tensor_engine.common.tree import tree_map
 from torch.fx.proxy import GraphAppendingTracer
 
 from .lines import Lines

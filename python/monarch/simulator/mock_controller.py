@@ -27,16 +27,24 @@ from monarch._src.actor._extension.monarch_hyperactor.proc import (  # @manual=/
 )
 from monarch._src.actor.shape import iter_ranks, NDSlice, Slices as Ranks
 
-from monarch.common import messages
+from monarch._src.tensor_engine.common import messages
 
-from monarch.common.controller_api import DebuggerMessage, LogMessage, MessageResult
-from monarch.common.device_mesh import no_mesh
-from monarch.common.invocation import Invocation, RemoteException, Seq
-from monarch.common.reference import Ref
-from monarch.common.tree import flatten
+from monarch._src.tensor_engine.common.controller_api import (
+    DebuggerMessage,
+    LogMessage,
+    MessageResult,
+)
+from monarch._src.tensor_engine.common.device_mesh import no_mesh
+from monarch._src.tensor_engine.common.invocation import (
+    Invocation,
+    RemoteException,
+    Seq,
+)
+from monarch._src.tensor_engine.common.reference import Ref
+from monarch._src.tensor_engine.common.tree import flatten
 
 if TYPE_CHECKING:
-    from monarch.common.tensor import Tensor
+    from monarch._src.tensor_engine.common.tensor import Tensor
 
 logger = logging.getLogger(__name__)
 

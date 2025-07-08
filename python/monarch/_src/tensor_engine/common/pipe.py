@@ -10,12 +10,12 @@ from collections import deque
 from typing import Any, Dict
 
 import torch
-from monarch.common.remote import Remote, remote
 
 from . import device_mesh, messages, stream
 from .fake import fake_call
 from .function import ResolvableFunctionFromPath
 from .reference import Referenceable
+from .remote import Remote, remote
 from .tensor import dtensor_check, Tensor
 from .tree import flatten
 

@@ -9,7 +9,7 @@ from unittest import main, TestCase
 
 import pytest
 import torch
-import monarch.common.mock_cuda  # usort: skip
+import monarch._src.tensor_engine.common.mock_cuda  # usort: skip
 
 
 def simple_forward_backward(device: str) -> None:
@@ -37,7 +37,7 @@ class TestMockCuda(TestCase):
         return super().setUp()
 
     def test_output_is_garbage(self):
-        with monarch.common.mock_cuda.mock_cuda_guard():
+        with monarch._src.tensor_engine.common.mock_cuda.mock_cuda_guard():
             x = torch.arange(9, device="cuda", dtype=torch.float32).reshape(3, 3)
             y = 2 * torch.eye(3, device="cuda")
             true_output = torch.tensor(
@@ -58,7 +58,7 @@ class TestMockCuda(TestCase):
         self.assertTrue(torch.allclose(cpu_dw, real_dw.cpu()))
         self.assertTrue(torch.allclose(cpu_db, real_db.cpu()))
 
-        with monarch.common.mock_cuda.mock_cuda_guard():
+        with monarch._src.tensor_engine.common.mock_cuda.mock_cuda_guard():
             mocked_y, mocked_dw, mocked_db = simple_forward_backward("cuda")
             self.assertFalse(torch.allclose(cpu_y, mocked_y.cpu()))
             self.assertFalse(torch.allclose(cpu_dw, mocked_dw.cpu()))

@@ -6,7 +6,7 @@
 
 import logging
 
-from monarch.common.remote import remote
+from monarch._src.tensor_engine.common.remote import remote
 
 
 logger = logging.getLogger(__name__)

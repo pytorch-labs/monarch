@@ -20,10 +20,12 @@ from monarch._rust_bindings.monarch_extension.debugger import (  # @manual=//mon
     PdbActor,
 )
 from monarch._rust_bindings.monarch_messages.debugger import DebuggerAction
-from monarch.common import opaque_ref
-from monarch.common.pipe import Pipe
-from monarch.common.process_group import SingleControllerProcessGroupWrapper
-from monarch.common.remote import remote
+from monarch._src.tensor_engine.common import opaque_ref
+from monarch._src.tensor_engine.common.pipe import Pipe
+from monarch._src.tensor_engine.common.process_group import (
+    SingleControllerProcessGroupWrapper,
+)
+from monarch._src.tensor_engine.common.remote import remote
 
 from torch.utils.data import DataLoader, TensorDataset
 

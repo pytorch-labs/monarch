@@ -14,10 +14,13 @@ from typing import Any, Callable, Dict, Generator, Literal, Optional
 
 import monarch_supervisor
 from monarch._src.actor.shape import NDSlice
+from monarch._src.tensor_engine.common.client import Client
+from monarch._src.tensor_engine.common.device_mesh import DeviceMesh
+from monarch._src.tensor_engine.common.invocation import (
+    DeviceException,
+    RemoteException,
+)
 from monarch.actor import proc_mesh, ProcMesh
-from monarch.common.client import Client
-from monarch.common.device_mesh import DeviceMesh
-from monarch.common.invocation import DeviceException, RemoteException
 from monarch.controller.backend import ProcessBackend
 from monarch.mesh_controller import spawn_tensor_engine
 from monarch.python_local_mesh import PythonLocalContext

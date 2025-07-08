@@ -14,9 +14,9 @@ from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
 import torch
 import torch.autograd.graph
 
-from monarch.common import device_mesh, stream
-from monarch.common.tensor import Tensor
-from monarch.common.tree import flatten
+from monarch._src.tensor_engine.common import device_mesh, stream
+from monarch._src.tensor_engine.common.tensor import Tensor
+from monarch._src.tensor_engine.common.tree import flatten
 from monarch.gradient import GradientGenerator as _GradientGenerator
 from torch._C._autograd import _get_sequence_nr  # @manual
 from torch.autograd.graph import get_gradient_edge, GradientEdge

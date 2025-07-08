@@ -32,7 +32,7 @@ if USE_CUDA:
     monarch_cpp_src.append("python/monarch/common/mock_cuda.cpp")
 
 common_C = CppExtension(
-    "monarch.common._C",
+    "monarch._src.tensor_engine.common._C",
     monarch_cpp_src,
     extra_compile_args=["-g", "-O3"],
     libraries=["dl"],

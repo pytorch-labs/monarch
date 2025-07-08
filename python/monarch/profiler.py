@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, NamedTuple, Optional, Tuple
 
 import torch
-from monarch.common.remote import remote
+from monarch._src.tensor_engine.common.remote import remote
 from monarch.remote_class import ControllerRemoteClass, WorkerRemoteClass
 
 

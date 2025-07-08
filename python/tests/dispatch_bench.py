@@ -11,12 +11,12 @@ import sys
 import torch
 import torch.utils.benchmark as benchmark
 
+from monarch._src.tensor_engine.common._coalescing import coalescing
+from monarch._src.tensor_engine.common.remote import remote
+
 # this function helps get a local device mesh for testing
 from monarch._testing import mock_mesh
 from monarch.builtins.log import set_logging_level_remote
-
-from monarch.common._coalescing import coalescing
-from monarch.common.remote import remote
 from monarch.fetch import fetch_shard
 from monarch.python_local_mesh import python_local_mesh
 from monarch_supervisor.logging import initialize_logging

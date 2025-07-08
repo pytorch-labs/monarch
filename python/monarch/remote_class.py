@@ -9,8 +9,8 @@ import importlib
 import itertools
 from typing import Any, Dict
 
-from monarch.common import device_mesh
-from monarch.common.remote import remote
+from monarch._src.tensor_engine.common import device_mesh
+from monarch._src.tensor_engine.common.remote import remote
 
 
 class ControllerRemoteClass:

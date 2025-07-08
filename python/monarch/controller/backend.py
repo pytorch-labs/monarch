@@ -15,7 +15,7 @@ from typing import List, NamedTuple, Optional, Sequence, Tuple
 
 from monarch._src.actor.shape import iter_ranks, Slices as Ranks
 
-from monarch.common import messages
+from monarch._src.tensor_engine.common import messages
 from monarch_supervisor import (
     Context,
     FunctionCall,

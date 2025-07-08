@@ -28,14 +28,14 @@ from monarch import (
     RemoteException as OldRemoteException,
     Stream,
 )
+from monarch._src.tensor_engine.common import remote as remote_module
+from monarch._src.tensor_engine.common.device_mesh import DeviceMesh
+from monarch._src.tensor_engine.common.remote import Remote
 
 from monarch._testing import BackendType, TestingContext
 from monarch.builtins.log import log_remote
 from monarch.builtins.random import set_manual_seed_remote
 from monarch.cached_remote_function import remote_autograd_function
-from monarch.common import remote as remote_module
-from monarch.common.device_mesh import DeviceMesh
-from monarch.common.remote import Remote
 from monarch.mesh_controller import RemoteException as NewRemoteException
 
 from monarch.opaque_module import OpaqueModule

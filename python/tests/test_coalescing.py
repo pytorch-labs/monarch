@@ -27,10 +27,14 @@ from monarch import (
     remote,
     Stream,
 )
+from monarch._src.tensor_engine.common._coalescing import _record_and_define, compile
+from monarch._src.tensor_engine.common.function_caching import (
+    AliasOf,
+    Storage,
+    TensorGroup,
+)
+from monarch._src.tensor_engine.common.tensor import Tensor
 from monarch._testing import TestingContext
-from monarch.common._coalescing import _record_and_define, compile
-from monarch.common.function_caching import AliasOf, Storage, TensorGroup
-from monarch.common.tensor import Tensor
 
 
 def _do_bogus_tensor_work(x, y, fail_rank=None):
@@ -234,7 +238,7 @@ class TestCoalescing:
     @contextmanager
     def assertRecorded(self, times: int):
         with patch(
-            "monarch.common._coalescing._record_and_define",
+            "monarch._src.tensor_engine.common._coalescing._record_and_define",
             side_effect=_record_and_define,
         ) as m:
             yield

@@ -39,13 +39,15 @@ import zmq
 import zmq.asyncio
 from monarch._src.actor.shape import NDSlice
 
-from monarch.common import messages
-from monarch.common.function import ResolvableFunction
-from monarch.common.messages import DependentOnError, Dims
-from monarch.common.process_group import SingleControllerProcessGroupWrapper
-from monarch.common.reference import Ref, Referenceable
-from monarch.common.tensor_factory import TensorFactory
-from monarch.common.tree import flatten, flattener
+from monarch._src.tensor_engine.common import messages
+from monarch._src.tensor_engine.common.function import ResolvableFunction
+from monarch._src.tensor_engine.common.messages import DependentOnError, Dims
+from monarch._src.tensor_engine.common.process_group import (
+    SingleControllerProcessGroupWrapper,
+)
+from monarch._src.tensor_engine.common.reference import Ref, Referenceable
+from monarch._src.tensor_engine.common.tensor_factory import TensorFactory
+from monarch._src.tensor_engine.common.tree import flatten, flattener
 from monarch_supervisor import get_message_queue, Letter
 from monarch_supervisor.logging import initialize_logging
 

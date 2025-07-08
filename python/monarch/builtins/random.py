@@ -8,7 +8,7 @@
 from typing import Callable
 
 import torch
-from monarch.common.remote import remote
+from monarch._src.tensor_engine.common.remote import remote
 
 
 @remote(propagate="inspect")

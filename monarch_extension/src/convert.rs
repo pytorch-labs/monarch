@@ -44,7 +44,7 @@ struct MessageParser<'a> {
 fn create_function(obj: Bound<'_, PyAny>) -> PyResult<ResolvableFunction> {
     let cloudpickle = obj
         .py()
-        .import("monarch.common.function")?
+        .import("monarch._src.tensor_engine.common.function")?
         .getattr("ResolvableFromCloudpickle")?;
     if obj.is_instance(&cloudpickle)? {
         Ok(ResolvableFunction::Cloudpickle(Cloudpickle::new(
@@ -102,7 +102,7 @@ impl<'a> MessageParser<'a> {
         let referenceable = self
             .current
             .py()
-            .import("monarch.common.reference")?
+            .import("monarch._src.tensor_engine.common.reference")?
             .getattr("Referenceable")?;
         let mut flat: Vec<Option<Ref>> = vec![];
         for x in output_tuple.0.try_iter()? {
@@ -198,8 +198,8 @@ static CONVERT_MAP: OnceLock<HashMap<u64, FnType>> = OnceLock::new();
 
 fn create_map(py: Python) -> HashMap<u64, FnType> {
     let messages = py
-        .import("monarch.common.messages")
-        .expect("import monarch.common.messages");
+        .import("monarch._src.tensor_engine.common.messages")
+        .expect("import monarch._src.tensor_engine.common.messages");
     let mut m: HashMap<u64, FnType> = HashMap::new();
     let key = |name: &str| {
         messages

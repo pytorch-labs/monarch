@@ -54,9 +54,12 @@ from monarch._src.actor._extension.monarch_hyperactor.proc import (  # @manual=/
     ActorId,
 )
 
-from monarch.common.device_mesh import DeviceMesh
-from monarch.common.fake import fake_call
-from monarch.common.invocation import DeviceException, RemoteException
+from monarch._src.tensor_engine.common.device_mesh import DeviceMesh
+from monarch._src.tensor_engine.common.fake import fake_call
+from monarch._src.tensor_engine.common.invocation import (
+    DeviceException,
+    RemoteException,
+)
 from monarch.rust_backend_mesh import (
     IBootstrap,
     MeshWorld,

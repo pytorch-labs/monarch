@@ -7,11 +7,14 @@
 from typing import List
 
 import torch
-from monarch.common.function_caching import TensorGroup, TensorGroupPattern
-from monarch.common.opaque_ref import OpaqueRef
-from monarch.common.remote import remote
-from monarch.common.tensor_factory import TensorFactory
-from monarch.common.tree import flatten
+from monarch._src.tensor_engine.common.function_caching import (
+    TensorGroup,
+    TensorGroupPattern,
+)
+from monarch._src.tensor_engine.common.opaque_ref import OpaqueRef
+from monarch._src.tensor_engine.common.remote import remote
+from monarch._src.tensor_engine.common.tensor_factory import TensorFactory
+from monarch._src.tensor_engine.common.tree import flatten
 from monarch.opaque_object import _fresh_opaque_ref, OpaqueObject
 from torch.autograd.graph import get_gradient_edge
 

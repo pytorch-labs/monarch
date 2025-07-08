@@ -16,7 +16,7 @@ import pytest
 import torch
 import torch.utils._python_dispatch
 from monarch import fetch_shard, no_mesh, remote, Stream
-from monarch.common.device_mesh import DeviceMesh
+from monarch._src.tensor_engine.common.device_mesh import DeviceMesh
 from monarch.rust_local_mesh import local_meshes, LoggingLocation, SocketType
 from torch.nn.attention import sdpa_kernel, SDPBackend
 from torch.nn.functional import scaled_dot_product_attention
@@ -186,7 +186,10 @@ class TestRustBackend(TestCase):
         with local_mesh(hosts=1, gpu_per_host=1):
             from typing import cast
 
-            from monarch.common.messages import CallFunction, CommandGroup
+            from monarch._src.tensor_engine.common.messages import (
+                CallFunction,
+                CommandGroup,
+            )
 
             a = cast(monarch.Tensor, torch.rand(3, 4))
             result = monarch.Tensor(a._fake, a.mesh, a.stream)
@@ -194,7 +197,7 @@ class TestRustBackend(TestCase):
                 0,
                 result,
                 (),
-                monarch.common.function.ResolvableFunctionFromPath(
+                monarch._src.tensor_engine.common.function.ResolvableFunctionFromPath(
                     "torch.ops.aten.mul.Tensor"
                 ),
                 (2, a),

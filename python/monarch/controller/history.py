@@ -12,12 +12,16 @@ from monarch._src.actor._extension.monarch_hyperactor.proc import (  # @manual=/
     ActorId,
 )
 
-from monarch.common.controller_api import MessageResult
+from monarch._src.tensor_engine.common.controller_api import MessageResult
 
-from monarch.common.invocation import Invocation, RemoteException, Seq
+from monarch._src.tensor_engine.common.invocation import (
+    Invocation,
+    RemoteException,
+    Seq,
+)
 
 if TYPE_CHECKING:
-    from monarch.common.tensor import Tensor
+    from monarch._src.tensor_engine.common.tensor import Tensor
 
 
 class History:

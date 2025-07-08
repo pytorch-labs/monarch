@@ -38,21 +38,20 @@ from monarch._rust_bindings.monarch_extension.client import (  # @manual=//monar
     WorldState,
 )
 from monarch._src.actor.shape import NDSlice
-from monarch.common import messages
-from monarch.common.borrows import Borrow, StorageAliases
-from monarch.common.controller_api import LogMessage, MessageResult, TController
-from monarch.common.device_mesh import DeviceMesh
 
-from monarch.common.future import Future
-from monarch.common.invocation import DeviceException, RemoteException, Seq
-from monarch.common.recording import flatten_messages, Recording
+from . import _coalescing, messages
+from .borrows import Borrow, StorageAliases
+from .controller_api import LogMessage, MessageResult, TController
+from .device_mesh import DeviceMesh
 
-from monarch.common.reference import Ref, Referenceable
-from monarch.common.stream import StreamRef
-from monarch.common.tensor import Tensor
-from monarch.common.tree import tree_map
+from .future import Future
+from .invocation import DeviceException, RemoteException, Seq
+from .recording import flatten_messages, Recording
 
-from . import _coalescing
+from .reference import Ref, Referenceable
+from .stream import StreamRef
+from .tensor import Tensor
+from .tree import tree_map
 
 
 logger = logging.getLogger(__name__)

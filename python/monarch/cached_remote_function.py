@@ -12,9 +12,15 @@ from contextlib import contextmanager
 from typing import Dict, List, Optional, Type, Union
 
 import torch
-from monarch.common.process_group import SingleControllerProcessGroupWrapper
+from monarch._src.tensor_engine.common.process_group import (
+    SingleControllerProcessGroupWrapper,
+)
 
-from monarch.common.remote import DummyProcessGroup, remote, RemoteProcessGroup
+from monarch._src.tensor_engine.common.remote import (
+    DummyProcessGroup,
+    remote,
+    RemoteProcessGroup,
+)
 
 from torch import autograd
 from torch.utils._pytree import tree_flatten, tree_unflatten

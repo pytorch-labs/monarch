@@ -13,8 +13,8 @@ from monarch import Future, RemoteException
 from monarch._src.actor._extension.monarch_hyperactor.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
     ActorId,
 )
-from monarch.common import future
-from monarch.common.client import Client
+from monarch._src.tensor_engine.common import future
+from monarch._src.tensor_engine.common.client import Client
 
 
 class TestFuture:

@@ -8,7 +8,7 @@
 import pytest
 
 from monarch import DeviceMesh, NDSlice
-from monarch.common.client import Client
+from monarch._src.tensor_engine.common.client import Client
 from monarch.simulator.mock_controller import MockController
 
 

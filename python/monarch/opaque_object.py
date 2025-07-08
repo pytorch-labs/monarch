@@ -7,14 +7,14 @@
 import functools
 
 import torch
-from monarch.common.function import (
+from monarch._src.tensor_engine.common.function import (
     ConvertsToResolvable,
     resolvable_function,
     ResolvableFunction,
 )
 
-from monarch.common.opaque_ref import OpaqueRef
-from monarch.common.remote import remote
+from monarch._src.tensor_engine.common.opaque_ref import OpaqueRef
+from monarch._src.tensor_engine.common.remote import remote
 
 
 def _invoke_method(obj: OpaqueRef, method_name: str, *args, **kwargs):

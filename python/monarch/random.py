@@ -8,8 +8,8 @@ import os
 from typing import NamedTuple, Tuple
 
 import torch
-from monarch.common.remote import remote
-from monarch.common.tensor import Tensor
+from monarch._src.tensor_engine.common.remote import remote
+from monarch._src.tensor_engine.common.tensor import Tensor
 
 
 class State(NamedTuple):

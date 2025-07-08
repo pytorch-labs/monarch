@@ -7,7 +7,7 @@
 # pyre-unsafe
 import torch
 
-from monarch.common.remote import remote
+from monarch._src.tensor_engine.common.remote import remote
 
 
 def run_loop_local(n_iters, tensor_shape=(2, 2)):

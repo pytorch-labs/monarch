@@ -15,7 +15,7 @@ from .fake import fake_call
 from .reference import Referenceable
 
 if TYPE_CHECKING:
-    from monarch.common.client import Client  # @manual
+    from .client import Client  # @manual
 
     from .tensor import Tensor
 

@@ -26,12 +26,13 @@ from typing import (
     Union,
 )
 
-import monarch.common.messages as messages
 import torch
 from monarch._src.actor.shape import MeshTrait, NDSlice, Shape
 
 from torch.utils._python_dispatch import TorchDispatchMode
 from torch.utils._pytree import tree_map
+
+from . import messages
 
 from ._tensor_to_table import tensor_to_table
 from .context_manager import activate_first_context_manager
@@ -41,7 +42,7 @@ from .stream import Stream
 from .tensor import MeshSliceTensor, Tensor
 
 if TYPE_CHECKING:
-    from monarch.common.client import Client
+    from .client import Client
 
 logger: Logger = logging.getLogger(__name__)
 
@@ -382,7 +383,7 @@ def _remote(*args, **kwargs):
     # we break the dependency to allow for separate files by
     # having device_mesh and tensor locally import the `remote`
     # entrypoint
-    from monarch.common.remote import remote
+    from .remote import remote
 
     return remote(*args, **kwargs)
 

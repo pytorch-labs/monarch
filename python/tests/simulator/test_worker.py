@@ -9,7 +9,7 @@ import unittest
 from typing import Tuple
 
 import torch
-from monarch.common.fake import fake_call
+from monarch._src.tensor_engine.common.fake import fake_call
 
 from monarch.simulator.profiling import RuntimeEstimator
 from monarch.simulator.task import Task

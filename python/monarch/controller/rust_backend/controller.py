@@ -31,11 +31,14 @@ from monarch._src.actor._extension.monarch_hyperactor.proc import (  # @manual=/
 )
 
 from monarch._src.actor.shape import NDSlice
-from monarch.common.controller_api import LogMessage, MessageResult
-from monarch.common.device_mesh import no_mesh
-from monarch.common.invocation import DeviceException, RemoteException
-from monarch.common.messages import SupportsToRustMessage
-from monarch.common.tensor import Tensor
+from monarch._src.tensor_engine.common.controller_api import LogMessage, MessageResult
+from monarch._src.tensor_engine.common.device_mesh import no_mesh
+from monarch._src.tensor_engine.common.invocation import (
+    DeviceException,
+    RemoteException,
+)
+from monarch._src.tensor_engine.common.messages import SupportsToRustMessage
+from monarch._src.tensor_engine.common.tensor import Tensor
 from monarch.controller.debugger import read as debugger_read, write as debugger_write
 from pyre_extensions import none_throws
 

@@ -11,7 +11,7 @@ import pytest
 
 import torch
 
-from monarch.common import messages
+from monarch._src.tensor_engine.common import messages
 from monarch.simulator.profiling import RuntimeEstimator, RuntimeProfiler, TimingType
 
 

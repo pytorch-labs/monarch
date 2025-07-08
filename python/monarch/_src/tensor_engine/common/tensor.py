@@ -29,16 +29,16 @@ from typing import (
 
 import torch
 import torch._ops
-from monarch.common.function import ResolvableFunctionFromPath
 from torch._subclasses.fake_tensor import FakeTensor
 from torch.utils._pytree import tree_map
 
 from . import messages, stream
 from .base_tensor import BaseTensor
 from .borrows import StorageAliases
+from .function import ResolvableFunctionFromPath
 
 if TYPE_CHECKING:
-    from monarch.common.device_mesh import DeviceMesh
+    from .device_mesh import DeviceMesh
 
 from monarch._src.actor.shape import NDSlice
 
@@ -129,7 +129,7 @@ class Tensor(Referenceable, BaseTensor):
 
     @classmethod
     def __torch_dispatch__(cls, func, types, args=(), kwargs=None):
-        from monarch.common.remote import remote
+        from .remote import remote
 
         # device_mesh <-> tensor <-> remote are mututally recursive
         # we break the dependency to allow for separate files by

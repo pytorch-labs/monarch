@@ -11,11 +11,11 @@ This is a utility file for fetching a shard of a tensor from remote.
 
 from typing import TypeVar
 
-from monarch.common.device_mesh import no_mesh
+from monarch._src.tensor_engine.common.device_mesh import no_mesh
 
-from monarch.common.future import Future
+from monarch._src.tensor_engine.common.future import Future
 
-from monarch.common.remote import _call_on_shard_and_fetch
+from monarch._src.tensor_engine.common.remote import _call_on_shard_and_fetch
 
 T = TypeVar("T")
 

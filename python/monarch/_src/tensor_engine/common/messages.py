@@ -24,20 +24,20 @@ from typing import (
 from monarch._rust_bindings.monarch_extension import tensor_worker
 
 from monarch._src.actor.shape import NDSlice
-from monarch.common.function import ResolvableFromCloudpickle, ResolvableFunction
-from monarch.common.invocation import DeviceException, RemoteException
-from monarch.common.reference import Referenceable
-from monarch.common.tree import flattener
 from pyre_extensions import none_throws
 
+from .function import ResolvableFromCloudpickle, ResolvableFunction
+from .invocation import DeviceException, RemoteException
+from .reference import Referenceable
+
 from .tensor_factory import TensorFactory
+from .tree import flattener
 
 if TYPE_CHECKING:
-    from monarch.common.stream import StreamRef
-
     from .device_mesh import DeviceMesh, RemoteProcessGroup
     from .pipe import Pipe
     from .recording import Recording
+    from .stream import StreamRef
     from .tensor import Tensor
 
 

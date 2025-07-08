@@ -27,12 +27,12 @@ from monarch import (
     Stream,
     Tensor,
 )
+from monarch._src.tensor_engine.common.controller_api import LogMessage
+from monarch._src.tensor_engine.common.invocation import DeviceException
+from monarch._src.tensor_engine.common.remote import remote
+from monarch._src.tensor_engine.common.tree import flattener
 
 from monarch._testing import BackendType, TestingContext
-from monarch.common.controller_api import LogMessage
-from monarch.common.invocation import DeviceException
-from monarch.common.remote import remote
-from monarch.common.tree import flattener
 from monarch.rust_local_mesh import (
     ControllerParams,
     local_mesh,

@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 
 import torch
-from monarch.common.remote import remote
+from monarch._src.tensor_engine.common.remote import remote
 
 
 PATH_KEY = "dir_snapshots"

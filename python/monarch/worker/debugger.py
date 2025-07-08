@@ -13,7 +13,7 @@ import pdb  # noqa
 import sys
 from typing import Optional, TYPE_CHECKING
 
-from monarch.common import messages
+from monarch._src.tensor_engine.common import messages
 
 logger = logging.getLogger(__name__)
 

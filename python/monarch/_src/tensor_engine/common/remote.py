@@ -24,36 +24,35 @@ from typing import (
     TypeVar,
 )
 
-import monarch.common.messages as messages
-
 import torch
 
-from monarch.common import _coalescing, device_mesh, stream
+from . import _coalescing, device_mesh, messages, stream
 
 if TYPE_CHECKING:
-    from monarch.common.client import Client
+    from .client import Client
 
-from monarch.common.device_mesh import RemoteProcessGroup
-from monarch.common.fake import fake_call
+from torch import autograd, distributed as dist
+from typing_extensions import ParamSpec
 
-from monarch.common.function import (
+from .device_mesh import RemoteProcessGroup
+from .fake import fake_call
+
+from .function import (
     Propagator,
     resolvable_function,
     ResolvableFunction,
     ResolvableFunctionFromPath,
 )
-from monarch.common.function_caching import (
+from .function_caching import (
     hashable_tensor_flatten,
     tensor_placeholder,
     TensorGroup,
     TensorPlaceholder,
 )
-from monarch.common.future import Future
-from monarch.common.messages import Dims
-from monarch.common.tensor import dtensor_check, dtensor_dispatch
-from monarch.common.tree import flatten, tree_map
-from torch import autograd, distributed as dist
-from typing_extensions import ParamSpec
+from .future import Future
+from .messages import Dims
+from .tensor import dtensor_check, dtensor_dispatch
+from .tree import flatten, tree_map
 
 logger: Logger = logging.getLogger(__name__)
 

@@ -44,11 +44,14 @@ from monarch._src.actor._extension.monarch_hyperactor.proc import (  # @manual=/
     ActorId,
 )
 from monarch._src.actor.shape import iter_ranks, NDSlice
-from monarch.common import messages
-from monarch.common.controller_api import LogMessage, MessageResult
-from monarch.common.device_mesh import DeviceMesh
-from monarch.common.function import ResolvableFunction, ResolvableFunctionFromPath
-from monarch.common.invocation import DeviceException
+from monarch._src.tensor_engine.common import messages
+from monarch._src.tensor_engine.common.controller_api import LogMessage, MessageResult
+from monarch._src.tensor_engine.common.device_mesh import DeviceMesh
+from monarch._src.tensor_engine.common.function import (
+    ResolvableFunction,
+    ResolvableFunctionFromPath,
+)
+from monarch._src.tensor_engine.common.invocation import DeviceException
 from monarch.simulator.command_history import CommandHistory, DTensorRef
 from monarch.simulator.config import META_VAL
 from monarch.simulator.ir import IRGraph

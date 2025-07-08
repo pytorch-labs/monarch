@@ -14,8 +14,8 @@ from itertools import count
 from typing import Dict, List, NamedTuple, Optional, Sequence, Set, Tuple, Union
 
 import torch
-from monarch.common.fake import fake_call
-from monarch.common.tensor_factory import TensorFactory
+from monarch._src.tensor_engine.common.fake import fake_call
+from monarch._src.tensor_engine.common.tensor_factory import TensorFactory
 from monarch.simulator.task import Task, WorkerTaskManager
 
 logger = logging.getLogger(__name__)

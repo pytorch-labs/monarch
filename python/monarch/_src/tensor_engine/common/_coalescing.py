@@ -24,22 +24,17 @@ from typing import (
 )
 
 import torch
-from monarch.common import messages
 
-from monarch.common.fake import fake_call
-from monarch.common.function_caching import (
-    hashable_tensor_flatten,
-    TensorGroup,
-    TensorGroupPattern,
-)
-from monarch.common.tensor import InputChecker, Tensor
-from monarch.common.tree import flatten
+from . import messages
+
+from .fake import fake_call
+from .function_caching import hashable_tensor_flatten, TensorGroup, TensorGroupPattern
+from .tensor import InputChecker, Tensor
+from .tree import flatten
 
 if TYPE_CHECKING:
-    from monarch.common.client import Recorder
-    from monarch.common.recording import Recording
-
-    from .client import Client
+    from .client import Client, Recorder
+    from .recording import Recording
 
 _coalescing = None
 

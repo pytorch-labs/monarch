@@ -15,9 +15,9 @@ from monarch._rust_bindings.monarch_extension.client import (  # @manual=//monar
 
 from monarch._src.actor.shape import NDSlice
 
-from monarch.common.invocation import DeviceException, RemoteException, Seq
-from monarch.common.reference import Ref
-from monarch.common.tensor import Tensor
+from .invocation import DeviceException, RemoteException, Seq
+from .reference import Ref
+from .tensor import Tensor
 
 
 class LogMessage(NamedTuple):

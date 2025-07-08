@@ -27,10 +27,10 @@ from threading import Thread
 from typing import Any, List, Optional
 
 import zmq
-from monarch.common.device_mesh import DeviceMesh
+from monarch._src.tensor_engine.common.device_mesh import DeviceMesh
 
-from monarch.common.mast import mast_get_jobs, MastJob
-from monarch.common.remote import remote
+from monarch._src.tensor_engine.common.mast import mast_get_jobs, MastJob
+from monarch._src.tensor_engine.common.remote import remote
 from monarch.world_mesh import world_mesh
 from monarch_supervisor import Context, get_message_queue, HostConnected
 from monarch_supervisor.host import main as host_main

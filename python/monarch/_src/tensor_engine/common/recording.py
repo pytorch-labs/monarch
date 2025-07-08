@@ -12,14 +12,14 @@ from typing import cast, Dict, Generator, List, NamedTuple, Tuple, TYPE_CHECKING
 
 from monarch._src.actor.shape import iter_ranks
 
-from monarch.common.reference import Ref
-
-from monarch.common.tensor import InputChecker
-
 from . import messages
 
+from .reference import Ref
+
+from .tensor import InputChecker
+
 if TYPE_CHECKING:
-    from monarch.common.client import Client
+    from .client import Client
 
 from monarch._src.actor.shape import NDSlice
 

@@ -8,7 +8,7 @@ from typing import Any, ClassVar, Dict, final, List, NamedTuple, Union
 
 from monarch._rust_bindings.monarch_extension.tensor_worker import Ref
 from monarch._rust_bindings.monarch_messages.debugger import DebuggerActionType
-from monarch._src.actor._extension.monarch_hyperactor.proc import (
+from monarch._src.actor._extension.monarch_hyperactor.proc import (  # @manual=//monarch/python/monarch/_src/actor:actor
     ActorId,
     Proc,
     Serialized,

@@ -23,7 +23,7 @@ from typing import (
 from monarch_supervisor import TTL
 
 if TYPE_CHECKING:
-    from monarch.common.client import Client
+    from .client import Client
 
 from .invocation import RemoteException
 
