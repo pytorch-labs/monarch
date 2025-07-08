@@ -151,7 +151,7 @@ class _ActorMeshRefImpl:
         ref: "_ActorMeshRefImpl", shape: Shape
     ) -> "_ActorMeshRefImpl":
         return _ActorMeshRefImpl(
-            ref._mailbox, None, shape, ref._please_replace_me_actor_ids
+            ref._mailbox, ref._actor_mesh, shape, ref._please_replace_me_actor_ids
         )
 
     def __getstate__(
