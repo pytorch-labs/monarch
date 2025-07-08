@@ -35,6 +35,7 @@ erased-serde = "0.3.27"
 futures = { version = "0.3.30", features = ["async-await", "compat"] }
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_mesh_macros = { version = "0.0.0", path = "../hyperactor_mesh_macros" }
+hyperactor_state = { version = "0.0.0", path = "../hyperactor_state" }
 hyperactor_telemetry = { version = "0.0.0", path = "../hyperactor_telemetry" }
 libc = "0.2.139"
 mockall = "0.13.1"

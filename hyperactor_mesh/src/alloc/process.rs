@@ -18,6 +18,7 @@ use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
+use hyperactor::ActorRef;
 use hyperactor::ProcId;
 use hyperactor::WorldId;
 use hyperactor::channel;
@@ -28,8 +29,10 @@ use hyperactor::channel::ChannelTx;
 use hyperactor::channel::Rx;
 use hyperactor::channel::Tx;
 use hyperactor::channel::TxStatus;
+use hyperactor::id;
 use hyperactor::sync::flag;
 use hyperactor::sync::monitor;
+use hyperactor_state::state_actor::StateActor;
 use ndslice::Shape;
 use tokio::io;
 use tokio::process::Command;
@@ -143,18 +146,51 @@ impl Child {
     ) -> (Self, impl Future<Output = ProcStopReason>) {
         let (group, handle) = monitor::group();
         let (exit_flag, exit_guard) = flag::guarded();
+        let stop_reason = Arc::new(OnceLock::new());
+
+        // TODO(lky): enable state actor branch and remove this flag
+        let use_state_actor = false;
+
+        // Set up stdout and stderr writers
+        let mut stdout_tee: Box<dyn io::AsyncWrite + Send + Unpin + 'static> =
+            Box::new(io::stdout());
+        let mut stderr_tee: Box<dyn io::AsyncWrite + Send + Unpin + 'static> =
+            Box::new(io::stderr());
+
+        // If state actor is enabled, try to set up LogWriter instances
+        if use_state_actor {
+            let state_actor_ref = ActorRef::<StateActor>::attest(id!(state_server[0].state[0]));
+            // Parse the state actor address
+            if let Ok(state_actor_addr) = "tcp![::]:3000".parse::<ChannelAddr>() {
+                // Use the helper function to create both writers at once
+                match hyperactor_state::log_writer::create_log_writers(
+                    state_actor_addr,
+                    state_actor_ref,
+                ) {
+                    Ok((stdout_writer, stderr_writer)) => {
+                        stdout_tee = stdout_writer;
+                        stderr_tee = stderr_writer;
+                    }
+                    Err(e) => {
+                        tracing::error!("failed to create log writers: {}", e);
+                    }
+                }
+            } else {
+                tracing::error!("failed to parse state actor address");
+            }
+        }
 
         let stdout = LogTailer::tee(
             MAX_TAIL_LOG_LINES,
             process.stdout.take().unwrap(),
-            io::stdout(),
+            stdout_tee,
         );
+
         let stderr = LogTailer::tee(
             MAX_TAIL_LOG_LINES,
             process.stderr.take().unwrap(),
-            io::stderr(),
+            stderr_tee,
         );
-        let stop_reason = Arc::new(OnceLock::new());
 
         let child = Self {
             channel: ChannelState::NotConnected,

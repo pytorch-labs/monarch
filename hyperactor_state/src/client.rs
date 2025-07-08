@@ -72,8 +72,8 @@ mod tests {
 
     use super::*;
     use crate::create_remote_client;
-    use crate::spawn_actor;
     use crate::test_utils::log_items;
+    use crate::test_utils::spawn_actor;
 
     #[tracing_test::traced_test]
     #[tokio::test]
@@ -83,7 +83,7 @@ mod tests {
         let params = ClientActorParams { sender };
         let client_proc_id =
             hyperactor::reference::ProcId(hyperactor::WorldId("client_server".to_string()), 0);
-        let (client_actor_addr, client_actor_handle) = spawn_actor::<ClientActor>(
+        let (client_actor_addr, client_actor_handle, _client_mailbox) = spawn_actor::<ClientActor>(
             client_actor_addr.clone(),
             client_proc_id,
             "state_client",

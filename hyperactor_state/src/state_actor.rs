@@ -96,15 +96,15 @@ mod tests {
     use super::*;
     use crate::client::ClientActorParams;
     use crate::create_remote_client;
-    use crate::spawn_actor;
     use crate::test_utils::log_items;
+    use crate::test_utils::spawn_actor;
 
     #[tokio::test]
     async fn test_subscribe_logs() {
         let state_actor_addr = ChannelAddr::any(channel::ChannelTransport::Unix);
         let state_proc_id =
             hyperactor::reference::ProcId(hyperactor::WorldId("state_server".to_string()), 0);
-        let (state_actor_addr, state_actor_handle) =
+        let (state_actor_addr, state_actor_handle, _state_mailbox) =
             spawn_actor::<StateActor>(state_actor_addr.clone(), state_proc_id, "state", ())
                 .await
                 .unwrap();
@@ -115,7 +115,7 @@ mod tests {
         let params = ClientActorParams { sender };
         let client_proc_id =
             hyperactor::reference::ProcId(hyperactor::WorldId("client_server".to_string()), 0);
-        let (client_actor_addr, client_actor_handle) = spawn_actor::<ClientActor>(
+        let (client_actor_addr, client_actor_handle, _client_mailbox) = spawn_actor::<ClientActor>(
             client_actor_addr.clone(),
             client_proc_id,
             "state_client",

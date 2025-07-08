@@ -8,12 +8,14 @@
 
 import contextlib
 import importlib.resources
+import logging
 import math
 import os
 import subprocess
 import sys
 import unittest
 from datetime import timedelta
+from time import sleep
 from typing import Generator, Optional
 from unittest import mock
 
@@ -64,6 +66,8 @@ class TestActor(Actor):
     def __init__(self) -> None:
         self.rank: int = current_rank().rank
         self.world_size: int = math.prod(current_size().values())
+        self.logger: logging.Logger = logging.getLogger("test_actor")
+        self.logger.setLevel(logging.INFO)
 
     @endpoint
     async def compute_world_size(self, master_addr: str, master_port: int) -> int:
@@ -77,6 +81,11 @@ class TestActor(Actor):
             return int(torch.sum(t).item())
         finally:
             dist.destroy_process_group()
+
+    @endpoint
+    async def log(self, message: str) -> None:
+        print(f"LogMessage from print: {message}")
+        self.logger.info(f"LogMessage from logger: {message}")
 
 
 @contextlib.contextmanager
@@ -457,3 +466,25 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
                     )
                 )
                 await ProcMesh.from_alloc(alloc)
+
+    async def test_log(self) -> None:
+        # create a mesh to log to both stdout and stderr
+
+        with remote_process_allocator() as host:
+            allocator = RemoteAllocator(
+                world_id="test_actor_logger",
+                initializer=StaticRemoteAllocInitializer(host),
+                heartbeat_interval=_100_MILLISECONDS,
+            )
+
+            spec = AllocSpec(AllocConstraints(), host=1, gpu=2)
+
+            proc_mesh = await ProcMesh.from_alloc(await allocator.allocate(spec))
+
+            actor = await proc_mesh.spawn("actor", TestActor)
+
+            for _ in range(3):
+                await actor.log.call("Hey there, from a test!!")
+                sleep(1)
+
+            print("======== All Done ========")
