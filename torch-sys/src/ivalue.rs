@@ -150,7 +150,8 @@ impl Clone for OpaqueIValue {
     /// This creates a deep copy of the underlying data and can be expensive.
     /// It might also panic if the `IValue` is not cloneable.
     fn clone(&self) -> Self {
-        Self(ffi::ivalue_deepcopy(&self.0).unwrap())
+        let serialized = bincode::serialize(&self.0).unwrap();
+        bincode::deserialize(&serialized).unwrap()
     }
 }
 

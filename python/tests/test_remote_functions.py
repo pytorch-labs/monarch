@@ -185,7 +185,9 @@ class RemoteFunctionsTestBase:
 # out is not counted as a failure, so we set a more restrictive timeout to
 # ensure we see a hard failure in CI.
 @pytest.mark.timeout(120)
-@pytest.mark.parametrize("backend_type", [BackendType.PY, BackendType.RS])
+@pytest.mark.parametrize(
+    "backend_type", [BackendType.PY, BackendType.RS, BackendType.MESH]
+)
 class TestRemoteFunctions(RemoteFunctionsTestBase):
     @classmethod
     def do_test_reduce_scatter_tensor(cls, backend_type, reduce_op, expected_tensor):
@@ -952,10 +954,13 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
             x = outer_remote_function_that_calls_inner()
             try:
                 inspect(x)
-            except RemoteException as e:
+            except OldRemoteException as e:
                 backtrace = "\n".join([frame.name for frame in e.worker_frames])
                 assert "outer_remote_function" in backtrace
                 assert "inner_remote_function" in backtrace
+            except NewRemoteException as e:
+                assert "outer_remote_function" in e.worker_error_string
+                assert "inner_remote_function" in e.worker_error_string
 
     def test_remote_function_broadcast(self, backend_type):
         with self.local_device_mesh(2, 2, backend_type) as device_mesh:

@@ -984,7 +984,7 @@ impl StreamActor {
                     }
                     let err = err.unwrap_dependent_error().unwrap_or(err);
                     WorkerError {
-                        backtrace: format!("{:?}", err),
+                        backtrace: err.to_string(),
                         worker_actor_id: worker_actor_id.clone(),
                     }
                 })
