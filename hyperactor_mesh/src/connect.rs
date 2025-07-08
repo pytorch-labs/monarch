@@ -6,6 +6,36 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+//! Actor-based duplex bytestream connections.
+//!
+//! This module provides the equivalent of a `TcpStream` duplex bytestream connection between two actors,
+//! implemented via actor message passing. It allows actors to communicate using familiar `AsyncRead` and
+//! `AsyncWrite` interfaces while leveraging the hyperactor framework's message passing capabilities.
+//!
+//! # Overview
+//!
+//! The connection system consists of:
+//! - [`ActorConnection`]: A duplex connection that implements both `AsyncRead` and `AsyncWrite`
+//! - [`OwnedReadHalf`] and [`OwnedWriteHalf`]: Split halves for independent reading and writing
+//! - [`Connect`] message for establishing connections
+//! - Helper functions [`connect`] and [`accept`] for client and server usage
+//!
+//! # Usage Patterns
+//!
+//! ## Client Side (Initiating Connection)
+//!
+//! Clients use `Connect::allocate()` to create a connection request. This method returns:
+//! 1. A `Connect` message to send to the server to initiate the connection
+//! 2. A `ConnectionCompleter` object that can be awaited for the server to finish connecting,
+//!    returning the `ActorConnection` used by the client.
+//!
+//! The typical pattern is: allocate components, send Connect message to server, await completion.
+//!
+//! ## Server Side (Accepting Connections)
+//!
+//! Servers forward `Connect` messages to the `accept()` helper function to finish setting up the
+//! connection, which returns the `ActorConnection` they can use.
+
 use std::io::Cursor;
 use std::pin::Pin;
 use std::time::Duration;
@@ -13,36 +43,32 @@ use std::time::Duration;
 use anyhow::Result;
 use future::Future;
 use futures::Stream;
-use futures::StreamExt;
 use futures::future;
-use futures::stream::FuturesUnordered;
+use futures::stream::FusedStream;
 use futures::task::Context;
 use futures::task::Poll;
+use hyperactor::ActorId;
 use hyperactor::Mailbox;
 use hyperactor::Named;
 use hyperactor::OncePortRef;
 use hyperactor::PortRef;
-use hyperactor::RemoteHandles;
-use hyperactor::actor::RemoteActor;
 use hyperactor::cap::CanOpenPort;
 use hyperactor::cap::CanSend;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
+use hyperactor::mailbox::OncePortReceiver;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::mailbox::open_once_port;
 use hyperactor::mailbox::open_port;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
-use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::message::Unbind;
-use ndslice::selection::dsl;
+use pin_project::pin_project;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
 use tokio_util::io::StreamReader;
-
-use crate::actor_mesh::ActorMesh;
 
 // Timeout for establishing a connection, used by both client and server.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -56,73 +82,156 @@ enum Io {
     Eof,
 }
 
-/// A message sent from a client to initiate a connection.
-#[derive(Debug, Serialize, Deserialize, Named, Clone)]
-pub struct Connect {
-    // The port the server can use to complete the connection.
-    port: PortRef<Accept>,
-}
-
-/// A response message sent from the server back to the client to complete setting
-/// up the connection.
-#[derive(Debug, Serialize, Deserialize, Named, Clone)]
-pub struct Accept {
-    // The port the client will use to send data over the connection to the server.
-    conn: PortRef<Io>,
-    // Channel used by the client to send a port back to the server, which it will
-    // use to send data over the connection to the client.
-    return_conn: OncePortRef<PortRef<Io>>,
-}
-
-impl Bind for Connect {
-    fn bind(&mut self, bindings: &mut Bindings) -> Result<()> {
-        self.port.bind(bindings)
-    }
-}
-
-impl Unbind for Connect {
-    fn unbind(&self, bindings: &mut Bindings) -> Result<()> {
-        self.port.unbind(bindings)
-    }
-}
-
-struct IoMsgStream {
+struct OwnedReadHalfStream {
     port: PortReceiver<Io>,
-}
-
-impl Stream for IoMsgStream {
-    type Item = std::io::Result<Cursor<Vec<u8>>>;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        // Create a new future each time and poll it immediately
-        // This works if recv() is cancellation-safe (like tokio mpsc)
-        let future = async {
-            match self.port.recv().await {
-                Err(err) => Some(Err(std::io::Error::other(err))),
-                Ok(Io::Data(buf)) => Some(Ok(Cursor::new(buf))),
-                // Break out of stream when we see EOF.
-                Ok(Io::Eof) => None,
-            }
-        };
-        let mut future = Box::pin(future);
-        future.as_mut().poll(cx)
-    }
+    exhausted: bool,
 }
 
 /// Wrap a `PortReceiver<IoMsg>` as a `AsyncRead`.
-pub struct IoMsgRead {
-    inner: StreamReader<IoMsgStream, Cursor<Vec<u8>>>,
+pub struct OwnedReadHalf {
+    peer: ActorId,
+    inner: StreamReader<OwnedReadHalfStream, Cursor<Vec<u8>>>,
 }
 
-impl IoMsgRead {
-    fn new(port: PortReceiver<Io>) -> Self {
+/// Wrap a `PortRef<IoMsg>` as a `AsyncWrite`.
+pub struct OwnedWriteHalf<C: CanSend> {
+    peer: ActorId,
+    caps: C,
+    port: PortRef<Io>,
+}
+
+/// A duplex bytestream connection between two actors.  Can generally be used like a `TcpStream`.
+#[pin_project]
+pub struct ActorConnection<C: CanSend> {
+    #[pin]
+    reader: OwnedReadHalf,
+    #[pin]
+    writer: OwnedWriteHalf<C>,
+}
+
+impl<C: CanSend> ActorConnection<C> {
+    pub fn into_split(self) -> (OwnedReadHalf, OwnedWriteHalf<C>) {
+        (self.reader, self.writer)
+    }
+
+    pub fn peer(&self) -> &ActorId {
+        self.reader.peer()
+    }
+}
+
+impl OwnedReadHalf {
+    fn new(peer: ActorId, port: PortReceiver<Io>) -> Self {
         Self {
-            inner: StreamReader::new(IoMsgStream { port }),
+            peer,
+            inner: StreamReader::new(OwnedReadHalfStream {
+                port,
+                exhausted: false,
+            }),
+        }
+    }
+
+    pub fn peer(&self) -> &ActorId {
+        &self.peer
+    }
+
+    pub fn reunited<C: CanSend>(self, other: OwnedWriteHalf<C>) -> ActorConnection<C> {
+        ActorConnection {
+            reader: self,
+            writer: other,
         }
     }
 }
 
-impl AsyncRead for IoMsgRead {
+impl<C: CanSend> OwnedWriteHalf<C> {
+    fn new(peer: ActorId, caps: C, port: PortRef<Io>) -> Self {
+        Self { peer, caps, port }
+    }
+
+    pub fn peer(&self) -> &ActorId {
+        &self.peer
+    }
+
+    pub fn reunited(self, other: OwnedReadHalf) -> ActorConnection<C> {
+        ActorConnection {
+            reader: other,
+            writer: self,
+        }
+    }
+}
+
+impl<C: CanSend> Drop for OwnedWriteHalf<C> {
+    fn drop(&mut self) {
+        // Send EOF on drop.
+        let _ = self.port.send(&self.caps, Io::Eof);
+    }
+}
+
+impl<C: CanSend> AsyncRead for ActorConnection<C> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        // Use project() to get pinned references to fields
+        let this = self.project();
+        this.reader.poll_read(cx, buf)
+    }
+}
+
+impl<C: CanSend> AsyncWrite for ActorConnection<C> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, std::io::Error>> {
+        // Use project() to get pinned references to fields
+        let this = self.project();
+        this.writer.poll_write(cx, buf)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
+        let this = self.project();
+        this.writer.poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
+        let this = self.project();
+        this.writer.poll_shutdown(cx)
+    }
+}
+
+impl Stream for OwnedReadHalfStream {
+    type Item = std::io::Result<Cursor<Vec<u8>>>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        // Once exhausted, always return None
+        if self.exhausted {
+            return Poll::Ready(None);
+        }
+
+        let result = futures::ready!(Box::pin(self.port.recv()).as_mut().poll(cx));
+        match result {
+            Err(err) => Poll::Ready(Some(Err(std::io::Error::other(err)))),
+            Ok(Io::Data(buf)) => Poll::Ready(Some(Ok(Cursor::new(buf)))),
+            // Break out of stream when we see EOF.
+            Ok(Io::Eof) => {
+                self.exhausted = true;
+                Poll::Ready(None)
+            }
+        }
+    }
+}
+
+impl FusedStream for OwnedReadHalfStream {
+    fn is_terminated(&self) -> bool {
+        self.exhausted
+    }
+}
+
+impl AsyncRead for OwnedReadHalf {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -132,25 +241,13 @@ impl AsyncRead for IoMsgRead {
     }
 }
 
-/// Wrap a `PortRef<IoMsg>` as a `AsyncWrite`.
-pub struct IoMsgWrite<'a, C: CanSend> {
-    caps: &'a C,
-    port: PortRef<Io>,
-}
-
-impl<'a, C: CanSend> IoMsgWrite<'a, C> {
-    fn new(caps: &'a C, port: PortRef<Io>) -> Self {
-        Self { caps, port }
-    }
-}
-
-impl<'a, C: CanSend> AsyncWrite for IoMsgWrite<'a, C> {
+impl<C: CanSend> AsyncWrite for OwnedWriteHalf<C> {
     fn poll_write(
         self: Pin<&mut Self>,
         _cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, std::io::Error>> {
-        match self.port.send(self.caps, Io::Data(buf.into())) {
+        match self.port.send(&self.caps, Io::Data(buf.into())) {
             Ok(()) => Poll::Ready(Ok(buf.len())),
             Err(e) => Poll::Ready(Err(std::io::Error::other(e))),
         }
@@ -165,85 +262,123 @@ impl<'a, C: CanSend> AsyncWrite for IoMsgWrite<'a, C> {
         _cx: &mut Context<'_>,
     ) -> Poll<Result<(), std::io::Error>> {
         // Send EOF on shutdown.
-        match self.port.send(self.caps, Io::Eof) {
+        match self.port.send(&self.caps, Io::Eof) {
             Ok(()) => Poll::Ready(Ok(())),
             Err(e) => Poll::Ready(Err(std::io::Error::other(e))),
         }
     }
 }
 
+/// A helper struct that contains the state needed to complete a connection.
+pub struct ConnectionCompleter<C> {
+    caps: C,
+    conn: PortReceiver<Io>,
+    port: OncePortReceiver<Accept>,
+}
+
+impl<C: CanOpenPort + CanSend> ConnectionCompleter<C> {
+    /// Wait for the server to accept the connection and return the streams that can be used to communicate
+    /// with the server.
+    pub async fn complete(self) -> Result<ActorConnection<C>> {
+        let accept = RealClock
+            .timeout(CONNECT_TIMEOUT, self.port.recv())
+            .await??;
+        Ok(ActorConnection {
+            reader: OwnedReadHalf::new(accept.id.clone(), self.conn),
+            writer: OwnedWriteHalf::new(accept.id, self.caps, accept.conn),
+        })
+    }
+}
+
+/// A message sent from a client to initiate a connection.
+#[derive(Debug, Serialize, Deserialize, Named, Clone)]
+pub struct Connect {
+    /// The ID of the client initiating the connection.
+    id: ActorId,
+    conn: PortRef<Io>,
+    /// The port the server can use to complete the connection.
+    return_conn: OncePortRef<Accept>,
+}
+
+impl Connect {
+    /// Allocate a new `Connect` message and return the associated `ConnectionCompleter` that can be used
+    /// to finish setting up the connection.
+    pub fn allocate<C: CanOpenPort + CanSend>(
+        id: ActorId,
+        caps: C,
+    ) -> (Self, ConnectionCompleter<C>) {
+        let (conn_tx, conn_rx) = open_port::<Io>(&caps);
+        let (return_tx, return_rx) = open_once_port::<Accept>(&caps);
+        (
+            Self {
+                id,
+                conn: conn_tx.bind(),
+                return_conn: return_tx.bind(),
+            },
+            ConnectionCompleter {
+                caps,
+                conn: conn_rx,
+                port: return_rx,
+            },
+        )
+    }
+}
+
+/// A response message sent from the server back to the client to complete setting
+/// up the connection.
+#[derive(Debug, Serialize, Deserialize, Named, Clone)]
+struct Accept {
+    /// The ID of the server that accepted the connection.
+    id: ActorId,
+    /// The port the client will use to send data over the connection to the server.
+    conn: PortRef<Io>,
+}
+
+impl Bind for Connect {
+    fn bind(&mut self, bindings: &mut Bindings) -> Result<()> {
+        self.conn.bind(bindings)?;
+        self.return_conn.bind(bindings)
+    }
+}
+
+impl Unbind for Connect {
+    fn unbind(&self, bindings: &mut Bindings) -> Result<()> {
+        self.conn.unbind(bindings)?;
+        self.return_conn.unbind(bindings)
+    }
+}
+
 /// Helper used by `Handler<Connect>`s to accept a connection initiated by a `Connect` message and
 /// return `AsyncRead` and `AsyncWrite` streams that can be used to communicate with the other side.
-pub async fn accept<'a, C: CanOpenPort + CanSend>(
-    caps: &'a C,
+pub async fn accept<C: CanOpenPort + CanSend>(
+    caps: C,
+    self_id: ActorId,
     message: Connect,
-) -> Result<(IoMsgRead, IoMsgWrite<'a, C>)> {
-    let (tx, rx) = open_port::<Io>(caps);
-    let (r_tx, r_rx) = open_once_port::<PortRef<Io>>(caps);
-    message.port.send(
-        caps,
+) -> Result<ActorConnection<C>> {
+    let (tx, rx) = open_port::<Io>(&caps);
+    message.return_conn.send(
+        &caps,
         Accept {
+            id: self_id,
             conn: tx.bind(),
-            return_conn: r_tx.bind(),
         },
     )?;
-    let wr = RealClock.timeout(CONNECT_TIMEOUT, r_rx.recv()).await??;
-    Ok((IoMsgRead::new(rx), IoMsgWrite::new(caps, wr)))
+    Ok(ActorConnection {
+        reader: OwnedReadHalf::new(message.id.clone(), rx),
+        writer: OwnedWriteHalf::new(message.id, caps, message.conn),
+    })
 }
 
-/// Initiate a connection to a `Handler<Connect>` and return `AsyncRead` and `AsyncWrite` streams to
-/// communicate with the other side.
-pub async fn connect<C: CanOpenPort + CanSend>(
-    caps: &C,
+/// Helper used by clients to initiate a connection by sending a `Connect` message to the given port
+/// and awaiting an `Accept` response. Returns `AsyncRead` and `AsyncWrite` streams that can be used
+/// to communicate with the remote actor.
+pub async fn connect(
+    mailbox: &Mailbox,
     port: PortRef<Connect>,
-) -> Result<(IoMsgRead, IoMsgWrite<C>)> {
-    let (tx, mut rx) = open_port::<Accept>(caps);
-    port.send(caps, Connect { port: tx.bind() })?;
-
-    let connection = RealClock.timeout(CONNECT_TIMEOUT, rx.recv()).await??;
-    let (tx, rx) = open_port::<Io>(caps);
-    connection.return_conn.send(caps, tx.bind())?;
-
-    Ok((IoMsgRead::new(rx), IoMsgWrite::new(caps, connection.conn)))
-}
-
-/// Initiate connections to all ranks in a `ActorMesh<Handler<Connect>>` and run the provided
-/// callback on each connection.
-pub async fn connect_mesh<M, A>(
-    actor_mesh: M,
-    handle: impl AsyncFn(IoMsgRead, IoMsgWrite<Mailbox>) -> Result<()>,
-) -> Result<()>
-where
-    M: ActorMesh<Actor = A>,
-    A: RemoteActor + RemoteHandles<Connect> + RemoteHandles<IndexedErasedUnbound<Connect>>,
-{
-    let client = actor_mesh.proc_mesh().client();
-
-    // Broadcast the initiate connection message.
-    let (tx, mut rx) = client.open_port::<Accept>();
-    actor_mesh.cast(dsl::all(dsl::true_()), Connect { port: tx.bind() })?;
-
-    // Loop to process running handlers on completed connections and waiting for outstanding handlers
-    // to complete.
-    let mut pending = actor_mesh.shape().slice().len();
-    let mut running = FuturesUnordered::default();
-    let deadline = RealClock.now() + CONNECT_TIMEOUT;
-    while !running.is_empty() || pending > 0 {
-        tokio::select! {
-            // We expect all actors to connect in the given deadline.
-            res = tokio::time::timeout_at(deadline, future::pending::<()>()), if pending > 0 => res?,
-            res = rx.recv() => {
-                let connection = res?;
-                let (tx, rx) = client.open_port::<Io>();
-                connection.return_conn.send(client, tx.bind())?;
-                running.push(Box::pin(handle(IoMsgRead::new(rx), IoMsgWrite::new(client, connection.conn))));
-                pending -= 1;
-            },
-            Some(res) = running.next() => res?,
-        }
-    }
-
-    Ok(())
+) -> Result<ActorConnection<Mailbox>> {
+    let (connect, completer) = Connect::allocate(mailbox.actor_id().clone(), mailbox.clone());
+    port.send(mailbox, connect)?;
+    completer.complete().await
 }
 
 #[cfg(test)]
@@ -279,7 +414,9 @@ mod tests {
             cx: &Context<Self>,
             message: Connect,
         ) -> Result<(), anyhow::Error> {
-            let (mut rd, mut wr) = accept(cx, message).await?;
+            let (mut rd, mut wr) = accept(cx, cx.self_id().clone(), message)
+                .await?
+                .into_split();
             tokio::io::copy(&mut rd, &mut wr).await?;
             wr.shutdown().await?;
             Ok(())
@@ -291,7 +428,7 @@ mod tests {
         let proc = Proc::local();
         let client = proc.attach("client")?;
         let actor = proc.spawn::<EchoActor>("actor", ()).await?;
-        let (mut rd, mut wr) = connect(&client, actor.port().bind()).await?;
+        let (mut rd, mut wr) = connect(&client, actor.port().bind()).await?.into_split();
         let send = [3u8, 4u8, 5u8, 6u8];
         try_join!(
             async move {
@@ -306,6 +443,32 @@ mod tests {
                 anyhow::Ok(())
             },
         )?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_connection_close_on_drop() -> Result<()> {
+        let proc = Proc::local();
+        let client = proc.attach("client")?;
+
+        let (connect, completer) = Connect::allocate(client.actor_id().clone(), client.clone());
+        let (mut rd, _) = accept(&client, client.actor_id().clone(), connect)
+            .await?
+            .into_split();
+        let (_, mut wr) = completer.complete().await?.into_split();
+
+        // Write some data
+        let send = [1u8, 2u8, 3u8];
+        wr.write_all(&send).await?;
+
+        // Drop the writer without explicit shutdown - this should send EOF
+        drop(wr);
+
+        // Reader should receive the data and then EOF (causing read_to_end to complete)
+        let mut recv = vec![];
+        rd.read_to_end(&mut recv).await?;
+        assert_eq!(&send, recv.as_slice());
+
         Ok(())
     }
 }

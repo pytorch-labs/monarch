@@ -40,6 +40,7 @@ libc = "0.2.139"
 mockall = "0.13.1"
 ndslice = { version = "0.0.0", path = "../ndslice" }
 nix = { version = "0.29.0", features = ["dir", "event", "hostname", "inotify", "ioctl", "mman", "mount", "net", "poll", "ptrace", "reboot", "resource", "sched", "signal", "term", "time", "user", "zerocopy"] }
+pin-project = "0.4.30"
 preempt_rwlock = { version = "0.0.0", path = "../preempt_rwlock" }
 rand = { version = "0.8", features = ["small_rng"] }
 serde = { version = "1.0.185", features = ["derive", "rc"] }
