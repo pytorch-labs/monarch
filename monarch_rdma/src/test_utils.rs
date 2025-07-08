@@ -44,7 +44,6 @@ pub mod test_utils {
     ) -> Result<bool, anyhow::Error> {
         let timeout = Duration::from_secs(timeout_secs);
         let start_time = Instant::now();
-
         while start_time.elapsed() < timeout {
             match qp.poll_completion() {
                 Ok(Some(wc)) => {
@@ -61,7 +60,7 @@ pub mod test_utils {
             }
         }
 
-        Ok(false)
+        Err(anyhow::Error::msg("Timeout while waiting for completion"))
     }
 
     pub struct RdmaManagerTestEnv<'a> {
@@ -81,6 +80,7 @@ pub mod test_utils {
     pub struct Buffer {
         ptr: u64,
         len: usize,
+        cpu_ref: Option<Box<[u8]>>,
     }
     impl RdmaManagerTestEnv<'_> {
         /// Sets up the RDMA test environment.
@@ -180,6 +180,7 @@ pub mod test_utils {
                     buf_vec.push(Buffer {
                         ptr: buffer.as_mut_ptr() as u64,
                         len: buffer.len(),
+                        cpu_ref: Some(buffer),
                     });
                     continue;
                 }
@@ -267,12 +268,11 @@ pub mod test_utils {
                     buf_vec.push(Buffer {
                         ptr: dptr,
                         len: padded_size,
+                        cpu_ref: None,
                     });
                 }
             }
 
-            let _buffer1 = vec![0u8; buffer_size].into_boxed_slice();
-            let _buffer2 = vec![0u8; buffer_size].into_boxed_slice();
             // Fill buffer1 with test data
             if device_str1.0 == "cuda" {
                 let mut temp_buffer = vec![0u8; buffer_size].into_boxed_slice();
@@ -294,7 +294,6 @@ pub mod test_utils {
                     }
                 }
             }
-
             let actor_1 = actor_mesh_1.get(0).unwrap();
             let actor_2 = actor_mesh_2.get(0).unwrap();
 
@@ -306,9 +305,11 @@ pub mod test_utils {
                 .await?;
             // Get keys from both actors.
 
+            let buffer_2 = buf_vec.remove(1);
+            let buffer_1 = buf_vec.remove(0);
             Ok(Self {
-                buffer_1: buf_vec[0].clone(),
-                buffer_2: buf_vec[1].clone(),
+                buffer_1,
+                buffer_2,
                 client_1: proc_mesh_1.client(),
                 client_2: proc_mesh_2.client(),
                 actor_1,
@@ -373,11 +374,13 @@ pub mod test_utils {
                     buf_vec.push(Buffer {
                         ptr: temp_buffer.as_mut_ptr() as u64,
                         len: size,
+                        cpu_ref: Some(temp_buffer),
                     });
                 } else {
                     buf_vec.push(Buffer {
                         ptr: handle.addr as u64,
                         len: size,
+                        cpu_ref: None,
                     });
                 }
             }
