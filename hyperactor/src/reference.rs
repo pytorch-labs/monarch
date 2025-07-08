@@ -896,7 +896,7 @@ impl<M: RemoteMessage> PortRef<M> {
     }
 
     /// Convert this port into a sink that can be used to send messages using the given capability.
-    pub fn into_sink<'a, C: cap::CanSend>(self, caps: &'a C) -> PortSink<'a, C, M> {
+    pub fn into_sink<C: cap::CanSend>(self, caps: C) -> PortSink<C, M> {
         PortSink::new(caps, self)
     }
 }
