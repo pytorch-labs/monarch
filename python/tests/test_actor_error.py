@@ -9,7 +9,7 @@ import importlib.resources
 import subprocess
 
 import pytest
-from monarch._src.actor._extension.monarch_hyperactor.proc_mesh import ProcEvent
+from monarch._src.actor._extension.proc_mesh import ProcEvent
 from monarch.actor import Actor, ActorError, endpoint, local_proc_mesh, proc_mesh
 
 

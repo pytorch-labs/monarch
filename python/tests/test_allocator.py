@@ -24,14 +24,8 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 
-from monarch._src.actor._extension.monarch_hyperactor.alloc import (
-    AllocConstraints,
-    AllocSpec,
-)
-from monarch._src.actor._extension.monarch_hyperactor.channel import (
-    ChannelAddr,
-    ChannelTransport,
-)
+from monarch._src.actor._extension.alloc import AllocConstraints, AllocSpec
+from monarch._src.actor._extension.channel import ChannelAddr, ChannelTransport
 from monarch._src.actor.allocator import (
     ALLOC_LABEL_PROC_MESH_NAME,
     RemoteAllocator,

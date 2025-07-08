@@ -13,19 +13,16 @@ import time
 
 import monarch
 
-from monarch._src.actor._extension.monarch_hyperactor.actor import (
-    PanicFlag,
-    PythonMessage,
-)
+from monarch._src.actor._extension.actor import PanicFlag, PythonMessage
 
-from monarch._src.actor._extension.monarch_hyperactor.alloc import (  # @manual=//monarch/monarch_extension:monarch_extension
+from monarch._src.actor._extension.alloc import (  # @manual=//monarch/monarch_extension:monarch_extension
     AllocConstraints,
     AllocSpec,
 )
-from monarch._src.actor._extension.monarch_hyperactor.mailbox import Mailbox
-from monarch._src.actor._extension.monarch_hyperactor.proc import ActorId
-from monarch._src.actor._extension.monarch_hyperactor.proc_mesh import ProcMesh
-from monarch._src.actor._extension.monarch_hyperactor.shape import Shape
+from monarch._src.actor._extension.mailbox import Mailbox
+from monarch._src.actor._extension.proc import ActorId
+from monarch._src.actor._extension.proc_mesh import ProcMesh
+from monarch._src.actor._extension.shape import Shape
 
 
 class MyActor:

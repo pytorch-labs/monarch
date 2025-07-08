@@ -38,23 +38,17 @@ from typing import (
     TypeVar,
 )
 
-from monarch._src.actor._extension.monarch_hyperactor.actor import (
-    PanicFlag,
-    PythonMessage,
-)
-from monarch._src.actor._extension.monarch_hyperactor.actor_mesh import PythonActorMesh
-from monarch._src.actor._extension.monarch_hyperactor.mailbox import (
+from monarch._src.actor._extension.actor import PanicFlag, PythonMessage
+from monarch._src.actor._extension.actor_mesh import PythonActorMesh
+from monarch._src.actor._extension.mailbox import (
     Mailbox,
     OncePortReceiver,
     OncePortRef,
     PortReceiver as HyPortReceiver,
     PortRef,
 )
-from monarch._src.actor._extension.monarch_hyperactor.proc import ActorId
-from monarch._src.actor._extension.monarch_hyperactor.shape import (
-    Point as HyPoint,
-    Shape,
-)
+from monarch._src.actor._extension.proc import ActorId
+from monarch._src.actor._extension.shape import Point as HyPoint, Shape
 
 from monarch._src.actor._extension.telemetry import enter_span, exit_span
 

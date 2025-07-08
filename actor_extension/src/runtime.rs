@@ -124,10 +124,7 @@ pub fn sleep_indefinitely_for_unit_tests(py: Python) -> PyResult<()> {
 pub fn register_python_bindings(runtime_mod: &Bound<'_, PyModule>) -> PyResult<()> {
     let sleep_indefinitely_fn =
         wrap_pyfunction!(sleep_indefinitely_for_unit_tests, runtime_mod.py())?;
-    sleep_indefinitely_fn.setattr(
-        "__module__",
-        "monarch._src.actor._extension.monarch_hyperactor.runtime",
-    )?;
+    sleep_indefinitely_fn.setattr("__module__", "monarch._src.actor._extension.runtime")?;
     runtime_mod.add_function(sleep_indefinitely_fn)?;
     Ok(())
 }

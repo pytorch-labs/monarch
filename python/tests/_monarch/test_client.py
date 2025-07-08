@@ -11,7 +11,7 @@ from unittest import TestCase
 import torch
 from monarch._rust_bindings.monarch_extension import client
 
-from monarch._src.actor._extension.monarch_hyperactor.proc import ActorId
+from monarch._src.actor._extension.proc import ActorId
 from pyre_extensions import none_throws
 
 

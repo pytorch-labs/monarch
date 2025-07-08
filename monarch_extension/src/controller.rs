@@ -6,12 +6,12 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use actor_extension_lib::ndslice::PySlice;
+use actor_extension_lib::proc::PySerialized;
 /// These the controller messages that are exposed to python to allow the client to construct and
 /// send messages to the controller. For more details of the definitions take a look at
 /// [`monarch_messages::controller::ControllerMessage`].
 use hyperactor::data::Serialized;
-use monarch_hyperactor::ndslice::PySlice;
-use monarch_hyperactor::proc::PySerialized;
 use monarch_messages::controller::Seq;
 use monarch_messages::controller::*;
 use monarch_messages::worker::Ref;

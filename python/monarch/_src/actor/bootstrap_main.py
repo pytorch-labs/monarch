@@ -22,9 +22,7 @@ except ImportError:
 
 
 async def main():
-    from monarch._src.actor._extension.monarch_hyperactor.bootstrap import (
-        bootstrap_main,
-    )
+    from monarch._src.actor._extension.bootstrap import bootstrap_main
 
     await bootstrap_main()
 

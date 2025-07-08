@@ -41,6 +41,8 @@ use std::collections::HashSet;
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
 
+use actor_extension_lib::shape::PyPoint;
+use actor_extension_lib::shape::PyShape;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
@@ -66,8 +68,6 @@ use hyperactor::forward;
 use hyperactor::reference::ActorId;
 use hyperactor_mesh::comm::multicast::CastInfo;
 use itertools::Itertools;
-use monarch_hyperactor::shape::PyPoint;
-use monarch_hyperactor::shape::PyShape;
 use monarch_messages::controller::ControllerActor;
 use monarch_messages::controller::ControllerMessageClient;
 use monarch_messages::controller::Seq;

@@ -38,10 +38,7 @@ pub fn bootstrap_main(py: Python) -> PyResult<Bound<PyAny>> {
 
 pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResult<()> {
     let f = wrap_pyfunction!(bootstrap_main, hyperactor_mod)?;
-    f.setattr(
-        "__module__",
-        "monarch._src.actor._extension.monarch_hyperactor.bootstrap",
-    )?;
+    f.setattr("__module__", "monarch._src.actor._extension.bootstrap")?;
     hyperactor_mod.add_function(f)?;
 
     Ok(())

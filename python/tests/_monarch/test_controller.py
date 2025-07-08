@@ -12,7 +12,7 @@ from monarch._rust_bindings.monarch_extension import (  # @manual=//monarch/pyth
     controller,
     tensor_worker,
 )
-from monarch._src.actor._extension.monarch_hyperactor import shape
+from monarch._src.actor._extension import shape
 
 
 class TestController(TestCase):

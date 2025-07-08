@@ -8,11 +8,11 @@
 
 from typing import final
 
-from monarch._src.actor._extension.monarch_hyperactor.actor import PythonMessage
-from monarch._src.actor._extension.monarch_hyperactor.mailbox import Mailbox
-from monarch._src.actor._extension.monarch_hyperactor.proc import ActorId
-from monarch._src.actor._extension.monarch_hyperactor.selection import Selection
-from monarch._src.actor._extension.monarch_hyperactor.shape import Shape
+from monarch._src.actor._extension.actor import PythonMessage
+from monarch._src.actor._extension.mailbox import Mailbox
+from monarch._src.actor._extension.proc import ActorId
+from monarch._src.actor._extension.selection import Selection
+from monarch._src.actor._extension.shape import Shape
 
 @final
 class PythonActorMesh:

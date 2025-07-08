@@ -8,7 +8,7 @@
 
 import time
 
-from monarch._src.actor._extension.monarch_hyperactor.actor import PythonMessage
+from monarch._src.actor._extension.actor import PythonMessage
 
 
 def test_python_message() -> None:

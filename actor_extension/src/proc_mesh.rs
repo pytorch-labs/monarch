@@ -106,10 +106,7 @@ impl TrackedProcMesh {
     }
 }
 
-#[pyclass(
-    name = "ProcMesh",
-    module = "monarch._src.actor._extension.monarch_hyperactor.proc_mesh"
-)]
+#[pyclass(name = "ProcMesh", module = "monarch._src.actor._extension.proc_mesh")]
 pub struct PyProcMesh {
     pub inner: SharedCell<TrackedProcMesh>,
     keepalive: Keepalive,
@@ -380,7 +377,7 @@ impl Drop for KeepaliveState {
 
 #[pyclass(
     name = "ProcMeshMonitor",
-    module = "monarch._src.actor._extension.monarch_hyperactor.proc_mesh"
+    module = "monarch._src.actor._extension.proc_mesh"
 )]
 pub struct PyProcMeshMonitor {
     proc_events: SharedCell<Mutex<ProcEvents>>,
@@ -417,10 +414,7 @@ impl PyProcMeshMonitor {
     }
 }
 
-#[pyclass(
-    name = "ProcEvent",
-    module = "monarch._src.actor._extension.monarch_hyperactor.proc_mesh"
-)]
+#[pyclass(name = "ProcEvent", module = "monarch._src.actor._extension.proc_mesh")]
 pub enum PyProcEvent {
     /// The proc of the given rank was stopped with the provided reason.
     /// The arguments represent the rank id and stop reason.

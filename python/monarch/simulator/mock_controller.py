@@ -22,7 +22,7 @@ import torch
 from monarch._rust_bindings.monarch_extension.client import (  # @manual=//monarch/monarch_extension:monarch_extension
     WorldState,
 )
-from monarch._src.actor._extension.monarch_hyperactor.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
+from monarch._src.actor._extension.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
     ActorId,
 )
 from monarch._src.actor.shape import iter_ranks, NDSlice, Slices as Ranks

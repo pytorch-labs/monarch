@@ -14,7 +14,7 @@ from dataclasses import dataclass
 
 from typing import Dict, TYPE_CHECKING
 
-from monarch._src.actor._extension.monarch_hyperactor.proc import ActorId
+from monarch._src.actor._extension.proc import ActorId
 
 if TYPE_CHECKING:
     from monarch._src.actor.debugger import DebugClient

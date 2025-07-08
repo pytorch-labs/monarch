@@ -22,17 +22,17 @@ from typing import (
     TypeVar,
 )
 
-from monarch._src.actor._extension.monarch_hyperactor.alloc import (  # @manual=//monarch/actor_extension:actor_extension
+from monarch._src.actor._extension.alloc import (  # @manual=//monarch/actor_extension:actor_extension
     Alloc,
     AllocConstraints,
     AllocSpec,
 )
-from monarch._src.actor._extension.monarch_hyperactor.mailbox import Mailbox
-from monarch._src.actor._extension.monarch_hyperactor.proc_mesh import (
+from monarch._src.actor._extension.mailbox import Mailbox
+from monarch._src.actor._extension.proc_mesh import (
     ProcMesh as HyProcMesh,
     ProcMeshMonitor,
 )
-from monarch._src.actor._extension.monarch_hyperactor.shape import Shape, Slice
+from monarch._src.actor._extension.shape import Shape, Slice
 from monarch._src.actor.actor_mesh import _Actor, _ActorMeshRefImpl, Actor, ActorMeshRef
 from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator
 from monarch._src.actor.code_sync import RsyncMeshClient, WorkspaceLocation

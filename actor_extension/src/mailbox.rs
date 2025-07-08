@@ -48,10 +48,7 @@ use crate::proc::PyActorId;
 use crate::runtime::signal_safe_block_on;
 use crate::shape::PyShape;
 #[derive(Clone, Debug)]
-#[pyclass(
-    name = "Mailbox",
-    module = "monarch._src.actor._extension.monarch_hyperactor.mailbox"
-)]
+#[pyclass(name = "Mailbox", module = "monarch._src.actor._extension.mailbox")]
 pub(super) struct PyMailbox {
     pub(super) inner: Mailbox,
 }
@@ -188,7 +185,7 @@ impl PyMailbox {
 #[pyclass(
     frozen,
     name = "PortId",
-    module = "monarch._src.actor._extension.monarch_hyperactor.mailbox"
+    module = "monarch._src.actor._extension.mailbox"
 )]
 #[derive(Clone)]
 pub struct PyPortId {
@@ -268,10 +265,7 @@ impl std::fmt::Debug for PyPortId {
 }
 
 #[derive(Clone, Debug)]
-#[pyclass(
-    name = "PortHandle",
-    module = "monarch._src.actor._extension.monarch_hyperactor.mailbox"
-)]
+#[pyclass(name = "PortHandle", module = "monarch._src.actor._extension.mailbox")]
 pub(super) struct PythonPortHandle {
     inner: PortHandle<PythonMessage>,
 }
@@ -295,7 +289,7 @@ impl PythonPortHandle {
 #[derive(Clone, Debug)]
 #[pyclass(
     name = "UndeliverablePortHandle",
-    module = "monarch._src.actor._extension.monarch_hyperactor.mailbox"
+    module = "monarch._src.actor._extension.mailbox"
 )]
 pub(super) struct PythonUndeliverablePortHandle {
     inner: PortHandle<Undeliverable<MessageEnvelope>>,
@@ -309,10 +303,7 @@ impl PythonUndeliverablePortHandle {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[pyclass(
-    name = "PortRef",
-    module = "monarch._src.actor._extension.monarch_hyperactor.mailbox"
-)]
+#[pyclass(name = "PortRef", module = "monarch._src.actor._extension.mailbox")]
 pub(super) struct PythonPortRef {
     pub(crate) inner: PortRef<PythonMessage>,
 }
@@ -345,7 +336,7 @@ impl From<PortRef<PythonMessage>> for PythonPortRef {
 #[derive(Debug)]
 #[pyclass(
     name = "PortReceiver",
-    module = "monarch._src.actor._extension.monarch_hyperactor.mailbox"
+    module = "monarch._src.actor._extension.mailbox"
 )]
 pub(super) struct PythonPortReceiver {
     inner: Arc<tokio::sync::Mutex<PortReceiver<PythonMessage>>>,
@@ -374,7 +365,7 @@ impl PythonPortReceiver {
 #[derive(Debug)]
 #[pyclass(
     name = "UndeliverableMessageEnvelope",
-    module = "monarch._src.actor._extension.monarch_hyperactor.mailbox"
+    module = "monarch._src.actor._extension.mailbox"
 )]
 pub(crate) struct PythonUndeliverableMessageEnvelope {
     #[allow(dead_code)] // At this time, field `inner` isn't read.
@@ -384,7 +375,7 @@ pub(crate) struct PythonUndeliverableMessageEnvelope {
 #[derive(Debug)]
 #[pyclass(
     name = "UndeliverablePortReceiver",
-    module = "monarch._src.actor._extension.monarch_hyperactor.mailbox"
+    module = "monarch._src.actor._extension.mailbox"
 )]
 pub(super) struct PythonUndeliverablePortReceiver {
     inner: Arc<tokio::sync::Mutex<PortReceiver<Undeliverable<MessageEnvelope>>>>,
@@ -420,7 +411,7 @@ impl PythonUndeliverablePortReceiver {
 #[derive(Debug)]
 #[pyclass(
     name = "OncePortHandle",
-    module = "monarch._src.actor._extension.monarch_hyperactor.mailbox"
+    module = "monarch._src.actor._extension.mailbox"
 )]
 pub(super) struct PythonOncePortHandle {
     inner: Option<OncePortHandle<PythonMessage>>,
@@ -449,10 +440,7 @@ impl PythonOncePortHandle {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[pyclass(
-    name = "OncePortRef",
-    module = "monarch._src.actor._extension.monarch_hyperactor.mailbox"
-)]
+#[pyclass(name = "OncePortRef", module = "monarch._src.actor._extension.mailbox")]
 pub(crate) struct PythonOncePortRef {
     pub(crate) inner: Option<OncePortRef<PythonMessage>>,
 }
@@ -492,7 +480,7 @@ impl From<OncePortRef<PythonMessage>> for PythonOncePortRef {
 
 #[pyclass(
     name = "OncePortReceiver",
-    module = "monarch._src.actor._extension.monarch_hyperactor.mailbox"
+    module = "monarch._src.actor._extension.mailbox"
 )]
 pub(super) struct PythonOncePortReceiver {
     inner: std::sync::Mutex<Option<OncePortReceiver<PythonMessage>>>,

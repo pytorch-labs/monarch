@@ -10,7 +10,7 @@ import sys
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Union
 
-from monarch._src.actor._extension.monarch_hyperactor.proc import ActorId
+from monarch._src.actor._extension.proc import ActorId
 from monarch._src.actor.actor_mesh import Actor, ActorMeshRef, endpoint
 from monarch._src.actor.pdb_wrapper import DebuggerWrite
 from monarch._src.actor.proc_mesh import local_proc_mesh

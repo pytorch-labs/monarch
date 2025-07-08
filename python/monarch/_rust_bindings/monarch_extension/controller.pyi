@@ -9,9 +9,9 @@ from typing import Any, final, List, Optional, Tuple, Union
 
 from monarch._rust_bindings.monarch_extension.tensor_worker import Ref, WorkerMessage
 
-from monarch._src.actor._extension.monarch_hyperactor.proc import Serialized
+from monarch._src.actor._extension.proc import Serialized
 
-from monarch._src.actor._extension.monarch_hyperactor.shape import Slice
+from monarch._src.actor._extension.shape import Slice
 
 @final
 class Node:

@@ -25,7 +25,7 @@ from monarch._rust_bindings.monarch_extension.client import (  # @manual=//monar
 )
 
 from monarch._rust_bindings.monarch_messages.debugger import DebuggerAction
-from monarch._src.actor._extension.monarch_hyperactor.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
+from monarch._src.actor._extension.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
     ActorId,
     Proc,
 )

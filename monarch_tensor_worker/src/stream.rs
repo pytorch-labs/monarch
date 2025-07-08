@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use actor_extension_lib::actor::PythonMessage;
 use anyhow::Result;
 use anyhow::anyhow;
 use anyhow::bail;
@@ -36,7 +37,6 @@ use hyperactor::mailbox::Mailbox;
 use hyperactor::mailbox::OncePortHandle;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::proc::Proc;
-use monarch_hyperactor::actor::PythonMessage;
 use monarch_messages::controller::ControllerMessageClient;
 use monarch_messages::controller::Seq;
 use monarch_messages::controller::WorkerError;

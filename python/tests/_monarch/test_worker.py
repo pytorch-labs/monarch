@@ -13,7 +13,7 @@ from unittest import TestCase
 import cloudpickle
 
 from monarch._rust_bindings.monarch_extension import tensor_worker
-from monarch._src.actor._extension.monarch_hyperactor import shape
+from monarch._src.actor._extension import shape
 from pyre_extensions import none_throws
 
 

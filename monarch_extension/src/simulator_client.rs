@@ -8,6 +8,7 @@
 
 #![cfg(feature = "tensor_engine")]
 
+use actor_extension_lib::runtime::signal_safe_block_on;
 use anyhow::anyhow;
 use hyperactor::PortId;
 use hyperactor::attrs::Attrs;
@@ -21,7 +22,6 @@ use hyperactor::simnet::OperationalMessage;
 use hyperactor::simnet::ProxyMessage;
 use hyperactor::simnet::SpawnMesh;
 use hyperactor::simnet::TrainingScriptState;
-use monarch_hyperactor::runtime::signal_safe_block_on;
 use monarch_simulator_lib::bootstrap::bootstrap;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;

@@ -25,11 +25,7 @@ use pyo3::types::PyTuple;
 /// representation of an n-dimensional array. Given an offset, sizes of
 /// each dimension, and strides for each dimension, Slice can compute
 /// indices into the flat array.
-#[pyclass(
-    name = "Slice",
-    frozen,
-    module = "monarch._src.actor._extension.monarch_hyperactor.shape"
-)]
+#[pyclass(name = "Slice", frozen, module = "monarch._src.actor._extension.shape")]
 #[derive(Clone)]
 pub struct PySlice {
     inner: Arc<ndslice::Slice>,

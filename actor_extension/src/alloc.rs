@@ -41,7 +41,7 @@ use crate::runtime::signal_safe_block_on;
 
 #[pyclass(
     name = "LocalAllocatorBase",
-    module = "monarch._src.actor._extension.monarch_hyperactor.alloc",
+    module = "monarch._src.actor._extension.alloc",
     subclass
 )]
 pub struct PyLocalAllocator;
@@ -88,7 +88,7 @@ impl PyLocalAllocator {
 
 #[pyclass(
     name = "ProcessAllocatorBase",
-    module = "monarch._src.actor._extension.monarch_hyperactor.alloc",
+    module = "monarch._src.actor._extension.alloc",
     subclass
 )]
 pub struct PyProcessAllocator {
@@ -156,7 +156,7 @@ impl PyProcessAllocator {
 /// Basically follows https://pyo3.rs/v0.25.0/trait-bounds.html.
 /// The Python subclass should implement `def initialize_alloc(self) -> list[str]`.
 pub struct PyRemoteProcessAllocInitializer {
-    // instance of a Python subclass of `monarch._src.actor._extension.monarch_hyperactor.alloc.RemoteProcessAllocInitializer`.
+    // instance of a Python subclass of `monarch._src.actor._extension.alloc.RemoteProcessAllocInitializer`.
     py_inner: Py<PyAny>,
 
     // allocation constraints passed onto the allocator's allocate call and passed along to python initializer.
@@ -234,7 +234,7 @@ impl RemoteProcessAllocInitializer for PyRemoteProcessAllocInitializer {
 
 #[pyclass(
     name = "RemoteAllocatorBase",
-    module = "monarch._src.actor._extension.monarch_hyperactor.alloc",
+    module = "monarch._src.actor._extension.alloc",
     subclass
 )]
 pub struct PyRemoteAllocator {
@@ -335,10 +335,7 @@ impl PyRemoteAllocator {
 /// A python class that wraps a Rust Alloc trait object. It represents what
 /// is shown on the python side. Internals are not exposed.
 /// It ensures that the Alloc is only used once (i.e. moved) in rust.
-#[pyclass(
-    name = "Alloc",
-    module = "monarch._src.actor._extension.monarch_hyperactor.alloc"
-)]
+#[pyclass(name = "Alloc", module = "monarch._src.actor._extension.alloc")]
 pub struct PyAlloc {
     pub inner: Arc<Mutex<Option<PyAllocWrapper>>>,
 }
@@ -399,7 +396,7 @@ impl Alloc for PyAllocWrapper {
 
 #[pyclass(
     name = "AllocConstraints",
-    module = "monarch._src.actor._extension.monarch_hyperactor.alloc"
+    module = "monarch._src.actor._extension.alloc"
 )]
 pub struct PyAllocConstraints {
     inner: AllocConstraints,
@@ -419,10 +416,7 @@ impl PyAllocConstraints {
     }
 }
 
-#[pyclass(
-    name = "AllocSpec",
-    module = "monarch._src.actor._extension.monarch_hyperactor.alloc"
-)]
+#[pyclass(name = "AllocSpec", module = "monarch._src.actor._extension.alloc")]
 pub struct PyAllocSpec {
     pub inner: AllocSpec,
 }

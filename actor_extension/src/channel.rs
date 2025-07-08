@@ -16,7 +16,7 @@ use pyo3::prelude::*;
 /// Python binding for [`hyperactor::channel::ChannelTransport`]
 #[pyclass(
     name = "ChannelTransport",
-    module = "monarch._src.actor._extension.monarch_hyperactor.channel",
+    module = "monarch._src.actor._extension.channel",
     eq
 )]
 #[derive(PartialEq, Clone, Copy, Debug)]
@@ -28,10 +28,7 @@ pub enum PyChannelTransport {
     // Sim(/*proxy address:*/ ChannelAddr), TODO kiuk@ add support
 }
 
-#[pyclass(
-    name = "ChannelAddr",
-    module = "monarch._src.actor._extension.monarch_hyperactor.channel"
-)]
+#[pyclass(name = "ChannelAddr", module = "monarch._src.actor._extension.channel")]
 pub struct PyChannelAddr {
     inner: ChannelAddr,
 }

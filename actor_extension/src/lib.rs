@@ -12,9 +12,22 @@
 //! It is imported by `monarch` as `monarch._src.actor._extension`.
 use pyo3::prelude::*;
 
+pub mod actor;
+mod actor_mesh;
+mod alloc;
 mod blocking;
+mod bootstrap;
+mod channel;
 mod code_sync;
+mod config;
+pub mod mailbox;
+pub mod ndslice;
 mod panic;
+pub mod proc;
+pub mod proc_mesh;
+pub mod runtime;
+mod selection;
+pub mod shape;
 mod telemetry;
 
 #[cfg(fbcode_build)]
@@ -51,65 +64,26 @@ fn get_or_add_new_module<'py>(
 #[pymodule]
 #[pyo3(name = "_extension")]
 pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    monarch_hyperactor::runtime::initialize(module.py())?;
-    let runtime = monarch_hyperactor::runtime::get_tokio_runtime();
+    crate::runtime::initialize(module.py())?;
+    let runtime = crate::runtime::get_tokio_runtime();
+
     ::hyperactor::initialize(runtime.handle().clone());
 
-    monarch_hyperactor::shape::register_python_bindings(&get_or_add_new_module(
-        module,
-        "monarch_hyperactor.shape",
-    )?)?;
-
-    monarch_hyperactor::selection::register_python_bindings(&get_or_add_new_module(
-        module,
-        "monarch_hyperactor.selection",
-    )?)?;
-    code_sync::register_python_bindings(&get_or_add_new_module(module, "code_sync")?)?;
-    monarch_hyperactor::bootstrap::register_python_bindings(&get_or_add_new_module(
-        module,
-        "monarch_hyperactor.bootstrap",
-    )?)?;
-
-    monarch_hyperactor::proc::register_python_bindings(&get_or_add_new_module(
-        module,
-        "monarch_hyperactor.proc",
-    )?)?;
-
-    monarch_hyperactor::actor::register_python_bindings(&get_or_add_new_module(
-        module,
-        "monarch_hyperactor.actor",
-    )?)?;
-
-    monarch_hyperactor::mailbox::register_python_bindings(&get_or_add_new_module(
-        module,
-        "monarch_hyperactor.mailbox",
-    )?)?;
-
-    monarch_hyperactor::alloc::register_python_bindings(&get_or_add_new_module(
-        module,
-        "monarch_hyperactor.alloc",
-    )?)?;
-    monarch_hyperactor::channel::register_python_bindings(&get_or_add_new_module(
-        module,
-        "monarch_hyperactor.channel",
-    )?)?;
-    monarch_hyperactor::actor_mesh::register_python_bindings(&get_or_add_new_module(
-        module,
-        "monarch_hyperactor.actor_mesh",
-    )?)?;
-    monarch_hyperactor::proc_mesh::register_python_bindings(&get_or_add_new_module(
-        module,
-        "monarch_hyperactor.proc_mesh",
-    )?)?;
-
-    monarch_hyperactor::runtime::register_python_bindings(&get_or_add_new_module(
-        module,
-        "monarch_hyperactor.runtime",
-    )?)?;
-    telemetry::register_python_bindings(&get_or_add_new_module(module, "telemetry")?)?;
-    crate::panic::register_python_bindings(&get_or_add_new_module(module, "panic")?)?;
-
+    crate::actor_mesh::register_python_bindings(&get_or_add_new_module(module, "actor_mesh")?)?;
+    crate::actor::register_python_bindings(&get_or_add_new_module(module, "actor")?)?;
+    crate::alloc::register_python_bindings(&get_or_add_new_module(module, "alloc")?)?;
     crate::blocking::register_python_bindings(&get_or_add_new_module(module, "blocking")?)?;
+    crate::bootstrap::register_python_bindings(&get_or_add_new_module(module, "bootstrap")?)?;
+    crate::channel::register_python_bindings(&get_or_add_new_module(module, "channel")?)?;
+    crate::code_sync::register_python_bindings(&get_or_add_new_module(module, "code_sync")?)?;
+    crate::mailbox::register_python_bindings(&get_or_add_new_module(module, "mailbox")?)?;
+    crate::panic::register_python_bindings(&get_or_add_new_module(module, "panic")?)?;
+    crate::proc_mesh::register_python_bindings(&get_or_add_new_module(module, "proc_mesh")?)?;
+    crate::proc::register_python_bindings(&get_or_add_new_module(module, "proc")?)?;
+    crate::runtime::register_python_bindings(&get_or_add_new_module(module, "runtime")?)?;
+    crate::selection::register_python_bindings(&get_or_add_new_module(module, "selection")?)?;
+    crate::shape::register_python_bindings(&get_or_add_new_module(module, "shape")?)?;
+    crate::telemetry::register_python_bindings(&get_or_add_new_module(module, "telemetry")?)?;
 
     #[cfg(fbcode_build)]
     crate::meta::register_python_bindings(&get_or_add_new_module(module, "meta")?)?;

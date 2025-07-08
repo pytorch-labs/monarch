@@ -10,7 +10,7 @@ from abc import ABC, abstractmethod
 
 from typing import Dict, Generator, Sequence, Tuple, Union
 
-from monarch._src.actor._extension.monarch_hyperactor.shape import Shape, Slice
+from monarch._src.actor._extension.shape import Shape, Slice
 
 from typing_extensions import Self
 

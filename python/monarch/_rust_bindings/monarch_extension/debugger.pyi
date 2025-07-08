@@ -11,7 +11,7 @@ from monarch._rust_bindings.monarch_messages.debugger import (
     DebuggerActionType,
 )
 
-from monarch._src.actor._extension.monarch_hyperactor.proc import Serialized
+from monarch._src.actor._extension.proc import Serialized
 
 @final
 class DebuggerMessage:

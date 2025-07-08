@@ -13,7 +13,7 @@ use pyo3::types::PyType;
 
 #[pyclass(
     name = "Selection",
-    module = "monarch._src.actor._extension.monarch_hyperactor.selection",
+    module = "monarch._src.actor._extension.selection",
     frozen
 )]
 pub struct PySelection {

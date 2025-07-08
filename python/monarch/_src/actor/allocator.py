@@ -10,7 +10,7 @@ import abc
 import logging
 from typing import final, Optional
 
-from monarch._src.actor._extension.monarch_hyperactor.alloc import (
+from monarch._src.actor._extension.alloc import (
     Alloc,
     AllocSpec,
     LocalAllocatorBase,
@@ -73,7 +73,7 @@ class RemoteAllocInitializer(abc.ABC):
     """Subclass-able Python interface for `hyperactor_mesh::alloc::remoteprocess:RemoteProcessAllocInitializer`.
 
     NOTE: changes to method signatures of this class must be made to the call-site at
-    `PyRemoteProcessAllocInitializer.py_initialize_alloc()` in `monarch/monarch_hyperactor/src/alloc.rs`
+    `PyRemoteProcessAllocInitializer.py_initialize_alloc()` in `monarch/actor_extension/src/alloc.rs`
     """
 
     @abc.abstractmethod

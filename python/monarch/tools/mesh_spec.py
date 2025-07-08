@@ -34,7 +34,7 @@ class MeshSpec:
     num_hosts: int
     host_type: str = _UNSET_STR
     gpus: int = _UNSET_INT
-    # NOTE: using str over monarch._src.actor._extension.monarch_hyperactor.channel.ChannelTransport enum
+    # NOTE: using str over monarch._src.actor._extension.channel.ChannelTransport enum
     #  b/c the rust binding doesn't have Python enum semantics, hence doesn't serialize well
     transport: str = "tcp"
     port: int = DEFAULT_REMOTE_ALLOCATOR_PORT

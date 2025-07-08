@@ -8,7 +8,7 @@
 from collections import deque
 from typing import Generator, Sequence, TYPE_CHECKING
 
-from monarch._src.actor._extension.monarch_hyperactor.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
+from monarch._src.actor._extension.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
     ActorId,
 )
 

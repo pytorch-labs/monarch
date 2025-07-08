@@ -8,11 +8,8 @@
 
 from typing import final, Optional, Type
 
-from monarch._src.actor._extension.monarch_hyperactor.actor import (
-    Actor,
-    PythonActorHandle,
-)
-from monarch._src.actor._extension.monarch_hyperactor.mailbox import Mailbox
+from monarch._src.actor._extension.actor import Actor, PythonActorHandle
+from monarch._src.actor._extension.mailbox import Mailbox
 
 def init_proc(
     *,

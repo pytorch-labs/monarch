@@ -52,10 +52,7 @@ use crate::proc::PySerialized;
 use crate::runtime::signal_safe_block_on;
 use crate::shape::PyShape;
 
-#[pyclass(
-    frozen,
-    module = "monarch._src.actor._extension.monarch_hyperactor.actor"
-)]
+#[pyclass(frozen, module = "monarch._src.actor._extension.actor")]
 #[derive(Serialize, Deserialize, Named)]
 pub struct PickledMessage {
     sender_actor_id: ActorId,
@@ -99,7 +96,7 @@ impl PickledMessage {
     }
 }
 
-#[pyclass(module = "monarch._src.actor._extension.monarch_hyperactor.actor")]
+#[pyclass(module = "monarch._src.actor._extension.actor")]
 pub struct PickledMessageClientActor {
     instance: Arc<Mutex<InstanceWrapper<PickledMessage>>>,
 }
@@ -174,10 +171,7 @@ impl PickledMessageClientActor {
     }
 }
 
-#[pyclass(
-    frozen,
-    module = "monarch._src.actor._extension.monarch_hyperactor.actor"
-)]
+#[pyclass(frozen, module = "monarch._src.actor._extension.actor")]
 #[derive(Default, Clone, Serialize, Deserialize, Named, PartialEq)]
 pub struct PythonMessage {
     pub(crate) method: String,
@@ -266,7 +260,7 @@ impl PythonMessage {
     }
 }
 
-#[pyclass(module = "monarch._src.actor._extension.monarch_hyperactor.actor")]
+#[pyclass(module = "monarch._src.actor._extension.actor")]
 pub(super) struct PythonActorHandle {
     pub(super) inner: ActorHandle<PythonActor>,
 }
@@ -391,7 +385,7 @@ fn create_task_locals() -> pyo3_async_runtimes::TaskLocals {
 // in Python, can catch the PanicException and notify the Rust awaiter manually.
 // In this way we can guarantee that the awaiter will complete even if the
 // `PyTaskCompleter` callback explodes.
-#[pyclass(module = "monarch._src.actor._extension.monarch_hyperactor.actor")]
+#[pyclass(module = "monarch._src.actor._extension.actor")]
 struct PanicFlag {
     sender: Option<tokio::sync::oneshot::Sender<PyObject>>,
 }

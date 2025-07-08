@@ -4,6 +4,6 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-from monarch._src.actor._extension.monarch_hyperactor.selection import Selection
+from monarch._src.actor._extension.selection import Selection
 
 __all__ = ["Selection"]

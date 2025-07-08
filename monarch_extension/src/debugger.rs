@@ -8,11 +8,11 @@
 
 use std::sync::Arc;
 
+use actor_extension_lib::proc::InstanceWrapper;
+use actor_extension_lib::proc::PyProc;
+use actor_extension_lib::proc::PySerialized;
+use actor_extension_lib::runtime::signal_safe_block_on;
 use hyperactor::ActorRef;
-use monarch_hyperactor::proc::InstanceWrapper;
-use monarch_hyperactor::proc::PyProc;
-use monarch_hyperactor::proc::PySerialized;
-use monarch_hyperactor::runtime::signal_safe_block_on;
 use monarch_messages::controller::ControllerActor;
 use monarch_messages::controller::ControllerMessageClient;
 use monarch_messages::debugger::DebuggerAction;

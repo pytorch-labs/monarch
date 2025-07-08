@@ -20,13 +20,13 @@ use std::ops::DerefMut;
 use std::os::fd::FromRawFd;
 use std::os::fd::OwnedFd;
 
+use actor_extension_lib::ndslice::PySlice;
+use actor_extension_lib::proc::PyActorId;
+use actor_extension_lib::runtime::get_tokio_runtime;
 use anyhow::Result;
 use clap::Parser;
 use hyperactor::data::Serialized;
 use hyperactor::reference::ActorId;
-use monarch_hyperactor::ndslice::PySlice;
-use monarch_hyperactor::proc::PyActorId;
-use monarch_hyperactor::runtime::get_tokio_runtime;
 use monarch_messages::wire_value::WireValue;
 use monarch_messages::wire_value::func_call_args_to_wire_values;
 use monarch_messages::worker::*;

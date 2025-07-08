@@ -50,7 +50,7 @@ from monarch._rust_bindings.monarch_tensor_worker.bootstrap import (
     WorkerServerResponse,
 )
 
-from monarch._src.actor._extension.monarch_hyperactor.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
+from monarch._src.actor._extension.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
     ActorId,
 )
 

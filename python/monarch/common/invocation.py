@@ -8,7 +8,7 @@
 import traceback
 from typing import Any, List, Optional, Tuple
 
-from monarch._src.actor._extension.monarch_hyperactor.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
+from monarch._src.actor._extension.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
     ActorId,
 )
 

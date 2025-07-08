@@ -16,9 +16,6 @@ use hyperactor_mesh::code_sync::WorkspaceLocation;
 use hyperactor_mesh::code_sync::rsync;
 use hyperactor_mesh::shape::Shape;
 use hyperactor_mesh::shared_cell::SharedCell;
-use monarch_hyperactor::proc_mesh::PyProcMesh;
-use monarch_hyperactor::runtime::signal_safe_block_on;
-use monarch_hyperactor::shape::PyShape;
 use pyo3::Bound;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
@@ -27,6 +24,10 @@ use pyo3::types::PyBytes;
 use pyo3::types::PyModule;
 use serde::Deserialize;
 use serde::Serialize;
+
+use crate::proc_mesh::PyProcMesh;
+use crate::runtime::signal_safe_block_on;
+use crate::shape::PyShape;
 
 #[pyclass(
     frozen,

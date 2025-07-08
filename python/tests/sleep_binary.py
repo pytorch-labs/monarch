@@ -14,7 +14,7 @@ This is used to test the signal handling behavior of signal_safe_block_on.
 
 import sys
 
-from monarch._src.actor._extension.monarch_hyperactor.runtime import (  # @manual
+from monarch._src.actor._extension.runtime import (  # @manual
     sleep_indefinitely_for_unit_tests,
 )
 

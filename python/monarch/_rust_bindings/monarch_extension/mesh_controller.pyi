@@ -8,11 +8,11 @@ from traceback import FrameSummary
 from typing import List, NamedTuple, Sequence, Tuple, Union
 
 from monarch._rust_bindings.monarch_extension import client
-from monarch._src.actor._extension.monarch_hyperactor.mailbox import PortId
-from monarch._src.actor._extension.monarch_hyperactor.proc import ActorId
-from monarch._src.actor._extension.monarch_hyperactor.proc_mesh import ProcMesh
+from monarch._src.actor._extension.mailbox import PortId
+from monarch._src.actor._extension.proc import ActorId
+from monarch._src.actor._extension.proc_mesh import ProcMesh
 
-from monarch._src.actor._extension.monarch_hyperactor.shape import Slice as NDSlice
+from monarch._src.actor._extension.shape import Slice as NDSlice
 
 class _Controller:
     def __init__(self) -> None: ...

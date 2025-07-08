@@ -26,7 +26,7 @@ use crate::shape::PyShape;
 
 #[pyclass(
     name = "PythonActorMesh",
-    module = "monarch._src.actor._extension.monarch_hyperactor.actor_mesh"
+    module = "monarch._src.actor._extension.actor_mesh"
 )]
 pub struct PythonActorMesh {
     pub(super) inner: SharedCell<RootActorMesh<'static, PythonActor>>,

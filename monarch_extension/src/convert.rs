@@ -9,9 +9,9 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+use actor_extension_lib::ndslice::PySlice;
+use actor_extension_lib::proc::PyActorId;
 use hyperactor::ActorId;
-use monarch_hyperactor::ndslice::PySlice;
-use monarch_hyperactor::proc::PyActorId;
 use monarch_messages::controller::Seq;
 use monarch_messages::wire_value::func_call_args_to_wire_values;
 use monarch_messages::worker;

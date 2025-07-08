@@ -8,12 +8,12 @@
 
 from typing import AsyncIterator, final, Type
 
-from monarch._src.actor._extension.monarch_hyperactor.actor import Actor
-from monarch._src.actor._extension.monarch_hyperactor.actor_mesh import PythonActorMesh
+from monarch._src.actor._extension.actor import Actor
+from monarch._src.actor._extension.actor_mesh import PythonActorMesh
 
-from monarch._src.actor._extension.monarch_hyperactor.alloc import Alloc
-from monarch._src.actor._extension.monarch_hyperactor.mailbox import Mailbox
-from monarch._src.actor._extension.monarch_hyperactor.shape import Shape
+from monarch._src.actor._extension.alloc import Alloc
+from monarch._src.actor._extension.mailbox import Mailbox
+from monarch._src.actor._extension.shape import Shape
 
 @final
 class ProcMesh:
