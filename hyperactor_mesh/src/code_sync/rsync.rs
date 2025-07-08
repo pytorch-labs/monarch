@@ -18,6 +18,9 @@ use anyhow::Result;
 use anyhow::bail;
 use anyhow::ensure;
 use async_trait::async_trait;
+use futures::StreamExt;
+use futures::TryStreamExt;
+use futures::stream;
 use futures::try_join;
 use hyperactor::Actor;
 use hyperactor::Handler;
@@ -40,7 +43,6 @@ use crate::actor_mesh::ActorMesh;
 use crate::code_sync::WorkspaceLocation;
 use crate::connect::Connect;
 use crate::connect::accept;
-use crate::connect::connect_mesh;
 
 pub async fn do_rsync(addr: &SocketAddr, workspace: &Path) -> Result<()> {
     let output = Command::new("rsync")
@@ -190,36 +192,45 @@ impl Handler<Connect> for RsyncActor {
     ) -> Result<(), anyhow::Error> {
         let (mut local, mut stream) = try_join!(
             async { Ok(TcpStream::connect(self.daemon.addr()).await?) },
-            async {
-                let (rd, wr) = accept(cx, message).await?;
-                anyhow::Ok(tokio::io::join(rd, wr))
-            }
+            accept(cx, cx.self_id().clone(), message),
         )?;
         tokio::io::copy_bidirectional(&mut local, &mut stream).await?;
         Ok(())
     }
 }
 
-pub async fn rsync_mesh<M>(actor_mesh: M, workspace: PathBuf) -> Result<()>
+pub async fn rsync_mesh<M>(actor_mesh: &M, workspace: PathBuf) -> Result<()>
 where
     M: ActorMesh<Actor = RsyncActor>,
 {
-    connect_mesh(actor_mesh, async move |rd, wr| {
-        let workspace = workspace.clone();
-        let listener = TcpListener::bind(("::1", 0)).await?;
-        let addr = listener.local_addr()?;
-        let mut local = tokio::io::join(rd, wr);
-        try_join!(
-            async move { do_rsync(&addr, &workspace).await },
-            async move {
-                let (mut stream, _) = listener.accept().await?;
-                tokio::io::copy_bidirectional(&mut stream, &mut local).await?;
-                anyhow::Ok(())
-            },
-        )?;
-        anyhow::Ok(())
-    })
-    .await
+    // We avoid casting here as we need point-to-point connections to each individual actor.
+    stream::iter(actor_mesh.iter_actor_refs())
+        // Connect to all actors in the mesh.
+        .map(|actor| async move {
+            let mailbox = actor_mesh.proc_mesh().client();
+            let (connect, completer) = Connect::allocate(mailbox.actor_id().clone(), mailbox);
+            actor.send(mailbox, connect)?;
+            completer.complete().await
+        })
+        // Max the connections run in parallel.
+        .buffer_unordered(usize::MAX)
+        // Initiate the rsync, in parallel.
+        .try_for_each_concurrent(None, |mut local| async {
+            let workspace = workspace.clone();
+            let listener = TcpListener::bind(("::1", 0)).await?;
+            let addr = listener.local_addr()?;
+            try_join!(
+                async move { do_rsync(&addr, &workspace).await },
+                async move {
+                    let (mut stream, _) = listener.accept().await?;
+                    tokio::io::copy_bidirectional(&mut stream, &mut local).await?;
+                    anyhow::Ok(())
+                },
+            )?;
+            anyhow::Ok(())
+        })
+        .await?;
+    Ok(())
 }
 
 #[cfg(test)]
