@@ -38,6 +38,7 @@ impl<T: Sized> std::ops::Deref for PreemptibleRwLockReadGuard<'_, T> {
 }
 
 pub struct OwnedPreemptibleRwLockReadGuard<T: ?Sized, U: ?Sized = T> {
+    lock: Arc<PreemptibleRwLock<T>>,
     preemptor: watch::Receiver<usize>,
     guard: OwnedRwLockReadGuard<T, U>,
 }
@@ -58,6 +59,7 @@ impl<T: ?Sized, U: ?Sized> OwnedPreemptibleRwLockReadGuard<T, U> {
         F: FnOnce(&U) -> &V,
     {
         OwnedPreemptibleRwLockReadGuard {
+            lock: self.lock,
             preemptor: self.preemptor,
             guard: OwnedRwLockReadGuard::map(self.guard, f),
         }
@@ -106,7 +108,7 @@ impl<T: Sized> std::ops::DerefMut for PreemptibleRwLockWriteGuard<'_, T> {
 /// readers get preempted, via `preempted()` method on the read guard that
 /// readers can `tokio::select!` on.
 #[derive(Debug)]
-pub struct PreemptibleRwLock<T: Sized> {
+pub struct PreemptibleRwLock<T: ?Sized> {
     lock: Arc<RwLock<T>>,
     preemptor_lock: RwLock<()>,
     // Used to track the number of writers waiting to acquire the lock and
@@ -134,6 +136,7 @@ impl<T: Sized> PreemptibleRwLock<T> {
     pub async fn read_owned(self: Arc<Self>) -> OwnedPreemptibleRwLockReadGuard<T> {
         let _guard = self.preemptor_lock.read().await;
         OwnedPreemptibleRwLockReadGuard {
+            lock: self.clone(),
             preemptor: self.preemptor.1.clone(),
             guard: self.lock.clone().read_owned().await,
         }
@@ -144,6 +147,7 @@ impl<T: Sized> PreemptibleRwLock<T> {
     ) -> Result<OwnedPreemptibleRwLockReadGuard<T>, TryLockError> {
         let _guard = self.preemptor_lock.try_read()?;
         Ok(OwnedPreemptibleRwLockReadGuard {
+            lock: self.clone(),
             preemptor: self.preemptor.1.clone(),
             guard: self.lock.clone().try_read_owned()?,
         })
@@ -231,6 +235,27 @@ mod tests {
             lock.write(/* preempt_readers */ true),
         )
         .await;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[allow(clippy::disallowed_methods)]
+    async fn test_preempt_owned_reader_after_lock_dropped() -> Result<()> {
+        let lock = Arc::new(PreemptibleRwLock::new(42));
+
+        // Get an owned read guard
+        let reader = lock.clone().read_owned().await;
+
+        // Drop the original Arc<PreemptibleRwLock>
+        drop(lock);
+
+        // Verify that preempted() still works even after the original Arc is dropped
+        tokio::select! {
+            biased;  // Make sure peempted is checked first.
+            _ = reader.preempted() => assert!(false),
+            _ = futures::future::ready(()) => (),
+        }
 
         Ok(())
     }
