@@ -16,6 +16,9 @@ mod blocking;
 mod code_sync;
 mod panic;
 
+#[cfg(fbcode_build)]
+mod meta;
+
 fn get_or_add_new_module<'py>(
     module: &Bound<'py, PyModule>,
     module_name: &str,
@@ -113,5 +116,8 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
     crate::panic::register_python_bindings(&get_or_add_new_module(module, "panic")?)?;
 
     crate::blocking::register_python_bindings(&get_or_add_new_module(module, "blocking")?)?;
+
+    #[cfg(fbcode_build)]
+    crate::meta::register_python_bindings(&get_or_add_new_module(module, "meta")?)?;
     Ok(())
 }
