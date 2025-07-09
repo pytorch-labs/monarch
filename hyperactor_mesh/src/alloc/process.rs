@@ -34,6 +34,8 @@ use hyperactor::sync::flag;
 use hyperactor::sync::monitor;
 use hyperactor_state::state_actor::StateActor;
 use ndslice::Shape;
+use nix::sys::signal;
+use nix::unistd::Pid;
 use tokio::io;
 use tokio::process::Command;
 use tokio::sync::Mutex;
@@ -204,17 +206,15 @@ impl Child {
         let monitor = async move {
             let reason = tokio::select! {
                 _ = handle => {
-                    match process.kill().await {
-                        Err(e) => {
-                            tracing::error!("error killing process: {}", e);
-                            // In this cased, we're left with little choice but to
-                            // orphan the process.
-                            ProcStopReason::Unknown
-                        },
-                        Ok(_) => {
-                            Self::exit_status_to_reason(process.wait().await)
-                        }
-                    }
+                    let Some(id) = process.id() else {
+                        tracing::error!("could not get child process id");
+                        return ProcStopReason::Unknown;
+                    };
+                    if let Err(e) = signal::kill(Pid::from_raw(id as i32), signal::SIGTERM) {
+                        tracing::error!("failed to kill child process: {}", e);
+                        return ProcStopReason::Unknown;
+                    };
+                    Self::exit_status_to_reason(process.wait().await)
                 }
                 result = process.wait() => Self::exit_status_to_reason(result),
             };
@@ -300,6 +300,11 @@ impl Child {
         } else {
             self.stop(ProcStopReason::Watchdog);
         }
+    }
+
+    #[cfg(test)]
+    fn fail_group(&self) {
+        self.group.fail();
     }
 }
 
@@ -516,4 +521,47 @@ mod tests {
     crate::alloc_test_suite!(ProcessAllocator::new(Command::new(
         buck_resources::get("monarch/hyperactor_mesh/bootstrap").unwrap()
     )));
+
+    #[tokio::test]
+    async fn test_sigterm_on_group_fail() {
+        let bootstrap_binary = buck_resources::get("monarch/hyperactor_mesh/bootstrap").unwrap();
+        let mut allocator = ProcessAllocator::new(Command::new(bootstrap_binary));
+
+        let mut alloc = allocator
+            .allocate(AllocSpec {
+                shape: ndslice::shape! { replica = 1 },
+                constraints: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        let proc_id = {
+            loop {
+                match alloc.next().await {
+                    Some(ProcState::Running { proc_id, .. }) => {
+                        break proc_id;
+                    }
+                    Some(ProcState::Failed { description, .. }) => {
+                        panic!("Process allocation failed: {}", description);
+                    }
+                    Some(_other) => {}
+                    None => {
+                        panic!("Allocation ended unexpectedly");
+                    }
+                }
+            }
+        };
+
+        if let Some(child) = alloc.active.get(&proc_id.rank()) {
+            child.fail_group();
+        }
+
+        assert!(matches!(
+            alloc.next().await,
+            Some(ProcState::Stopped {
+                reason: ProcStopReason::Killed(15, false),
+                ..
+            })
+        ));
+    }
 }
