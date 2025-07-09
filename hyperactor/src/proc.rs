@@ -1026,7 +1026,7 @@ impl<A: Actor> Instance<A> {
     /// Initialize and run the actor until it fails or is stopped.
     async fn run(&mut self, actor: &mut A) -> Result<(), ActorError> {
         hyperactor_telemetry::declare_static_counter!(MESSAGES_RECEIVED, "actor.messages_received");
-        tracing::debug!("entering actor loop");
+        tracing::debug!("entering actor loop: {}", self.self_id());
 
         self.change_status(ActorStatus::Initializing);
         actor
@@ -1087,7 +1087,7 @@ impl<A: Actor> Instance<A> {
             }
             tracing::debug!("drained {} messages", n);
         }
-        tracing::debug!("exited actor loop");
+        tracing::debug!("exited actor loop: {}", self.self_id());
         self.change_status(ActorStatus::Stopped);
         Ok(())
     }
