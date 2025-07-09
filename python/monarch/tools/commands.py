@@ -21,7 +21,7 @@ from monarch.tools.config import (  # @manual=//monarch/python/monarch/tools/con
 )
 
 from monarch.tools.mesh_spec import mesh_spec_from_metadata, ServerSpec
-from torchx.runner import Runner
+from torchx.runner import Runner  # @manual=//torchx/runner:lib_core
 from torchx.specs import AppDef, AppDryRunInfo, AppState, CfgVal, parse_app_handle
 from torchx.specs.builders import parse_args
 from torchx.util.types import decode, decode_optional
