@@ -491,7 +491,7 @@ async def test_debug() -> None:
             rank, coords, _, _, function, lineno = breakpoints[i]
             initial_linenos[rank] = lineno
             assert rank == i
-            assert coords == {"hosts": rank % 2, "gpus": rank // 2}
+            assert coords == {"hosts": rank // 2, "gpus": rank % 2}
             assert function == "test_python_actors._debugee_actor_internal"
             assert lineno == breakpoints[0][5] + 4 * rank
 
