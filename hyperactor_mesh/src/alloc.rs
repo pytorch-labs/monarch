@@ -35,6 +35,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::alloc::test_utils::MockAllocWrapper;
+use crate::log_source::LogSource;
 use crate::proc_mesh::mesh_agent::MeshAgent;
 
 /// Errors that occur during allocation operations.
@@ -217,6 +218,20 @@ pub trait Alloc {
 
     /// The channel transport used the procs in this alloc.
     fn transport(&self) -> ChannelTransport;
+
+    /// The log source for this alloc.
+    /// It allows remote processes to stream stdout and stderr back to the client.
+    /// A client can connect to the log source to obtain the streamed logs.
+    /// A log source is allocation specific. Each allocator can decide how to stream the logs back.
+    async fn log_source(&self) -> Result<LogSource, AllocatorError> {
+        // TODO: this should be implemented based on different allocators.
+        // Having this temporarily here so that the client can connect to the log source.
+        // But the client will not get anything.
+        // The following diffs will gradually implement this for different allocators.
+        LogSource::new_with_local_actor()
+            .await
+            .map_err(AllocatorError::from)
+    }
 
     /// Stop this alloc, shutting down all of its procs. A clean
     /// shutdown should result in Stop events from all allocs,

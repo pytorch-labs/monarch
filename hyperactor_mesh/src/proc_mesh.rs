@@ -25,7 +25,6 @@ use hyperactor::actor::remote::Remote;
 use hyperactor::cap;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
-use hyperactor::id;
 use hyperactor::mailbox;
 use hyperactor::mailbox::BoxableMailboxSender;
 use hyperactor::mailbox::BoxedMailboxSender;
@@ -57,6 +56,7 @@ use crate::alloc::ProcState;
 use crate::alloc::ProcStopReason;
 use crate::assign::Ranks;
 use crate::comm::CommActorMode;
+use crate::log_source::StateServerInfo;
 use crate::proc_mesh::mesh_agent::MeshAgent;
 use crate::proc_mesh::mesh_agent::MeshAgentMessageClient;
 use crate::reference::ProcMeshId;
@@ -303,12 +303,11 @@ impl ProcMesh {
         }
 
         // Get a reference to the state actor for streaming logs.
-        // TODO: bind logging options to python API so that users can choose if to stream (optionally aggregated) logs back or not.
-        // TODO: spin up state actor locally and remotely with names and addresses passed in here.
-        let state_actor_id = id!(state_server[0].state[0]);
-        let state_actor_ref = ActorRef::<StateActor>::attest(state_actor_id.clone());
-        let state_actor_addr = "tcp![::]:3000".parse::<ChannelAddr>().unwrap();
-        router.bind(state_actor_id.into(), state_actor_addr.clone());
+        let StateServerInfo {
+            state_proc_addr,
+            state_actor_id,
+        } = alloc.log_source().await?.server_info();
+        router.bind(state_actor_id.clone().into(), state_proc_addr.clone());
 
         let log_handler = Box::new(hyperactor_state::client::StdlogHandler {});
         let params = ClientActorParams { log_handler };
@@ -319,6 +318,7 @@ impl ProcMesh {
             .unwrap()
             .bind();
 
+        let state_actor_ref: ActorRef<StateActor> = ActorRef::attest(state_actor_id);
         match state_actor_ref
             .subscribe_logs(
                 &client,
