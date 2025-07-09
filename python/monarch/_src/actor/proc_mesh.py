@@ -8,6 +8,7 @@
 
 import os
 import sys
+import warnings
 from contextlib import AbstractContextManager
 
 from typing import (
@@ -275,8 +276,6 @@ class ProcMesh(MeshTrait):
     # Finalizer to check if the proc mesh was closed properly.
     def __del__(self) -> None:
         if not self._stopped:
-            import warnings
-
             warnings.warn(
                 f"unstopped ProcMesh {self!r}",
                 ResourceWarning,
