@@ -92,12 +92,30 @@ mod tests {
     use std::time::Duration;
 
     use hyperactor::channel;
+    use tokio::sync::mpsc::Sender;
 
     use super::*;
     use crate::client::ClientActorParams;
+    use crate::client::LogHandler;
     use crate::create_remote_client;
     use crate::test_utils::log_items;
     use crate::test_utils::spawn_actor;
+
+    /// A log handler that flushes GenericStateObject to a mpsc channel.
+    #[derive(Debug)]
+    struct MpscLogHandler {
+        sender: Sender<Vec<GenericStateObject>>,
+    }
+
+    impl LogHandler for MpscLogHandler {
+        fn handle_log(&self, logs: Vec<GenericStateObject>) -> Result<()> {
+            let sender = self.sender.clone();
+            tokio::spawn(async move {
+                sender.send(logs).await.unwrap();
+            });
+            Ok(())
+        }
+    }
 
     #[tokio::test]
     async fn test_subscribe_logs() {
@@ -112,7 +130,8 @@ mod tests {
 
         let client_actor_addr = ChannelAddr::any(channel::ChannelTransport::Unix);
         let (sender, mut receiver) = tokio::sync::mpsc::channel::<Vec<GenericStateObject>>(20);
-        let params = ClientActorParams { sender };
+        let log_handler = Box::new(MpscLogHandler { sender });
+        let params = ClientActorParams { log_handler };
         let client_proc_id =
             hyperactor::reference::ProcId(hyperactor::WorldId("client_server".to_string()), 0);
         let (client_actor_addr, client_actor_handle, _client_mailbox) = spawn_actor::<ClientActor>(

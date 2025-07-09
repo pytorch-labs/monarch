@@ -25,6 +25,7 @@ use hyperactor::actor::remote::Remote;
 use hyperactor::cap;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
+use hyperactor::id;
 use hyperactor::mailbox;
 use hyperactor::mailbox::BoxableMailboxSender;
 use hyperactor::mailbox::BoxedMailboxSender;
@@ -38,6 +39,10 @@ use hyperactor::proc::Proc;
 use hyperactor::reference::ProcId;
 use hyperactor::reference::Reference;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor_state::client::ClientActor;
+use hyperactor_state::client::ClientActorParams;
+use hyperactor_state::state_actor::StateActor;
+use hyperactor_state::state_actor::StateMessageClient;
 use ndslice::Range;
 use ndslice::Shape;
 use ndslice::ShapeError;
@@ -200,7 +205,7 @@ impl ProcMesh {
         client_proc
             .clone()
             .serve(client_rx, mailbox::monitored_return_handle());
-        router.bind(client_proc_id.clone().into(), client_proc_addr);
+        router.bind(client_proc_id.clone().into(), client_proc_addr.clone());
 
         // Bind this router to the global router, to enable cross-mesh routing.
         // TODO: unbind this when we incorporate mesh destruction too.
@@ -295,6 +300,42 @@ impl ProcMesh {
             comm_actor
                 .send(&client, CommActorMode::Mesh(rank, address_book.clone()))
                 .map_err(anyhow::Error::from)?;
+        }
+
+        // Get a reference to the state actor for streaming logs.
+        // TODO: bind logging options to python API so that users can choose if to stream (optionally aggregated) logs back or not.
+        // TODO: spin up state actor locally and remotely with names and addresses passed in here.
+        let state_actor_id = id!(state_server[0].state[0]);
+        let state_actor_ref = ActorRef::<StateActor>::attest(state_actor_id.clone());
+        let state_actor_addr = "tcp![::]:3000".parse::<ChannelAddr>().unwrap();
+        router.bind(state_actor_id.into(), state_actor_addr.clone());
+
+        let log_handler = Box::new(hyperactor_state::client::StdlogHandler {});
+        let params = ClientActorParams { log_handler };
+
+        let client_logging_actor: ActorRef<ClientActor> = client_proc
+            .spawn::<ClientActor>("logging_client", params)
+            .await
+            .unwrap()
+            .bind();
+
+        match state_actor_ref
+            .subscribe_logs(
+                &client,
+                client_proc_addr.clone(),
+                client_logging_actor.clone(),
+            )
+            .await
+        {
+            Ok(_) => {}
+            Err(err) => {
+                // TODO: talking to the state actor is not on the critical path.
+                // However, if the state actor is not reachable, we will receive spams of mailbox warnings.
+                tracing::warn!(
+                    "failed to subscribe to state actor logs; remote logging will not be available on the client: {}",
+                    err
+                );
+            }
         }
 
         let shape = alloc.shape().clone();
