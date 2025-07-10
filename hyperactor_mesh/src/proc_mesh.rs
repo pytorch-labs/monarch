@@ -56,6 +56,7 @@ use crate::alloc::ProcState;
 use crate::alloc::ProcStopReason;
 use crate::assign::Ranks;
 use crate::comm::CommActorMode;
+use crate::log_source::LogSource;
 use crate::log_source::StateServerInfo;
 use crate::proc_mesh::mesh_agent::MeshAgent;
 use crate::proc_mesh::mesh_agent::MeshAgentMessageClient;
@@ -91,6 +92,9 @@ pub struct ProcMesh {
     client: Mailbox,
     comm_actors: Vec<ActorRef<CommActor>>,
     world_id: WorldId,
+    // this is optionally to hold the lifecycle of the state actor for log streaming
+    // TODO: we can implement the stop so the proc mesh can stop the state actor
+    _log_source: LogSource,
 }
 
 struct EventState {
@@ -303,10 +307,11 @@ impl ProcMesh {
         }
 
         // Get a reference to the state actor for streaming logs.
+        let log_source = alloc.log_source().await?;
         let StateServerInfo {
             state_proc_addr,
             state_actor_id,
-        } = alloc.log_source().await?.server_info();
+        } = log_source.server_info();
         router.bind(state_actor_id.clone().into(), state_proc_addr.clone());
 
         let log_handler = Box::new(hyperactor_state::client::StdlogHandler {});
@@ -357,6 +362,7 @@ impl ProcMesh {
             client,
             comm_actors,
             world_id,
+            _log_source: log_source,
         })
     }
 
