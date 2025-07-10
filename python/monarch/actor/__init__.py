@@ -23,7 +23,13 @@ from monarch._src.actor.actor_mesh import (
     ValueMesh,
 )
 from monarch._src.actor.future import Future
-from monarch._src.actor.proc_mesh import local_proc_mesh, proc_mesh, ProcMesh
+from monarch._src.actor.proc_mesh import (
+    debug_client,
+    local_proc_mesh,
+    proc_mesh,
+    ProcMesh,
+)
+
 
 __all__ = [
     "Accumulator",
@@ -42,4 +48,5 @@ __all__ = [
     "ProcMesh",
     "send",
     "ValueMesh",
+    "debug_client",
 ]

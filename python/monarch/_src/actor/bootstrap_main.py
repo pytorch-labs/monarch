@@ -54,6 +54,10 @@ def invoke_main():
     except Exception as e:
         logging.warning(f"Failed to set up py-spy: {e}")
 
+    from monarch._src.actor.debugger import remote_breakpointhook
+
+    sys.breakpointhook = remote_breakpointhook
+
     # Start an event loop for PythonActors to use.
     asyncio.run(main())
 
