@@ -20,23 +20,15 @@ use hyperactor::WorldId;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::sim::AddressProxyPair;
 use hyperactor::channel::sim::SimAddr;
-use hyperactor::simnet;
-use hyperactor::simnet::OperationalMessage;
-use hyperactor::simnet::SpawnMesh;
-use hyperactor::simnet::simnet_handle;
 use hyperactor_multiprocess::System;
 use hyperactor_multiprocess::proc_actor::ProcActor;
 use hyperactor_multiprocess::proc_actor::spawn;
 use hyperactor_multiprocess::system::ServerHandle;
 use hyperactor_multiprocess::system_actor::ProcLifecycleMode;
 use monarch_messages::worker::Factory;
-use tokio::sync::Mutex;
-use tokio::sync::mpsc::UnboundedReceiver;
-use tokio::task::JoinHandle;
 use torch_sys::Layout;
 use torch_sys::ScalarType;
 
-use crate::simulator::Simulator;
 use crate::worker::Fabric;
 use crate::worker::MockWorkerParams;
 use crate::worker::WorkerActor;
@@ -183,62 +175,4 @@ pub async fn spawn_sim_worker(
     )
     .await?;
     Ok(bootstrap.proc_actor)
-}
-
-/// Bootstrap the simulation. Spawns the system, controllers, and workers.
-/// Args:
-///    system_addr: The address of the system actor.
-pub async fn bootstrap(
-    system_addr: ChannelAddr,
-    proxy_addr: ChannelAddr,
-    world_size: usize,
-) -> Result<JoinHandle<()>> {
-    // TODO: enable supervision events.
-    let mut operational_message_rx = simnet::start(system_addr.clone(), proxy_addr, 1000)?;
-    let simulator = Arc::new(Mutex::new(Simulator::new(system_addr).await?));
-    let operational_listener_handle = {
-        let simulator = simulator.clone();
-        tokio::spawn(async move {
-            handle_operational_message(&mut operational_message_rx, simulator, world_size).await
-        })
-    };
-
-    Ok(operational_listener_handle)
-}
-
-async fn handle_operational_message(
-    operational_message_rx: &mut UnboundedReceiver<OperationalMessage>,
-    simulator: Arc<Mutex<Simulator>>,
-    world_size: usize,
-) {
-    while let Some(msg) = operational_message_rx.recv().await {
-        tracing::info!("received operational message: {:?}", msg);
-        match msg {
-            OperationalMessage::SpawnMesh(SpawnMesh {
-                system_addr,
-                controller_actor_id,
-                worker_world,
-            }) => {
-                if let Err(e) = simulator
-                    .lock()
-                    .await
-                    .spawn_mesh(system_addr, controller_actor_id, worker_world, world_size)
-                    .await
-                {
-                    tracing::error!("failed to spawn mesh: {:?}", e);
-                }
-            }
-            OperationalMessage::KillWorld(world_id) => {
-                if let Err(e) = simulator.lock().await.kill_world(&world_id) {
-                    tracing::error!("failed to kill world: {:?}", e);
-                }
-            }
-            OperationalMessage::SetTrainingScriptState(state) => match simnet_handle() {
-                Ok(handle) => handle.set_training_script_state(state),
-                Err(e) => {
-                    tracing::error!("failed to set training script state: {:?}", e);
-                }
-            },
-        }
-    }
 }
