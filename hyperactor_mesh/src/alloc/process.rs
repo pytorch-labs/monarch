@@ -29,7 +29,6 @@ use hyperactor::channel::ChannelTx;
 use hyperactor::channel::Rx;
 use hyperactor::channel::Tx;
 use hyperactor::channel::TxStatus;
-use hyperactor::id;
 use hyperactor::sync::flag;
 use hyperactor::sync::monitor;
 use hyperactor_state::state_actor::StateActor;
@@ -53,6 +52,8 @@ use crate::bootstrap;
 use crate::bootstrap::Allocator2Process;
 use crate::bootstrap::Process2Allocator;
 use crate::bootstrap::Process2AllocatorMessage;
+use crate::log_source::LogSource;
+use crate::log_source::StateServerInfo;
 use crate::shortuuid::ShortUuid;
 
 /// The maximum number of log lines to tail keep for managed processes.
@@ -89,6 +90,9 @@ impl Allocator for ProcessAllocator {
         let (bootstrap_addr, rx) = channel::serve(ChannelAddr::any(ChannelTransport::Unix))
             .await
             .map_err(anyhow::Error::from)?;
+        let log_source = LogSource::new_with_local_actor()
+            .await
+            .map_err(AllocatorError::from)?;
 
         let name = ShortUuid::generate();
         let n = spec.shape.slice().len();
@@ -97,6 +101,7 @@ impl Allocator for ProcessAllocator {
             world_id: WorldId(name.to_string()),
             spec: spec.clone(),
             bootstrap_addr,
+            log_source,
             rx,
             index: 0,
             active: HashMap::new(),
@@ -115,6 +120,7 @@ pub struct ProcessAlloc {
     world_id: WorldId, // to provide storage
     spec: AllocSpec,
     bootstrap_addr: ChannelAddr,
+    log_source: LogSource,
     rx: channel::ChannelRx<Process2Allocator>,
     index: usize,
     active: HashMap<usize, Child>,
@@ -145,6 +151,7 @@ struct Child {
 impl Child {
     fn monitored(
         mut process: tokio::process::Child,
+        state_server_info: StateServerInfo,
     ) -> (Self, impl Future<Output = ProcStopReason>) {
         let (group, handle) = monitor::group();
         let (exit_flag, exit_guard) = flag::guarded();
@@ -161,24 +168,20 @@ impl Child {
 
         // If state actor is enabled, try to set up LogWriter instances
         if use_state_actor {
-            let state_actor_ref = ActorRef::<StateActor>::attest(id!(state_server[0].state[0]));
-            // Parse the state actor address
-            if let Ok(state_actor_addr) = "tcp![::]:3000".parse::<ChannelAddr>() {
-                // Use the helper function to create both writers at once
-                match hyperactor_state::log_writer::create_log_writers(
-                    state_actor_addr,
-                    state_actor_ref,
-                ) {
-                    Ok((stdout_writer, stderr_writer)) => {
-                        stdout_tee = stdout_writer;
-                        stderr_tee = stderr_writer;
-                    }
-                    Err(e) => {
-                        tracing::error!("failed to create log writers: {}", e);
-                    }
+            let state_actor_ref = ActorRef::<StateActor>::attest(state_server_info.state_actor_id);
+            let state_actor_addr = state_server_info.state_proc_addr;
+            // Use the helper function to create both writers at once
+            match hyperactor_state::log_writer::create_log_writers(
+                state_actor_addr,
+                state_actor_ref,
+            ) {
+                Ok((stdout_writer, stderr_writer)) => {
+                    stdout_tee = stdout_writer;
+                    stderr_tee = stderr_writer;
                 }
-            } else {
-                tracing::error!("failed to parse state actor address");
+                Err(e) => {
+                    tracing::error!("failed to create log writers: {}", e);
+                }
             }
         }
 
@@ -394,7 +397,8 @@ impl ProcessAlloc {
                         None
                     }
                     Ok(rank) => {
-                        let (handle, monitor) = Child::monitored(process);
+                        let (handle, monitor) =
+                            Child::monitored(process, self.log_source.server_info());
                         self.children.spawn(async move { (index, monitor.await) });
                         self.active.insert(index, handle);
                         // Adjust for shape slice offset for non-zero shapes (sub-shapes).
@@ -496,6 +500,10 @@ impl Alloc for ProcessAlloc {
 
     fn transport(&self) -> ChannelTransport {
         ChannelTransport::Unix
+    }
+
+    async fn log_source(&self) -> Result<LogSource, AllocatorError> {
+        Ok(self.log_source.clone())
     }
 
     async fn stop(&mut self) -> Result<(), AllocatorError> {

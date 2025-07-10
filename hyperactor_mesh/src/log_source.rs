@@ -22,6 +22,8 @@ use hyperactor::mailbox::DialMailboxRouter;
 use hyperactor::mailbox::MailboxServer;
 use hyperactor::proc::Proc;
 use hyperactor_state::state_actor::StateActor;
+use serde::Deserialize;
+use serde::Serialize;
 
 use crate::shortuuid::ShortUuid;
 
@@ -36,7 +38,7 @@ pub struct LogSource {
     state_actor: ActorRef<StateActor>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StateServerInfo {
     pub state_proc_addr: ChannelAddr,
     pub state_actor_id: ActorId,

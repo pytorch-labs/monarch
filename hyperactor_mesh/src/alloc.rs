@@ -223,15 +223,7 @@ pub trait Alloc {
     /// It allows remote processes to stream stdout and stderr back to the client.
     /// A client can connect to the log source to obtain the streamed logs.
     /// A log source is allocation specific. Each allocator can decide how to stream the logs back.
-    async fn log_source(&self) -> Result<LogSource, AllocatorError> {
-        // TODO: this should be implemented based on different allocators.
-        // Having this temporarily here so that the client can connect to the log source.
-        // But the client will not get anything.
-        // The following diffs will gradually implement this for different allocators.
-        LogSource::new_with_local_actor()
-            .await
-            .map_err(AllocatorError::from)
-    }
+    async fn log_source(&self) -> Result<LogSource, AllocatorError>;
 
     /// Stop this alloc, shutting down all of its procs. A clean
     /// shutdown should result in Stop events from all allocs,
@@ -365,6 +357,10 @@ pub mod test_utils {
 
         fn transport(&self) -> ChannelTransport {
             self.alloc.transport()
+        }
+
+        async fn log_source(&self) -> Result<LogSource, AllocatorError> {
+            self.alloc.log_source().await
         }
 
         async fn stop(&mut self) -> Result<(), AllocatorError> {

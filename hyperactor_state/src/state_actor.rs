@@ -76,10 +76,15 @@ impl StateMessageHandler for StateActor {
 
     async fn subscribe_logs(
         &mut self,
-        _cx: &Context<Self>,
+        cx: &Context<Self>,
         addr: ChannelAddr,
         client_actor_ref: ActorRef<ClientActor>,
     ) -> Result<(), anyhow::Error> {
+        tracing::info!(
+            "StateActor {} gets a new subscriber: {}",
+            cx.self_id(),
+            client_actor_ref
+        );
         self.subscribers
             .insert(client_actor_ref, create_remote_client(addr).await?);
         Ok(())
