@@ -46,9 +46,12 @@ class PdbWrapper(pdb.Pdb):
         super().__init__(stdout=WriteWrapper(self), stdin=ReadWrapper.create(self))
         self._first = True
 
-    def set_trace(self, frame):
+    def set_trace(self, frame=None):
         self.client_ref.debugger_session_start.call_one(
-            self.rank, self.coords, socket.getfqdn(socket.gethostname()), self.actor_id
+            self.rank,
+            self.coords,
+            socket.getfqdn(socket.gethostname()),
+            self.actor_id.actor_name,
         ).get()
         if self.header:
             self.message(self.header)
@@ -66,7 +69,9 @@ class PdbWrapper(pdb.Pdb):
             super().do_clear(arg)
 
     def end_debug_session(self):
-        self.client_ref.debugger_session_end.call_one(self.rank).get()
+        self.client_ref.debugger_session_end.call_one(
+            self.actor_id.actor_name, self.rank
+        ).get()
         # Once the debug client actor is notified of the session being over,
         # we need to prevent any additional requests being sent for the session
         # by redirecting stdin and stdout.
@@ -86,7 +91,7 @@ class ReadWrapper(io.RawIOBase):
 
     def readinto(self, b):
         response = self.session.client_ref.debugger_read.call_one(
-            self.session.rank, len(b)
+            self.session.actor_id.actor_name, self.session.rank, len(b)
         ).get()
         if response == "detach":
             # this gets injected by the worker event loop to
@@ -120,6 +125,7 @@ class WriteWrapper:
             # pyre-ignore
             lineno = self.session.curframe.f_lineno
         self.session.client_ref.debugger_write.call_one(
+            self.session.actor_id.actor_name,
             self.session.rank,
             DebuggerWrite(
                 s.encode(),
