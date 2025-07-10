@@ -27,11 +27,6 @@ from monarch._rust_bindings.monarch_hyperactor.shape import Shape
 
 class MyActor:
     async def handle(
-        self, mailbox: Mailbox, message: PythonMessage, panic_flag: PanicFlag
-    ) -> None:
-        raise NotImplementedError()
-
-    async def handle_cast(
         self,
         mailbox: Mailbox,
         rank: int,

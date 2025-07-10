@@ -179,9 +179,6 @@ class PanicFlag:
 
 class Actor(Protocol):
     async def handle(
-        self, mailbox: Mailbox, message: PythonMessage, panic_flag: PanicFlag
-    ) -> None: ...
-    async def handle_cast(
         self,
         mailbox: Mailbox,
         rank: int,
