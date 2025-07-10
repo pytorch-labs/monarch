@@ -25,7 +25,6 @@ use hyperactor::RemoteMessage;
 use hyperactor::Unbind;
 use hyperactor::WorldId;
 use hyperactor::actor::RemoteActor;
-use hyperactor::attrs::Attrs;
 use hyperactor::cap;
 use hyperactor::mailbox::MailboxSenderError;
 use hyperactor::mailbox::PortReceiver;
@@ -46,7 +45,6 @@ use crate::Mesh;
 use crate::comm::multicast::CastMessage;
 use crate::comm::multicast::CastMessageEnvelope;
 use crate::comm::multicast::Uslice;
-use crate::comm::multicast::set_cast_info_on_headers;
 use crate::metrics;
 use crate::proc_mesh::ProcMesh;
 use crate::reference::ActorMeshId;
@@ -217,32 +215,26 @@ impl<'a, A: RemoteActor> RootActorMesh<'a, A> {
     /// Until the selection logic is more powerful, we need a way to
     /// replicate the send patterns that the worker actor mesh actually does.
     #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `CastError`.
-    pub fn cast_slices<M: RemoteMessage + Clone>(
-        &self,
-        sel: Vec<Slice>,
-        message: M,
-    ) -> Result<(), CastError>
+    pub fn cast_slices<M>(&self, sel: Vec<Slice>, message: M) -> Result<(), CastError>
     where
+        M: Castable + Clone,
         A: RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,
     {
         let _ = metrics::ACTOR_MESH_CAST_DURATION.start(hyperactor::kv_pairs!(
             "message_type" => M::typename(),
             "message_variant" => message.arm().unwrap_or_default(),
         ));
-        for ref slice in sel {
-            for rank in slice.iter() {
-                let mut headers = Attrs::new();
-                set_cast_info_on_headers(
-                    &mut headers,
-                    rank,
-                    self.shape().clone(),
-                    self.proc_mesh.client().actor_id().clone(),
-                );
-                self.ranks[rank]
-                    .send_with_headers(self.proc_mesh.client(), headers, message.clone())
-                    .map_err(|err| CastError::MailboxSenderError(rank, err))?;
-            }
-        }
+
+        let slices: &[&Slice] = &sel.iter().collect::<Vec<_>>();
+        let selection = self
+            .proc_mesh
+            .shape()
+            .slice()
+            .reify_views(slices)
+            .expect("invalid slices");
+
+        self.cast(selection, message)?;
+
         Ok(())
     }
 
@@ -518,6 +510,7 @@ mod tests {
             use $crate::sel_from_shape;
             use $crate::sel;
             use $crate::proc_mesh::SharedSpawnable;
+            use $crate::comm::multicast::set_cast_info_on_headers;
             use std::collections::VecDeque;
             use hyperactor::data::Serialized;
 
