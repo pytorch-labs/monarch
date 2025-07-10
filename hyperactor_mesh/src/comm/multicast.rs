@@ -179,19 +179,20 @@ pub(crate) struct ForwardMessage {
 }
 
 declare_attrs! {
-    /// Used inside headers for cast messages to store
-    /// the rank of the receiver.
-    attr CAST_RANK: usize;
-    /// Used inside headers to store the shape of the
-    /// actor mesh that a message was cast to.
-    attr CAST_SHAPE: Shape;
+    /// Casting metadata comprising:
+    /// 1) the rank of the receiver in the mesh,
+    /// 2) the shape of the mesh on which the message is being cast.
+    ///
+    /// The mesh here is the root mesh -- i.e., the shape is the extents
+    /// of the mesh on which the actors were spawned.
+    attr CAST_INFO: (usize, Shape);
+
     /// Used inside headers to store the originating sender of a cast.
     pub attr CAST_ORIGINATING_SENDER: ActorId;
 }
 
 pub fn set_cast_info_on_headers(headers: &mut Attrs, rank: usize, shape: Shape, sender: ActorId) {
-    headers.set(CAST_RANK, rank);
-    headers.set(CAST_SHAPE, shape);
+    headers.set(CAST_INFO, (rank, shape));
     headers.set(CAST_ORIGINATING_SENDER, sender);
 }
 
@@ -206,10 +207,9 @@ pub trait CastInfo {
 impl<A: Actor> CastInfo for Context<'_, A> {
     fn cast_info(&self) -> (usize, Shape) {
         let headers = self.headers();
-        match (headers.get(CAST_RANK), headers.get(CAST_SHAPE)) {
-            (Some(rank), Some(shape)) => (*rank, shape.clone()),
-            (None, None) => (0, Shape::unity()),
-            _ => panic!("Expected either both rank and shape or neither"),
+        match headers.get(CAST_INFO) {
+            Some((rank, shape)) => (*rank, shape.clone()),
+            None => (0, Shape::unity()),
         }
     }
 }
