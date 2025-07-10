@@ -38,6 +38,11 @@ from monarch._src.actor.actor_mesh import _Actor, _ActorMeshRefImpl, Actor, Acto
 from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator
 from monarch._src.actor.code_sync import RsyncMeshClient, WorkspaceLocation
 from monarch._src.actor.code_sync.auto_reload import AutoReloadActor
+from monarch._src.actor.debugger import (
+    _DEBUG_MANAGER_ACTOR_NAME,
+    DebugClient,
+    DebugManager,
+)
 
 from monarch._src.actor.device_utils import _local_device_count
 from monarch._src.actor.future import Future
@@ -83,11 +88,13 @@ class ProcMesh(MeshTrait):
         hy_proc_mesh: HyProcMesh,
         _mock_shape: Optional[Shape] = None,
         _device_mesh: Optional["DeviceMesh"] = None,
+        _is_initializing_debugger: bool = False,
     ) -> None:
         self._proc_mesh = hy_proc_mesh
         self._mock_shape: Optional[Shape] = _mock_shape
         # type: ignore[21]
         self._rdma_manager: Optional["RDMAManager"] = None
+        self._debug_manager: Optional[DebugManager] = None
         self._mailbox: Mailbox = self._proc_mesh.client
         self._rsync_mesh_client: Optional[RsyncMeshClient] = None
         self._auto_reload_actor: Optional[AutoReloadActor] = None
@@ -96,6 +103,10 @@ class ProcMesh(MeshTrait):
         if _mock_shape is None and HAS_TENSOR_ENGINE:
             # type: ignore[21]
             self._rdma_manager = self._spawn_blocking("rdma_manager", RDMAManager)
+        if not _is_initializing_debugger:
+            self._debug_manager = self._spawn_blocking(
+                _DEBUG_MANAGER_ACTOR_NAME, DebugManager, debug_client()
+            )
 
     @property
     def _shape(self) -> Shape:
@@ -296,13 +307,21 @@ async def local_proc_mesh_nonblocking(
     return await ProcMesh.from_alloc(alloc)
 
 
-def local_proc_mesh_blocking(*, gpus: Optional[int] = None, hosts: int = 1) -> ProcMesh:
+def local_proc_mesh_blocking(
+    *,
+    gpus: Optional[int] = None,
+    hosts: int = 1,
+    _is_initializing_debugger: bool = False,
+) -> ProcMesh:
     if gpus is None:
         gpus = _local_device_count()
     spec = AllocSpec(AllocConstraints(), gpus=gpus, hosts=hosts)
     allocator = LocalAllocator()
     alloc = allocator.allocate(spec).get()
-    return ProcMesh.from_alloc(alloc).get()
+    return ProcMesh(
+        HyProcMesh.allocate_blocking(alloc),
+        _is_initializing_debugger=_is_initializing_debugger,
+    )
 
 
 def local_proc_mesh(*, gpus: Optional[int] = None, hosts: int = 1) -> Future[ProcMesh]:
@@ -371,3 +390,33 @@ def proc_mesh(
         lambda: proc_mesh_nonblocking(gpus=gpus, hosts=hosts, env=env),
         lambda: proc_mesh_blocking(gpus=gpus, hosts=hosts, env=env),
     )
+
+
+_debug_proc_mesh: Optional["ProcMesh"] = None
+
+
+# Lazy init of the debug proc mesh so that importing monarch.proc_mesh
+# doesn't trigger the debug client to spawn, which could cause confusing
+# logs. This is defined in proc_mesh.py instead of debugger.py for
+# circular import reasons.
+def _get_debug_proc_mesh() -> "ProcMesh":
+    global _debug_proc_mesh
+    if _debug_proc_mesh is None:
+        _debug_proc_mesh = local_proc_mesh_blocking(
+            gpus=1, hosts=1, _is_initializing_debugger=True
+        )
+    return _debug_proc_mesh
+
+
+_debug_client_mesh: Optional[ActorMeshRef[DebugClient]] = None
+
+
+# Lazy init for the same reason as above. This is defined in proc_mesh.py
+# instead of debugger.py for circular import reasons.
+def debug_client() -> ActorMeshRef[DebugClient]:
+    global _debug_client_mesh
+    if _debug_client_mesh is None:
+        _debug_client_mesh = (
+            _get_debug_proc_mesh().spawn("debug_client", DebugClient).get()
+        )
+    return _debug_client_mesh
