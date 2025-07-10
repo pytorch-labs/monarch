@@ -90,7 +90,7 @@ impl RdmaBuffer {
     /// # Returns
     /// `Ok(bool)` indicating if the operation completed successfully.
     pub async fn read_into(
-        &mut self,
+        &self,
         client: &Mailbox,
         remote: RdmaBuffer,
         timeout: u64,
@@ -124,7 +124,7 @@ impl RdmaBuffer {
     /// # Returns
     /// `Ok(bool)` indicating if the operation completed successfully.
     pub async fn write_from(
-        &mut self,
+        &self,
         client: &Mailbox,
         remote: RdmaBuffer,
         timeout: u64,
@@ -477,7 +477,7 @@ impl RdmaQueuePair {
         pd: *mut rdmacore_sys::ibv_pd,
         config: IbverbsConfig,
     ) -> Result<Self, anyhow::Error> {
-        tracing::info!("creating an RdmaQueuePair from config {}", config);
+        tracing::debug!("creating an RdmaQueuePair from config {}", config);
         // SAFETY:
         // This code uses unsafe rdmacore_sys calls to interact with the RDMA device, but is safe because:
         // - All pointers are properly initialized and checked for null before use

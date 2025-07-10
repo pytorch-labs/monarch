@@ -29,8 +29,8 @@ use crate::shape::PyShape;
     module = "monarch._rust_bindings.monarch_hyperactor.actor_mesh"
 )]
 pub struct PythonActorMesh {
-    pub(super) inner: SharedCell<RootActorMesh<'static, PythonActor>>,
-    pub(super) client: PyMailbox,
+    pub inner: SharedCell<RootActorMesh<'static, PythonActor>>,
+    pub client: PyMailbox,
     pub(super) _keepalive: Keepalive,
 }
 
@@ -62,7 +62,7 @@ impl PythonActorMesh {
     }
 
     #[getter]
-    fn client(&self) -> PyMailbox {
+    pub fn client(&self) -> PyMailbox {
         self.client.clone()
     }
 

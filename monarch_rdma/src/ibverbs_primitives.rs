@@ -595,9 +595,8 @@ pub fn ibverbs_supported() -> bool {
         let device_list = rdmacore_sys::ibv_get_device_list(&mut num_devices);
         if !device_list.is_null() {
             rdmacore_sys::ibv_free_device_list(device_list);
-            return true;
         }
-        false
+        num_devices > 0
     }
 }
 

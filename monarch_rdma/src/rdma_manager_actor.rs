@@ -230,17 +230,25 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         remote: ActorRef<RdmaManagerActor>,
     ) -> Result<RdmaQueuePair, anyhow::Error> {
         if !self.is_connected(cx, remote.clone()).await? {
-            self.initialize_qp(cx, remote.clone()).await?;
-            remote.initialize_qp(cx, cx.bind().clone()).await?;
+            let is_loopback =
+                remote.actor_id().clone() == cx.bind::<RdmaManagerActor>().actor_id().clone();
 
-            let remote_endpoint = remote.connection_info(cx, cx.bind().clone()).await?;
-            self.connect(cx, remote.clone(), remote_endpoint).await?;
-
-            let local_endpoint = self.connection_info(cx, remote.clone()).await?;
-            remote
-                .connect(cx, cx.bind().clone(), local_endpoint)
-                .await?;
+            if is_loopback {
+                self.initialize_qp(cx, remote.clone()).await?;
+                let endpoint = self.connection_info(cx, remote.clone()).await?;
+                self.connect(cx, remote.clone(), endpoint).await?;
+            } else {
+                self.initialize_qp(cx, remote.clone()).await?;
+                remote.initialize_qp(cx, cx.bind().clone()).await?;
+                let remote_endpoint = remote.connection_info(cx, cx.bind().clone()).await?;
+                self.connect(cx, remote.clone(), remote_endpoint).await?;
+                let local_endpoint = self.connection_info(cx, remote.clone()).await?;
+                remote
+                    .connect(cx, cx.bind().clone(), local_endpoint)
+                    .await?;
+            }
         }
+
         let qp = self
             .qp_map
             .get_mut(&remote.actor_id().clone())
