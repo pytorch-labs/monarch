@@ -24,17 +24,20 @@ use crate::object::LogState;
 use crate::object::Name;
 use crate::object::StateObject;
 
+/// A trait for handling logs received by the client actor.
+#[async_trait]
 pub trait LogHandler: Sync + Send + std::fmt::Debug + 'static {
-    // we cannot call it handle here as it conflicts with hyperactor macro
-    fn handle_log(&self, logs: Vec<GenericStateObject>) -> Result<()>;
+    /// Handle the logs received by the client actor.
+    async fn handle_log(&self, logs: Vec<GenericStateObject>) -> Result<()>;
 }
 
 /// A log handler that flushes GenericStateObject to stdout.
 #[derive(Debug)]
 pub struct StdlogHandler;
 
+#[async_trait]
 impl LogHandler for StdlogHandler {
-    fn handle_log(&self, logs: Vec<GenericStateObject>) -> Result<()> {
+    async fn handle_log(&self, logs: Vec<GenericStateObject>) -> Result<()> {
         for log in logs {
             let metadata = log.metadata();
             let deserialized_data: StateObject<LogSpec, LogState> = log.data().deserialized()?;
@@ -42,14 +45,13 @@ impl LogHandler for StdlogHandler {
             // Deserialize the message and process line by line with UTF-8
             let message_lines = deserialize_message_lines(&deserialized_data.state.message)?;
 
-            // TODO: @lky D77377307 do not use raw string to distinguish between stdout and stderr
             if metadata.kind != Kind::Log {
                 continue;
             }
             match &metadata.name {
                 Name::StdoutLog((hostname, pid)) => {
                     for line in message_lines {
-                        // TODO: @lky hostname and pid should only be printed for non-aggregated logs. =
+                        // TODO: @lky hostname and pid should only be printed for non-aggregated logs.
                         // For aggregated logs, we should leave as is for better aggregation.
                         println!("[{} {}] {}", hostname, pid, line);
                     }
@@ -90,7 +92,8 @@ fn deserialize_message_lines(
     handlers = [ClientMessage],
 )]
 pub struct ClientActor {
-    // TODO: extend hyperactor macro to support a generic to avoid using Box here.
+    // Use boxed log handler to erase types.
+    // This is needed because the client actor ref needs to be sent over the wire and used by the state actor.
     log_handler: Box<dyn LogHandler>,
 }
 
@@ -124,7 +127,7 @@ impl ClientMessageHandler for ClientActor {
         _cx: &Context<Self>,
         logs: Vec<GenericStateObject>,
     ) -> Result<(), anyhow::Error> {
-        self.log_handler.handle_log(logs)?;
+        self.log_handler.handle_log(logs).await?;
         Ok(())
     }
 }
@@ -151,12 +154,10 @@ mod tests {
         sender: Sender<Vec<GenericStateObject>>,
     }
 
+    #[async_trait]
     impl LogHandler for MpscLogHandler {
-        fn handle_log(&self, logs: Vec<GenericStateObject>) -> Result<()> {
-            let sender = self.sender.clone();
-            tokio::spawn(async move {
-                sender.send(logs).await.unwrap();
-            });
+        async fn handle_log(&self, logs: Vec<GenericStateObject>) -> Result<()> {
+            self.sender.send(logs).await.unwrap();
             Ok(())
         }
     }

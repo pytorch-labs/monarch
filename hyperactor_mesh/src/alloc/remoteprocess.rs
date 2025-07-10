@@ -117,17 +117,12 @@ struct ForwarderLogHandler {
     forwarder: Mailbox,
 }
 
+#[async_trait]
 impl LogHandler for ForwarderLogHandler {
-    fn handle_log(&self, logs: Vec<GenericStateObject>) -> anyhow::Result<()> {
+    async fn handle_log(&self, logs: Vec<GenericStateObject>) -> anyhow::Result<()> {
         let actor = self.parent_state_actor.clone();
         let forwarder = self.forwarder.clone();
-        // TODO: (@jamessun) this is horribly wrong. ClientActor's log handler needs to be type erased
-        // so that the state actor can be subscribed by different kinds of ClientActor.
-        // However, async function and Box do not work well together.
-        tokio::spawn(async move {
-            actor.push_logs(&forwarder, logs).await.unwrap();
-        });
-        Ok(())
+        actor.push_logs(&forwarder, logs).await
     }
 }
 
@@ -1126,12 +1121,10 @@ mod test {
         sender: Sender<Vec<GenericStateObject>>,
     }
 
+    #[async_trait]
     impl LogHandler for MpscLogHandler {
-        fn handle_log(&self, logs: Vec<GenericStateObject>) -> anyhow::Result<()> {
-            let sender = self.sender.clone();
-            tokio::spawn(async move {
-                sender.send(logs).await.unwrap();
-            });
+        async fn handle_log(&self, logs: Vec<GenericStateObject>) -> anyhow::Result<()> {
+            self.sender.send(logs).await.unwrap();
             Ok(())
         }
     }

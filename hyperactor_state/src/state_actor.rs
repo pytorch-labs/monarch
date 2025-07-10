@@ -112,12 +112,10 @@ mod tests {
         sender: Sender<Vec<GenericStateObject>>,
     }
 
+    #[async_trait]
     impl LogHandler for MpscLogHandler {
-        fn handle_log(&self, logs: Vec<GenericStateObject>) -> Result<()> {
-            let sender = self.sender.clone();
-            tokio::spawn(async move {
-                sender.send(logs).await.unwrap();
-            });
+        async fn handle_log(&self, logs: Vec<GenericStateObject>) -> Result<()> {
+            self.sender.send(logs).await.unwrap();
             Ok(())
         }
     }

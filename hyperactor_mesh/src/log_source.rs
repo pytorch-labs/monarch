@@ -117,6 +117,7 @@ mod tests {
     use std::str::FromStr;
     use std::time::Duration;
 
+    use async_trait::async_trait;
     use hyperactor::channel;
     use hyperactor::channel::ChannelAddr;
     use hyperactor::clock::Clock;
@@ -162,12 +163,10 @@ mod tests {
         sender: Sender<Vec<GenericStateObject>>,
     }
 
+    #[async_trait]
     impl LogHandler for MpscLogHandler {
-        fn handle_log(&self, logs: Vec<GenericStateObject>) -> anyhow::Result<()> {
-            let sender = self.sender.clone();
-            tokio::spawn(async move {
-                sender.send(logs).await.unwrap();
-            });
+        async fn handle_log(&self, logs: Vec<GenericStateObject>) -> anyhow::Result<()> {
+            self.sender.send(logs).await.unwrap();
             Ok(())
         }
     }
