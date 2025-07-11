@@ -17,6 +17,15 @@ use hyperactor::message::Unbind;
 use serde::Deserialize;
 use serde::Serialize;
 
+#[derive(Bind, Unbind)]
+struct MyUnitStruct;
+
+#[derive(Bind, Unbind)]
+struct EmptyNamedStruct {}
+
+#[derive(Bind, Unbind)]
+struct EmptyUnamedStruct();
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Named)]
 struct MyReply(String);
 
@@ -46,6 +55,8 @@ struct MyGenericStruct<'a, A: Bind + Unbind, B>(#[binding(include)] A, &'a B, A)
 #[derive(Clone, Debug, PartialEq, Bind, Unbind)]
 enum MyEnum {
     Unit,
+    EmptyStruct {},
+    EmptyTuple(),
     NoopTuple(u64, bool),
     NoopStruct {
         field0: u64,
@@ -72,6 +83,8 @@ enum MyEnum {
 #[derive(Clone, Debug, PartialEq, Bind, Unbind)]
 enum MyGenericEnum<'a, A: Bind + Unbind, B> {
     Unit,
+    EmptyStruct {},
+    EmptyTuple(),
     Tuple(#[binding(include)] A, &'a B, A),
 }
 

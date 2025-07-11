@@ -1600,7 +1600,7 @@ where
 
             Ok(match &variant.fields {
                 Fields::Named(_) => {
-                    quote! { Self::#name { #(#field_accessors),*, } => { #(#items)* } }
+                    quote! { Self::#name { #(#field_accessors),* } => { #(#items)* } }
                 }
                 Fields::Unnamed(_) => {
                     quote! { Self::#name( #(#field_accessors),* ) => { #(#items)* } }
