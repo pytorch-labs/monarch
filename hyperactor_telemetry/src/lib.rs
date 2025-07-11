@@ -89,7 +89,7 @@ lazy_static! {
                 Box::new(std::io::stderr())
             }
             env::Env::Mast => match RollingFileAppender::builder()
-                .rotation(Rotation::HOURLY)
+                .rotation(Rotation::DAILY)
                 .filename_prefix("dedicated_log_monarch")
                 .filename_suffix("log")
                 .build("/logs/")
