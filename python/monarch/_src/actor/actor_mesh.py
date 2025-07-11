@@ -12,7 +12,6 @@ import functools
 import inspect
 import logging
 import random
-import sys
 import traceback
 
 from dataclasses import dataclass
@@ -53,14 +52,11 @@ from monarch._rust_bindings.monarch_hyperactor.shape import Point as HyPoint, Sh
 from monarch._rust_bindings.monarch_hyperactor.telemetry import enter_span, exit_span
 from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator
 from monarch._src.actor.future import Future
-from monarch._src.actor.pdb_wrapper import remote_breakpointhook
+from monarch._src.actor.pdb_wrapper import PdbWrapper
 
 from monarch._src.actor.pickle import flatten, unpickle
 
 from monarch._src.actor.shape import MeshTrait, NDSlice
-
-if TYPE_CHECKING:
-    from monarch._src.actor.debugger import DebugClient
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -96,6 +92,23 @@ _context: contextvars.ContextVar[MonarchContext] = contextvars.ContextVar(
     "monarch.actor_mesh._context"
 )
 
+
+@dataclass
+class DebugContext:
+    pdb_wrapper: Optional[PdbWrapper] = None
+
+    @staticmethod
+    def get() -> "DebugContext":
+        return _debug_context.get()
+
+    @staticmethod
+    def set(debug_context: "DebugContext") -> None:
+        _debug_context.set(debug_context)
+
+
+_debug_context: contextvars.ContextVar[DebugContext] = contextvars.ContextVar(
+    "monarch.actor_mesh._debug_context"
+)
 
 T = TypeVar("T")
 P = ParamSpec("P")
@@ -538,6 +551,8 @@ class _Actor:
             )
             _context.set(ctx)
 
+            DebugContext.set(DebugContext())
+
             args, kwargs = unpickle(message.message, mailbox)
 
             if message.method == "__init__":
@@ -574,9 +589,10 @@ class _Actor:
                     )
                     try:
                         result = await the_method(self.instance, *args, **kwargs)
+                        self._maybe_exit_debugger()
                     except Exception as e:
                         logging.critical(
-                            "Unahndled exception in actor endpoint",
+                            "Unhandled exception in actor endpoint",
                             exc_info=e,
                         )
                         raise e
@@ -589,11 +605,13 @@ class _Actor:
                     the_method.__module__, message.method, str(ctx.mailbox.actor_id)
                 )
                 result = the_method(self.instance, *args, **kwargs)
+                self._maybe_exit_debugger()
                 exit_span()
 
             if port is not None:
                 port.send("result", result)
         except Exception as e:
+            self._post_mortem_debug(e.__traceback__)
             traceback.print_exc()
             s = ActorError(e)
 
@@ -604,6 +622,7 @@ class _Actor:
             else:
                 raise s from None
         except BaseException as e:
+            self._post_mortem_debug(e.__traceback__)
             # A BaseException can be thrown in the case of a Rust panic.
             # In this case, we need a way to signal the panic to the Rust side.
             # See [Panics in async endpoints]
@@ -613,6 +632,29 @@ class _Actor:
                 # The channel might be closed if the Rust side has already detected the error
                 pass
             raise
+
+    def _maybe_exit_debugger(self, do_continue=True) -> None:
+        if (pdb_wrapper := DebugContext.get().pdb_wrapper) is not None:
+            if do_continue:
+                pdb_wrapper.clear_all_breaks()
+                pdb_wrapper.do_continue("")
+            pdb_wrapper.end_debug_session()
+        DebugContext.set(DebugContext())
+
+    def _post_mortem_debug(self, exc_tb) -> None:
+        from monarch._src.actor.debugger import DebugManager
+
+        if (pdb_wrapper := DebugContext.get().pdb_wrapper) is not None:
+            ctx = MonarchContext.get()
+            pdb_wrapper = PdbWrapper(
+                ctx.point.rank,
+                ctx.point.shape.coordinates(ctx.point.rank),
+                ctx.mailbox.actor_id,
+                DebugManager.ref().get_debug_client.call_one().get(),
+            )
+            DebugContext.set(DebugContext(pdb_wrapper))
+            pdb_wrapper.post_mortem(exc_tb)
+            self._maybe_exit_debugger(do_continue=False)
 
 
 def _is_mailbox(x: object) -> bool:
@@ -646,19 +688,6 @@ class Actor(MeshTrait):
     def _new_with_shape(self, shape: Shape) -> "ActorMeshRef":
         raise NotImplementedError(
             "actor implementations are not meshes, but we can't convince the typechecker of it..."
-        )
-
-    @endpoint  # pyre-ignore
-    def _set_debug_client(self, client: "DebugClient") -> None:
-        point = MonarchContext.get().point
-        # For some reason, using a lambda instead of functools.partial
-        # confuses the pdb wrapper implementation.
-        sys.breakpointhook = functools.partial(  # pyre-ignore
-            remote_breakpointhook,
-            point.rank,
-            point.shape.coordinates(point.rank),
-            MonarchContext.get().mailbox.actor_id,
-            client,
         )
 
 

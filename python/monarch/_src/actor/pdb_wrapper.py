@@ -4,6 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-unsafe
 import bdb
 import inspect
 import io
@@ -45,35 +46,43 @@ class PdbWrapper(pdb.Pdb):
         super().__init__(stdout=WriteWrapper(self), stdin=ReadWrapper.create(self))
         self._first = True
 
-    def setup(self, *args, **kwargs):
-        r = super().setup(*args, **kwargs)
-        if self._first:
-            self._first = False
-            # when we enter the debugger, we want to present the user's stack frame
-            # not the nested one inside session.run. This means that the local
-            # variables are what gets printed, etc. To do this
-            # we first execute up 2 to get to that frame.
-            self.do_up(2)
-        return r
-
-    def set_continue(self) -> None:
-        r = super().set_continue()
-        if not self.breaks:
-            # no more breakpoints so this debugger will not
-            # be used again, and we detach from the controller io.
-            self.client_ref.debugger_session_end.call_one(self.rank).get()
-            # break cycle with itself before we exit
-            self.stdin = sys.stdin
-            self.stdout = sys.stdout
-        return r
-
-    def set_trace(self):
+    def set_trace(self, frame=None):
         self.client_ref.debugger_session_start.call_one(
-            self.rank, self.coords, socket.getfqdn(socket.gethostname()), self.actor_id
+            self.rank,
+            self.coords,
+            socket.getfqdn(socket.gethostname()),
+            self.actor_id.actor_name,
         ).get()
         if self.header:
             self.message(self.header)
-        super().set_trace()
+        super().set_trace(frame)
+
+    def do_clear(self, arg):
+        if not arg:
+            # Sending `clear` without any argument specified will
+            # request confirmation from the user using the `input` function,
+            # which bypasses our ReadWrapper and causes a hang on the client.
+            # To avoid this, we just clear all breakpoints instead without
+            # confirmation.
+            super().clear_all_breaks()
+        else:
+            super().do_clear(arg)
+
+    def end_debug_session(self):
+        self.client_ref.debugger_session_end.call_one(
+            self.actor_id.actor_name, self.rank
+        ).get()
+        # Once the debug client actor is notified of the session being over,
+        # we need to prevent any additional requests being sent for the session
+        # by redirecting stdin and stdout.
+        self.stdin = sys.stdin
+        self.stdout = sys.stdout
+
+    def post_mortem(self, exc_tb):
+        self._first = False
+        # See builtin implementation of pdb.post_mortem() for reference.
+        self.reset()
+        self.interaction(None, exc_tb)
 
 
 class ReadWrapper(io.RawIOBase):
@@ -82,7 +91,7 @@ class ReadWrapper(io.RawIOBase):
 
     def readinto(self, b):
         response = self.session.client_ref.debugger_read.call_one(
-            self.session.rank, len(b)
+            self.session.actor_id.actor_name, self.session.rank, len(b)
         ).get()
         if response == "detach":
             # this gets injected by the worker event loop to
@@ -116,6 +125,7 @@ class WriteWrapper:
             # pyre-ignore
             lineno = self.session.curframe.f_lineno
         self.session.client_ref.debugger_write.call_one(
+            self.session.actor_id.actor_name,
             self.session.rank,
             DebuggerWrite(
                 s.encode(),
@@ -126,10 +136,3 @@ class WriteWrapper:
 
     def flush(self):
         pass
-
-
-def remote_breakpointhook(
-    rank: int, coords: Dict[str, int], actor_id: ActorId, client_ref: "DebugClient"
-):
-    ds = PdbWrapper(rank, coords, actor_id, client_ref)
-    ds.set_trace()
