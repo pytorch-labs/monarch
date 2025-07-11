@@ -36,12 +36,18 @@ use hyperactor::mailbox::Mailbox;
 use hyperactor::mailbox::OncePortHandle;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::proc::Proc;
+use monarch_hyperactor::actor::LocalPythonMessage;
+use monarch_hyperactor::actor::PythonActor;
 use monarch_hyperactor::actor::PythonMessage;
+use monarch_hyperactor::mailbox::EitherPortRef;
+use monarch_hyperactor::mailbox::PythonPortRef;
 use monarch_messages::controller::ControllerMessageClient;
 use monarch_messages::controller::Seq;
 use monarch_messages::controller::WorkerError;
+use monarch_messages::worker::ActorCallParams;
 use monarch_messages::worker::CallFunctionError;
 use monarch_messages::worker::CallFunctionParams;
+use monarch_messages::worker::LocalState;
 use monarch_messages::worker::StreamRef;
 use monarch_types::PyTree;
 use monarch_types::SerializablePyErr;
@@ -233,6 +239,8 @@ pub enum StreamMessage {
     ),
 
     GetTensorRefUnitTestsOnly(Ref, #[reply] OncePortHandle<Option<TensorCellResult>>),
+
+    SendResultOfActorCall(ActorId, ActorCallParams),
 }
 
 impl StreamMessage {
@@ -1663,6 +1671,73 @@ impl StreamMessageHandler for StreamActor {
             self.controller_actor.fetch_result(cx, seq, result).await?;
         }
 
+        Ok(())
+    }
+
+    async fn send_result_of_actor_call(
+        &mut self,
+        cx: &Context<Self>,
+        worker_actor_id: ActorId,
+        params: ActorCallParams,
+    ) -> anyhow::Result<()> {
+        // TODO: handle mutates
+        let actor_id = ActorId(cx.proc().proc_id().clone(), params.actor, params.index);
+        let actor_ref: ActorRef<PythonActor> = ActorRef::attest(actor_id);
+        let actor_handle = actor_ref.downcast_handle(cx).unwrap();
+        let (send, recv) = cx.open_once_port();
+        let send = send.bind();
+        let send = EitherPortRef::Once(send.into());
+        let message = PythonMessage {
+            response_port: Some(send),
+            ..params.python_message
+        };
+        let local_state: Result<Vec<monarch_hyperactor::actor::LocalState>> =
+            Python::with_gil(|py| {
+                params
+                    .local_state
+                    .into_iter()
+                    .map(|elem| match elem {
+                        LocalState::Mailbox => Ok(monarch_hyperactor::actor::LocalState::Mailbox),
+                        // SAFETY: python is gonna make unsafe copies of this stuff anyway
+                        LocalState::Ref(r) => unsafe {
+                            let x = self.ref_to_rvalue(&r)?.try_to_object_unsafe(py)?.into();
+                            Ok(monarch_hyperactor::actor::LocalState::PyObject(x))
+                        },
+                    })
+                    .collect()
+            });
+        // including making the PyMailbox
+        let message = LocalPythonMessage {
+            message,
+            local_state: Some(local_state?),
+        };
+        actor_handle.send(message)?;
+        let result = recv.recv().await?.with_rank(worker_actor_id.rank());
+        if result.method == "exception" {
+            // If result has "exception" as its kind, then
+            // we need to unpickle and turn it into a WorkerError
+            // and call remote_function_failed otherwise the
+            // controller assumes the object is correct and doesn't handle
+            // dependency tracking correctly.
+            let err = Python::with_gil(|py| -> Result<WorkerError, SerializablePyErr> {
+                let err = py
+                    .import("pickle")
+                    .unwrap()
+                    .call_method1("loads", (result.message.into_vec(),))?;
+                Ok(WorkerError {
+                    worker_actor_id,
+                    backtrace: err.to_string(),
+                })
+            })?;
+            self.controller_actor
+                .remote_function_failed(cx, params.seq, err)
+                .await?;
+        } else {
+            let result = Serialized::serialize(&result).unwrap();
+            self.controller_actor
+                .fetch_result(cx, params.seq, Ok(result))
+                .await?;
+        }
         Ok(())
     }
 

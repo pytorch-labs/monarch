@@ -176,6 +176,35 @@ impl<'a> MessageParser<'a> {
     fn parseWorkerMessageList(&self, name: &str) -> PyResult<Vec<WorkerMessage>> {
         self.attr(name)?.try_iter()?.map(|x| convert(x?)).collect()
     }
+    #[allow(non_snake_case)]
+    fn parseLocalStateList(&self, name: &str) -> PyResult<Vec<worker::LocalState>> {
+        let local_state_list = self.attr(name)?;
+        let mut result = Vec::new();
+
+        // Get the PyMailbox class for type checking
+        let mailbox_class = self
+            .current
+            .py()
+            .import("monarch._rust_bindings.monarch_hyperactor.mailbox")?
+            .getattr("Mailbox")?;
+
+        for item in local_state_list.try_iter()? {
+            let item = item?;
+            // Check if it's a Ref by trying to extract it
+            if let Ok(ref_val) = create_ref(item.clone()) {
+                result.push(worker::LocalState::Ref(ref_val));
+            } else if item.is_instance(&mailbox_class)? {
+                // It's a PyMailbox instance
+                result.push(worker::LocalState::Mailbox);
+            } else {
+                return Err(PyValueError::new_err(format!(
+                    "Expected Ref or Mailbox in local_state, got: {}",
+                    item.get_type().name()?
+                )));
+            }
+        }
+        Ok(result)
+    }
     fn parse_error_reason(&self, name: &str) -> PyResult<Option<(Option<ActorId>, String)>> {
         let err = self.attr(name)?;
         if err.is_none() {
@@ -430,6 +459,19 @@ fn create_map(py: Python) -> HashMap<u64, FnType> {
     m.insert(key("CommandGroup"), |p| {
         Ok(WorkerMessage::CommandGroup(
             p.parseWorkerMessageList("commands")?,
+        ))
+    });
+    m.insert(key("SendResultOfActorCall"), |p| {
+        Ok(WorkerMessage::SendResultOfActorCall(
+            worker::ActorCallParams {
+                seq: p.parseSeq("seq")?,
+                actor: p.parse("actor")?,
+                index: p.parse("actor_index")?,
+                python_message: p.parse("python_message")?,
+                local_state: p.parseLocalStateList("local_state")?,
+                mutates: p.parseRefList("mutates")?,
+                stream: p.parseStreamRef("stream")?,
+            },
         ))
     });
     m

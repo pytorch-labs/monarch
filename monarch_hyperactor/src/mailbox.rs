@@ -313,7 +313,7 @@ impl PythonUndeliverablePortHandle {
     name = "PortRef",
     module = "monarch._rust_bindings.monarch_hyperactor.mailbox"
 )]
-pub(super) struct PythonPortRef {
+pub struct PythonPortRef {
     pub(crate) inner: PortRef<PythonMessage>,
 }
 
@@ -453,7 +453,7 @@ impl PythonOncePortHandle {
     name = "OncePortRef",
     module = "monarch._rust_bindings.monarch_hyperactor.mailbox"
 )]
-pub(crate) struct PythonOncePortRef {
+pub struct PythonOncePortRef {
     pub(crate) inner: Option<OncePortRef<PythonMessage>>,
 }
 

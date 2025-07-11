@@ -172,7 +172,7 @@ class ProcMesh(MeshTrait):
         actor_mesh = self._proc_mesh.spawn_blocking(name, _Actor)
         service = ActorMeshRef(
             Class,
-            _ActorMeshRefImpl.from_hyperactor_mesh(self._mailbox, actor_mesh),
+            _ActorMeshRefImpl.from_hyperactor_mesh(self._mailbox, actor_mesh, self),
             self._mailbox,
         )
         # useful to have this separate, because eventually we can reconstitute ActorMeshRef objects across pickling by
@@ -197,7 +197,7 @@ class ProcMesh(MeshTrait):
         actor_mesh = await self._proc_mesh.spawn_nonblocking(name, _Actor)
         service = ActorMeshRef(
             Class,
-            _ActorMeshRefImpl.from_hyperactor_mesh(self._mailbox, actor_mesh),
+            _ActorMeshRefImpl.from_hyperactor_mesh(self._mailbox, actor_mesh, self),
             self._mailbox,
         )
         # useful to have this separate, because eventually we can reconstitute ActorMeshRef objects across pickling by
