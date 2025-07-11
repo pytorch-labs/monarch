@@ -21,13 +21,14 @@ pub enum Name {
     StderrLog((String, u32)),
 }
 
-impl From<OutputTarget> for Name {
-    fn from(target: OutputTarget) -> Self {
+impl Name {
+    /// Creates a new Name from an OutputTarget and a specific process ID.
+    /// This allows passing in a PID from outside instead of using the current process ID.
+    pub fn from_target_with_pid(target: OutputTarget, pid: u32) -> Self {
         let hostname = hostname::get()
             .unwrap_or_else(|_| "unknown_host".into())
             .into_string()
             .unwrap_or("unknown_host".to_string());
-        let pid = std::process::id();
 
         match target {
             OutputTarget::Stdout => Name::StdoutLog((hostname, pid)),

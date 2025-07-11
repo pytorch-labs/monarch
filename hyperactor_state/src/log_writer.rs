@@ -83,20 +83,25 @@ pub struct LogWriterActor {
     // Sequence counters for stdout and stderr
     stdout_seq: AtomicU64,
     stderr_seq: AtomicU64,
+    // Process ID of the process that generates the logs.
+    pid: u32,
 }
 
 #[derive(Debug, Clone)]
 pub struct LogWriterActorParams {
     mailbox_router: DialMailboxRouter,
     client: Mailbox,
+    // Process ID of the process that generates the logs.
+    pid: u32,
 }
 
 impl LogWriterActorParams {
     // Constructor for LogWriterActorParams
-    pub fn new(mailbox_router: DialMailboxRouter, client: Mailbox) -> Self {
+    pub fn new(mailbox_router: DialMailboxRouter, client: Mailbox, pid: u32) -> Self {
         Self {
             mailbox_router,
             client,
+            pid,
         }
     }
 }
@@ -112,6 +117,7 @@ impl Actor for LogWriterActor {
             mailbox_router: params.mailbox_router,
             stdout_seq: AtomicU64::new(0),
             stderr_seq: AtomicU64::new(0),
+            pid: params.pid,
         })
     }
 }
@@ -156,7 +162,7 @@ impl LogWriterMessageHandler for LogWriterActor {
 
             // Create the log state object
             let metadata = StateMetadata {
-                name: Name::from(output_target),
+                name: Name::from_target_with_pid(output_target, self.pid),
                 kind: Kind::Log,
             };
             let spec = LogSpec {};
@@ -226,6 +232,7 @@ impl StateActorLogSender {
     pub fn new(
         state_actor_addr: ChannelAddr,
         state_actor_ref: ActorRef<StateActor>,
+        pid: u32,
     ) -> Result<Self, anyhow::Error> {
         // Create a LogWriterActor
         let proc_id = id!(log_writer_proc).random_user_proc();
@@ -233,7 +240,7 @@ impl StateActorLogSender {
         let proc = Proc::new(proc_id, BoxedMailboxSender::new(router.clone()));
         // Create client mailbox
         let client = proc.attach("client")?;
-        let log_writer_params = LogWriterActorParams::new(router, client.clone());
+        let log_writer_params = LogWriterActorParams::new(router, client.clone(), pid);
 
         // Spawn the LogWriterActor using our helper function
         let log_writer_handle = futures::executor::block_on(Self::spawn_log_writer_actor(
@@ -289,6 +296,8 @@ pub struct LogWriter<T: LogSender + Unpin + 'static, S: io::AsyncWrite + Send + 
 /// # Arguments
 ///
 /// * `state_actor_addr` - The address of the state actor to send logs to
+/// * `state_actor_ref` - A reference to the state actor
+/// * `pid` - The process ID of the process that generates the logs
 ///
 /// # Returns
 ///
@@ -296,6 +305,7 @@ pub struct LogWriter<T: LogSender + Unpin + 'static, S: io::AsyncWrite + Send + 
 pub fn create_log_writers(
     state_actor_addr: ChannelAddr,
     state_actor_ref: ActorRef<StateActor>,
+    pid: u32,
 ) -> Result<
     (
         Box<dyn io::AsyncWrite + Send + Unpin + 'static>,
@@ -304,7 +314,7 @@ pub fn create_log_writers(
     anyhow::Error,
 > {
     // Create a single StateActorLogSender to be shared between stdout and stderr
-    let log_sender = StateActorLogSender::new(state_actor_addr, state_actor_ref)?;
+    let log_sender = StateActorLogSender::new(state_actor_addr, state_actor_ref, pid)?;
 
     // Create LogWriter instances for stdout and stderr using the shared log sender
     let stdout_writer = LogWriter::with_default_writer(OutputTarget::Stdout, log_sender.clone())?;

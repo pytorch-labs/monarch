@@ -174,6 +174,7 @@ impl Child {
             match hyperactor_state::log_writer::create_log_writers(
                 state_actor_addr,
                 state_actor_ref,
+                process.id().unwrap_or(0),
             ) {
                 Ok((stdout_writer, stderr_writer)) => {
                     stdout_tee = stdout_writer;
