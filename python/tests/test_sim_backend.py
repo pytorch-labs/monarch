@@ -24,11 +24,8 @@ def local_sim_mesh(
     # TODO: support multiple gpus in a mesh.
     gpu_per_host: int = 1,
     activate: bool = True,
-    proxy_addr: Optional[str] = None,
 ) -> Generator[DeviceMesh, None, None]:
-    dms = sim_mesh(
-        n_meshes=1, hosts=hosts, gpus_per_host=gpu_per_host, proxy_addr=proxy_addr
-    )
+    dms = sim_mesh(n_meshes=1, hosts=hosts, gpus_per_host=gpu_per_host)
     dm = dms[0]
     try:
         if activate:

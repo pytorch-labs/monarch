@@ -58,9 +58,7 @@ from monarch.rust_backend_mesh import MeshWorld
 logger: logging.Logger = logging.getLogger(__name__)
 
 
-def sim_mesh(
-    n_meshes: int, hosts: int, gpus_per_host: int, proxy_addr: Optional[str] = None
-) -> List[DeviceMesh]:
+def sim_mesh(n_meshes: int, hosts: int, gpus_per_host: int) -> List[DeviceMesh]:
     """
     Creates a single simulated device mesh with the given number of per host.
 
@@ -185,7 +183,6 @@ class Bootstrap:
         Bootstraps a SimMesh.
         Args:
             num_meshes: int - number of meshes to create.
-            proxy_addr: Option[str] - the proxy address of the simulation process
             mesh_world_state: a state of the meshes. Keys are the MeshWorld and values are boolean indicating if this mesh is active.
         """
         # do a fake call to instantiate ThreadPoolExecutor so we don't block GIL later
@@ -196,13 +193,9 @@ class Bootstrap:
 
         self._mesh_world_state: Dict[MeshWorld, Optional[DeviceMesh]] = mesh_world_state
 
-        proxy_addr = f"unix!@{_random_id()}-proxy"
-        self.bootstrap_addr: str = f"sim!unix!@system,{proxy_addr}"
-        client_proxy_addr = f"unix!@{_random_id()}-proxy"
-        self.client_listen_addr = f"sim!unix!@client,{client_proxy_addr}"
-        self.client_bootstrap_addr = (
-            f"sim!unix!@client,{client_proxy_addr},unix!@system,{proxy_addr}"
-        )
+        self.bootstrap_addr: str = "sim!unix!@system"
+        self.client_listen_addr = "sim!unix!@client"
+        self.client_bootstrap_addr = "sim!unix!@client,unix!@system"
 
         self._simulator_client = SimulatorClient(self.bootstrap_addr, world_size)
         for i in range(num_meshes):

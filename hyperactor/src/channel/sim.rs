@@ -39,25 +39,6 @@ lazy_static! {
 }
 static SIM_LINK_BUF_SIZE: usize = 256;
 
-#[derive(
-    Clone,
-    Debug,
-    PartialEq,
-    Eq,
-    Serialize,
-    Deserialize,
-    Ord,
-    PartialOrd,
-    Hash
-)]
-/// A channel address along with the address of the proxy for the process
-pub struct AddressProxyPair {
-    /// The address.
-    pub address: ChannelAddr,
-    /// The address of the proxy for the process
-    pub proxy: ChannelAddr,
-}
-
 /// An address for a simulated channel.
 #[derive(
     Clone,
@@ -71,36 +52,38 @@ pub struct AddressProxyPair {
     Hash
 )]
 pub struct SimAddr {
-    src: Option<Box<AddressProxyPair>>,
+    src: Option<Box<ChannelAddr>>,
     /// The address.
     addr: Box<ChannelAddr>,
-    /// The proxy address.
-    proxy: Box<ChannelAddr>,
+    /// If source is the client
+    client: bool,
 }
 
 impl SimAddr {
     /// Creates a new SimAddr.
     #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SimNetError`.
     /// Creates a new SimAddr without a source to be served
-    pub fn new(addr: ChannelAddr, proxy: ChannelAddr) -> Result<Self, SimNetError> {
-        Self::new_impl(None, addr, proxy)
+    pub fn new(addr: ChannelAddr) -> Result<Self, SimNetError> {
+        Self::new_impl(None, addr, false)
     }
 
     /// Creates a new directional SimAddr meant to convey a channel between two addresses.
     #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SimNetError`.
-    pub fn new_with_src(
-        src: AddressProxyPair,
-        addr: ChannelAddr,
-        proxy: ChannelAddr,
-    ) -> Result<Self, SimNetError> {
-        Self::new_impl(Some(Box::new(src)), addr, proxy)
+    pub fn new_with_src(src: ChannelAddr, addr: ChannelAddr) -> Result<Self, SimNetError> {
+        Self::new_impl(Some(Box::new(src)), addr, false)
+    }
+
+    /// Creates a new directional SimAddr meant to convey a channel between two addresses.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SimNetError`.
+    fn new_with_client_src(src: ChannelAddr, addr: ChannelAddr) -> Result<Self, SimNetError> {
+        Self::new_impl(Some(Box::new(src)), addr, true)
     }
 
     #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SimNetError`.
     fn new_impl(
-        src: Option<Box<AddressProxyPair>>,
+        src: Option<Box<ChannelAddr>>,
         addr: ChannelAddr,
-        proxy: ChannelAddr,
+        client: bool,
     ) -> Result<Self, SimNetError> {
         if let ChannelAddr::Sim(_) = &addr {
             return Err(SimNetError::InvalidArg(format!(
@@ -108,16 +91,10 @@ impl SimAddr {
                 addr
             )));
         }
-        if let ChannelAddr::Sim(_) = &proxy {
-            return Err(SimNetError::InvalidArg(format!(
-                "proxy cannot be a sim address, found {}",
-                proxy
-            )));
-        }
         Ok(Self {
             src,
             addr: Box::new(addr),
-            proxy: Box::new(proxy),
+            client,
         })
     }
 
@@ -126,26 +103,22 @@ impl SimAddr {
         &self.addr
     }
 
-    /// Returns the proxy address.
-    pub fn proxy(&self) -> &ChannelAddr {
-        &self.proxy
+    /// Returns the source address
+    pub fn src(&self) -> &Option<Box<ChannelAddr>> {
+        &self.src
     }
 
-    /// Returns the source address and proxy.
-    pub fn src(&self) -> &Option<Box<AddressProxyPair>> {
-        &self.src
+    /// The underlying transport we are simulating
+    pub fn transport(&self) -> ChannelTransport {
+        self.addr.transport()
     }
 }
 
 impl fmt::Display for SimAddr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.src {
-            None => write!(f, "{},{}", self.addr, self.proxy),
-            Some(src) => write!(
-                f,
-                "{},{},{},{}",
-                src.address, src.proxy, self.addr, self.proxy
-            ),
+            None => write!(f, "{}", self.addr),
+            Some(src) => write!(f, "{},{}", src, self.addr),
         }
     }
 }
@@ -153,19 +126,15 @@ impl fmt::Display for SimAddr {
 /// Message Event that can be passed around in the simnet.
 #[derive(Debug)]
 pub(crate) struct MessageDeliveryEvent {
-    src_addr: Option<AddressProxyPair>,
-    dest_addr: AddressProxyPair,
+    src_addr: Option<ChannelAddr>,
+    dest_addr: ChannelAddr,
     data: Serialized,
     duration_ms: u64,
 }
 
 impl MessageDeliveryEvent {
     /// Creates a new MessageDeliveryEvent.
-    pub fn new(
-        src_addr: Option<AddressProxyPair>,
-        dest_addr: AddressProxyPair,
-        data: Serialized,
-    ) -> Self {
+    pub fn new(src_addr: Option<ChannelAddr>, dest_addr: ChannelAddr, data: Serialized) -> Self {
         Self {
             src_addr,
             dest_addr,
@@ -198,16 +167,16 @@ impl Event for MessageDeliveryEvent {
             "Sending message from {} to {}",
             self.src_addr
                 .as_ref()
-                .map_or("unknown".to_string(), |addr| addr.address.to_string()),
-            self.dest_addr.address.clone()
+                .map_or("unknown".to_string(), |addr| addr.to_string()),
+            self.dest_addr.clone()
         )
     }
 
     async fn read_simnet_config(&mut self, topology: &Arc<Mutex<SimNetConfig>>) {
         if let Some(src_addr) = &self.src_addr {
             let edge = SimNetEdge {
-                src: src_addr.address.clone(),
-                dst: self.dest_addr.address.clone(),
+                src: src_addr.clone(),
+                dst: self.dest_addr.clone(),
             };
             self.duration_ms = topology
                 .lock()
@@ -232,18 +201,18 @@ pub async fn update_config(config: simnet::NetworkConfig) -> anyhow::Result<(), 
 }
 
 /// Returns a simulated channel address that is bound to "any" channel address.
-pub(crate) fn any(proxy: ChannelAddr) -> ChannelAddr {
+pub(crate) fn any(transport: ChannelTransport) -> ChannelAddr {
     ChannelAddr::Sim(SimAddr {
         src: None,
-        addr: Box::new(ChannelAddr::any(proxy.transport())),
-        proxy: Box::new(proxy),
+        addr: Box::new(ChannelAddr::any(transport)),
+        client: false,
     })
 }
 
 /// Parse the sim channel address. It should have two non-sim channel addresses separated by a comma.
 #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ChannelError`.
 pub fn parse(addr_string: &str) -> Result<ChannelAddr, ChannelError> {
-    let re = Regex::new(r"([^,]+),([^,]+)(,([^,]+),([^,]+))?$").map_err(|err| {
+    let re = Regex::new(r"([^,]+)(,([^,]+))?$").map_err(|err| {
         ChannelError::InvalidAddress(format!("invalid sim address regex: {}", err))
     })?;
 
@@ -261,26 +230,19 @@ pub fn parse(addr_string: &str) -> Result<ChannelAddr, ChannelError> {
         }
 
         match parts.len() {
-            2 => {
+            1 => {
                 let addr = parts[0].parse::<ChannelAddr>()?;
-                let proxy = parts[1].parse::<ChannelAddr>()?;
 
-                Ok(ChannelAddr::Sim(SimAddr::new(addr, proxy)?))
+                Ok(ChannelAddr::Sim(SimAddr::new(addr)?))
             }
-            5 => {
+            3 => {
                 let src_addr = parts[0].parse::<ChannelAddr>()?;
-                let src_proxy = parts[1].parse::<ChannelAddr>()?;
-                let addr = parts[3].parse::<ChannelAddr>()?;
-                let proxy = parts[4].parse::<ChannelAddr>()?;
-
-                Ok(ChannelAddr::Sim(SimAddr::new_with_src(
-                    AddressProxyPair {
-                        address: src_addr,
-                        proxy: src_proxy,
-                    },
-                    addr,
-                    proxy,
-                )?))
+                let addr = parts[2].parse::<ChannelAddr>()?;
+                Ok(ChannelAddr::Sim(if parts[0] == "client" {
+                    SimAddr::new_with_client_src(src_addr, addr)
+                } else {
+                    SimAddr::new_with_src(src_addr, addr)
+                }?))
             }
             _ => Err(ChannelError::InvalidAddress(addr_string.to_string())),
         }
@@ -310,31 +272,22 @@ fn create_egress_sender(
     Ok(Arc::new(tx))
 }
 
-/// Check if the address is outside of the simulation.
-#[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SimNetError`.
-fn is_external_addr(addr: &AddressProxyPair) -> anyhow::Result<bool, SimNetError> {
-    Ok(simnet_handle()?.proxy_addr() != &addr.proxy)
-}
-
 #[async_trait]
-impl Dispatcher<AddressProxyPair> for SimDispatcher {
+impl Dispatcher<ChannelAddr> for SimDispatcher {
     async fn send(
         &self,
-        _src_addr: Option<AddressProxyPair>,
-        addr: AddressProxyPair,
+        _src_addr: Option<ChannelAddr>,
+        addr: ChannelAddr,
         data: Serialized,
     ) -> Result<(), SimNetError> {
         self.dispatchers
-            .get(&addr.address)
+            .get(&addr)
             .ok_or_else(|| {
-                SimNetError::InvalidNode(
-                    addr.address.to_string(),
-                    anyhow::anyhow!("no dispatcher found"),
-                )
+                SimNetError::InvalidNode(addr.to_string(), anyhow::anyhow!("no dispatcher found"))
             })?
             .send(data)
             .await
-            .map_err(|err| SimNetError::InvalidNode(addr.address.to_string(), err.into()))
+            .map_err(|err| SimNetError::InvalidNode(addr.to_string(), err.into()))
     }
 }
 
@@ -349,9 +302,10 @@ impl Default for SimDispatcher {
 
 #[derive(Debug)]
 pub(crate) struct SimTx<M: RemoteMessage> {
-    src_addr: Option<AddressProxyPair>,
-    dst_addr: AddressProxyPair,
+    src_addr: Option<ChannelAddr>,
+    dst_addr: ChannelAddr,
     status: watch::Receiver<TxStatus>, // Default impl. Always reports `Active`.
+    client: bool,
     _phantom: PhantomData<M>,
 }
 
@@ -372,15 +326,14 @@ impl<M: RemoteMessage> Tx<M> for SimTx<M> {
         };
         match simnet_handle() {
             Ok(handle) => match &self.src_addr {
-                Some(src_addr) if src_addr.proxy != *handle.proxy_addr() => handle
-                    .send_scheduled_event(ScheduledEvent {
-                        event: Box::new(MessageDeliveryEvent::new(
-                            self.src_addr.clone(),
-                            self.dst_addr.clone(),
-                            data,
-                        )),
-                        time: SimClock.millis_since_start(RealClock.now()),
-                    }),
+                Some(_) if self.client => handle.send_scheduled_event(ScheduledEvent {
+                    event: Box::new(MessageDeliveryEvent::new(
+                        self.src_addr.clone(),
+                        self.dst_addr.clone(),
+                        data,
+                    )),
+                    time: SimClock.millis_since_start(RealClock.now()),
+                }),
                 _ => handle.send_event(Box::new(MessageDeliveryEvent::new(
                     self.src_addr.clone(),
                     self.dst_addr.clone(),
@@ -393,7 +346,7 @@ impl<M: RemoteMessage> Tx<M> for SimTx<M> {
     }
 
     fn addr(&self) -> ChannelAddr {
-        self.dst_addr.address.clone()
+        self.dst_addr.clone()
     }
 
     fn status(&self) -> &watch::Receiver<TxStatus> {
@@ -412,11 +365,9 @@ pub(crate) fn dial<M: RemoteMessage>(addr: SimAddr) -> Result<SimTx<M>, ChannelE
 
     Ok(SimTx {
         src_addr: dialer,
-        dst_addr: AddressProxyPair {
-            address: *addr.addr,
-            proxy: *addr.proxy,
-        },
+        dst_addr: addr.addr().clone(),
         status,
+        client: addr.client,
         _phantom: PhantomData,
     })
 }
@@ -425,13 +376,10 @@ pub(crate) fn dial<M: RemoteMessage>(addr: SimAddr) -> Result<SimTx<M>, ChannelE
 /// The mpsc tx will be used to dispatch messages when it's time while
 /// the mpsc rx will be used by the above applications to handle received messages
 /// like any other channel.
-/// A sim address has src and dst. Dispatchers are only indexed by dst address.
+/// A sim address has a dst and optional src. Dispatchers are only indexed by dst address.
 pub(crate) fn serve<M: RemoteMessage>(
     sim_addr: SimAddr,
 ) -> anyhow::Result<(ChannelAddr, SimRx<M>)> {
-    // Serves sim address at sim_addr.src and set up local proxy at sim_addr.src_proxy.
-    // Reversing the src and dst since the first element in the output tuple is the
-    // dialing address of this sim channel. So the served address is the dst.
     let (tx, rx) = mpsc::channel::<Serialized>(SIM_LINK_BUF_SIZE);
     // Add tx to sender dispatch.
     SENDER.dispatchers.insert(*sim_addr.addr.clone(), tx);
@@ -474,13 +422,7 @@ mod tests {
         let dst_ok = vec!["[::1]:1234", "tcp!127.0.0.1:8080", "local!123"];
         let srcs_ok = vec!["[::2]:1234", "tcp!127.0.0.2:8080", "local!124"];
 
-        let proxy = ChannelAddr::any(ChannelTransport::Unix);
-        start(
-            ChannelAddr::any(ChannelTransport::Unix),
-            proxy.clone(),
-            1000,
-        )
-        .unwrap();
+        start();
 
         // TODO: New NodeAdd event should do this for you..
         for addr in dst_ok.iter().chain(srcs_ok.iter()) {
@@ -490,16 +432,10 @@ mod tests {
                 .bind(addr.parse::<ChannelAddr>().unwrap())
                 .unwrap();
         }
-        // Messages are transferred internally if only there's a local proxy and the
-        // dst proxy is the same as local proxy.
         for (src_addr, dst_addr) in zip(srcs_ok, dst_ok) {
             let dst_addr = SimAddr::new_with_src(
-                AddressProxyPair {
-                    address: src_addr.parse::<ChannelAddr>().unwrap(),
-                    proxy: proxy.clone(),
-                },
+                src_addr.parse::<ChannelAddr>().unwrap(),
                 dst_addr.parse::<ChannelAddr>().unwrap(),
-                proxy.clone(),
             )
             .unwrap();
 
@@ -517,22 +453,14 @@ mod tests {
     async fn test_invalid_sim_addr() {
         let src = "sim!src";
         let dst = "sim!dst";
-        let src_proxy = "sim!src_proxy";
-        let dst_proxy = "sim!dst_proxy";
-        let sim_addr = format!("{},{},{},{}", src, src_proxy, dst, dst_proxy);
+        let sim_addr = format!("{},{}", src, dst);
         let result = parse(&sim_addr);
         assert!(matches!(result, Err(ChannelError::InvalidAddress(_))));
-
-        let dst = "unix!dst".parse::<ChannelAddr>().unwrap();
-        let dst_proxy = "sim!unix!a,unix!b".parse::<ChannelAddr>().unwrap();
-        let result = SimAddr::new(dst, dst_proxy);
-        // dst_proxy shouldn't be a sim address.
-        assert!(matches!(result, Err(SimNetError::InvalidArg(_))));
     }
 
     #[tokio::test]
     async fn test_parse_sim_addr() {
-        let sim_addr = "sim!unix!@dst,unix!@proxy";
+        let sim_addr = "sim!unix!@dst";
         let result = sim_addr.parse();
         assert!(result.is_ok());
         let ChannelAddr::Sim(sim_addr) = result.unwrap() else {
@@ -540,42 +468,26 @@ mod tests {
         };
         assert!(sim_addr.src().is_none());
         assert_eq!(sim_addr.addr().to_string(), "unix!@dst");
-        assert_eq!(sim_addr.proxy().to_string(), "unix!@proxy");
 
-        let sim_addr = "sim!unix!@src,unix!@proxy,unix!@dst,unix!@proxy";
+        let sim_addr = "sim!unix!@src,unix!@dst";
         let result = sim_addr.parse();
         assert!(result.is_ok());
         let ChannelAddr::Sim(sim_addr) = result.unwrap() else {
             panic!("Expected a sim address");
         };
         assert!(sim_addr.src().is_some());
-        let src_pair = sim_addr.src().clone().unwrap();
-        assert_eq!(src_pair.address.to_string(), "unix!@src");
-        assert_eq!(src_pair.proxy.to_string(), "unix!@proxy");
         assert_eq!(sim_addr.addr().to_string(), "unix!@dst");
-        assert_eq!(sim_addr.proxy().to_string(), "unix!@proxy");
     }
 
     #[tokio::test]
     async fn test_realtime_frontier() {
-        let proxy: ChannelAddr = ChannelAddr::any(ChannelTransport::Unix);
-        start(
-            ChannelAddr::any(ChannelTransport::Unix),
-            proxy.clone(),
-            1000,
-        )
-        .unwrap();
+        start();
 
         tokio::time::pause();
-        let sim_addr =
-            SimAddr::new("unix!@dst".parse::<ChannelAddr>().unwrap(), proxy.clone()).unwrap();
+        let sim_addr = SimAddr::new("unix!@dst".parse::<ChannelAddr>().unwrap()).unwrap();
         let sim_addr_with_src = SimAddr::new_with_src(
-            AddressProxyPair {
-                address: "unix!@src".parse::<ChannelAddr>().unwrap(),
-                proxy: proxy.clone(),
-            },
+            "unix!@src".parse::<ChannelAddr>().unwrap(),
             "unix!@dst".parse::<ChannelAddr>().unwrap(),
-            proxy.clone(),
         )
         .unwrap();
         let (_, mut rx) = sim::serve::<()>(sim_addr.clone()).unwrap();
@@ -612,31 +524,17 @@ mod tests {
     #[tokio::test]
     async fn test_client_message_scheduled_realtime() {
         tokio::time::pause();
-        let proxy_addr = ChannelAddr::any(ChannelTransport::Unix);
-        start(
-            ChannelAddr::any(ChannelTransport::Unix),
-            proxy_addr.clone(),
-            1000,
-        )
-        .unwrap();
+        start();
         let controller_to_dst = SimAddr::new_with_src(
-            AddressProxyPair {
-                address: "unix!@controller".parse::<ChannelAddr>().unwrap(),
-                proxy: proxy_addr.clone(),
-            },
+            "unix!@controller".parse::<ChannelAddr>().unwrap(),
             "unix!@dst".parse::<ChannelAddr>().unwrap(),
-            proxy_addr.clone(),
         )
         .unwrap();
         let controller_tx = sim::dial::<()>(controller_to_dst.clone()).unwrap();
 
-        let client_to_dst = SimAddr::new_with_src(
-            AddressProxyPair {
-                address: ChannelAddr::any(ChannelTransport::Unix),
-                proxy: ChannelAddr::any(ChannelTransport::Unix),
-            },
+        let client_to_dst = SimAddr::new_with_client_src(
+            "unix!@client".parse::<ChannelAddr>().unwrap(),
             "unix!@dst".parse::<ChannelAddr>().unwrap(),
-            proxy_addr.clone(),
         )
         .unwrap();
         let client_tx = sim::dial::<()>(client_to_dst).unwrap();

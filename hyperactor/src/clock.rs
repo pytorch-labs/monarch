@@ -309,8 +309,7 @@ impl Clock for RealClock {
 
 #[cfg(test)]
 mod tests {
-    use crate::channel::ChannelAddr;
-    use crate::channel::ChannelTransport;
+
     use crate::clock::Clock;
     use crate::clock::SimClock;
     use crate::simnet;
@@ -341,12 +340,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sim_timeout() {
-        simnet::start(
-            ChannelAddr::any(ChannelTransport::Unix),
-            ChannelAddr::any(ChannelTransport::Unix),
-            1000,
-        )
-        .unwrap();
+        simnet::start();
         let res = SimClock
             .timeout(tokio::time::Duration::from_secs(10), async {
                 SimClock.sleep(tokio::time::Duration::from_secs(5)).await;

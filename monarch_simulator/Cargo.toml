@@ -29,5 +29,4 @@ torch-sys-cuda = { version = "0.0.0", path = "../torch-sys-cuda" }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 
 [dev-dependencies]
-rand = { version = "0.8", features = ["small_rng"] }
 tracing-test = { version = "0.2.3", features = ["no-env-filter"] }

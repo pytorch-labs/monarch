@@ -624,7 +624,6 @@ mod tests {
     use hyperactor::RefClient;
     use hyperactor::channel;
     use hyperactor::channel::ChannelTransport;
-    use hyperactor::channel::sim::SimAddr;
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
     use hyperactor::data::Named;
@@ -1559,20 +1558,13 @@ mod tests {
     #[tokio::test]
     async fn test_sim_supervision_failure() {
         // Start system actor.
-        let system_addr = ChannelAddr::any(ChannelTransport::Unix);
-        let proxy_addr = ChannelAddr::any(ChannelTransport::Unix);
-        simnet::start(
-            ChannelAddr::any(ChannelTransport::Unix),
-            proxy_addr.clone(),
-            1000,
-        )
-        .unwrap();
+        simnet::start();
         simnet::simnet_handle()
             .unwrap()
             .set_training_script_state(simnet::TrainingScriptState::Waiting);
 
         let system_sim_addr =
-            ChannelAddr::Sim(SimAddr::new(system_addr, proxy_addr.clone()).unwrap());
+            ChannelAddr::any(ChannelTransport::Sim(Box::new(ChannelTransport::Unix)));
         // Set very long supervision_update_timeout
         let server_handle = System::serve(
             system_sim_addr.clone(),
@@ -1588,9 +1580,8 @@ mod tests {
         // Bootstrap the controller
         let controller_id = id!(controller[0].root);
         let proc_id = id!(world[0]);
-        let controller_proc_listen_addr = ChannelAddr::Sim(
-            SimAddr::new(ChannelAddr::any(ChannelTransport::Unix), proxy_addr).unwrap(),
-        );
+        let controller_proc_listen_addr =
+            ChannelAddr::any(ChannelTransport::Sim(Box::new(ChannelTransport::Unix)));
 
         let (_, actor_ref) = ControllerActor::bootstrap(
             controller_id.clone(),

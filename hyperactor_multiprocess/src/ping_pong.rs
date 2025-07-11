@@ -14,9 +14,7 @@ mod tests {
     use hyperactor::ActorRef;
     use hyperactor::Mailbox;
     use hyperactor::channel::ChannelAddr;
-    use hyperactor::channel::ChannelTransport;
     use hyperactor::channel::sim;
-    use hyperactor::channel::sim::AddressProxyPair;
     use hyperactor::channel::sim::SimAddr;
     use hyperactor::id;
     use hyperactor::reference::Index;
@@ -36,16 +34,10 @@ mod tests {
     #[tokio::test]
     async fn test_sim_ping_pong() {
         let system_addr = "local!1".parse::<ChannelAddr>().unwrap();
-        let proxy_addr = ChannelAddr::any(ChannelTransport::Unix);
 
-        simnet::start(
-            ChannelAddr::any(ChannelTransport::Unix),
-            proxy_addr.clone(),
-            1000,
-        )
-        .unwrap();
+        simnet::start();
 
-        let system_sim_addr = SimAddr::new(system_addr.clone(), proxy_addr.clone()).unwrap();
+        let system_sim_addr = SimAddr::new(system_addr.clone()).unwrap();
         let server_handle = System::serve(
             ChannelAddr::Sim(system_sim_addr.clone()),
             Duration::from_secs(10),
@@ -64,21 +56,14 @@ mod tests {
 
         let ping_actor_ref = spawn_proc_actor(
             2,
-            proxy_addr.clone(),
             system_sim_addr.clone(),
             sys_mailbox.clone(),
             world_id.clone(),
         )
         .await;
 
-        let pong_actor_ref = spawn_proc_actor(
-            3,
-            proxy_addr.clone(),
-            system_sim_addr,
-            sys_mailbox.clone(),
-            world_id.clone(),
-        )
-        .await;
+        let pong_actor_ref =
+            spawn_proc_actor(3, system_sim_addr, sys_mailbox.clone(), world_id.clone()).await;
 
         // Configure the simulation network.
         let simnet_config_yaml = r#"
@@ -124,7 +109,6 @@ edges:
 
     async fn spawn_proc_actor(
         actor_index: Index,
-        proxy_addr: ChannelAddr,
         system_addr: SimAddr,
         sys_mailbox: Mailbox,
         world_id: WorldId,
@@ -133,19 +117,11 @@ edges:
             .parse::<ChannelAddr>()
             .unwrap();
 
-        let proc_sim_addr = SimAddr::new(proc_addr.clone(), proxy_addr.clone()).unwrap();
+        let proc_sim_addr = SimAddr::new(proc_addr.clone()).unwrap();
         let proc_listen_addr = ChannelAddr::Sim(proc_sim_addr);
         let proc_id = world_id.proc_id(actor_index);
         let proc_to_system = ChannelAddr::Sim(
-            SimAddr::new_with_src(
-                AddressProxyPair {
-                    address: proc_addr.clone(),
-                    proxy: proxy_addr.clone(),
-                },
-                system_addr.addr().clone(),
-                system_addr.proxy().clone(),
-            )
-            .unwrap(),
+            SimAddr::new_with_src(proc_addr.clone(), system_addr.addr().clone()).unwrap(),
         );
         let bootstrap = ProcActor::bootstrap(
             proc_id,

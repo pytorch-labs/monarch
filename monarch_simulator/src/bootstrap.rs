@@ -18,7 +18,6 @@ use hyperactor::ActorRef;
 use hyperactor::ProcId;
 use hyperactor::WorldId;
 use hyperactor::channel::ChannelAddr;
-use hyperactor::channel::sim::AddressProxyPair;
 use hyperactor::channel::sim::SimAddr;
 use hyperactor_multiprocess::System;
 use hyperactor_multiprocess::proc_actor::ProcActor;
@@ -62,15 +61,7 @@ pub async fn spawn_controller(
         panic!("bootstrap_addr must be a SimAddr");
     };
     let bootstrap_addr = ChannelAddr::Sim(
-        SimAddr::new_with_src(
-            AddressProxyPair {
-                address: listen_addr.clone(),
-                proxy: bootstrap_addr.proxy().clone(),
-            },
-            bootstrap_addr.addr().clone(),
-            bootstrap_addr.proxy().clone(),
-        )
-        .unwrap(),
+        SimAddr::new_with_src(listen_addr.clone(), bootstrap_addr.addr().clone()).unwrap(),
     );
     tracing::info!(
         "controller listen addr: {}, bootstrap addr: {}",
@@ -121,15 +112,7 @@ pub async fn spawn_sim_worker(
         panic!("bootstrap_addr must be a SimAddr");
     };
     let bootstrap_addr = ChannelAddr::Sim(
-        SimAddr::new_with_src(
-            AddressProxyPair {
-                address: listen_addr.clone(),
-                proxy: bootstrap_addr.proxy().clone(),
-            },
-            bootstrap_addr.addr().clone(),
-            bootstrap_addr.proxy().clone(),
-        )
-        .unwrap(),
+        SimAddr::new_with_src(listen_addr.clone(), bootstrap_addr.addr().clone()).unwrap(),
     );
     tracing::info!(
         "worker {} listen addr: {}, bootstrap addr: {}",

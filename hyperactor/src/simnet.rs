@@ -26,7 +26,6 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use dashmap::DashSet;
 use enum_as_inner::EnumAsInner;
-use futures::executor::block_on;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
@@ -39,23 +38,16 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinError;
 use tokio::task::JoinHandle;
 use tokio::time::interval;
-use tokio::time::timeout;
 
-use crate as hyperactor; // for macros
+// for macros
 use crate::ActorId;
 use crate::Mailbox;
-use crate::Named;
 use crate::OncePortRef;
-use crate::channel;
 use crate::channel::ChannelAddr;
-use crate::channel::Rx;
-use crate::channel::sim::AddressProxyPair;
-use crate::channel::sim::MessageDeliveryEvent;
 use crate::clock::Clock;
 use crate::clock::RealClock;
 use crate::clock::SimClock;
 use crate::data::Serialized;
-use crate::mailbox::MessageEnvelope;
 
 static HANDLE: OnceLock<SimNetHandle> = OnceLock::new();
 
@@ -305,10 +297,6 @@ pub enum SimNetError {
     #[error("timeout after {} ms: {}", .0.as_millis(), .1)]
     Timeout(Duration, String),
 
-    /// External node is trying to connect but proxy is not available.
-    #[error("proxy not available: {0}")]
-    ProxyNotAvailable(String),
-
     /// Cannot deliver the message because destination address is missing.
     #[error("missing destination address")]
     MissingDestinationAddress,
@@ -342,9 +330,6 @@ pub struct SimNetHandle {
     event_tx: UnboundedSender<(Box<dyn Event>, bool, Option<SimulatorTimeInstant>)>,
     config: Arc<Mutex<SimNetConfig>>,
     pending_event_count: Arc<AtomicUsize>,
-    /// Handle to a running proxy server that forwards external messages
-    /// into the simnet.
-    proxy_handle: ProxyHandle,
     /// A receiver to receive simulator operational messages.
     /// The receiver can be moved out of the simnet handle.
     training_script_state_tx: tokio::sync::watch::Sender<TrainingScriptState>,
@@ -416,8 +401,6 @@ impl SimNetHandle {
     /// Close the simulator, processing pending messages before
     /// completing the returned future.
     pub async fn close(&self) -> Result<Vec<SimulatorEventRecord>, JoinError> {
-        // Stop the proxy if there is one.
-        self.proxy_handle.stop().await?;
         // Signal the simnet loop to stop
         self.stop_signal.store(true, Ordering::SeqCst);
 
@@ -462,41 +445,9 @@ impl SimNetHandle {
             "timeout waiting for received events to be scheduled".to_string(),
         ))
     }
-
-    /// Returns the external address of the simnet.
-    pub fn proxy_addr(&self) -> &ChannelAddr {
-        &self.proxy_handle.addr
-    }
 }
 
 pub(crate) type Topology = DashMap<SimNetEdge, SimNetEdgeInfo>;
-
-/// A ProxyMessage is a message that SimNet proxy receives.
-/// The message may requests the SimNet to send the payload in the message field from
-/// src to dst if addr field exists.
-/// Or handle the payload in the message field if addr field is None, indicating that
-/// this is a self-handlable message.
-#[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Named)]
-pub struct ProxyMessage {
-    sender_addr: Option<AddressProxyPair>,
-    dest_addr: Option<AddressProxyPair>,
-    data: Serialized,
-}
-
-impl ProxyMessage {
-    /// Creates a new ForwardMessage.
-    pub fn new(
-        sender_addr: Option<AddressProxyPair>,
-        dest_addr: Option<AddressProxyPair>,
-        data: Serialized,
-    ) -> Self {
-        Self {
-            sender_addr,
-            dest_addr,
-            data,
-        }
-    }
-}
 
 /// Configure network topology for the simnet
 pub struct SimNetConfig {
@@ -510,31 +461,6 @@ pub struct SimNetConfig {
 /// The network is represented as a graph of nodes.
 /// The graph is represented as a map of edges.
 /// The network also has a cloud of inflight messages
-/// SimNet also serves a proxy address to receive external traffic. This proxy address can handle
-/// [`ProxyMessage`]s and forward the payload from src to dst.
-///
-/// Example:
-/// In this example, we send a ForwardMessage to the proxy_addr. SimNet will handle the message and
-/// forward the payload from src to dst.
-/// ```ignore
-/// let nw_handle = start("local!0".parse().unwrap(), 1000, true, Some(gen_event_fcn))
-///   .await
-///   .unwrap();
-/// let proxy_addr = nw_handle.proxy_addr().clone();
-/// let tx = crate::channel::dial(proxy_addr).unwrap();
-/// let src_to_dst_msg = MessageEnvelope::new_unknown(
-///   port_id.clone(),
-///   Serialized::serialize(&"hola".to_string()).unwrap(),
-/// );
-/// let forward_message = ForwardMessage::new(
-///   "unix!@src".parse::<ChannelAddr>().unwrap(),
-///   "unix!@dst".parse::<ChannelAddr>().unwrap(),
-///   src_to_dst_msg
-/// );
-/// let external_message =
-///   MessageEnvelope::new_unknown(port_id, Serialized::serialize(&forward_message).unwrap());
-/// tx.send(external_message).await.unwrap();
-/// ```
 pub struct SimNet {
     config: Arc<Mutex<SimNetConfig>>,
     address_book: DashSet<ChannelAddr>,
@@ -545,103 +471,15 @@ pub struct SimNet {
     pending_event_count: Arc<AtomicUsize>,
 }
 
-/// A proxy to bridge external nodes and the SimNet.
-struct ProxyHandle {
-    join_handle: Mutex<Option<JoinHandle<()>>>,
-    stop_signal: Arc<AtomicBool>,
-    addr: ChannelAddr,
-}
-
-impl ProxyHandle {
-    /// Starts an proxy server to handle external [`ForwardMessage`]s. It will forward the payload inside
-    /// the [`ForwardMessage`] from src to dst in the SimNet.
-    /// Args:
-    ///  proxy_addr: address to listen
-    ///  event_tx: a channel to send events to the SimNet
-    ///  pending_event_count: a counter to keep track of the number of pending events
-    ///  to_event: a function that specifies how to generate an Event from a forward message
-    async fn start(
-        proxy_addr: ChannelAddr,
-        event_tx: UnboundedSender<(Box<dyn Event>, bool, Option<SimulatorTimeInstant>)>,
-        pending_event_count: Arc<AtomicUsize>,
-    ) -> anyhow::Result<Self> {
-        let (addr, mut rx) = channel::serve::<MessageEnvelope>(proxy_addr).await?;
-        tracing::info!("SimNet serving external traffic on {}", &addr);
-        let stop_signal = Arc::new(AtomicBool::new(false));
-
-        let join_handle = {
-            let stop_signal = stop_signal.clone();
-            tokio::spawn(async move {
-                'outer: loop {
-                    // timeout the wait to enable stop signal checking at least every 100ms.
-                    #[allow(clippy::disallowed_methods)]
-                    if let Ok(Ok(msg)) = timeout(Duration::from_millis(100), rx.recv()).await {
-                        let proxy_message: ProxyMessage = msg.deserialized().unwrap();
-                        if let Some(dest_addr) = proxy_message.dest_addr {
-                            let event = Box::new(MessageDeliveryEvent::new(
-                                proxy_message.sender_addr,
-                                dest_addr,
-                                proxy_message.data,
-                            ));
-                            if let Err(e) = event_tx.send((event, true, None)) {
-                                tracing::error!("error sending message to simnet: {:?}", e);
-                            } else {
-                                pending_event_count
-                                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                            }
-                        }
-                    }
-                    if stop_signal.load(Ordering::SeqCst) {
-                        eprintln!("stopping external traffic handler");
-                        break 'outer;
-                    }
-                }
-            })
-        };
-        Ok(Self {
-            join_handle: Mutex::new(Some(join_handle)),
-            stop_signal,
-            addr,
-        })
-    }
-
-    /// Stop the proxy.
-    async fn stop(&self) -> Result<(), JoinError> {
-        self.stop_signal.store(true, Ordering::SeqCst);
-        let mut guard = self.join_handle.lock().await;
-        if let Some(handle) = guard.take() {
-            handle.await
-        } else {
-            Ok(())
-        }
-    }
-}
-
 /// Starts a sim net.
 /// Args:
-///     private_addr: an internal address to receive operational messages such as NodeJoinEvent
 ///     max_duration_ms: an optional config to override default settings of the network latency
-///     enable_record: a flag to enable recording of message delivery records
-pub fn start(
-    private_addr: ChannelAddr,
-    proxy_addr: ChannelAddr,
-    max_duration_ms: u64,
-) -> anyhow::Result<()> {
+pub fn start() {
+    let max_duration_ms = 1000 * 10;
     // Construct a topology with one node: the default A.
     let address_book: DashSet<ChannelAddr> = DashSet::new();
-    address_book.insert(private_addr.clone());
 
     let topology = DashMap::new();
-    topology.insert(
-        SimNetEdge {
-            src: private_addr.clone(),
-            dst: private_addr,
-        },
-        SimNetEdgeInfo {
-            latency: Duration::from_millis(1),
-        },
-    );
-
     let config = Arc::new(Mutex::new(SimNetConfig { topology }));
 
     let (training_script_state_tx, training_script_state_rx) =
@@ -657,7 +495,7 @@ pub fn start(
         let stop_signal = stop_signal.clone();
 
         tokio::spawn(async move {
-            let mut net = SimNet {
+            SimNet {
                 config,
                 address_book,
                 state: State {
@@ -667,30 +505,20 @@ pub fn start(
                 max_latency: Duration::from_millis(max_duration_ms),
                 records: Vec::new(),
                 pending_event_count,
-            };
-            net.run(event_rx, training_script_state_rx, stop_signal)
-                .await
+            }
+            .run(event_rx, training_script_state_rx, stop_signal)
+            .await
         })
     }));
-
-    let proxy_handle = block_on(ProxyHandle::start(
-        proxy_addr,
-        event_tx.clone(),
-        pending_event_count.clone(),
-    ))
-    .map_err(|err| SimNetError::ProxyNotAvailable(err.to_string()))?;
 
     HANDLE.get_or_init(|| SimNetHandle {
         join_handle,
         event_tx,
         config,
         pending_event_count,
-        proxy_handle,
         training_script_state_tx,
         stop_signal,
     });
-
-    Ok(())
 }
 
 impl SimNet {
@@ -961,7 +789,6 @@ mod tests {
     use tokio::sync::Mutex;
 
     use super::*;
-    use crate::channel::ChannelTransport;
     use crate::channel::sim::SimAddr;
     use crate::clock::Clock;
     use crate::clock::RealClock;
@@ -1081,17 +908,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_instantiation() {
-        let default_addr = format!("local!{}", 0)
-            .parse::<simnet::ChannelAddr>()
-            .unwrap();
-        assert!(
-            start(
-                default_addr.clone(),
-                ChannelAddr::any(ChannelTransport::Unix),
-                1000,
-            )
-            .is_ok()
-        );
+        start();
         simnet_handle().unwrap().close().await.unwrap();
     }
 
@@ -1099,12 +916,7 @@ mod tests {
     async fn test_simnet_config() {
         // Tests that we can create a simnet, config latency between two node and deliver
         // the message with configured latency.
-        start(
-            "local!0".parse::<simnet::ChannelAddr>().unwrap(),
-            ChannelAddr::any(ChannelTransport::Unix),
-            1000,
-        )
-        .unwrap();
+        start();
         let alice = "local!1".parse::<simnet::ChannelAddr>().unwrap();
         let bob = "local!2".parse::<simnet::ChannelAddr>().unwrap();
         let latency = Duration::from_millis(1000);
@@ -1121,9 +933,8 @@ mod tests {
             .await
             .unwrap();
 
-        let proxy_addr = ChannelAddr::any(channel::ChannelTransport::Unix);
-        let alice = SimAddr::new(alice, proxy_addr.clone()).unwrap();
-        let bob = SimAddr::new(bob, proxy_addr.clone()).unwrap();
+        let alice = SimAddr::new(alice).unwrap();
+        let bob = SimAddr::new(bob).unwrap();
         let msg = Box::new(MessageDeliveryEvent::new(
             alice,
             bob,
@@ -1148,13 +959,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_simnet_debounce() {
-        let default_addr = "local!0".parse::<simnet::ChannelAddr>().unwrap();
-        start(
-            default_addr.clone(),
-            ChannelAddr::any(ChannelTransport::Unix),
-            1000,
-        )
-        .unwrap();
+        start();
         let alice = "local!1".parse::<simnet::ChannelAddr>().unwrap();
         let bob = "local!2".parse::<simnet::ChannelAddr>().unwrap();
 
@@ -1171,10 +976,8 @@ mod tests {
             .await
             .unwrap();
 
-        let proxy_addr = ChannelAddr::any(channel::ChannelTransport::Unix);
-
-        let alice = SimAddr::new(alice, proxy_addr.clone()).unwrap();
-        let bob = SimAddr::new(bob, proxy_addr).unwrap();
+        let alice = SimAddr::new(alice).unwrap();
+        let bob = SimAddr::new(bob).unwrap();
 
         // Rapidly send 10 messages expecting that each one debounces the processing
         for _ in 0..10 {
@@ -1211,13 +1014,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sim_dispatch() {
-        let proxy = ChannelAddr::any(ChannelTransport::Unix);
-        start(
-            ChannelAddr::any(ChannelTransport::Unix),
-            proxy.clone(),
-            1000,
-        )
-        .unwrap();
+        start();
         let sender = Some(TestDispatcher::default());
         let mut addresses: Vec<simnet::ChannelAddr> = Vec::new();
         // // Create a simple network of 4 nodes.
@@ -1234,11 +1031,10 @@ mod tests {
             .map(|s| Serialized::serialize(&s.to_string()).unwrap())
             .collect();
 
-        let proxy_addr = ChannelAddr::any(channel::ChannelTransport::Unix);
-        let addr_0 = SimAddr::new(addresses[0].clone(), proxy_addr.clone()).unwrap();
-        let addr_1 = SimAddr::new(addresses[1].clone(), proxy_addr.clone()).unwrap();
-        let addr_2 = SimAddr::new(addresses[2].clone(), proxy_addr.clone()).unwrap();
-        let addr_3 = SimAddr::new(addresses[3].clone(), proxy_addr.clone()).unwrap();
+        let addr_0 = SimAddr::new(addresses[0].clone()).unwrap();
+        let addr_1 = SimAddr::new(addresses[1].clone()).unwrap();
+        let addr_2 = SimAddr::new(addresses[2].clone()).unwrap();
+        let addr_3 = SimAddr::new(addresses[3].clone()).unwrap();
         let one = Box::new(MessageDeliveryEvent::new(
             addr_0.clone(),
             addr_1.clone(),
@@ -1286,20 +1082,20 @@ mod tests {
     #[tokio::test]
     async fn test_read_config_from_yaml() {
         let yaml = r#"
-edges:
-  - src: local!0
-    dst: local!1
-    metadata:
-      latency: 1
-  - src: local!0
-    dst: local!2
-    metadata:
-      latency: 2
-  - src: local!1
-    dst: local!2
-    metadata:
-      latency: 3
-"#;
+ edges:
+   - src: local!0
+     dst: local!1
+     metadata:
+       latency: 1
+   - src: local!0
+     dst: local!2
+     metadata:
+       latency: 2
+   - src: local!1
+     dst: local!2
+     metadata:
+       latency: 3
+ "#;
         let config = NetworkConfig::from_yaml(yaml).unwrap();
         assert_eq!(config.edges.len(), 3);
         assert_eq!(
@@ -1331,74 +1127,9 @@ edges:
         assert_eq!(config.edges[2].metadata.latency, Duration::from_secs(3));
     }
 
-    #[cfg(target_os = "linux")]
-    #[tokio::test]
-    async fn test_simnet_receive_external_message() {
-        use tokio::sync::oneshot;
-
-        use crate::PortId;
-        use crate::channel::Tx;
-
-        let proxy_addr = ChannelAddr::any(channel::ChannelTransport::Unix);
-        start(
-            ChannelAddr::any(ChannelTransport::Unix),
-            proxy_addr.clone(),
-            1000,
-        )
-        .unwrap();
-        let tx = crate::channel::dial(proxy_addr.clone()).unwrap();
-        let port_id = PortId(id!(test[0].actor0), 0);
-        let src_to_dst_msg = Serialized::serialize(&"hola".to_string()).unwrap();
-        let src = random_abstract_addr();
-        let dst = random_abstract_addr();
-        let src_and_proxy = Some(AddressProxyPair {
-            address: src.clone(),
-            proxy: proxy_addr.clone(),
-        });
-        let dst_and_proxy = AddressProxyPair {
-            address: dst.clone(),
-            proxy: proxy_addr.clone(),
-        };
-        let forward_message = ProxyMessage::new(src_and_proxy, Some(dst_and_proxy), src_to_dst_msg);
-        let external_message =
-            MessageEnvelope::new_unknown(port_id, Serialized::serialize(&forward_message).unwrap());
-        tx.try_post(external_message, oneshot::channel().0).unwrap();
-        // flush doesn't work here because tx.send() delivers the message through real network.
-        // We have to wait for the message to enter simnet.
-        RealClock.sleep(Duration::from_millis(1000)).await;
-        simnet_handle()
-            .unwrap()
-            .flush(Duration::from_millis(1000))
-            .await
-            .unwrap();
-        let records = simnet_handle().unwrap().close().await;
-        assert!(records.as_ref().unwrap().len() == 1);
-        let expected_record = SimulatorEventRecord {
-            summary: format!("Sending message from {} to {}", src, dst),
-            start_at: 0,
-            end_at: 1,
-        };
-        assert_eq!(records.unwrap().first().unwrap(), &expected_record);
-    }
-
     #[tokio::test]
     async fn test_sim_sleep() {
-        start(
-            ChannelAddr::any(ChannelTransport::Unix),
-            ChannelAddr::any(ChannelTransport::Unix),
-            1000,
-        )
-        .unwrap();
-
-        let default_addr = format!("local!{}", 0)
-            .parse::<simnet::ChannelAddr>()
-            .unwrap();
-        let _ = start(
-            default_addr.clone(),
-            ChannelAddr::any(ChannelTransport::Unix),
-            1000,
-        )
-        .unwrap();
+        start();
 
         let start = SimClock.now();
         assert_eq!(SimClock.millis_since_start(start), 0);
@@ -1411,12 +1142,7 @@ edges:
 
     #[tokio::test]
     async fn test_torch_op() {
-        start(
-            ChannelAddr::any(ChannelTransport::Unix),
-            ChannelAddr::any(ChannelTransport::Unix),
-            1000,
-        )
-        .unwrap();
+        start();
         let args_string = "1, 2".to_string();
         let kwargs_string = "a=2".to_string();
 

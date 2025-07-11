@@ -6,24 +6,16 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use hyperactor::channel::ChannelAddr;
-use hyperactor::channel::ChannelTransport;
 use hyperactor::clock::Clock;
 use hyperactor::clock::SimClock;
 use hyperactor::simnet;
-use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
 #[pyfunction]
 #[pyo3(name = "start_event_loop")]
 pub fn start_simnet_event_loop(py: Python) -> PyResult<Bound<'_, PyAny>> {
     pyo3_async_runtimes::tokio::future_into_py(py, async move {
-        simnet::start(
-            ChannelAddr::any(ChannelTransport::Unix),
-            ChannelAddr::any(ChannelTransport::Unix),
-            1000,
-        )
-        .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+        simnet::start();
         Ok(())
     })
 }
