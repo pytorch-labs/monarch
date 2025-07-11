@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import logging
+from typing import Optional
 
 def forward_to_tracing(record: logging.LogRecord) -> None:
     """
@@ -83,6 +84,60 @@ def use_sim_clock() -> None:
 
     This switches the telemetry system to use simulated time, which is useful for
     testing and simulation environments where you want deterministic time control.
+    """
+    ...
+
+def add_to_counter(
+    name: str, value: int, attributes: Optional[list[tuple[str, str]]] = None
+) -> None:
+    """
+    Add a value to a counter with the given name and attributes.
+
+    This function creates or uses an existing counter with the specified name
+    and increments it by the given value with the provided attributes.
+
+    Args:
+    - name (str): The name of the counter metric.
+    - value (int): The value to add to the counter (must be non-negative).
+    - attributes (Optional[list[tuple[str, str]]]): Optional list of key-value pairs to use as metric attributes.
+      These attributes allow you to create different time series for the same counter.
+      If None, no attributes will be added.
+    """
+    ...
+
+def add_to_up_down_counter(
+    name: str, value: int, attributes: Optional[list[tuple[str, str]]] = None
+) -> None:
+    """
+    Add a value to an up/down counter with the given name and attributes.
+
+    This function creates or uses an existing up/down counter with the specified name
+    and increments or decrements it by the given value with the provided attributes.
+
+    Args:
+    - name (str): The name of the up/down counter metric.
+    - value (int): The value to add to the counter (can be positive or negative).
+    - attributes (Optional[list[tuple[str, str]]]): Optional list of key-value pairs to use as metric attributes.
+      These attributes allow you to create different time series for the same counter.
+      If None, no attributes will be added.
+    """
+    ...
+
+def add_to_gauge(
+    name: str, value: float, attributes: Optional[list[tuple[str, str]]] = None
+) -> None:
+    """
+    Record a value to a gauge with the given name and attributes.
+
+    This function creates or uses an existing gauge with the specified name
+    and sets it to the given value with the provided attributes.
+
+    Args:
+    - name (str): The name of the gauge metric.
+    - value (float): The value to record to the gauge.
+    - attributes (Optional[list[tuple[str, str]]]): Optional list of key-value pairs to use as metric attributes.
+      These attributes allow you to create different time series for the same gauge.
+      If None, no attributes will be added.
     """
     ...
 
