@@ -809,7 +809,8 @@ impl MailboxServerHandle {
     /// join the handle by awaiting the [`MailboxServerHandle`] future.
     ///
     /// Stop should be called at most once.
-    pub fn stop(&self) {
+    pub fn stop(&self, reason: &str) {
+        tracing::info!("stopping mailbox server; reason: {}", reason);
         self.stopped_tx.send(true).expect("stop called twice");
     }
 }
@@ -2554,7 +2555,7 @@ mod tests {
             .serialize_and_send_once(port, 123u64, monitored_return_handle())
             .unwrap();
         assert_eq!(receiver.recv().await.unwrap(), 123u64);
-        serve_handle.stop();
+        serve_handle.stop("fromt test");
         serve_handle.await.unwrap().unwrap();
     }
 
@@ -2595,7 +2596,7 @@ mod tests {
             .serialize_and_send_once(port, msg, monitored_return_handle())
             .unwrap();
         assert_eq!(receiver.recv().await.unwrap(), msg);
-        serve_handle.stop();
+        serve_handle.stop("from test");
         serve_handle.await.unwrap().unwrap();
     }
 

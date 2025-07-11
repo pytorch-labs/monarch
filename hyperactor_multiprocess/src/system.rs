@@ -145,7 +145,7 @@ impl ServerHandle {
     pub async fn stop(&self) -> Result<(), ActorError> {
         // TODO: this needn't be async
         self.actor_handle.drain_and_stop()?;
-        self.mailbox_handle.stop();
+        self.mailbox_handle.stop("system server stopped");
         Ok(())
     }
 

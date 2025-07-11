@@ -488,7 +488,7 @@ impl ProcActor {
     /// Shutdown the mailbox server to free up rx and its cooresponding listen address.
     /// Because in the next bootstrap attempt, the same listen address will be used.
     async fn failed_proc_bootstrap_cleanup(mailbox_handle: MailboxServerHandle) {
-        mailbox_handle.stop();
+        mailbox_handle.stop("failed proc bootstrap cleanup");
         if let Err(shutdown_err) = mailbox_handle.await {
             // Ignore the shutdown error and populate the original error.
             tracing::error!(

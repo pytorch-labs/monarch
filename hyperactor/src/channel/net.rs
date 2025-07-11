@@ -751,7 +751,8 @@ impl<M: RemoteMessage> Rx<M> for NetRx<M> {
 
 impl<M: RemoteMessage> Drop for NetRx<M> {
     fn drop(&mut self) {
-        self.2.stop();
+        self.2
+            .stop(&format!("NetRx dropped; channel address: {}", self.1));
     }
 }
 
@@ -780,12 +781,13 @@ impl ServerHandle {
     /// incoming connection requests, and drain pending operations
     /// on active connections. After draining is completed, the
     /// connections are closed.
-    pub fn stop(&self) {
+    fn stop(&self, reason: &str) {
+        tracing::info!("stopping server: {}; reason: {}", self, reason);
         self.cancel_token.cancel();
     }
 
     /// Reference to the channel that was used to start the server.
-    pub fn local_channel_addr(&self) -> &ChannelAddr {
+    fn local_channel_addr(&self) -> &ChannelAddr {
         &self.channel_addr
     }
 }
@@ -1145,7 +1147,7 @@ where
         let _ = tracing::info_span!("channel_listen_accept_loop");
         tokio::select! {
             result = listener.accept() => {
-                tracing::debug!("listener accepted a new connection.");
+                tracing::debug!("listener accepted a new connection to {}", listener_channel_addr);
                 match result {
                     Ok((stream, addr)) => {
                         let tx = tx.clone();
@@ -1180,13 +1182,13 @@ where
                     });
                     }
                     Err(err) => {
-                        tracing::info!("serve {}: accept error: {}", listener_channel_addr,err)
+                        tracing::info!("serve {}: accept error: {}", listener_channel_addr, err)
                     }
                 }
             }
 
             _ = parent_cancel_token.cancelled() => {
-                tracing::info!("received parent token cancellation");
+                tracing::info!("serve {}: received parent token cancellation", listener_channel_addr);
                 break Ok(());
             }
 
@@ -1962,7 +1964,7 @@ mod tests {
         RealClock.sleep(Duration::from_secs(5)).await;
 
         // Stop the server.
-        rx1.2.stop();
+        rx1.2.stop("from testing");
         assert_matches!(rx1.recv().await.unwrap_err(), ChannelError::Closed);
 
         // Send the message is allowed even when the server is down.

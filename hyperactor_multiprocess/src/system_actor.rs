@@ -2722,7 +2722,7 @@ mod tests {
 
         // Now kill pong's mailbox server making message delivery
         // between procs impossible.
-        proc_actor_1.mailbox.stop();
+        proc_actor_1.mailbox.stop("from testing");
         proc_actor_1.mailbox.await.unwrap().unwrap();
 
         // That in itself shouldn't be a problem. Check the world

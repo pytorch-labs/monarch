@@ -220,7 +220,7 @@ impl Alloc for LocalAlloc {
                     };
 
                     // Stop serving the mailbox.
-                    proc_to_stop.handle.stop();
+                    proc_to_stop.handle.stop("received Action::Stop");
 
                     if let Err(err) = proc_to_stop
                         .proc

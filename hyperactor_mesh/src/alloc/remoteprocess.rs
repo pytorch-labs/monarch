@@ -371,7 +371,7 @@ impl RemoteProcessAllocator {
         )
         .await;
 
-        mailbox_handle.stop();
+        mailbox_handle.stop("alloc stopped");
         if let Err(e) = mailbox_handle.await {
             tracing::error!("failed to join forwarder: {}", e);
         }
