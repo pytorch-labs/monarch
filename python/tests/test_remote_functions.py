@@ -9,7 +9,6 @@ import itertools
 import math
 import sys
 import traceback
-from enum import Enum
 from typing import Callable, ContextManager, Tuple
 from unittest.mock import patch
 
@@ -1277,3 +1276,24 @@ def a_function_called_by_a_live_function(x):
 
 def a_live_function_call_by_a_live_function(x):
     return 3 * x
+
+
+@remote
+def return_them(x: torch.Tensor, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    return (x, y)
+
+
+@pytest.mark.skipif(
+    torch.cuda.device_count() < 2,
+    reason="Not enough GPUs, this test requires at least 2 GPUs",
+)
+class TestMeshSpecific(RemoteFunctionsTestBase):
+    def test_value_mesh(self):
+        with self.local_device_mesh(2, 2, "mesh") as device_mesh:
+            x = device_mesh.rank("host")
+            y = device_mesh.rank("gpu")
+            r = return_them.call(x, y).get()
+
+            for p, (h, g) in r:
+                assert p["host"] == h.item()
+                assert p["gpu"] == g.item()
