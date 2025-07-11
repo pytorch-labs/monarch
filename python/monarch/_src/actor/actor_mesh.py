@@ -50,6 +50,7 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     OncePortRef,
     PortReceiver as HyPortReceiver,
     PortRef,
+    UndeliverablePortReceiver,
 )
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.shape import Point as HyPoint, Shape
@@ -727,6 +728,11 @@ def _pickle(obj: object) -> bytes:
 
 
 class Actor(MeshTrait):
+    def __init__(self) -> None:
+        # Bind undeliverable message port
+        # TODO: Temporary fix to avoid warning spam. Fix tracked in T230700229
+        undeliverable_receiver()
+
     @functools.cached_property
     def logger(cls) -> logging.Logger:
         lgr = logging.getLogger(cls.__class__.__name__)
@@ -875,6 +881,10 @@ def current_actor_name() -> str:
 def current_rank() -> Point:
     ctx = MonarchContext.get()
     return ctx.point
+
+
+def undeliverable_receiver() -> UndeliverablePortReceiver:
+    return MonarchContext.get().mailbox.undeliverable_receiver()
 
 
 def current_size() -> Dict[str, int]:
