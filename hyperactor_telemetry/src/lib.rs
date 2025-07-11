@@ -30,12 +30,17 @@ pub const DISABLE_OTEL_METRICS: &str = "DISABLE_OTEL_METRICS";
 /// Set to "1" to disable the recorder output.
 pub const DISABLE_RECORDER_TRACING: &str = "DISABLE_RECORDER_TRACING";
 
+/// Environment variable to additionally enable stderr logging in Local environment.
+/// Set to "1" to also dump logs to stderr when running in Local environment.
+pub const MONARCH_DEBUG: &str = "MONARCH_DEBUG";
+
 #[cfg(fbcode_build)]
 mod meta;
 mod otel;
 mod pool;
 pub mod recorder;
 mod spool;
+use std::cell::RefCell;
 use std::io::IsTerminal;
 use std::io::Write;
 use std::str::FromStr;
@@ -61,6 +66,12 @@ use tracing_subscriber::Layer;
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::filter::Targets;
 use tracing_subscriber::fmt;
+use tracing_subscriber::fmt::FormatEvent;
+use tracing_subscriber::fmt::FormatFields;
+use tracing_subscriber::fmt::MakeWriter;
+use tracing_subscriber::fmt::format::Format;
+use tracing_subscriber::fmt::format::Writer;
+use tracing_subscriber::registry::LookupSpan;
 
 use crate::recorder::Recorder;
 
@@ -81,32 +92,30 @@ impl TelemetryClock for DefaultTelemetryClock {
     }
 }
 
-// Need to keep this around so that the tracing subscriber doesn't drop the writer.
+fn file_appender(dir: &str, filename: &str) -> Box<dyn Write + Send> {
+    match RollingFileAppender::builder()
+        .rotation(Rotation::NEVER)
+        .filename_prefix(filename)
+        .filename_suffix("log")
+        .build(dir)
+    {
+        Ok(file) => Box::new(file),
+        Err(e) => {
+            tracing::warn!("unable to create custom log file: {}", e);
+            Box::new(std::io::stderr())
+        }
+    }
+}
+
+fn writer(filename: &str) -> Box<dyn Write + Send> {
+    match env::Env::current() {
+        env::Env::Test | env::Env::MastEmulator => Box::new(std::io::stderr()),
+        env::Env::Local => file_appender("/tmp/", &format!("monarch_log{}", filename)),
+        env::Env::Mast => file_appender("/logs/", &format!("dedicated_log_monarch{}", filename)),
+    }
+}
+
 lazy_static! {
-    static ref WRITER_GUARD: Arc<(NonBlocking, WorkerGuard)> = {
-        let writer: Box<dyn Write + Send> = match env::Env::current() {
-            env::Env::Local | env::Env::Test | env::Env::MastEmulator => {
-                Box::new(std::io::stderr())
-            }
-            env::Env::Mast => match RollingFileAppender::builder()
-                .rotation(Rotation::HOURLY)
-                .filename_prefix("dedicated_log_monarch")
-                .filename_suffix("log")
-                .build("/logs/")
-            {
-                Ok(file) => Box::new(file),
-                Err(e) => {
-                    tracing::warn!("unable to create custom log file: {}", e);
-                    Box::new(std::io::stderr())
-                }
-            },
-        };
-        return Arc::new(
-            tracing_appender::non_blocking::NonBlockingBuilder::default()
-                .lossy(false)
-                .finish(writer),
-        );
-    };
     static ref TELEMETRY_CLOCK: Arc<Mutex<Box<dyn TelemetryClock + Send>>> =
         { Arc::new(Mutex::new(Box::new(DefaultTelemetryClock {}))) };
 }
@@ -415,6 +424,161 @@ macro_rules! declare_static_histogram {
     };
 }
 
+static WRITER_GUARD: std::sync::OnceLock<Arc<(NonBlocking, WorkerGuard)>> =
+    std::sync::OnceLock::new();
+
+tokio::task_local! {
+    static TASK_LOG_FILENAME: RefCell<Option<Box<dyn Write + Send>>>;
+    static TASK_LOG_PREFIX: RefCell<Option<String>>;
+}
+
+/// Set both logging file and prefix for the current tokio task using a scope.
+/// This creates a scope where all log messages will be written to the specified file with the given prefix.
+pub async fn with_task_scoped_logging<F, Fut>(filename: &str, prefix: &str, f: F) -> Fut::Output
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future,
+{
+    let writer_cell = RefCell::new(Some(writer(filename)));
+    let prefix_cell = RefCell::new(Some(prefix.to_string()));
+
+    TASK_LOG_FILENAME
+        .scope(writer_cell, async move {
+            TASK_LOG_PREFIX
+                .scope(prefix_cell, async move { f().await })
+                .await
+        })
+        .await
+}
+
+/// A custom formatter that prepends task-local prefixes to log messages.
+/// Uses either Glog formatter or default formatter based on environment.
+struct PrefixedFormatter {
+    formatter: FormatterType,
+}
+
+enum FormatterType {
+    Glog(Glog<LocalTime>),
+    Default(Format<tracing_subscriber::fmt::format::Full, ()>),
+}
+
+impl PrefixedFormatter {
+    fn new(formatter: FormatterType) -> Self {
+        Self { formatter }
+    }
+}
+
+impl<S, N> FormatEvent<S, N> for PrefixedFormatter
+where
+    S: tracing::Subscriber + for<'a> LookupSpan<'a>,
+    N: for<'a> FormatFields<'a> + 'static,
+{
+    fn format_event(
+        &self,
+        ctx: &tracing_subscriber::fmt::FmtContext<'_, S, N>,
+        mut writer: Writer<'_>,
+        event: &tracing::Event<'_>,
+    ) -> std::fmt::Result {
+        let prefix = TASK_LOG_PREFIX
+            .try_with(|log_prefix| log_prefix.borrow().clone())
+            .unwrap_or(None);
+        if let Some(prefix) = prefix {
+            write!(writer, "[{}]", prefix)?;
+        }
+
+        match &self.formatter {
+            FormatterType::Glog(inner) => inner.format_event(ctx, writer, event),
+            FormatterType::Default(inner) => inner.format_event(ctx, writer, event),
+        }
+    }
+}
+
+/// A custom writer that routes log events to task-specific files with fallback.
+/// Checks if the current task has a specific log file configured,
+/// and if not, falls back to the provided fallback writer.
+#[derive(Debug, Clone)]
+struct TaskRoutingWriter<W> {
+    fallback_writer: W,
+}
+
+impl<W> TaskRoutingWriter<W> {
+    fn new(fallback_writer: W) -> Self {
+        Self { fallback_writer }
+    }
+}
+
+/// Wrapper that implements Write and routes to custom sink if defined, otherwise to fallback.
+struct CustomWriter<W> {
+    sink: Sink<W>,
+}
+
+enum Sink<W> {
+    Custom,
+    Fallback(W),
+}
+
+impl<W: std::io::Write> std::io::Write for CustomWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match &mut self.sink {
+            Sink::Custom => TASK_LOG_FILENAME
+                .try_with(|writer_ref| {
+                    let mut writer_borrow = writer_ref.borrow_mut();
+                    if let Some(ref mut writer) = *writer_borrow {
+                        writer.write(buf)
+                    } else {
+                        Err(std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            "Expected custom taks writer but found none.",
+                        ))
+                    }
+                })
+                .unwrap_or_else(|_| {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "Unable to access task writer.",
+                    ))
+                }),
+            Sink::Fallback(writer) => writer.write(buf),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match &mut self.sink {
+            Sink::Custom => TASK_LOG_FILENAME
+                .try_with(|log| {
+                    let mut log_borrow = log.borrow_mut();
+                    if let Some(ref mut writer) = *log_borrow {
+                        writer.flush()
+                    } else {
+                        Ok(())
+                    }
+                })
+                .unwrap_or(Ok(())),
+            Sink::Fallback(writer) => writer.flush(),
+        }
+    }
+}
+
+impl<'a, W> MakeWriter<'a> for TaskRoutingWriter<W>
+where
+    W: for<'writer> MakeWriter<'writer> + Clone,
+{
+    type Writer = CustomWriter<<W as MakeWriter<'a>>::Writer>;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        match TASK_LOG_FILENAME.try_with(|log| log.borrow().is_some()) {
+            Ok(_) => CustomWriter { sink: Sink::Custom },
+            Err(_) => CustomWriter {
+                sink: Sink::Fallback(self.fallback_writer.make_writer()),
+            },
+        }
+    }
+
+    fn make_writer_for(&'a self, _: &tracing::Metadata<'_>) -> Self::Writer {
+        self.make_writer()
+    }
+}
+
 /// Set up logging based on the given execution environment. We specialize logging based on how the
 /// logs are consumed. The destination scuba table is specialized based on the execution environment.
 /// mast -> monarch_tracing/prod
@@ -432,10 +596,22 @@ pub fn initialize_logging(clock: impl TelemetryClock + Send + 'static) {
         env::Env::Test => "debug",
     };
 
-    let writer: &NonBlocking = &WRITER_GUARD.0;
+    // Create writer and store the guard globally to prevent it from being dropped
+    let writer_box: Box<dyn Write + Send> = writer(&"");
+    let (non_blocking, guard) = tracing_appender::non_blocking::NonBlockingBuilder::default()
+        .lossy(false)
+        .finish(writer_box);
+
+    let writer_guard = Arc::new((non_blocking, guard));
+    let _ = WRITER_GUARD.set(writer_guard.clone());
+
+    let formatter = match env::Env::current() {
+        env::Env::Mast => FormatterType::Glog(Glog::default().with_timer(LocalTime::default())),
+        _ => FormatterType::Default(Format::default().without_time().with_target(false)),
+    };
     let glog = fmt::Layer::default()
-        .with_writer(writer.clone())
-        .event_format(Glog::default().with_timer(LocalTime::default()))
+        .with_writer(TaskRoutingWriter::new(writer_guard.0.clone()))
+        .event_format(PrefixedFormatter::new(formatter))
         .fmt_fields(GlogFields::default().compact())
         .with_ansi(std::io::stderr().is_terminal())
         .with_filter(
@@ -447,6 +623,22 @@ pub fn initialize_logging(clock: impl TelemetryClock + Send + 'static) {
                     .expect("Invalid log level"),
                 ))
                 .with_target("opentelemetry", LevelFilter::OFF), // otel has some log span under debug that we don't care about
+        );
+
+    let debug_layer = fmt::Layer::default()
+        .with_writer(std::io::stderr)
+        .event_format(Format::default().without_time().with_target(false))
+        .fmt_fields(GlogFields::default().compact())
+        .with_ansi(std::io::stderr().is_terminal())
+        .with_filter(
+            Targets::new()
+                .with_default(LevelFilter::from_level(
+                    tracing::Level::from_str(
+                        &std::env::var("RUST_LOG").unwrap_or(glog_level.to_string()),
+                    )
+                    .expect("Invalid log level"),
+                ))
+                .with_target("opentelemetry", LevelFilter::OFF),
         );
 
     use tracing_subscriber::Registry;
@@ -462,6 +654,11 @@ pub fn initialize_logging(clock: impl TelemetryClock + Send + 'static) {
         if let Err(err) = Registry::default()
             .with(if is_layer_enabled(DISABLE_OTEL_TRACING) {
                 Some(otel::tracing_layer())
+            } else {
+                None
+            })
+            .with(if is_layer_enabled(MONARCH_DEBUG) {
+                Some(debug_layer)
             } else {
                 None
             })

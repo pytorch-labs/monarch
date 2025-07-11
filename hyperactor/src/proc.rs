@@ -919,7 +919,14 @@ impl<A: Actor> Instance<A> {
     }
 
     async fn serve(mut self, mut actor: A) {
-        let result = self.run_actor_tree(&mut actor).await;
+        let actor_id = self.cell.actor_id().clone();
+        let filename = actor_id.name().to_string();
+        let prefix = format!("{}", actor_id);
+
+        let result = hyperactor_telemetry::with_task_scoped_logging(&filename, &prefix, || async {
+            self.run_actor_tree(&mut actor).await
+        })
+        .await;
 
         let actor_status = match result {
             Ok(_) => ActorStatus::Stopped,
@@ -1026,7 +1033,7 @@ impl<A: Actor> Instance<A> {
     /// Initialize and run the actor until it fails or is stopped.
     async fn run(&mut self, actor: &mut A) -> Result<(), ActorError> {
         hyperactor_telemetry::declare_static_counter!(MESSAGES_RECEIVED, "actor.messages_received");
-        tracing::debug!("entering actor loop: {}", self.self_id());
+        tracing::debug!("entering actor loop for {}", self.cell.actor_id());
 
         self.change_status(ActorStatus::Initializing);
         actor
