@@ -85,7 +85,8 @@ class RustTracer(trace.Tracer):
         record_exception: bool = True,
         set_status_on_exception: bool = True,
     ) -> trace.Span:
-        return SpanWrapper(name)
+        actor_id = str(attributes.get("actor_id")) if attributes else None
+        return SpanWrapper(name, actor_id)
 
     @contextmanager
     # pyre-fixme[15]: `start_as_current_span` overrides method defined in `Tracer`
@@ -102,7 +103,9 @@ class RustTracer(trace.Tracer):
         set_status_on_exception: bool = True,
         end_on_exit: bool = True,
     ) -> Iterator[trace.Span]:
-        with SpanWrapper(name) as s:
+        actor_id = str(attributes.get("actor_id")) if attributes else None
+
+        with SpanWrapper(name, actor_id) as s:
             with trace.use_span(s):
                 yield s
 
