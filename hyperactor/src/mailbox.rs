@@ -2360,7 +2360,6 @@ mod tests {
     use crate::channel::ChannelTransport;
     use crate::channel::dial;
     use crate::channel::serve;
-    use crate::channel::sim::AddressProxyPair;
     use crate::channel::sim::SimAddr;
     use crate::clock::Clock;
     use crate::clock::RealClock;
@@ -2561,23 +2560,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_sim_client_server() {
-        let proxy = ChannelAddr::any(channel::ChannelTransport::Unix);
-        simnet::start(
-            ChannelAddr::any(ChannelTransport::Unix),
-            proxy.clone(),
-            1000,
-        )
-        .unwrap();
-        let dst_addr =
-            SimAddr::new("local!1".parse::<ChannelAddr>().unwrap(), proxy.clone()).unwrap();
+        simnet::start();
+        let dst_addr = SimAddr::new("local!1".parse::<ChannelAddr>().unwrap()).unwrap();
         let src_to_dst = ChannelAddr::Sim(
             SimAddr::new_with_src(
-                AddressProxyPair {
-                    address: "local!0".parse::<ChannelAddr>().unwrap(),
-                    proxy: proxy.clone(),
-                },
+                "local!0".parse::<ChannelAddr>().unwrap(),
                 dst_addr.addr().clone(),
-                dst_addr.proxy().clone(),
             )
             .unwrap(),
         );

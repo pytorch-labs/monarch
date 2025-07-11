@@ -13,7 +13,6 @@ use std::sync::Arc;
 use anyhow::anyhow;
 use hyperactor::WorldId;
 use hyperactor::channel::ChannelAddr;
-use hyperactor::channel::ChannelTransport;
 use hyperactor::simnet;
 use hyperactor::simnet::TrainingScriptState;
 use hyperactor::simnet::simnet_handle;
@@ -52,29 +51,17 @@ impl SimulatorClient {
     #[new]
     fn new(py: Python, system_addr: String, world_size: i32) -> PyResult<Self> {
         signal_safe_block_on(py, async move {
-            let system_addr = system_addr
-                .parse::<ChannelAddr>()
-                .map_err(|err| PyValueError::new_err(err.to_string()))?;
-
-            let ChannelAddr::Sim(system_sim_addr) = &system_addr else {
-                return Err(PyValueError::new_err(format!(
-                    "bootstrap address should be a sim address: {}",
-                    system_addr
-                )));
-            };
-
-            simnet::start(
-                ChannelAddr::any(ChannelTransport::Unix),
-                system_sim_addr.proxy().clone(),
-                1000,
-            )
-            .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+            simnet::start();
 
             Ok(Self {
                 inner: Arc::new(Mutex::new(
-                    TensorEngineSimulator::new(system_addr)
-                        .await
-                        .map_err(|err| PyRuntimeError::new_err(err.to_string()))?,
+                    TensorEngineSimulator::new(
+                        system_addr
+                            .parse::<ChannelAddr>()
+                            .map_err(|err| PyValueError::new_err(err.to_string()))?,
+                    )
+                    .await
+                    .map_err(|err| PyRuntimeError::new_err(err.to_string()))?,
                 )),
                 world_size: world_size as usize,
             })

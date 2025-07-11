@@ -236,7 +236,7 @@ pub enum ChannelTransport {
     Local,
 
     /// Sim is a simulated channel for testing.
-    Sim(/*proxy address:*/ ChannelAddr),
+    Sim(/*simulated transport:*/ Box<ChannelTransport>),
 
     /// Transport over unix domain socket.
     Unix,
@@ -368,7 +368,7 @@ impl ChannelAddr {
                 Self::MetaTls(hostname, 0)
             }
             ChannelTransport::Local => Self::Local(0),
-            ChannelTransport::Sim(proxy) => sim::any(proxy),
+            ChannelTransport::Sim(transport) => sim::any(*transport),
             // This works because the file will be deleted but we know we have a unique file by this point.
             ChannelTransport::Unix => Self::Unix(net::unix::SocketAddr::from_str("").unwrap()),
         }
@@ -380,7 +380,7 @@ impl ChannelAddr {
             Self::Tcp(_) => ChannelTransport::Tcp,
             Self::MetaTls(_, _) => ChannelTransport::MetaTls,
             Self::Local(_) => ChannelTransport::Local,
-            Self::Sim(addr) => ChannelTransport::Sim(addr.proxy().clone()),
+            Self::Sim(addr) => ChannelTransport::Sim(Box::new(addr.transport())),
             Self::Unix(_) => ChannelTransport::Unix,
         }
     }
@@ -637,10 +637,9 @@ mod tests {
         }
 
         for (raw, parsed) in cases_ok.iter().zip(src_ok.clone()).map(|(a, _)| {
-            let proxy_str = "unix!@proxy_a";
             (
-                format!("sim!{},{}", a.0, &proxy_str),
-                ChannelAddr::Sim(SimAddr::new(a.1.clone(), proxy_str.parse().unwrap()).unwrap()),
+                format!("sim!{}", a.0),
+                ChannelAddr::Sim(SimAddr::new(a.1.clone()).unwrap()),
             )
         }) {
             assert_eq!(raw.parse::<ChannelAddr>().unwrap(), parsed);

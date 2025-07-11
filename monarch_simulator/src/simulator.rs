@@ -116,35 +116,14 @@ mod tests {
     use hyperactor::ProcId;
     use hyperactor::WorldId;
     use hyperactor::channel::ChannelAddr;
-    use hyperactor::channel::ChannelTransport;
     use hyperactor::simnet;
-    use rand::Rng;
-    use rand::distributions::Alphanumeric;
-
-    #[cfg(target_os = "linux")]
-    fn random_str() -> String {
-        rand::thread_rng()
-            .sample_iter(&Alphanumeric)
-            .take(24)
-            .map(char::from)
-            .collect::<String>()
-    }
 
     #[tracing_test::traced_test]
     #[tokio::test]
     async fn test_spawn_and_kill_mesh() {
-        let proxy = format!("unix!@{}", random_str());
+        simnet::start();
 
-        simnet::start(
-            ChannelAddr::any(ChannelTransport::Unix),
-            proxy.parse().unwrap(),
-            1000,
-        )
-        .unwrap();
-
-        let system_addr = format!("sim!unix!@system,{}", &proxy)
-            .parse::<ChannelAddr>()
-            .unwrap();
+        let system_addr = "sim!unix!@system".parse::<ChannelAddr>().unwrap();
         let mut simulator = super::TensorEngineSimulator::new(system_addr.clone())
             .await
             .unwrap();

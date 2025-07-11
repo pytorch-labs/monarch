@@ -38,7 +38,6 @@ use hyperactor::RefClient;
 use hyperactor::WorldId;
 use hyperactor::actor::Handler;
 use hyperactor::channel::ChannelAddr;
-use hyperactor::channel::sim::AddressProxyPair;
 use hyperactor::channel::sim::SimAddr;
 use hyperactor::clock::Clock;
 use hyperactor::clock::ClockKind;
@@ -762,13 +761,9 @@ impl ReportingRouter {
                 ChannelAddr::Sim(
                     SimAddr::new_with_src(
                         // source is the sender
-                        AddressProxyPair {
-                            address: sender_sim_addr.addr().clone(),
-                            proxy: sender_sim_addr.proxy().clone(),
-                        },
+                        sender_sim_addr.addr().clone(),
                         // dest remains unchanged
                         dest_sim_addr.addr().clone(),
-                        dest_sim_addr.proxy().clone(),
                     )
                     .unwrap(),
                 )
@@ -2800,19 +2795,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_sim_address() {
-        let proxy = ChannelAddr::any(ChannelTransport::Unix);
-        simnet::start(
-            ChannelAddr::any(ChannelTransport::Unix),
-            proxy.clone(),
-            1000,
-        )
-        .unwrap();
+        simnet::start();
 
         let src_id = id!(proc[0].actor);
-        let src_addr =
-            ChannelAddr::Sim(SimAddr::new("unix!@src".parse().unwrap(), proxy.clone()).unwrap());
-        let dst_addr =
-            ChannelAddr::Sim(SimAddr::new("unix!@dst".parse().unwrap(), proxy.clone()).unwrap());
+        let src_addr = ChannelAddr::Sim(SimAddr::new("unix!@src".parse().unwrap()).unwrap());
+        let dst_addr = ChannelAddr::Sim(SimAddr::new("unix!@dst".parse().unwrap()).unwrap());
         let (_, mut rx) = channel::serve::<MessageEnvelope>(src_addr.clone())
             .await
             .unwrap();
@@ -2844,7 +2831,7 @@ mod tests {
             panic!("Expected sim address");
         };
 
-        assert_eq!(addr.src().clone().unwrap().address.to_string(), "unix!@src");
+        assert_eq!(addr.src().clone().unwrap().to_string(), "unix!@src");
         assert_eq!(addr.addr().to_string(), "unix!@dst");
     }
 }

@@ -25,7 +25,7 @@ pub enum PyChannelTransport {
     MetaTls,
     Local,
     Unix,
-    // Sim(/*proxy address:*/ ChannelAddr), TODO kiuk@ add support
+    // Sim(/*transport:*/ ChannelTransport), TODO kiuk@ add support
 }
 
 #[pyclass(
@@ -131,9 +131,7 @@ mod tests {
 
     #[test]
     fn test_channel_unsupported_transport() -> PyResult<()> {
-        let sim_addr = ChannelAddr::any(ChannelTransport::Sim(ChannelAddr::any(
-            ChannelTransport::Unix,
-        )));
+        let sim_addr = ChannelAddr::any(ChannelTransport::Sim(Box::new(ChannelTransport::Unix)));
         let addr = PyChannelAddr { inner: sim_addr };
 
         assert!(addr.get_port().is_err());
