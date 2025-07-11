@@ -184,6 +184,7 @@ impl ProcMesh {
         let (router_channel_addr, router_rx) = channel::serve(ChannelAddr::any(alloc.transport()))
             .await
             .map_err(|err| AllocatorError::Other(err.into()))?;
+        tracing::info!("router channel started listening on addr: {router_channel_addr}");
         let router = DialMailboxRouter::new_with_default(global_router().boxed());
         for (rank, (addr, _agent)) in running.iter().enumerate() {
             let proc_id = proc_ids.get(rank).unwrap().clone();
@@ -202,6 +203,7 @@ impl ProcMesh {
         let (client_proc_addr, client_rx) = channel::serve(ChannelAddr::any(alloc.transport()))
             .await
             .map_err(|err| AllocatorError::Other(err.into()))?;
+        tracing::info!("client proc started listening on addr: {client_proc_addr}");
         let client_proc = Proc::new(
             client_proc_id.clone(),
             BoxedMailboxSender::new(router.clone()),
