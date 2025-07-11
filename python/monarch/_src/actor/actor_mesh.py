@@ -580,11 +580,6 @@ class _Actor:
         self.instance: object | None = None
 
     async def handle(
-        self, mailbox: Mailbox, message: PythonMessage, panic_flag: PanicFlag
-    ) -> None:
-        return await self.handle_cast(mailbox, 0, singleton_shape, message, panic_flag)
-
-    async def handle_cast(
         self,
         mailbox: Mailbox,
         rank: int,

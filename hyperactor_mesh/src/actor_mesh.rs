@@ -441,7 +441,7 @@ pub(crate) mod test_util {
             cx: &Context<Self>,
             GetRank(ok, reply): GetRank,
         ) -> Result<(), anyhow::Error> {
-            let (rank, _) = cx.cast_info()?;
+            let (rank, _) = cx.cast_info();
             reply.send(cx, rank)?;
             anyhow::ensure!(ok, "intentional error!"); // If `!ok` exit with `Err()`.
             Ok(())
