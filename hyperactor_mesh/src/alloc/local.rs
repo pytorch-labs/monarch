@@ -76,10 +76,15 @@ pub struct LocalAlloc {
     todo_rx: mpsc::UnboundedReceiver<Action>,
     stopped: bool,
     failed: bool,
+    transport: ChannelTransport,
 }
 
 impl LocalAlloc {
     fn new(spec: AllocSpec) -> Self {
+        Self::new_with_transport(spec, ChannelTransport::Local)
+    }
+
+    pub(crate) fn new_with_transport(spec: AllocSpec, transport: ChannelTransport) -> Self {
         let name = ShortUuid::generate();
         let (todo_tx, todo_rx) = mpsc::unbounded_channel();
         for rank in 0..spec.shape.slice().len() {
@@ -95,6 +100,7 @@ impl LocalAlloc {
             todo_rx,
             stopped: false,
             failed: false,
+            transport,
         }
     }
 
@@ -124,7 +130,7 @@ impl LocalAlloc {
         &self.name
     }
 
-    fn size(&self) -> usize {
+    pub(crate) fn size(&self) -> usize {
         self.spec.shape.slice().len()
     }
 }
@@ -250,7 +256,7 @@ impl Alloc for LocalAlloc {
     }
 
     fn transport(&self) -> ChannelTransport {
-        ChannelTransport::Local
+        self.transport.clone()
     }
 
     async fn log_source(&self) -> Result<LogSource, AllocatorError> {

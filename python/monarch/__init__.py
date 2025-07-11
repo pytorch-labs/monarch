@@ -116,6 +116,8 @@ _public_api = {
     "timer": ("monarch.timer", "timer"),
     "ProcessAllocator": ("monarch._src.actor.allocator", "ProcessAllocator"),
     "LocalAllocator": ("monarch._src.actor.allocator", "LocalAllocator"),
+    "SimAllocator": ("monarch._src_actor.allocator", "SimAllocator"),
+    "ActorFuture": ("monarch.future", "ActorFuture"),
     "builtins": ("monarch.builtins", "builtins"),
 }
 
@@ -184,6 +186,8 @@ __all__ = [
     "timer",
     "ProcessAllocator",
     "LocalAllocator",
+    "SimAllocator",
+    "ActorFuture",
     "builtins",
 ]
 assert sorted(__all__) == sorted(_public_api)

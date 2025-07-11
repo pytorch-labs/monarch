@@ -16,6 +16,7 @@ from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monar
     LocalAllocatorBase,
     ProcessAllocatorBase,
     RemoteAllocatorBase,
+    SimAllocatorBase,
 )
 
 from monarch._src.actor.future import Future
@@ -51,6 +52,28 @@ class ProcessAllocator(ProcessAllocatorBase):
 class LocalAllocator(LocalAllocatorBase):
     """
     An allocator that allocates by spawning actors into the current process.
+    """
+
+    def allocate(self, spec: AllocSpec) -> Future[Alloc]:
+        """
+        Allocate a process according to the provided spec.
+
+        Arguments:
+        - `spec`: The spec to allocate according to.
+
+        Returns:
+        - A future that will be fulfilled when the requested allocation is fulfilled.
+        """
+        return Future(
+            lambda: self.allocate_nonblocking(spec),
+            lambda: self.allocate_blocking(spec),
+        )
+
+
+@final
+class SimAllocator(SimAllocatorBase):
+    """
+    An allocator that allocates by spawning actors into the current process using simulated channels for transport
     """
 
     def allocate(self, spec: AllocSpec) -> Future[Alloc]:

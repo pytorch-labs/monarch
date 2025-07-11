@@ -100,6 +100,26 @@ class LocalAllocatorBase:
         """
         ...
 
+class SimAllocatorBase:
+    async def allocate_nonblocking(self, spec: AllocSpec) -> Alloc:
+        """
+        Allocate a process according to the provided spec.
+
+        Arguments:
+        - `spec`: The spec to allocate according to.
+        """
+        ...
+
+    def allocate_blocking(self, spec: AllocSpec) -> Alloc:
+        """
+        Allocate a process according to the provided spec, blocking until an
+        alloc is returned.
+
+        Arguments:
+        - `spec`: The spec to allocate according to.
+        """
+        ...
+
 class RemoteAllocatorBase:
     def __new__(
         cls,

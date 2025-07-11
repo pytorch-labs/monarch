@@ -28,6 +28,7 @@ use hyperactor_mesh::alloc::ProcessAllocator;
 use hyperactor_mesh::alloc::remoteprocess::RemoteProcessAlloc;
 use hyperactor_mesh::alloc::remoteprocess::RemoteProcessAllocHost;
 use hyperactor_mesh::alloc::remoteprocess::RemoteProcessAllocInitializer;
+use hyperactor_mesh::alloc::sim::SimAllocator;
 use hyperactor_mesh::log_source::LogSource;
 use hyperactor_mesh::shape::Shape;
 use ndslice::Slice;
@@ -219,6 +220,53 @@ impl PyLocalAllocator {
         let spec = spec.inner.clone();
         signal_safe_block_on(py, async move {
             LocalAllocator
+                .allocate(spec)
+                .await
+                .map(|inner| PyAlloc::new(Box::new(inner)))
+                .map_err(|e| PyRuntimeError::new_err(format!("{:?}", e)))
+        })?
+    }
+}
+
+#[pyclass(
+    name = "SimAllocatorBase",
+    module = "monarch._rust_bindings.monarch_hyperactor.alloc",
+    subclass
+)]
+pub struct PySimAllocator;
+
+#[pymethods]
+impl PySimAllocator {
+    #[new]
+    fn new() -> Self {
+        PySimAllocator {}
+    }
+
+    fn allocate_nonblocking<'py>(
+        &self,
+        py: Python<'py>,
+        spec: &PyAllocSpec,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        // We could use Bound here, and acquire the GIL inside of `future_into_py`, but
+        // it is rather awkward with the current APIs, and we can anyway support Arc/Mutex
+        // pretty easily.
+        let spec = spec.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            SimAllocator
+                .allocate(spec)
+                .await
+                .map(|inner| PyAlloc::new(Box::new(inner)))
+                .map_err(|e| PyRuntimeError::new_err(format!("{}", e)))
+        })
+    }
+
+    fn allocate_blocking<'py>(&self, py: Python<'py>, spec: &PyAllocSpec) -> PyResult<PyAlloc> {
+        // We could use Bound here, and acquire the GIL inside of
+        // `signal_safe_block_on`, but it is rather awkward with the current
+        // APIs, and we can anyway support Arc/Mutex pretty easily.
+        let spec = spec.inner.clone();
+        signal_safe_block_on(py, async move {
+            SimAllocator
                 .allocate(spec)
                 .await
                 .map(|inner| PyAlloc::new(Box::new(inner)))
@@ -479,6 +527,7 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
     hyperactor_mod.add_class::<PyAllocSpec>()?;
     hyperactor_mod.add_class::<PyProcessAllocator>()?;
     hyperactor_mod.add_class::<PyLocalAllocator>()?;
+    hyperactor_mod.add_class::<PySimAllocator>()?;
     hyperactor_mod.add_class::<PyRemoteAllocator>()?;
 
     Ok(())

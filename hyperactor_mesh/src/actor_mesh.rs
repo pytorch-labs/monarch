@@ -992,4 +992,10 @@ mod tests {
             buck_resources::get("monarch/hyperactor_mesh/bootstrap").unwrap()
         )));
     }
+
+    mod sim {
+        use crate::alloc::sim::SimAllocator;
+
+        actor_mesh_test_suite!(SimAllocator::new_and_start_simnet());
+    }
 }

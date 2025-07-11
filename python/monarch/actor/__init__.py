@@ -28,8 +28,8 @@ from monarch._src.actor.proc_mesh import (
     local_proc_mesh,
     proc_mesh,
     ProcMesh,
+    sim_proc_mesh,
 )
-
 
 __all__ = [
     "Accumulator",
@@ -47,6 +47,7 @@ __all__ = [
     "ProcMesh",
     "port",
     "send",
+    "sim_proc_mesh",
     "ValueMesh",
     "debug_client",
 ]

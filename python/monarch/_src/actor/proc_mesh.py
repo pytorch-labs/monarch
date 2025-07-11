@@ -35,7 +35,7 @@ from monarch._rust_bindings.monarch_hyperactor.proc_mesh import (
 )
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape, Slice
 from monarch._src.actor.actor_mesh import _Actor, _ActorMeshRefImpl, Actor, ActorMeshRef
-from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator
+from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator, SimAllocator
 from monarch._src.actor.code_sync import RsyncMeshClient, WorkspaceLocation
 from monarch._src.actor.code_sync.auto_reload import AutoReloadActor
 from monarch._src.actor.debugger import (
@@ -326,6 +326,33 @@ def local_proc_mesh(*, gpus: Optional[int] = None, hosts: int = 1) -> Future[Pro
     return Future(
         lambda: local_proc_mesh_nonblocking(gpus=gpus, hosts=hosts),
         lambda: local_proc_mesh_blocking(gpus=gpus, hosts=hosts),
+    )
+
+
+async def sim_proc_mesh_nonblocking(
+    *, gpus: Optional[int] = None, hosts: int = 1
+) -> ProcMesh:
+    if gpus is None:
+        gpus = _local_device_count()
+    spec = AllocSpec(AllocConstraints(), gpus=gpus, hosts=hosts)
+    allocator = SimAllocator()
+    alloc = await allocator.allocate(spec)
+    return await ProcMesh.from_alloc(alloc)
+
+
+def sim_proc_mesh_blocking(*, gpus: Optional[int] = None, hosts: int = 1) -> ProcMesh:
+    if gpus is None:
+        gpus = _local_device_count()
+    spec = AllocSpec(AllocConstraints(), gpus=gpus, hosts=hosts)
+    allocator = SimAllocator()
+    alloc = allocator.allocate(spec).get()
+    return ProcMesh.from_alloc(alloc).get()
+
+
+def sim_proc_mesh(*, gpus: Optional[int] = None, hosts: int = 1) -> Future[ProcMesh]:
+    return Future(
+        lambda: sim_proc_mesh_nonblocking(gpus=gpus, hosts=hosts),
+        lambda: sim_proc_mesh_blocking(gpus=gpus, hosts=hosts),
     )
 
 
