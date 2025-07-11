@@ -175,10 +175,10 @@ impl PickledMessageClientActor {
 #[pyclass(frozen, module = "monarch._rust_bindings.monarch_hyperactor.actor")]
 #[derive(Default, Clone, Serialize, Deserialize, Named, PartialEq)]
 pub struct PythonMessage {
-    pub(crate) method: String,
-    pub(crate) message: ByteBuf,
-    response_port: Option<EitherPortRef>,
-    rank: Option<usize>,
+    pub method: String,
+    pub message: ByteBuf,
+    pub response_port: Option<EitherPortRef>,
+    pub rank: Option<usize>,
 }
 
 impl PythonMessage {
@@ -289,7 +289,7 @@ impl PythonActorHandle {
         PythonMessage { cast = true },
     ],
 )]
-pub(super) struct PythonActor {
+pub struct PythonActor {
     /// The Python object that we delegate message handling to. An instance of
     /// `monarch.actor_mesh._Actor`.
     pub(super) actor: PyObject,
@@ -399,9 +399,13 @@ impl PanicFlag {
 }
 
 #[async_trait]
-impl Handler<PythonMessage> for PythonActor {
-    async fn handle(&mut self, cx: &Context<Self>, message: PythonMessage) -> anyhow::Result<()> {
-        let mailbox = PyMailbox {
+impl Handler<LocalPythonMessage> for PythonActor {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: LocalPythonMessage,
+    ) -> anyhow::Result<()> {
+        let mailbox: PyMailbox = PyMailbox {
             inner: cx.mailbox_for_py().clone(),
         };
         // Create a channel for signaling panics in async endpoints.
@@ -409,6 +413,16 @@ impl Handler<PythonMessage> for PythonActor {
         let (sender, receiver) = oneshot::channel();
 
         let future = Python::with_gil(|py| -> Result<_, SerializablePyErr> {
+            let mailbox = mailbox.into_bound_py_any(py).unwrap();
+            let local_state: Option<Vec<Bound<'_, PyAny>>> = message.local_state.map(|state| {
+                state
+                    .into_iter()
+                    .map(|e| match e {
+                        LocalState::Mailbox => mailbox.clone(),
+                        LocalState::PyObject(obj) => obj.into_bound_py_any(py).unwrap(),
+                    })
+                    .collect()
+            });
             let (rank, shape) = cx.cast_info();
             let awaitable = self.actor.call_method(
                 py,
@@ -417,10 +431,11 @@ impl Handler<PythonMessage> for PythonActor {
                     mailbox,
                     rank,
                     PyShape::from(shape),
-                    message,
+                    message.message,
                     PanicFlag {
                         sender: Some(sender),
                     },
+                    local_state,
                 ),
                 None,
             )?;
@@ -436,6 +451,20 @@ impl Handler<PythonMessage> for PythonActor {
         let handler = AsyncEndpointTask::spawn(cx, ()).await?;
         handler.run(cx, PythonTask::new(future), receiver).await?;
         Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<PythonMessage> for PythonActor {
+    async fn handle(&mut self, cx: &Context<Self>, message: PythonMessage) -> anyhow::Result<()> {
+        self.handle(
+            cx,
+            LocalPythonMessage {
+                message,
+                local_state: None,
+            },
+        )
+        .await
     }
 }
 
@@ -537,6 +566,17 @@ impl AsyncEndpointInvocationHandler for AsyncEndpointTask {
         cx.stop()?;
         Ok(())
     }
+}
+#[derive(Debug)]
+pub enum LocalState {
+    Mailbox,
+    PyObject(PyObject),
+}
+
+#[derive(Debug)]
+pub struct LocalPythonMessage {
+    pub message: PythonMessage,
+    pub local_state: Option<Vec<LocalState>>,
 }
 
 pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResult<()> {

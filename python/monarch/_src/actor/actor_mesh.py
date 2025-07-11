@@ -9,7 +9,9 @@
 import collections
 import contextvars
 import functools
+import importlib
 import inspect
+import itertools
 import logging
 import random
 import traceback
@@ -60,9 +62,12 @@ from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator
 from monarch._src.actor.future import Future
 from monarch._src.actor.pdb_wrapper import PdbWrapper
 
-from monarch._src.actor.pickle import flatten, unpickle
+from monarch._src.actor.pickle import flatten, unflatten
 
 from monarch._src.actor.shape import MeshTrait, NDSlice
+
+if TYPE_CHECKING:
+    from monarch._src.actor.proc_mesh import ProcMesh
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -137,36 +142,41 @@ class _ActorMeshRefImpl:
         self,
         mailbox: Mailbox,
         hy_actor_mesh: Optional[PythonActorMesh],
+        proc_mesh: "Optional[ProcMesh]",
         shape: Shape,
         actor_ids: List[ActorId],
     ) -> None:
         self._mailbox = mailbox
         self._actor_mesh = hy_actor_mesh
+        # actor meshes do not have a way to look this up at the moment,
+        # so we fake it here
+        self._proc_mesh = proc_mesh
         self._shape = shape
         self._please_replace_me_actor_ids = actor_ids
 
     @staticmethod
     def from_hyperactor_mesh(
-        mailbox: Mailbox, hy_actor_mesh: PythonActorMesh
+        mailbox: Mailbox, hy_actor_mesh: PythonActorMesh, proc_mesh: "ProcMesh"
     ) -> "_ActorMeshRefImpl":
         shape: Shape = hy_actor_mesh.shape
         return _ActorMeshRefImpl(
             mailbox,
             hy_actor_mesh,
+            proc_mesh,
             hy_actor_mesh.shape,
             [cast(ActorId, hy_actor_mesh.get(i)) for i in range(len(shape))],
         )
 
     @staticmethod
     def from_actor_id(mailbox: Mailbox, actor_id: ActorId) -> "_ActorMeshRefImpl":
-        return _ActorMeshRefImpl(mailbox, None, singleton_shape, [actor_id])
+        return _ActorMeshRefImpl(mailbox, None, None, singleton_shape, [actor_id])
 
     @staticmethod
     def from_actor_ref_with_shape(
         ref: "_ActorMeshRefImpl", shape: Shape
     ) -> "_ActorMeshRefImpl":
         return _ActorMeshRefImpl(
-            ref._mailbox, None, shape, ref._please_replace_me_actor_ids
+            ref._mailbox, None, None, shape, ref._please_replace_me_actor_ids
         )
 
     def __getstate__(
@@ -221,6 +231,11 @@ class _ActorMeshRefImpl:
 
     def __len__(self) -> int:
         return len(self._shape)
+
+    @property
+    def _name_pid(self):
+        actor_id0 = self._please_replace_me_actor_ids[0]
+        return actor_id0.actor_name, actor_id0.pid
 
 
 class Extent(NamedTuple):
@@ -367,13 +382,21 @@ class ActorEndpoint(Endpoint[P, R]):
         This sends the message to all actors but does not wait for any result.
         """
         self._signature.bind(None, *args, **kwargs)
+
+        objects, bytes = flatten((args, kwargs), _is_ref_or_mailbox)
         message = PythonMessage(
             self._name,
-            _pickle((args, kwargs)),
+            bytes,
             None if port is None else port._port_ref,
             None,
         )
-        self._actor_mesh.cast(message, selection)
+        refs = [obj for obj in objects if hasattr(obj, "__monarch_ref__")]
+        if not refs:
+            self._actor_mesh.cast(message, selection)
+        else:
+            importlib.import_module("monarch." + "mesh_controller").actor_send(
+                self, message, refs, port
+            )
         shape = self._actor_mesh._shape
         return Extent(shape.labels, shape.ndslice.sizes)
 
@@ -569,7 +592,7 @@ class PortReceiver(Generic[R]):
 
     def _process(self, msg: PythonMessage) -> R:
         # TODO: Try to do something more structured than a cast here
-        payload = cast(R, unpickle(msg.message, self._mailbox))
+        payload = cast(R, unflatten(msg.message, itertools.repeat(self._mailbox)))
         if msg.method == "result":
             return payload
         else:
@@ -616,7 +639,10 @@ class _Actor:
         shape: Shape,
         message: PythonMessage,
         panic_flag: PanicFlag,
+        local_state: List[Any] | None,
     ) -> None:
+        if local_state is None:
+            local_state = itertools.repeat(mailbox)
         port = (
             Port(message.response_port, mailbox, rank)
             if message.response_port
@@ -630,11 +656,13 @@ class _Actor:
 
             DebugContext.set(DebugContext())
 
-            args, kwargs = unpickle(message.message, mailbox)
+            args, kwargs = unflatten(message.message, local_state)
 
             if message.method == "__init__":
                 Class, *args = args
                 self.instance = Class(*args, **kwargs)
+                if port is not None:
+                    port.send("result", None)
                 return None
 
             if self.instance is None:
@@ -735,7 +763,15 @@ class _Actor:
 
 
 def _is_mailbox(x: object) -> bool:
+    if hasattr(x, "__monarch_ref__"):
+        raise NotImplementedError(
+            "Sending monarch tensor references directly to a port."
+        )
     return isinstance(x, Mailbox)
+
+
+def _is_ref_or_mailbox(x: object) -> bool:
+    return hasattr(x, "__monarch_ref__") or isinstance(x, Mailbox)
 
 
 def _pickle(obj: object) -> bytes:

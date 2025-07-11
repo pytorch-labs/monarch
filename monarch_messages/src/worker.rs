@@ -27,6 +27,7 @@ use hyperactor::Named;
 use hyperactor::RefClient;
 use hyperactor::Unbind;
 use hyperactor::reference::ActorId;
+use monarch_hyperactor::actor::PythonMessage;
 use monarch_types::SerializablePyErr;
 use ndslice::Slice;
 use pyo3::exceptions::PyValueError;
@@ -402,6 +403,33 @@ pub struct CallFunctionParams {
     pub remote_process_groups: Vec<Ref>,
 }
 
+/// The local state that has to be restored into the python_message during
+/// its unpickling.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum LocalState {
+    Ref(Ref),
+    Mailbox,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ActorCallParams {
+    pub seq: Seq,
+    /// The actor to call is (proc_id of stream worker, 'actor', 'index')
+    pub actor: String,
+    pub index: usize,
+    /// The PythonMessage object to send to the actor.
+    pub python_message: PythonMessage,
+    /// Referenceable objects to pass to the actor,
+    /// these will be put into the PythonMessage
+    /// during its unpickling. Because unpickling also needs to
+    /// restore mailboxes, we also have to keep track of which
+    /// members should just be the mailbox object.
+    pub local_state: Vec<LocalState>,
+
+    /// Tensors that will be mutated by the call.
+    pub mutates: Vec<Ref>,
+    pub stream: StreamRef,
+}
 /// Type of reduction for [`WorkerMessage::Reduce`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Reduction {
@@ -642,21 +670,30 @@ pub enum WorkerMessage {
 
     /// First use of the borrow on the receiving stream. This is a marker for
     /// synchronization.
-    BorrowFirstUse { borrow: u64 },
+    BorrowFirstUse {
+        borrow: u64,
+    },
 
     /// Last use of the borrow on the receiving stream. This is a marker for
     /// synchronization.
-    BorrowLastUse { borrow: u64 },
+    BorrowLastUse {
+        borrow: u64,
+    },
 
     /// Drop the borrow and free the resources associated with it.
-    BorrowDrop { borrow: u64 },
+    BorrowDrop {
+        borrow: u64,
+    },
 
     /// Delete these refs from the worker state.
     DeleteRefs(Vec<Ref>),
 
     /// A [`ControllerMessage::Status`] will be send to the controller
     /// when all streams have processed all the message sent before this one.
-    RequestStatus { seq: Seq, controller: bool },
+    RequestStatus {
+        seq: Seq,
+        controller: bool,
+    },
 
     /// Perform a reduction operation, using an efficient communication backend.
     /// Only NCCL is supported for now.
@@ -758,6 +795,7 @@ pub enum WorkerMessage {
         stream: StreamRef,
     },
 
+    SendResultOfActorCall(ActorCallParams),
     PipeRecv {
         seq: Seq,
         /// Result refs.

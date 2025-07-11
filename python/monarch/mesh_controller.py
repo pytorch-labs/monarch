@@ -30,18 +30,19 @@ from monarch._rust_bindings.monarch_extension.client import (  # @manual=//monar
     WorldState,
 )
 from monarch._rust_bindings.monarch_extension.mesh_controller import _Controller
+from monarch._rust_bindings.monarch_hyperactor.actor import PythonMessage
 from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
 from monarch._rust_bindings.monarch_hyperactor.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
     ActorId,
 )
-from monarch._src.actor.actor_mesh import Port, PortTuple
+from monarch._src.actor.actor_mesh import ActorMeshRef, Port, PortTuple
 from monarch._src.actor.shape import NDSlice
-from monarch.common import messages
+from monarch.common import device_mesh, messages, stream
 from monarch.common.controller_api import TController
 from monarch.common.invocation import Seq
+from monarch.common.messages import Referenceable, SendResultOfActorCall
 from monarch.common.stream import StreamRef
-from monarch.common.tensor import Tensor
-
+from monarch.common.tensor import InputChecker, Tensor
 from monarch.tensor_worker_main import _set_trace
 
 if TYPE_CHECKING:
@@ -255,3 +256,59 @@ class RemoteException(Exception):
         except Exception:
             traceback.print_exc()
             return "<exception formatting RemoteException>"
+
+
+def actor_send(
+    actor_mesh: ActorMeshRef,
+    message: PythonMessage,
+    refs: Sequence[Any],
+    port: Optional[Port[Any]],
+):
+    tensors = [ref for ref in refs if isinstance(ref, Tensor)]
+    # we have some monarch references, we need to ensure their
+    # proc_mesh matches that of the tensors we sent to it
+    chosen_stream = stream._active
+    for t in tensors:
+        if hasattr(t, "stream"):
+            chosen_stream = t.stream
+            break
+    with InputChecker(refs, lambda x: f"actor_call({x})") as checker:
+        checker.check_mesh_stream_local(device_mesh._active, chosen_stream)
+        # TODO: move propagators into Endpoint abstraction and run the propagator to get the
+        # mutates
+        checker.check_permission(())
+    selected_device_mesh = (
+        actor_mesh._actor_mesh._proc_mesh
+        and actor_mesh._actor_mesh._proc_mesh._device_mesh
+    )
+    if selected_device_mesh is not checker.mesh:
+        raise ValueError(
+            f"monarch Tensors sent to an actor must be located on the same process as the actor. However {checker.mesh} is not {selected_device_mesh}."
+            "NYI: better serialization of mesh names to make the mismatch more clear."
+        )
+
+    client = checker.mesh.client
+    stream_ref = chosen_stream._to_ref(client)
+
+    fut = (port, checker.mesh._ndslice) if port is not None else None
+
+    ident = client.new_node([], tensors, cast("OldFuture", fut))
+
+    actor_name, actor_index = actor_mesh._actor_mesh._name_pid
+    msg = SendResultOfActorCall(
+        ident,
+        actor_name,
+        actor_index,
+        message,
+        cast("List[Mailbox | Referenceable]", refs),
+        [],
+        stream_ref,
+    )
+
+    print("SENDING MESSAGE", msg)
+    client.send(checker.mesh._ndslice, msg)
+    # we have to ask for status updates
+    # from workers to be sure they have finished
+    # enough work to count this future as finished,
+    # and all potential errors have been reported
+    client._request_status()
