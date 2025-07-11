@@ -215,32 +215,20 @@ pub fn set_cast_info_on_headers(headers: &mut Attrs, rank: usize, shape: Shape, 
 }
 
 pub trait CastInfo {
-    /// Get the cast rank and cast shape, returning an error
-    /// if the relevant info isn't available.
-    fn cast_info(&self) -> anyhow::Result<(usize, Shape)>;
-
-    /// Get the cast rank and cast shape, returning None
-    /// if the relevant info isn't available.
-    fn maybe_cast_info(&self) -> Option<(usize, Shape)>;
+    /// Get the cast rank and cast shape.
+    /// If something wasn't explicitly sent via a cast, then
+    /// we represent it as the only member of a 0-dimensonal cast shape,
+    /// which is the same as a singleton.
+    fn cast_info(&self) -> (usize, Shape);
 }
 
 impl<A: Actor> CastInfo for Context<'_, A> {
-    fn cast_info(&self) -> anyhow::Result<(usize, Shape)> {
+    fn cast_info(&self) -> (usize, Shape) {
         let headers = self.headers();
-        let rank = headers
-            .get(CAST_RANK)
-            .ok_or_else(|| anyhow::anyhow!("{} not found in headers", CAST_RANK.name()))?;
-        let shape = headers
-            .get(CAST_SHAPE)
-            .ok_or_else(|| anyhow::anyhow!("{} not found in headers", CAST_SHAPE.name()))?
-            .clone();
-        Ok((*rank, shape))
-    }
-
-    fn maybe_cast_info(&self) -> Option<(usize, Shape)> {
-        let headers = self.headers();
-        headers
-            .get(CAST_RANK)
-            .map(|rank| headers.get(CAST_SHAPE).map(|shape| (*rank, shape.clone())))?
+        match (headers.get(CAST_RANK), headers.get(CAST_SHAPE)) {
+            (Some(rank), Some(shape)) => (*rank, shape.clone()),
+            (None, None) => (0, Shape::unity()),
+            _ => panic!("Expected either both rank and shape or neither"),
+        }
     }
 }

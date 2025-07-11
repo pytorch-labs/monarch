@@ -28,6 +28,7 @@ use hyperactor::message::Unbind;
 use hyperactor_mesh::comm::multicast::CastInfo;
 use monarch_types::PickledPyObject;
 use monarch_types::SerializablePyErr;
+use ndslice::Shape;
 use pyo3::conversion::IntoPyObjectExt;
 use pyo3::exceptions::PyBaseException;
 use pyo3::exceptions::PyRuntimeError;
@@ -408,34 +409,21 @@ impl Handler<PythonMessage> for PythonActor {
         let (sender, receiver) = oneshot::channel();
 
         let future = Python::with_gil(|py| -> Result<_, SerializablePyErr> {
-            let awaitable = match cx.maybe_cast_info() {
-                Some((rank, shape)) => self.actor.call_method(
-                    py,
-                    "handle_cast",
-                    (
-                        mailbox,
-                        rank,
-                        PyShape::from(shape),
-                        message,
-                        PanicFlag {
-                            sender: Some(sender),
-                        },
-                    ),
-                    None,
-                )?,
-                None => self.actor.call_method(
-                    py,
-                    "handle",
-                    (
-                        mailbox,
-                        message,
-                        PanicFlag {
-                            sender: Some(sender),
-                        },
-                    ),
-                    None,
-                )?,
-            };
+            let (rank, shape) = cx.cast_info();
+            let awaitable = self.actor.call_method(
+                py,
+                "handle",
+                (
+                    mailbox,
+                    rank,
+                    PyShape::from(shape),
+                    message,
+                    PanicFlag {
+                        sender: Some(sender),
+                    },
+                ),
+                None,
+            )?;
 
             pyo3_async_runtimes::into_future_with_locals(
                 self.get_task_locals(py),

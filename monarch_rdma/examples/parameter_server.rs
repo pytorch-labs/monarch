@@ -303,7 +303,7 @@ impl Handler<WorkerInit> for WorkerActor {
         cx: &Context<Self>,
         WorkerInit(ps_ref, rdma_managers): WorkerInit,
     ) -> Result<(), anyhow::Error> {
-        let (rank, _) = cx.cast_info()?;
+        let (rank, _) = cx.cast_info();
 
         println!("[worker_actor_{}] initializing", rank);
 
@@ -336,7 +336,7 @@ impl Handler<WorkerStep> for WorkerActor {
         cx: &Context<Self>,
         WorkerStep(reply): WorkerStep,
     ) -> Result<(), anyhow::Error> {
-        let (rank, _) = cx.cast_info()?;
+        let (rank, _) = cx.cast_info();
 
         for (grad_value, weight) in self
             .local_gradients
@@ -385,7 +385,7 @@ impl Handler<WorkerUpdate> for WorkerActor {
         cx: &Context<Self>,
         WorkerUpdate(reply): WorkerUpdate,
     ) -> Result<(), anyhow::Error> {
-        let (rank, _) = cx.cast_info()?;
+        let (rank, _) = cx.cast_info();
 
         println!(
             "[worker_actor_{}] pulling new weights from parameter server (before: {:?})",
@@ -418,7 +418,7 @@ impl Handler<WorkerUpdate> for WorkerActor {
 impl Handler<Log> for WorkerActor {
     /// Logs the worker's weights
     async fn handle(&mut self, cx: &Context<Self>, _: Log) -> Result<(), anyhow::Error> {
-        let (rank, _) = cx.cast_info()?;
+        let (rank, _) = cx.cast_info();
         println!("[worker_actor_{}] weights: {:?}", rank, self.weights_data);
         Ok(())
     }

@@ -118,11 +118,6 @@ async def test_accumulator() -> None:
 
 class MyActor:
     async def handle(
-        self, mailbox: Mailbox, message: PythonMessage, panic_flag: PanicFlag
-    ) -> None:
-        return None
-
-    async def handle_cast(
         self,
         mailbox: Mailbox,
         rank: int,
