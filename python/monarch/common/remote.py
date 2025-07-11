@@ -13,6 +13,7 @@ from logging import Logger
 from typing import (
     Any,
     Callable,
+    cast,
     Dict,
     Generic,
     Literal,
@@ -27,12 +28,17 @@ from typing import (
 import monarch.common.messages as messages
 
 import torch
+from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
+from monarch._rust_bindings.monarch_hyperactor.shape import Shape
+from monarch._src.actor.actor_mesh import Extent, Port, PortTuple, Selection
 
 from monarch.common import _coalescing, device_mesh, stream
+from monarch.common.future import Future as OldFuture
 
 if TYPE_CHECKING:
     from monarch.common.client import Client
 
+from monarch._src.actor.actor_mesh import Endpoint
 from monarch.common.device_mesh import RemoteProcessGroup
 from monarch.common.fake import fake_call
 
@@ -48,9 +54,9 @@ from monarch.common.function_caching import (
     TensorGroup,
     TensorPlaceholder,
 )
-from monarch.common.future import Future
 from monarch.common.messages import Dims
-from monarch.common.tensor import dtensor_check, dtensor_dispatch
+
+from monarch.common.tensor import dtensor_check, dtensor_dispatch, InputChecker
 from monarch.common.tree import flatten, tree_map
 from torch import autograd, distributed as dist
 from typing_extensions import ParamSpec
@@ -62,11 +68,83 @@ R = TypeVar("R")
 T = TypeVar("T")
 
 
-class Remote(Generic[P, R]):
+class Remote(Generic[P, R], Endpoint[P, R]):
     def __init__(self, impl: Any, propagator_arg: Propagator):
         self._remote_impl = impl
         self._propagator_arg = propagator_arg
         self._cache: Optional[dict] = None
+
+    def _send(
+        self,
+        args: Tuple[Any, ...],
+        kwargs: Dict[str, Any],
+        port: "Optional[Port]" = None,
+        selection: Selection = "all",
+    ) -> Extent:
+        ambient_mesh = device_mesh._active
+        propagator = self._fetch_propagate
+        rfunction = self._maybe_resolvable
+        # a None rfunction is an optimization for the identity function (lambda x: x)
+        if rfunction is None:
+            preprocess_message = None
+            rfunction = ResolvableFunctionFromPath("ident")
+        else:
+            preprocess_message = rfunction
+        _, dtensors, mutates, tensor_mesh = dtensor_check(
+            propagator, rfunction, args, kwargs, ambient_mesh, stream._active
+        )
+
+        if ambient_mesh is None:
+            raise ValueError(
+                "Calling a 'remote' monarch function requires an active proc_mesh (`with proc_mesh.activate():`)"
+            )
+
+        if not ambient_mesh._is_subset_of(tensor_mesh):
+            raise ValueError(
+                f"The current mesh {ambient_mesh} is not a subset of the mesh on which the tensors being used are defined {tensor_mesh}"
+            )
+
+        client: "Client" = ambient_mesh.client
+        if _coalescing.is_active(client):
+            raise NotImplementedError("NYI: fetching results during a coalescing block")
+        stream_ref = stream._active._to_ref(client)
+
+        fut = (port, ambient_mesh._ndslice)
+
+        ident = client.new_node(mutates, dtensors, cast("OldFuture", fut))
+
+        client.send(
+            ambient_mesh._ndslice,
+            messages.SendValue(
+                ident,
+                None,
+                mutates,
+                preprocess_message,
+                args,
+                kwargs,
+                stream_ref,
+            ),
+        )
+        # we have to ask for status updates
+        # from workers to be sure they have finished
+        # enough work to count this future as finished,
+        # and all potential errors have been reported
+        client._request_status()
+        return Extent(ambient_mesh._labels, ambient_mesh._ndslice.sizes)
+
+    def _port(self, once: bool = False) -> "PortTuple[R]":
+        ambient_mesh = device_mesh._active
+        if ambient_mesh is None:
+            raise ValueError(
+                "FIXME - cannot create a port without an active proc_mesh, because there is not way to create a port without a mailbox"
+            )
+        mesh_controller = getattr(ambient_mesh.client, "_mesh_controller", None)
+        if mesh_controller is None:
+            raise ValueError(
+                "Cannot create raw port objects with an old-style tensor engine controller."
+            )
+        mailbox: Mailbox = mesh_controller._mailbox
+        return PortTuple.create(mailbox, once)
 
     @property
     def _resolvable(self):
@@ -74,11 +152,7 @@ class Remote(Generic[P, R]):
 
     @property
     def _maybe_resolvable(self):
-        return (
-            None
-            if self._remote_impl is None
-            else resolvable_function(self._remote_impl)
-        )
+        return None if self._remote_impl is None else self._resolvable
 
     def _propagate(self, args, kwargs, fake_args, fake_kwargs):
         if self._propagator_arg is None or self._propagator_arg == "cached":
@@ -102,7 +176,7 @@ class Remote(Generic[P, R]):
             raise ValueError("Must specify explicit callable for pipe")
         return self._propagate(args, kwargs, fake_args, fake_kwargs)
 
-    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
+    def rref(self, *args: P.args, **kwargs: P.kwargs) -> R:
         return dtensor_dispatch(
             self._resolvable,
             self._propagate,
@@ -111,6 +185,9 @@ class Remote(Generic[P, R]):
             device_mesh._active,
             stream._active,
         )
+
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
+        return self.rref(*args, **kwargs)
 
 
 # This can't just be Callable because otherwise we are not
@@ -153,12 +230,39 @@ remote_identity = Remote(None, lambda x: x)
 
 
 def call_on_shard_and_fetch(
+    remote: Remote[P, R], *args, shard: Dict[str, int] | None = None, **kwargs
+) -> OldFuture[R]:
+    # We have to flatten the tensors twice: first to discover
+    # which mesh we are working on to shard it, and then again when doing the
+    # dtensor_check in send. This complexity is a consequence of doing
+    # implicit inference of the mesh from the tensors.
+    dtensors, unflatten = flatten((args, kwargs), lambda x: isinstance(x, torch.Tensor))
+    with InputChecker.from_flat_args(
+        remote._remote_impl, dtensors, unflatten
+    ) as checker:
+        checker.check_mesh_stream_local(device_mesh._active, stream._active)
+
+        if not hasattr(checker.mesh.client, "_mesh_controller"):
+            return _old_call_on_shard_and_fetch(
+                remote,
+                *args,
+                shard=shard,
+                **kwargs,
+            )
+
+        selected_slice = checker.mesh._process(shard)
+        shard_mesh = checker.mesh._new_with_shape(Shape(["_"], selected_slice))
+        with shard_mesh.activate():
+            return cast("OldFuture[R]", remote.call_one(*args, **kwargs))
+
+
+def _old_call_on_shard_and_fetch(
     remote_obj: Remote[P, R],
     /,
     *args: object,
     shard: dict[str, int] | None = None,
     **kwargs: object,
-) -> Future[R]:
+) -> OldFuture[R]:
     """
     Call `function` at the coordinates `shard` of the current device mesh, and retrieve the result as a Future.
         function - the remote function to call

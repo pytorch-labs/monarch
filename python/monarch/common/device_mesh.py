@@ -32,6 +32,7 @@ from monarch._src.actor.shape import MeshTrait, NDSlice, Shape
 
 from torch.utils._python_dispatch import TorchDispatchMode
 from torch.utils._pytree import tree_map
+from torch.utils.weak import weakref
 
 from ._tensor_to_table import tensor_to_table
 from .context_manager import activate_first_context_manager
@@ -170,6 +171,7 @@ class DeviceMesh(Referenceable, MeshTrait):
         self.exit = lambda: None
         self.ref = None
         self._active_mesh_context = None
+        self._subset_of: Optional[weakref.ReferenceType["DeviceMesh"]] = None
 
     def define_remotely(self):
         if self.ref is None:
@@ -227,7 +229,16 @@ class DeviceMesh(Referenceable, MeshTrait):
     def _new_with_shape(self, shape: Shape) -> "DeviceMesh":
         mesh = DeviceMesh(self.client, shape.ndslice, tuple(shape.labels))
         mesh.exit = self.exit
+        mesh._subset_of = weakref.ref(self)
         return mesh
+
+    def _is_subset_of(self, other: "DeviceMesh") -> bool:
+        p = self
+        while p is not None:
+            if p is other:
+                return True
+            p = None if p._subset_of is None else p._subset_of()
+        return False
 
     def __call__(self, **kwargs) -> "DeviceMesh":
         """

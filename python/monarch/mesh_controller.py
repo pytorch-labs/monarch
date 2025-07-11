@@ -204,8 +204,7 @@ class MeshClient(Client):
         response_port = None
         if future is not None:
             # method annotation is a lie to make Client happy
-            port = cast("Port[Any]", future)
-            slice = NDSlice.new_row_major([])
+            port, slice = cast("Tuple[Port[Any], NDSlice]", future)
             response_port = (port._port_ref.port_id, slice)
         self._mesh_controller.node(seq, defs, uses, response_port, tracebacks)
         return seq

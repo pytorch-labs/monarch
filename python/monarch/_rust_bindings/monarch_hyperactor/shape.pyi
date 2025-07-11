@@ -5,7 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import collections.abc
-from typing import Dict, final, Iterator, List, overload
+from typing import Dict, final, Iterator, List, overload, Sequence
 
 @final
 class Slice:
@@ -90,7 +90,7 @@ class Slice:
         ...
 
     @staticmethod
-    def new_row_major(ranks: list[int]) -> "Slice":
+    def new_row_major(ranks: Sequence[int]) -> "Slice":
         """Returns a contiguous slice composed of ranks"""
         ...
 
@@ -106,7 +106,7 @@ class Shape:
     - `labels`: A list of strings representing the labels for each dimension.
     - `slice`: An Slice object representing the shape.
     """
-    def __new__(cls, labels: List[str], slice: Slice) -> "Shape": ...
+    def __new__(cls, labels: Sequence[str], slice: Slice) -> "Shape": ...
     @property
     def ndslice(self) -> Slice: ...
     @property

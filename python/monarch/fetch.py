@@ -9,7 +9,7 @@
 This is a utility file for fetching a shard of a tensor from remote.
 """
 
-from typing import TypeVar
+from typing import cast, TypeVar
 
 from monarch.common.device_mesh import no_mesh
 
@@ -37,7 +37,7 @@ def fetch_shard(
             shard = {}
         shard.update(kwargs)
 
-    return call_on_shard_and_fetch(remote_identity, obj, shard=shard)
+    return cast("Future[T]", call_on_shard_and_fetch(remote_identity, obj, shard=shard))
 
 
 def show(obj: T, shard: dict[str, int] | None = None, **kwargs: int) -> object:
