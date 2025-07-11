@@ -103,7 +103,7 @@ class ProcMesh(MeshTrait):
         if _mock_shape is None and HAS_TENSOR_ENGINE:
             # type: ignore[21]
             self._rdma_manager = self._spawn_blocking("rdma_manager", RDMAManager)
-        if not _is_initializing_debugger:
+        if not _is_initializing_debugger and _mock_shape is None:
             self._debug_manager = self._spawn_blocking(
                 _DEBUG_MANAGER_ACTOR_NAME, DebugManager, debug_client()
             )
