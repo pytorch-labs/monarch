@@ -25,7 +25,6 @@ use crate::alloc::Allocator;
 use crate::alloc::AllocatorError;
 use crate::alloc::LocalAlloc;
 use crate::alloc::ProcState;
-use crate::log_source::LogSource;
 use crate::shortuuid::ShortUuid;
 
 /// An allocator that runs procs in the local process with network traffic going through simulated channels.
@@ -108,10 +107,6 @@ impl Alloc for SimAlloc {
 
     async fn stop(&mut self) -> Result<(), AllocatorError> {
         self.inner.stop().await
-    }
-
-    async fn log_source(&self) -> Result<LogSource, AllocatorError> {
-        self.inner.log_source().await
     }
 }
 

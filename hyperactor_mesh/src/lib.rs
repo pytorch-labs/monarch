@@ -19,7 +19,7 @@ pub mod bootstrap;
 pub mod code_sync;
 pub mod comm;
 pub mod connect;
-pub mod log_source;
+pub mod logging;
 pub mod mesh;
 pub mod mesh_selection;
 mod metrics;

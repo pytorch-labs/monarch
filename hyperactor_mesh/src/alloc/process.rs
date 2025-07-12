@@ -50,7 +50,6 @@ use crate::bootstrap;
 use crate::bootstrap::Allocator2Process;
 use crate::bootstrap::Process2Allocator;
 use crate::bootstrap::Process2AllocatorMessage;
-use crate::log_source::LogSource;
 use crate::shortuuid::ShortUuid;
 
 /// The maximum number of log lines to tail keep for managed processes.
@@ -87,9 +86,6 @@ impl Allocator for ProcessAllocator {
         let (bootstrap_addr, rx) = channel::serve(ChannelAddr::any(ChannelTransport::Unix))
             .await
             .map_err(anyhow::Error::from)?;
-        let log_source = LogSource::new_with_local_actor()
-            .await
-            .map_err(AllocatorError::from)?;
 
         let name = ShortUuid::generate();
         let n = spec.shape.slice().len();
@@ -98,7 +94,6 @@ impl Allocator for ProcessAllocator {
             world_id: WorldId(name.to_string()),
             spec: spec.clone(),
             bootstrap_addr,
-            log_source,
             rx,
             index: 0,
             active: HashMap::new(),
@@ -117,7 +112,6 @@ pub struct ProcessAlloc {
     world_id: WorldId, // to provide storage
     spec: AllocSpec,
     bootstrap_addr: ChannelAddr,
-    log_source: LogSource,
     rx: channel::ChannelRx<Process2Allocator>,
     index: usize,
     active: HashMap<usize, Child>,
@@ -490,10 +484,6 @@ impl Alloc for ProcessAlloc {
 
     fn transport(&self) -> ChannelTransport {
         ChannelTransport::Unix
-    }
-
-    async fn log_source(&self) -> Result<LogSource, AllocatorError> {
-        Ok(self.log_source.clone())
     }
 
     async fn stop(&mut self) -> Result<(), AllocatorError> {

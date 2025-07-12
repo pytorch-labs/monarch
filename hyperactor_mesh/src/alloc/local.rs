@@ -33,7 +33,6 @@ use crate::alloc::AllocSpec;
 use crate::alloc::Allocator;
 use crate::alloc::AllocatorError;
 use crate::alloc::ProcState;
-use crate::log_source::LogSource;
 use crate::proc_mesh::mesh_agent::MeshAgent;
 use crate::shortuuid::ShortUuid;
 
@@ -257,14 +256,6 @@ impl Alloc for LocalAlloc {
 
     fn transport(&self) -> ChannelTransport {
         self.transport.clone()
-    }
-
-    async fn log_source(&self) -> Result<LogSource, AllocatorError> {
-        // Local alloc does not need to stream logs back.
-        // The client can subscribe to it but local actors will not stream logs into it.
-        LogSource::new_with_local_actor()
-            .await
-            .map_err(AllocatorError::from)
     }
 
     async fn stop(&mut self) -> Result<(), AllocatorError> {
