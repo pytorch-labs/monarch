@@ -1310,7 +1310,7 @@ impl cap::sealed::CanSend for Mailbox {
                 .get_or_init(DashSet::new)
                 .insert(actor_id.clone())
             {
-                let bt = std::backtrace::Backtrace::capture();
+                let bt = std::backtrace::Backtrace::force_capture();
                 tracing::warn!(
                     actor_id = ?actor_id,
                     backtrace = ?bt,
@@ -2834,7 +2834,7 @@ mod tests {
                     "returned in unit test".to_string(),
                 ));
                 UndeliverableMailboxSender
-                    .post(envelope, /*unused */ monitored_return_handle().clone());
+                    .post(envelope, /*unused */ monitored_return_handle());
             }
         });
         drop(return_handle);
