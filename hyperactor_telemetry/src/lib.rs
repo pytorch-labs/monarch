@@ -14,10 +14,6 @@
 #![feature(formatting_options)]
 
 // TODO:ehedeman Remove or replace with better config once telemetry perf issues are solved
-/// Environment variable to disable the glog logging layer.
-/// Set to "1" to disable glog logging output.
-pub const DISABLE_GLOG_TRACING: &str = "DISABLE_GLOG_TRACING";
-
 /// Environment variable to disable the OpenTelemetry logging layer.
 /// Set to "1" to disable OpenTelemetry  tracing.
 pub const DISABLE_OTEL_TRACING: &str = "DISABLE_OTEL_TRACING";
@@ -83,23 +79,18 @@ impl TelemetryClock for DefaultTelemetryClock {
 
 // Need to keep this around so that the tracing subscriber doesn't drop the writer.
 lazy_static! {
-    static ref WRITER_GUARD: Arc<(NonBlocking, WorkerGuard)> = {
-        let writer: Box<dyn Write + Send> = match env::Env::current() {
-            env::Env::Local | env::Env::Test | env::Env::MastEmulator => {
+    static ref FILE_WRITER_GUARD: Arc<(NonBlocking, WorkerGuard)> = {
+        let writer: Box<dyn Write + Send> = match RollingFileAppender::builder()
+            .rotation(Rotation::DAILY)
+            .filename_prefix("dedicated_log_monarch")
+            .filename_suffix("log")
+            .build("/logs/")
+        {
+            Ok(file) => Box::new(file),
+            Err(e) => {
+                tracing::warn!("unable to create custom log file: {}", e);
                 Box::new(std::io::stderr())
             }
-            env::Env::Mast => match RollingFileAppender::builder()
-                .rotation(Rotation::DAILY)
-                .filename_prefix("dedicated_log_monarch")
-                .filename_suffix("log")
-                .build("/logs/")
-            {
-                Ok(file) => Box::new(file),
-                Err(e) => {
-                    tracing::warn!("unable to create custom log file: {}", e);
-                    Box::new(std::io::stderr())
-                }
-            },
         };
         return Arc::new(
             tracing_appender::non_blocking::NonBlockingBuilder::default()
@@ -425,16 +416,37 @@ macro_rules! declare_static_histogram {
 /// to get this behavior.
 pub fn initialize_logging(clock: impl TelemetryClock + Send + 'static) {
     swap_telemetry_clock(clock);
-    let glog_level = match env::Env::current() {
+    let file_log_level = match env::Env::current() {
         env::Env::Local => "info",
         env::Env::MastEmulator => "info",
         env::Env::Mast => "info",
         env::Env::Test => "debug",
     };
+    let file_writer: &NonBlocking = &FILE_WRITER_GUARD.0;
+    let file_layer = fmt::Layer::default()
+        .with_writer(file_writer.clone())
+        .event_format(Glog::default().with_timer(LocalTime::default()))
+        .fmt_fields(GlogFields::default().compact())
+        .with_ansi(false)
+        .with_filter(
+            Targets::new()
+                .with_default(LevelFilter::from_level(
+                    tracing::Level::from_str(
+                        &std::env::var("MONARCH_FILE_LOG").unwrap_or(file_log_level.to_string()),
+                    )
+                    .expect("Invalid log level"),
+                ))
+                .with_target("opentelemetry", LevelFilter::OFF), // otel has some log span under debug that we don't care about
+        );
 
-    let writer: &NonBlocking = &WRITER_GUARD.0;
-    let glog = fmt::Layer::default()
-        .with_writer(writer.clone())
+    let stderr_log_level = match env::Env::current() {
+        env::Env::Local => "error",
+        env::Env::MastEmulator => "info",
+        env::Env::Mast => "error",
+        env::Env::Test => "debug",
+    };
+    let stderr_layer = fmt::Layer::default()
+        .with_writer(std::io::stderr)
         .event_format(Glog::default().with_timer(LocalTime::default()))
         .fmt_fields(GlogFields::default().compact())
         .with_ansi(std::io::stderr().is_terminal())
@@ -442,7 +454,8 @@ pub fn initialize_logging(clock: impl TelemetryClock + Send + 'static) {
             Targets::new()
                 .with_default(LevelFilter::from_level(
                     tracing::Level::from_str(
-                        &std::env::var("RUST_LOG").unwrap_or(glog_level.to_string()),
+                        &std::env::var("MONARCH_STDERR_LOG")
+                            .unwrap_or(stderr_log_level.to_string()),
                     )
                     .expect("Invalid log level"),
                 ))
@@ -465,16 +478,13 @@ pub fn initialize_logging(clock: impl TelemetryClock + Send + 'static) {
             } else {
                 None
             })
-            .with(if is_layer_enabled(DISABLE_GLOG_TRACING) {
-                Some(glog)
-            } else {
-                None
-            })
             .with(if is_layer_enabled(DISABLE_RECORDER_TRACING) {
                 Some(recorder().layer())
             } else {
                 None
             })
+            .with(file_layer)
+            .with(stderr_layer)
             .try_init()
         {
             tracing::debug!("logging already initialized for this process: {}", err);
@@ -502,13 +512,8 @@ pub fn initialize_logging(clock: impl TelemetryClock + Send + 'static) {
     #[cfg(not(fbcode_build))]
     {
         if let Err(err) = Registry::default()
-            .with(
-                if std::env::var(DISABLE_GLOG_TRACING).unwrap_or_default() != "1" {
-                    Some(glog)
-                } else {
-                    None
-                },
-            )
+            .with(file_layer)
+            .with(stderr_layer)
             .with(
                 if std::env::var(DISABLE_RECORDER_TRACING).unwrap_or_default() != "1" {
                     Some(recorder().layer())
