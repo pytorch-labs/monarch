@@ -565,7 +565,20 @@ impl Selection {
         opts: &EvalOpts,
         slice: &'a Slice,
     ) -> Result<Box<dyn Iterator<Item = usize> + 'a>, ShapeError> {
-        Ok(Self::validate(self, opts, slice)?.eval_rec(slice, vec![0; slice.num_dim()], 0))
+        // Canonically embed 0D as 1D (extent 1).
+        if slice.num_dim() == 0 {
+            let slice = Slice::new(slice.offset(), vec![1], vec![1]).unwrap();
+            return Ok(Box::new(
+                self.validate(opts, &slice)?
+                    .eval_rec(&slice, vec![0; 1], 0)
+                    .collect::<Vec<_>>()
+                    .into_iter(),
+            ));
+        }
+
+        Ok(self
+            .validate(opts, slice)?
+            .eval_rec(slice, vec![0; slice.num_dim()], 0))
     }
 
     fn eval_rec<'a>(
@@ -1829,6 +1842,17 @@ mod tests {
             );
         }
         assert_matches!(res.as_slice(), [i, j] if *i < *j && *i < 8 && *j < 8);
+    }
+
+    #[test]
+    fn test_eval_zero_dim_slice() {
+        let slice_0d = Slice::new(1, vec![], vec![]).unwrap();
+        assert_eq!(eval(true_(), &slice_0d), vec![1]);
+        assert_eq!(eval(false_(), &slice_0d), vec![]);
+        assert_eq!(eval(all(true_()), &slice_0d), vec![1]);
+        assert_eq!(eval(all(false_()), &slice_0d), vec![]);
+        assert_eq!(eval(union(true_(), true_()), &slice_0d), vec![1]);
+        assert_eq!(eval(intersection(true_(), false_()), &slice_0d), vec![]);
     }
 
     #[test]

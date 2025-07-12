@@ -378,6 +378,14 @@ impl RoutingFrame {
         _chooser: &mut dyn FnMut(&Choice) -> usize,
         f: &mut dyn FnMut(RoutingStep) -> ControlFlow<()>,
     ) -> ControlFlow<()> {
+        if self.slice.num_dim() == 0 {
+            // Canonically embed 0D as 1D (extent 1).
+            let embedded = Slice::new(self.slice.offset(), vec![1], vec![1]).unwrap();
+            let mut this = self.clone();
+            this.slice = Arc::new(embedded);
+            this.here = vec![0];
+            return this.next_steps(_chooser, f);
+        }
         let selection = self
             .selection
             .clone()
@@ -1589,5 +1597,49 @@ mod tests {
             result.is_err(),
             "Expected panic due to overdelivery, but no panic occurred"
         );
+    }
+
+    #[test]
+    fn test_next_steps_zero_dim_slice() {
+        use std::ops::ControlFlow;
+
+        use crate::selection::dsl::*;
+
+        let slice = Slice::new(42, vec![], vec![]).unwrap();
+        let selection = true_();
+        let frame = RoutingFrame::root(selection, slice.clone());
+
+        let mut steps = vec![];
+        let _ = frame.next_steps(
+            &mut |_| panic!("Unexpected Choice in 0D test"),
+            &mut |step| {
+                steps.push(step);
+                ControlFlow::Continue(())
+            },
+        );
+
+        assert_eq!(steps.len(), 1);
+        let step = steps[0].as_forward().unwrap();
+        assert_eq!(step.here, vec![0]);
+        assert!(step.deliver_here());
+        assert_eq!(step.slice.location(&step.here).unwrap(), 42);
+
+        let selection = all(false_());
+        let frame = RoutingFrame::root(selection, slice);
+
+        let mut steps = vec![];
+        let _ = frame.next_steps(
+            &mut |_| panic!("Unexpected Choice in 0D test"),
+            &mut |step| {
+                steps.push(step);
+                ControlFlow::Continue(())
+            },
+        );
+
+        assert_eq!(steps.len(), 1);
+        let step = steps[0].as_forward().unwrap();
+        assert_eq!(step.here, vec![0]);
+        assert!(!step.deliver_here());
+        assert_eq!(step.slice.location(&step.here).unwrap(), 42);
     }
 }
