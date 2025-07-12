@@ -560,12 +560,39 @@ impl Selection {
     /// feasible because the precise type depends on dynamic selection
     /// structure. Boxing erases this variability and allows a uniform
     /// return type.
+    ///
+    /// # Canonical handling of 0-dimensional slices
+    ///
+    /// A `Slice` with zero dimensions represents the empty product
+    /// `∏_{i=1}^{0} Xᵢ`, which has exactly one element: the empty
+    /// tuple. To ensure that evaluation behaves uniformly across
+    /// dimensions, we canonically embed the 0-dimensional case into a
+    /// 1-dimensional slice of extent 1. That is, we reinterpret the
+    /// 0D slice as `Slice::new(offset, [1], [1])`, which is
+    /// semantically equivalent and enables evaluation to proceed
+    /// through the normal recursive machinery without special-casing.
+    /// The result is that selection expressions are always evaluated
+    /// over a slice with at least one dimension, and uniform logic
+    /// applies.
     pub fn eval<'a>(
         &self,
         opts: &EvalOpts,
         slice: &'a Slice,
     ) -> Result<Box<dyn Iterator<Item = usize> + 'a>, ShapeError> {
-        Ok(Self::validate(self, opts, slice)?.eval_rec(slice, vec![0; slice.num_dim()], 0))
+        // Canonically embed 0D as 1D (extent 1).
+        if slice.num_dim() == 0 {
+            let slice = Slice::new(slice.offset(), vec![1], vec![1]).unwrap();
+            return Ok(Box::new(
+                self.validate(opts, &slice)?
+                    .eval_rec(&slice, vec![0; 1], 0)
+                    .collect::<Vec<_>>()
+                    .into_iter(),
+            ));
+        }
+
+        Ok(self
+            .validate(opts, slice)?
+            .eval_rec(slice, vec![0; slice.num_dim()], 0))
     }
 
     fn eval_rec<'a>(
@@ -1829,6 +1856,21 @@ mod tests {
             );
         }
         assert_matches!(res.as_slice(), [i, j] if *i < *j && *i < 8 && *j < 8);
+    }
+
+    #[test]
+    fn test_eval_zero_dim_slice() {
+        let slice_0d = Slice::new(1, vec![], vec![]).unwrap();
+        // Let s be a slice with dim(s) = 0. Then: ∃! x ∈ s :
+        // coordsₛ(x) = ().
+        assert_eq!(slice_0d.coordinates(1).unwrap(), vec![]);
+
+        assert_eq!(eval(true_(), &slice_0d), vec![1]);
+        assert_eq!(eval(false_(), &slice_0d), vec![]);
+        assert_eq!(eval(all(true_()), &slice_0d), vec![1]);
+        assert_eq!(eval(all(false_()), &slice_0d), vec![]);
+        assert_eq!(eval(union(true_(), true_()), &slice_0d), vec![1]);
+        assert_eq!(eval(intersection(true_(), false_()), &slice_0d), vec![]);
     }
 
     #[test]
