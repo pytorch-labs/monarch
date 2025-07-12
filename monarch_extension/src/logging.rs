@@ -11,9 +11,9 @@
 use hyperactor::ActorRef;
 use hyperactor_mesh::RootActorMesh;
 use hyperactor_mesh::actor_mesh::ActorMesh;
-use hyperactor_mesh::log_source::LogClientActor;
-use hyperactor_mesh::log_source::LogForwardActor;
-use hyperactor_mesh::log_source::LogForwardMessage;
+use hyperactor_mesh::logging::LogClientActor;
+use hyperactor_mesh::logging::LogForwardActor;
+use hyperactor_mesh::logging::LogForwardMessage;
 use hyperactor_mesh::selection::Selection;
 use hyperactor_mesh::shared_cell::SharedCell;
 use monarch_hyperactor::proc_mesh::PyProcMesh;

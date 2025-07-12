@@ -16,8 +16,6 @@ use anyhow::Context;
 use async_trait::async_trait;
 use futures::FutureExt;
 use futures::future::select_all;
-use hyperactor::ActorRef;
-use hyperactor::Mailbox;
 use hyperactor::Named;
 use hyperactor::ProcId;
 use hyperactor::WorldId;
@@ -32,21 +30,11 @@ use hyperactor::channel::TxStatus;
 use hyperactor::clock;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
-use hyperactor::id;
-use hyperactor::mailbox;
-use hyperactor::mailbox::BoxedMailboxSender;
 use hyperactor::mailbox::DialMailboxRouter;
 use hyperactor::mailbox::MailboxServer;
 use hyperactor::mailbox::monitored_return_handle;
-use hyperactor::proc::Proc;
 use hyperactor::reference::Reference;
 use hyperactor::serde_json;
-use hyperactor_state::client::ClientActor;
-use hyperactor_state::client::ClientActorParams;
-use hyperactor_state::client::LogHandler;
-use hyperactor_state::object::GenericStateObject;
-use hyperactor_state::state_actor::StateActor;
-use hyperactor_state::state_actor::StateMessageClient;
 use mockall::automock;
 use ndslice::Shape;
 use serde::Deserialize;
@@ -68,9 +56,6 @@ use crate::alloc::AllocatorError;
 use crate::alloc::ProcState;
 use crate::alloc::ProcStopReason;
 use crate::alloc::ProcessAllocator;
-use crate::log_source::LogSource;
-use crate::log_source::StateServerInfo;
-use crate::shortuuid::ShortUuid;
 
 /// Control messages sent from remote process allocator to local allocator.
 #[derive(Debug, Clone, Serialize, Deserialize, Named)]
@@ -82,8 +67,6 @@ pub enum RemoteProcessAllocatorMessage {
         spec: AllocSpec,
         /// Bootstrap address to be used for sending updates.
         bootstrap_addr: ChannelAddr,
-        /// The location of the state actor.
-        state_server_info: StateServerInfo,
         /// Ordered list of hosts in this allocation. Can be used to
         /// pre-populate the any local configurations such as torch.dist.
         hosts: Vec<String>,
@@ -109,21 +92,6 @@ pub enum RemoteProcessProcStateMessage {
     Done(WorldId),
     /// Heartbeat message to check if client is alive.
     HeartBeat,
-}
-
-#[derive(Debug)]
-struct ForwarderLogHandler {
-    parent_state_actor: ActorRef<StateActor>,
-    forwarder: Mailbox,
-}
-
-#[async_trait]
-impl LogHandler for ForwarderLogHandler {
-    async fn handle_log(&self, logs: Vec<GenericStateObject>) -> anyhow::Result<()> {
-        let actor = self.parent_state_actor.clone();
-        let forwarder = self.forwarder.clone();
-        actor.push_logs(&forwarder, logs).await
-    }
 }
 
 /// Allocator with a service frontend that wraps ProcessAllocator.
@@ -196,24 +164,6 @@ impl RemoteProcessAllocator {
             }
         }
 
-        // Setup a proc and an actor to forward the child process's log to the state actor.
-        // This child-parent-state actor relay is not needed. But it helps with abstraction.
-        let router = DialMailboxRouter::new();
-        let (forwarder_proc_addr, forwarder_rx) =
-            channel::serve(ChannelAddr::any(ChannelTransport::Unix))
-                .await
-                .unwrap();
-        let forwarder_proc_id = id!(forwarder[0]);
-        let forwarder_proc = Proc::new(
-            forwarder_proc_id.clone(),
-            BoxedMailboxSender::new(router.clone()),
-        );
-        forwarder_proc
-            .clone()
-            .serve(forwarder_rx, mailbox::monitored_return_handle());
-        router.bind(forwarder_proc_id.into(), forwarder_proc_addr.clone());
-        let forwarder = forwarder_proc.attach("forwarder").unwrap();
-
         let mut active_allocation: Option<ActiveAllocation> = None;
         loop {
             tokio::select! {
@@ -222,63 +172,26 @@ impl RemoteProcessAllocator {
                         Ok(RemoteProcessAllocatorMessage::Allocate {
                             spec,
                             bootstrap_addr,
-                            state_server_info,
                             hosts,
                             heartbeat_interval,
                         }) => {
                             tracing::info!("received allocation request: {:?}", spec);
-                            let parent_state_actor_id = state_server_info.state_actor_id.clone();
-                            router.bind(parent_state_actor_id.clone().into(), state_server_info.state_proc_addr.clone());
 
                             ensure_previous_alloc_stopped(&mut active_allocation).await;
 
                             match process_allocator.allocate(spec.clone()).await {
                                 Ok(alloc) => {
-                                    let child_state_server_info = alloc.log_source().await?.server_info();
-                                    let child_state_actor_id = child_state_server_info.state_actor_id.clone();
-                                    if child_state_actor_id == parent_state_actor_id {
-                                        // In general, this is unlikely. But if it happens, it will get into infinite forwarding loop.
-                                        anyhow::bail!("found duplicated state actor ids: {}, {}", child_state_actor_id, parent_state_actor_id);
-                                    }
-
-                                    router.bind(
-                                        child_state_actor_id.clone().into(),
-                                        child_state_server_info.state_proc_addr.clone(),
-                                    );
-                                    tracing::info!("receiving log from {} and forwarding to {}", child_state_actor_id, parent_state_actor_id);
-
-                                    // Spin up the client actor, subscribe to the child process, and forward the log to the state actor.
-                                    let log_handler = Box::new(ForwarderLogHandler {
-                                        parent_state_actor: ActorRef::attest(parent_state_actor_id),
-                                        forwarder: forwarder.clone(),
-                                    });
-                                    let params = ClientActorParams { log_handler };
-
-                                    // Use UUID as there could be multiple allocations.
-                                    let forwarder_client_actor: ActorRef<ClientActor> = forwarder_proc
-                                        .spawn::<ClientActor>(&format!("forwarder_client{}", ShortUuid::generate()), params)
-                                        .await?
-                                        .bind();
-                                    let child_state_actor_ref: ActorRef<StateActor> = ActorRef::attest(child_state_actor_id);
-                                    child_state_actor_ref
-                                        .subscribe_logs(
-                                            &forwarder,
-                                            forwarder_proc_addr.clone(),
-                                            forwarder_client_actor.clone(),
-                                        )
-                                        .await?;
-
                                     let cancel_token = CancellationToken::new();
                                     active_allocation = Some(ActiveAllocation {
                                         cancel_token: cancel_token.clone(),
                                         handle: tokio::spawn(Self::handle_allocation_request(
-                                        Box::new(alloc) as Box<dyn Alloc + Send + Sync>,
-                                        bootstrap_addr,
-                                        hosts,
-                                        heartbeat_interval,
-                                        cancel_token,
-                                    )),
-                                })
+                                            Box::new(alloc) as Box<dyn Alloc + Send + Sync>,
+                                            bootstrap_addr,
+                                            hosts,
+                                            heartbeat_interval,
+                                            cancel_token,
+                                        )),
+                                    })
                                 }
                                 Err(e) => {
                                     tracing::error!("allocation for {:?} failed: {}", spec, e);
@@ -524,11 +437,6 @@ struct RemoteProcessAllocHostState {
 pub trait RemoteProcessAllocInitializer {
     /// Initializes and returns a list of hosts to be used by this RemoteProcessAlloc.
     async fn initialize_alloc(&mut self) -> Result<Vec<RemoteProcessAllocHost>, anyhow::Error>;
-
-    async fn initialize_state_actor(&self) -> Result<LogSource, anyhow::Error> {
-        // TODO (@lky): this needs to be scheduler specific. Let's implement it for MAST and python initializer.
-        LogSource::new_with_local_actor().await
-    }
 }
 
 /// A generalized implementation of an Alloc using one or more hosts running
@@ -558,8 +466,6 @@ pub struct RemoteProcessAlloc {
 
     bootstrap_addr: ChannelAddr,
     rx: ChannelRx<RemoteProcessProcStateMessage>,
-
-    log_source: LogSource,
 }
 
 impl RemoteProcessAlloc {
@@ -585,8 +491,6 @@ impl RemoteProcessAlloc {
             bootstrap_addr.clone()
         );
 
-        let log_source = initializer.initialize_state_actor().await?;
-
         let (comm_watcher_tx, comm_watcher_rx) = unbounded_channel();
 
         Ok(Self {
@@ -601,7 +505,6 @@ impl RemoteProcessAlloc {
             hosts_by_offset: HashMap::new(),
             host_states: HashMap::new(),
             bootstrap_addr,
-            log_source,
             event_queue: VecDeque::new(),
             comm_watcher_tx,
             comm_watcher_rx,
@@ -730,7 +633,6 @@ impl RemoteProcessAlloc {
                 ))?;
             tx.post(RemoteProcessAllocatorMessage::Allocate {
                 bootstrap_addr: self.bootstrap_addr.clone(),
-                state_server_info: self.log_source.server_info().clone(),
                 spec: AllocSpec {
                     shape: host_shape.clone(),
                     constraints: self.spec.constraints.clone(),
@@ -1079,10 +981,6 @@ impl Alloc for RemoteProcessAlloc {
         self.transport.clone()
     }
 
-    async fn log_source(&self) -> Result<LogSource, AllocatorError> {
-        Ok(self.log_source.clone())
-    }
-
     async fn stop(&mut self) -> Result<(), AllocatorError> {
         tracing::info!("stopping alloc");
 
@@ -1103,9 +1001,7 @@ mod test {
     use hyperactor::channel::ChannelRx;
     use hyperactor::clock::ClockKind;
     use hyperactor::id;
-    use hyperactor_state::test_utils::log_items;
     use ndslice::shape;
-    use tokio::sync::mpsc::Sender;
     use tokio::sync::oneshot;
 
     use super::*;
@@ -1115,19 +1011,6 @@ mod test {
     use crate::alloc::MockAllocator;
     use crate::alloc::ProcStopReason;
     use crate::proc_mesh::mesh_agent::MeshAgent;
-
-    #[derive(Debug)]
-    struct MpscLogHandler {
-        sender: Sender<Vec<GenericStateObject>>,
-    }
-
-    #[async_trait]
-    impl LogHandler for MpscLogHandler {
-        async fn handle_log(&self, logs: Vec<GenericStateObject>) -> anyhow::Result<()> {
-            self.sender.send(logs).await.unwrap();
-            Ok(())
-        }
-    }
 
     async fn read_all_created(rx: &mut ChannelRx<RemoteProcessProcStateMessage>, alloc_len: usize) {
         let mut i: usize = 0;
@@ -1219,7 +1102,6 @@ mod test {
         let alloc_len = spec.shape.slice().len();
 
         let world_id: WorldId = id!(test_world_id);
-        let log_source = LogSource::new_with_local_actor().await.unwrap();
         let mut alloc = MockAlloc::new();
         alloc.expect_world_id().return_const(world_id.clone());
         alloc.expect_shape().return_const(spec.shape.clone());
@@ -1228,10 +1110,6 @@ mod test {
 
         // final none
         alloc.expect_next().return_const(None);
-        alloc
-            .expect_log_source()
-            .times(1)
-            .return_once(move || Ok(log_source));
 
         let mut allocator = MockAllocator::new();
         let total_messages = alloc_len * 3 + 1;
@@ -1258,10 +1136,6 @@ mod test {
         tx.send(RemoteProcessAllocatorMessage::Allocate {
             spec: spec.clone(),
             bootstrap_addr,
-            state_server_info: LogSource::new_with_local_actor()
-                .await
-                .unwrap()
-                .server_info(),
             hosts: vec![],
             heartbeat_interval: Duration::from_secs(1),
         })
@@ -1366,7 +1240,6 @@ mod test {
         let alloc_len = spec.shape.slice().len();
 
         let world_id: WorldId = id!(test_world_id);
-        let log_source = LogSource::new_with_local_actor().await.unwrap();
         let mut alloc = MockAllocWrapper::new_block_next(
             MockAlloc::new(),
             // block after all created, all running
@@ -1380,11 +1253,6 @@ mod test {
 
         alloc.alloc.expect_next().return_const(None);
         alloc.alloc.expect_stop().times(1).return_once(|| Ok(()));
-        alloc
-            .alloc
-            .expect_log_source()
-            .times(1)
-            .return_once(move || Ok(log_source));
 
         let mut allocator = MockAllocator::new();
         allocator
@@ -1405,10 +1273,6 @@ mod test {
         tx.send(RemoteProcessAllocatorMessage::Allocate {
             spec: spec.clone(),
             bootstrap_addr,
-            state_server_info: LogSource::new_with_local_actor()
-                .await
-                .unwrap()
-                .server_info(),
             hosts: vec![],
             heartbeat_interval: Duration::from_millis(200),
         })
@@ -1435,156 +1299,6 @@ mod test {
     }
 
     #[timed_test::async_timed_test(timeout_secs = 15)]
-    async fn test_log_streaming() {
-        hyperactor_telemetry::initialize_logging(ClockKind::default());
-        let serve_addr = ChannelAddr::any(ChannelTransport::Unix);
-        let bootstrap_addr = ChannelAddr::any(ChannelTransport::Unix);
-        let (_, mut rx) = channel::serve(bootstrap_addr.clone()).await.unwrap();
-
-        let spec = AllocSpec {
-            shape: shape!(host = 1, gpu = 2),
-            constraints: Default::default(),
-        };
-        let tx = channel::dial(serve_addr.clone()).unwrap();
-
-        let alloc_len = spec.shape.slice().len();
-
-        let world_id: WorldId = id!(test_world_id);
-        let child_log_source = LogSource::new_with_local_actor().await.unwrap();
-        let mut alloc = MockAllocWrapper::new_block_next(
-            MockAlloc::new(),
-            // block after all created, all running
-            alloc_len * 2,
-        );
-        let next_tx = alloc.notify_tx();
-        alloc.alloc.expect_world_id().return_const(world_id.clone());
-        alloc.alloc.expect_shape().return_const(spec.shape.clone());
-
-        set_procstate_expectations(&mut alloc.alloc, spec.shape.clone());
-
-        alloc.alloc.expect_next().return_const(None);
-        alloc.alloc.expect_stop().times(1).return_once(|| Ok(()));
-        let child_log_source_clone = child_log_source.clone();
-        alloc
-            .alloc
-            .expect_log_source()
-            .times(1)
-            .return_once(move || Ok(child_log_source_clone));
-
-        let mut allocator = MockAllocator::new();
-        allocator
-            .expect_allocate()
-            .times(1)
-            .return_once(|_| Ok(alloc));
-
-        let remote_allocator = RemoteProcessAllocator::new();
-        let handle = tokio::spawn({
-            let remote_allocator = remote_allocator.clone();
-            async move {
-                remote_allocator
-                    .start_with_allocator(serve_addr, allocator)
-                    .await
-            }
-        });
-
-        let parent_log_source = LogSource::new_with_local_actor().await.unwrap();
-        tx.send(RemoteProcessAllocatorMessage::Allocate {
-            spec: spec.clone(),
-            bootstrap_addr,
-            state_server_info: parent_log_source.server_info(),
-            hosts: vec![],
-            heartbeat_interval: Duration::from_millis(200),
-        })
-        .await
-        .unwrap();
-
-        // Allocated
-        let m = rx.recv().await.unwrap();
-        assert_matches!(m, RemoteProcessProcStateMessage::Allocated {world_id, shape} if world_id == world_id && shape == spec.shape);
-
-        read_all_created(&mut rx, alloc_len).await;
-        read_all_running(&mut rx, alloc_len).await;
-
-        // Push some log to child state actor and subscribe to the parent state actor
-        let router = DialMailboxRouter::new();
-        let (client_proc_addr, client_rx) =
-            channel::serve(ChannelAddr::any(ChannelTransport::Unix))
-                .await
-                .unwrap();
-        let client_proc = Proc::new(id!(client[0]), BoxedMailboxSender::new(router.clone()));
-        client_proc
-            .clone()
-            .serve(client_rx, mailbox::monitored_return_handle());
-        router.bind(id!(client[0]).into(), client_proc_addr.clone());
-        router.bind(
-            parent_log_source
-                .server_info()
-                .state_actor_id
-                .clone()
-                .into(),
-            parent_log_source.server_info().state_proc_addr.clone(),
-        );
-        router.bind(
-            child_log_source.server_info().state_actor_id.clone().into(),
-            child_log_source.server_info().state_proc_addr.clone(),
-        );
-        let client = client_proc.attach("client").unwrap();
-
-        // Spin up the client logging actor and subscribe to the state actor
-        let (sender, mut receiver) = tokio::sync::mpsc::channel::<Vec<GenericStateObject>>(20);
-        let log_handler = Box::new(MpscLogHandler { sender });
-        let params = ClientActorParams { log_handler };
-
-        let client_logging_actor: ActorRef<ClientActor> = client_proc
-            .spawn::<ClientActor>("logging_client", params)
-            .await
-            .unwrap()
-            .bind();
-        let parent_state_actor_ref: ActorRef<StateActor> =
-            ActorRef::attest(parent_log_source.server_info().state_actor_id.clone());
-        let child_state_actor_ref: ActorRef<StateActor> =
-            ActorRef::attest(child_log_source.server_info().state_actor_id.clone());
-
-        // Listen to the parent
-        parent_state_actor_ref
-            .subscribe_logs(
-                &client,
-                client_proc_addr.clone(),
-                client_logging_actor.clone(),
-            )
-            .await
-            .unwrap();
-
-        // Write to the child
-        child_state_actor_ref
-            .push_logs(&client, log_items(0, 10))
-            .await
-            .unwrap();
-
-        // Collect received messages with timeout
-        let fetched_logs = client_proc
-            .clock()
-            .timeout(Duration::from_secs(1), receiver.recv())
-            .await
-            .expect("timed out waiting for message")
-            .expect("channel closed unexpectedly");
-
-        // Verify we received all expected logs
-        assert_eq!(fetched_logs.len(), 10);
-        assert_eq!(fetched_logs, log_items(0, 10));
-
-        // allocation finished. now we stop it.
-        tx.send(RemoteProcessAllocatorMessage::Stop).await.unwrap();
-        // receive all stops
-        next_tx.send(()).unwrap();
-
-        read_all_stopped(&mut rx, alloc_len).await;
-
-        remote_allocator.terminate();
-        handle.await.unwrap().unwrap();
-    }
-
-    #[timed_test::async_timed_test(timeout_secs = 15)]
     async fn test_realloc() {
         hyperactor_telemetry::initialize_logging(ClockKind::default());
         let serve_addr = ChannelAddr::any(ChannelTransport::Unix);
@@ -1600,8 +1314,6 @@ mod test {
         let alloc_len = spec.shape.slice().len();
 
         let world_id: WorldId = id!(test_world_id);
-        let log_source1 = LogSource::new_with_local_actor().await.unwrap();
-        let log_source2 = LogSource::new_with_local_actor().await.unwrap();
         let mut alloc1 = MockAllocWrapper::new_block_next(
             MockAlloc::new(),
             // block after all created, all running
@@ -1617,12 +1329,6 @@ mod test {
         set_procstate_expectations(&mut alloc1.alloc, spec.shape.clone());
         alloc1.alloc.expect_next().return_const(None);
         alloc1.alloc.expect_stop().times(1).return_once(|| Ok(()));
-        alloc1
-            .alloc
-            .expect_log_source()
-            .times(1)
-            .return_once(move || Ok(log_source1));
-
         // second allocation
         let mut alloc2 = MockAllocWrapper::new_block_next(
             MockAlloc::new(),
@@ -1638,11 +1344,6 @@ mod test {
         set_procstate_expectations(&mut alloc2.alloc, spec.shape.clone());
         alloc2.alloc.expect_next().return_const(None);
         alloc2.alloc.expect_stop().times(1).return_once(|| Ok(()));
-        alloc2
-            .alloc
-            .expect_log_source()
-            .times(1)
-            .return_once(move || Ok(log_source2));
 
         let mut allocator = MockAllocator::new();
         allocator
@@ -1668,10 +1369,6 @@ mod test {
         tx.send(RemoteProcessAllocatorMessage::Allocate {
             spec: spec.clone(),
             bootstrap_addr: bootstrap_addr.clone(),
-            state_server_info: LogSource::new_with_local_actor()
-                .await
-                .unwrap()
-                .server_info(),
             hosts: vec![],
             heartbeat_interval: Duration::from_millis(200),
         })
@@ -1689,10 +1386,6 @@ mod test {
         tx.send(RemoteProcessAllocatorMessage::Allocate {
             spec: spec.clone(),
             bootstrap_addr,
-            state_server_info: LogSource::new_with_local_actor()
-                .await
-                .unwrap()
-                .server_info(),
             hosts: vec![],
             heartbeat_interval: Duration::from_millis(200),
         })
@@ -1744,7 +1437,6 @@ mod test {
         let alloc_len = spec.shape.slice().len();
 
         let world_id: WorldId = id!(test_world_id);
-        let log_source = LogSource::new_with_local_actor().await.unwrap();
         let mut alloc = MockAllocWrapper::new_block_next(
             MockAlloc::new(),
             // block after all created, all running
@@ -1753,11 +1445,6 @@ mod test {
         let next_tx = alloc.notify_tx();
         alloc.alloc.expect_world_id().return_const(world_id.clone());
         alloc.alloc.expect_shape().return_const(spec.shape.clone());
-        alloc
-            .alloc
-            .expect_log_source()
-            .times(1)
-            .return_once(move || Ok(log_source));
 
         set_procstate_expectations(&mut alloc.alloc, spec.shape.clone());
 
@@ -1789,10 +1476,6 @@ mod test {
         tx.send(RemoteProcessAllocatorMessage::Allocate {
             spec: spec.clone(),
             bootstrap_addr,
-            state_server_info: LogSource::new_with_local_actor()
-                .await
-                .unwrap()
-                .server_info(),
             hosts: vec![],
             heartbeat_interval: Duration::from_millis(200),
         })
@@ -1834,7 +1517,6 @@ mod test {
         let tx = channel::dial(serve_addr.clone()).unwrap();
 
         let test_world_id: WorldId = id!(test_world_id);
-        let log_source = LogSource::new_with_local_actor().await.unwrap();
         let mut alloc = MockAllocWrapper::new_block_next(
             MockAlloc::new(),
             // block after the failure update
@@ -1857,11 +1539,6 @@ mod test {
         alloc.alloc.expect_next().times(1).return_const(None);
 
         alloc.alloc.expect_stop().times(1).return_once(|| Ok(()));
-        alloc
-            .alloc
-            .expect_log_source()
-            .times(1)
-            .return_once(move || Ok(log_source));
 
         let mut allocator = MockAllocator::new();
         allocator
@@ -1882,10 +1559,6 @@ mod test {
         tx.send(RemoteProcessAllocatorMessage::Allocate {
             spec: spec.clone(),
             bootstrap_addr,
-            state_server_info: LogSource::new_with_local_actor()
-                .await
-                .unwrap()
-                .server_info(),
             hosts: vec![],
             heartbeat_interval: Duration::from_secs(60),
         })
@@ -1977,10 +1650,6 @@ mod test_alloc {
                 },
             ])
         });
-        let log_source = LogSource::new_with_local_actor().await.unwrap();
-        initializer
-            .expect_initialize_state_actor()
-            .return_once(move || Ok(log_source));
         let mut alloc =
             RemoteProcessAlloc::new(spec.clone(), world_id, transport, 0, heartbeat, initializer)
                 .await
@@ -2106,10 +1775,6 @@ mod test_alloc {
                 },
             ])
         });
-        let log_source = LogSource::new_with_local_actor().await.unwrap();
-        initializer
-            .expect_initialize_state_actor()
-            .return_once(move || Ok(log_source));
         let mut alloc =
             RemoteProcessAlloc::new(spec.clone(), world_id, transport, 0, heartbeat, initializer)
                 .await
@@ -2229,10 +1894,6 @@ mod test_alloc {
                 },
             ])
         });
-        let log_source = LogSource::new_with_local_actor().await.unwrap();
-        initializer
-            .expect_initialize_state_actor()
-            .return_once(move || Ok(log_source));
         let mut alloc =
             RemoteProcessAlloc::new(spec.clone(), world_id, transport, 0, heartbeat, initializer)
                 .await

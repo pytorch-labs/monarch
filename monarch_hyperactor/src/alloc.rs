@@ -29,7 +29,6 @@ use hyperactor_mesh::alloc::remoteprocess::RemoteProcessAlloc;
 use hyperactor_mesh::alloc::remoteprocess::RemoteProcessAllocHost;
 use hyperactor_mesh::alloc::remoteprocess::RemoteProcessAllocInitializer;
 use hyperactor_mesh::alloc::sim::SimAllocator;
-use hyperactor_mesh::log_source::LogSource;
 use hyperactor_mesh::shape::Shape;
 use ndslice::Slice;
 use pyo3::exceptions::PyRuntimeError;
@@ -99,10 +98,6 @@ impl Alloc for PyAllocWrapper {
 
     fn transport(&self) -> ChannelTransport {
         self.inner.transport()
-    }
-
-    async fn log_source(&self) -> Result<LogSource, AllocatorError> {
-        self.inner.log_source().await
     }
 
     async fn stop(&mut self) -> Result<(), AllocatorError> {

@@ -64,7 +64,6 @@ mod tests {
     use hyperactor_mesh::alloc;
     use hyperactor_mesh::alloc::Alloc;
     use hyperactor_mesh::alloc::remoteprocess;
-    use hyperactor_mesh::log_source::LogSource;
     use ndslice::shape;
 
     use super::*;
@@ -117,10 +116,6 @@ mod tests {
                 id: serve_address.to_string(),
             }])
         });
-        let log_source = LogSource::new_with_local_actor().await.unwrap();
-        initializer
-            .expect_initialize_state_actor()
-            .return_once(move || Ok(log_source));
 
         let heartbeat = std::time::Duration::from_millis(100);
         let world_id = WorldId("__unused__".to_string());
