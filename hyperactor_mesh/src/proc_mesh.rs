@@ -490,7 +490,7 @@ impl ProcMesh {
 }
 
 /// Proc lifecycle events.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ProcEvent {
     /// The proc of the given rank was stopped with the provided reason.
     Stopped(usize, ProcStopReason),
@@ -560,17 +560,15 @@ impl ProcEvents {
                     };
                     // transmit to the correct root actor mesh.
                     {
-                        let Some(tx) = self.actor_event_router.get(actor_id.name()) else {
+                        if let Some(tx) = self.actor_event_router.get(actor_id.name()) {
+                            if tx.send(event).is_err() {
+                                tracing::warn!("unable to transmit supervision event to actor {}", actor_id);
+                            }
+                        } else {
                             tracing::warn!("received supervision event for unregistered actor {}", actor_id);
-                            continue;
-                        };
-                        let Ok(_) = tx.send(event) else {
-                            tracing::warn!("unable to transmit supervision event to actor {}", actor_id);
-                            continue;
-                        };
+                        }
                     }
-                    // TODO: Actor supervision events need to be wired to the frontend.
-                    // TODO: This event should be handled by the proc mesh if unhandled by actor mesh.
+                    // Send this event to Python proc mesh to keep its health status up to date.
                     break Some(ProcEvent::Crashed(*rank, actor_status.to_string()))
                 }
             }
@@ -777,6 +775,7 @@ mod tests {
         let mut events = mesh.events().unwrap();
 
         let mut actors = mesh.spawn::<TestActor>("failing", &()).await.unwrap();
+        let mut actor_events = actors.events().unwrap();
 
         actors
             .cast(
@@ -790,7 +789,7 @@ mod tests {
             ProcEvent::Crashed(0, reason) if reason.contains("failmonkey")
         );
 
-        let event = actors.next().await.unwrap();
+        let event = actor_events.next().await.unwrap();
         assert_matches!(event.actor_status(), ActorStatus::Failed(_));
         assert_eq!(event.actor_id().1, "failing".to_string());
         assert_eq!(event.actor_id().2, 0);
@@ -806,6 +805,6 @@ mod tests {
         );
 
         assert!(events.next().await.is_none());
-        assert!(actors.next().await.is_none());
+        assert!(actor_events.next().await.is_none());
     }
 }
