@@ -11,6 +11,13 @@ class _RdmaMemoryRegionView:
     def __init__(self, addr: int, size_in_bytes: int) -> None: ...
 
 @final
+class _RdmaManager:
+    device: str
+    def __repr__(self) -> str: ...
+
+def create_rdma_manager_blocking(proc_mesh: Any) -> Optional[_RdmaManager]: ...
+async def create_rdma_manager_nonblocking(proc_mesh: Any) -> Optional[_RdmaManager]: ...
+@final
 class _RdmaBuffer:
     name: str
 
