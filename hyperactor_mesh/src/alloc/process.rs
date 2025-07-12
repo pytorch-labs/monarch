@@ -50,6 +50,7 @@ use crate::bootstrap;
 use crate::bootstrap::Allocator2Process;
 use crate::bootstrap::Process2Allocator;
 use crate::bootstrap::Process2AllocatorMessage;
+use crate::logging::create_log_writers;
 use crate::shortuuid::ShortUuid;
 
 /// The maximum number of log lines to tail keep for managed processes.
@@ -155,10 +156,7 @@ impl Child {
             Box::new(io::stderr());
 
         // Use the helper function to create both writers at once
-        match hyperactor_state::log_writer::create_log_writers(
-            log_channel,
-            process.id().unwrap_or(0),
-        ) {
+        match create_log_writers(log_channel, process.id().unwrap_or(0)) {
             Ok((stdout_writer, stderr_writer)) => {
                 stdout_tee = stdout_writer;
                 stderr_tee = stderr_writer;
