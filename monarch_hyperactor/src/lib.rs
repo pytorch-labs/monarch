@@ -21,6 +21,7 @@ pub mod proc_mesh;
 pub mod runtime;
 pub mod selection;
 pub mod shape;
+pub mod supervision;
 pub mod telemetry;
 
 #[cfg(fbcode_build)]

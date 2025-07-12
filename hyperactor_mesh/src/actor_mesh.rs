@@ -179,7 +179,9 @@ pub struct RootActorMesh<'a, A: RemoteActor> {
     proc_mesh: ProcMeshRef<'a>,
     name: String,
     pub(crate) ranks: Vec<ActorRef<A>>, // temporary until we remove `ArcActorMesh`.
-    actor_supervision_rx: mpsc::UnboundedReceiver<ActorSupervisionEvent>,
+    // The receiver of supervision events. It is None if it has been transferred to
+    // an actor event observer.
+    actor_supervision_rx: Option<mpsc::UnboundedReceiver<ActorSupervisionEvent>>,
 }
 
 impl<'a, A: RemoteActor> RootActorMesh<'a, A> {
@@ -193,7 +195,7 @@ impl<'a, A: RemoteActor> RootActorMesh<'a, A> {
             proc_mesh: ProcMeshRef::Borrowed(proc_mesh),
             name,
             ranks,
-            actor_supervision_rx,
+            actor_supervision_rx: Some(actor_supervision_rx),
         }
     }
 
@@ -207,7 +209,7 @@ impl<'a, A: RemoteActor> RootActorMesh<'a, A> {
             proc_mesh: ProcMeshRef::Shared(Box::new(proc_mesh)),
             name,
             ranks,
-            actor_supervision_rx,
+            actor_supervision_rx: Some(actor_supervision_rx),
         }
     }
 
@@ -216,21 +218,35 @@ impl<'a, A: RemoteActor> RootActorMesh<'a, A> {
         self.proc_mesh.client().open_port()
     }
 
-    /// An event stream of proc events. Each ProcMesh can produce only one such
+    /// An event stream of actor events. Each RootActorMesh can produce only one such
     /// stream, returning None after the first call.
+    pub fn events(&mut self) -> Option<ActorSupervisionEvents> {
+        self.actor_supervision_rx
+            .take()
+            .map(|actor_supervision_rx| ActorSupervisionEvents {
+                actor_supervision_rx,
+                mesh_id: self.id(),
+            })
+    }
+}
+
+/// Supervision event stream for actor mesh. It emits actor supervision events.
+pub struct ActorSupervisionEvents {
+    // The receiver of supervision events from proc mesh.
+    actor_supervision_rx: mpsc::UnboundedReceiver<ActorSupervisionEvent>,
+    // The name of the actor mesh.
+    mesh_id: ActorMeshId,
+}
+
+impl ActorSupervisionEvents {
     pub async fn next(&mut self) -> Option<ActorSupervisionEvent> {
         let result = self.actor_supervision_rx.recv().await;
-        match result.as_ref() {
-            Some(event) => {
-                tracing::debug!("Received supervision event: {event:?}");
-            }
-            None => {
-                tracing::info!(
-                    "Supervision stream for actor mesh {} was closed!",
-                    self.name
-                );
-            }
-        };
+        if result.is_none() {
+            tracing::info!(
+                "supervision stream for actor mesh {:?} was closed!",
+                self.mesh_id
+            );
+        }
         result
     }
 }
