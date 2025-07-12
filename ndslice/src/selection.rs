@@ -565,7 +565,20 @@ impl Selection {
         opts: &EvalOpts,
         slice: &'a Slice,
     ) -> Result<Box<dyn Iterator<Item = usize> + 'a>, ShapeError> {
-        Ok(Self::validate(self, opts, slice)?.eval_rec(slice, vec![0; slice.num_dim()], 0))
+        // Canonically embed 0D as 1D (extent 1).
+        if slice.num_dim() == 0 {
+            let slice = Slice::new(slice.offset(), vec![1], vec![1]).unwrap();
+            return Ok(Box::new(
+                self.validate(opts, &slice)?
+                    .eval_rec(&slice, vec![0; 1], 0)
+                    .collect::<Vec<_>>()
+                    .into_iter(),
+            ));
+        }
+
+        Ok(self
+            .validate(opts, slice)?
+            .eval_rec(slice, vec![0; slice.num_dim()], 0))
     }
 
     fn eval_rec<'a>(
@@ -865,26 +878,28 @@ impl Selection {
         }
     }
 
-    // "Pads out" a selection so that if `Selection::True` appears before
-    // the final dimension, it becomes All(All(...(True))), enough to fill
-    // the remaining dimensions.
-    pub(crate) fn promote_terminal_true(self, dim: usize, max_dim: usize) -> Selection {
+    /// Pads out a terminal selection (e.g., `True`, `False`) with
+    /// `All(...)` to reach `max_dim` dimensions.
+    pub(crate) fn promote_terminal(self, dim: usize, max_dim: usize) -> Selection {
         use crate::selection::dsl::*;
 
         match self {
             Selection::True if dim < max_dim => all(true_()),
-            Selection::All(inner) => all(inner.promote_terminal_true(dim + 1, max_dim)),
-            Selection::Range(r, inner) => range(r, inner.promote_terminal_true(dim + 1, max_dim)),
+            Selection::False if dim < max_dim => all(false_()),
+
+            Selection::All(inner) => all(inner.promote_terminal(dim + 1, max_dim)),
+            Selection::Range(r, inner) => range(r, inner.promote_terminal(dim + 1, max_dim)),
             Selection::Intersection(a, b) => intersection(
-                a.promote_terminal_true(dim, max_dim),
-                b.promote_terminal_true(dim, max_dim),
+                a.promote_terminal(dim, max_dim),
+                b.promote_terminal(dim, max_dim),
             ),
             Selection::Union(a, b) => union(
-                a.promote_terminal_true(dim, max_dim),
-                b.promote_terminal_true(dim, max_dim),
+                a.promote_terminal(dim, max_dim),
+                b.promote_terminal(dim, max_dim),
             ),
-            Selection::First(inner) => first(inner.promote_terminal_true(dim + 1, max_dim)),
-            Selection::Any(inner) => any(inner.promote_terminal_true(dim + 1, max_dim)),
+            Selection::First(inner) => first(inner.promote_terminal(dim + 1, max_dim)),
+            Selection::Any(inner) => any(inner.promote_terminal(dim + 1, max_dim)),
+
             other => other,
         }
     }
@@ -1829,6 +1844,17 @@ mod tests {
             );
         }
         assert_matches!(res.as_slice(), [i, j] if *i < *j && *i < 8 && *j < 8);
+    }
+
+    #[test]
+    fn test_eval_zero_dim_slice() {
+        let slice_0d = Slice::new(1, vec![], vec![]).unwrap();
+        assert_eq!(eval(true_(), &slice_0d), vec![1]);
+        assert_eq!(eval(false_(), &slice_0d), vec![]);
+        assert_eq!(eval(all(true_()), &slice_0d), vec![1]);
+        assert_eq!(eval(all(false_()), &slice_0d), vec![]);
+        assert_eq!(eval(union(true_(), true_()), &slice_0d), vec![1]);
+        assert_eq!(eval(intersection(true_(), false_()), &slice_0d), vec![]);
     }
 
     #[test]
