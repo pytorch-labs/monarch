@@ -878,26 +878,28 @@ impl Selection {
         }
     }
 
-    // "Pads out" a selection so that if `Selection::True` appears before
-    // the final dimension, it becomes All(All(...(True))), enough to fill
-    // the remaining dimensions.
-    pub(crate) fn promote_terminal_true(self, dim: usize, max_dim: usize) -> Selection {
+    /// Pads out a terminal selection (e.g., `True`, `False`) with
+    /// `All(...)` to reach `max_dim` dimensions.
+    pub(crate) fn promote_terminal(self, dim: usize, max_dim: usize) -> Selection {
         use crate::selection::dsl::*;
 
         match self {
             Selection::True if dim < max_dim => all(true_()),
-            Selection::All(inner) => all(inner.promote_terminal_true(dim + 1, max_dim)),
-            Selection::Range(r, inner) => range(r, inner.promote_terminal_true(dim + 1, max_dim)),
+            Selection::False if dim < max_dim => all(false_()),
+
+            Selection::All(inner) => all(inner.promote_terminal(dim + 1, max_dim)),
+            Selection::Range(r, inner) => range(r, inner.promote_terminal(dim + 1, max_dim)),
             Selection::Intersection(a, b) => intersection(
-                a.promote_terminal_true(dim, max_dim),
-                b.promote_terminal_true(dim, max_dim),
+                a.promote_terminal(dim, max_dim),
+                b.promote_terminal(dim, max_dim),
             ),
             Selection::Union(a, b) => union(
-                a.promote_terminal_true(dim, max_dim),
-                b.promote_terminal_true(dim, max_dim),
+                a.promote_terminal(dim, max_dim),
+                b.promote_terminal(dim, max_dim),
             ),
-            Selection::First(inner) => first(inner.promote_terminal_true(dim + 1, max_dim)),
-            Selection::Any(inner) => any(inner.promote_terminal_true(dim + 1, max_dim)),
+            Selection::First(inner) => first(inner.promote_terminal(dim + 1, max_dim)),
+            Selection::Any(inner) => any(inner.promote_terminal(dim + 1, max_dim)),
+
             other => other,
         }
     }

@@ -389,7 +389,7 @@ impl RoutingFrame {
         let selection = self
             .selection
             .clone()
-            .promote_terminal_true(self.dim, self.slice.num_dim());
+            .promote_terminal(self.dim, self.slice.num_dim());
         match &selection {
             Selection::True => ControlFlow::Continue(()),
             Selection::False => ControlFlow::Continue(()),
@@ -1624,7 +1624,7 @@ mod tests {
         assert!(step.deliver_here());
         assert_eq!(step.slice.location(&step.here).unwrap(), 42);
 
-        let selection = all(false_());
+        let selection = false_();
         let frame = RoutingFrame::root(selection, slice);
 
         let mut steps = vec![];
