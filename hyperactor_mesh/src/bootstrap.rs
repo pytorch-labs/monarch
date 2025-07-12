@@ -28,6 +28,10 @@ use crate::proc_mesh::mesh_agent::MeshAgent;
 
 pub(crate) const BOOTSTRAP_ADDR_ENV: &str = "HYPERACTOR_MESH_BOOTSTRAP_ADDR";
 pub(crate) const BOOTSTRAP_INDEX_ENV: &str = "HYPERACTOR_MESH_INDEX";
+/// A channel used by each process to receive its own stdout and stderr
+/// Because stdout and stderr can only be obtained by the parent process,
+/// they need to be streamed back to the process.
+pub(crate) const BOOTSTRAP_LOG_CHANNEL: &str = "BOOTSTRAP_LOG_CHANNEL";
 
 /// Messages sent from the process to the allocator. This is an envelope
 /// containing the index of the process (i.e., its "address" assigned by

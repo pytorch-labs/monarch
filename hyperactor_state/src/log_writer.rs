@@ -7,6 +7,7 @@
  */
 
 use std::pin::Pin;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::task::Context;
 use std::task::Poll;
@@ -23,6 +24,8 @@ use hyperactor::Named;
 use hyperactor::RefClient;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
+use hyperactor::channel::ChannelTx;
+use hyperactor::channel::Tx;
 use hyperactor::data::Serialized;
 use hyperactor::id;
 use hyperactor::mailbox::BoxedMailboxSender;
@@ -67,6 +70,31 @@ pub enum LogWriterMessage {
         output_target: OutputTarget,
         /// The log payload as bytes
         payload: Vec<u8>,
+    },
+}
+
+/// Messages that can be sent to the LogWriterActor
+#[derive(
+    Debug,
+    Clone,
+    Serialize,
+    Deserialize,
+    Named,
+    Handler,
+    HandleClient,
+    RefClient
+)]
+pub enum LogMessage {
+    /// Log details
+    Log {
+        /// The hostname of the process that generated the log
+        hostname: String,
+        /// The pid of the process that generated the log
+        pid: u32,
+        /// The target output stream (stdout or stderr)
+        output_target: OutputTarget,
+        /// The log payload as bytes
+        payload: Serialized,
     },
 }
 
@@ -195,7 +223,7 @@ impl LogWriterMessageHandler for LogWriterActor {
 #[async_trait]
 pub trait LogSender: Send + Sync {
     /// Send a log payload to the state actor
-    fn send(&self, target: OutputTarget, payload: Vec<u8>) -> anyhow::Result<()>;
+    fn send(&mut self, target: OutputTarget, payload: Vec<u8>) -> anyhow::Result<()>;
 }
 
 /// Represents the target output stream (stdout or stderr)
@@ -269,7 +297,7 @@ impl StateActorLogSender {
 }
 
 impl LogSender for StateActorLogSender {
-    fn send(&self, target: OutputTarget, payload: Vec<u8>) -> anyhow::Result<()> {
+    fn send(&mut self, target: OutputTarget, payload: Vec<u8>) -> anyhow::Result<()> {
         // Simply forward the payload to the LogWriterActor
         self.log_writer_actor_ref
             .send(
@@ -280,6 +308,43 @@ impl LogSender for StateActorLogSender {
                 },
             )
             .map_err(|e| anyhow::anyhow!("Failed to send log: {}", e))
+    }
+}
+
+/// Write the log to a local unix channel so some actors can listen to it and stream the log back.
+#[derive(Clone)]
+pub struct LocalLogSender {
+    hostname: String,
+    pid: u32,
+    tx: Arc<ChannelTx<LogMessage>>,
+}
+
+impl LocalLogSender {
+    fn new(log_channel: ChannelAddr, pid: u32) -> Result<Self, anyhow::Error> {
+        let tx = channel::dial::<LogMessage>(log_channel)?;
+        let hostname = hostname::get()
+            .unwrap_or_else(|_| "unknown_host".into())
+            .into_string()
+            .unwrap_or("unknown_host".to_string());
+        Ok(Self {
+            hostname,
+            pid,
+            tx: Arc::new(tx),
+        })
+    }
+}
+
+impl LogSender for LocalLogSender {
+    fn send(&mut self, target: OutputTarget, payload: Vec<u8>) -> anyhow::Result<()> {
+        // post regardless; the log receiver should be spinned up shortly.
+        self.tx.post(LogMessage::Log {
+            hostname: self.hostname.clone(),
+            pid: self.pid,
+            output_target: target,
+            payload: Serialized::serialize_anon(&payload)?,
+        });
+
+        Ok(())
     }
 }
 
@@ -297,14 +362,13 @@ pub struct LogWriter<T: LogSender + Unpin + 'static, S: io::AsyncWrite + Send + 
 ///
 /// * `state_actor_addr` - The address of the state actor to send logs to
 /// * `state_actor_ref` - A reference to the state actor
-/// * `pid` - The process ID of the process that generates the logs
+/// * `pid` - The process ID of the process that generates the logsrust-analyzer-diagnostics-view:/diagnostic%20message%20%5B15%5D?15#file:///data/users/jamessun/fbsource/fbcode/monarch/hyperactor_state/src/log_writer.rs
 ///
 /// # Returns
 ///
 /// A tuple of boxed writers for stdout and stderr
 pub fn create_log_writers(
-    state_actor_addr: ChannelAddr,
-    state_actor_ref: ActorRef<StateActor>,
+    log_channel: ChannelAddr,
     pid: u32,
 ) -> Result<
     (
@@ -314,7 +378,8 @@ pub fn create_log_writers(
     anyhow::Error,
 > {
     // Create a single StateActorLogSender to be shared between stdout and stderr
-    let log_sender = StateActorLogSender::new(state_actor_addr, state_actor_ref, pid)?;
+
+    let log_sender = LocalLogSender::new(log_channel, pid)?;
 
     // Create LogWriter instances for stdout and stderr using the shared log sender
     let stdout_writer = LogWriter::with_default_writer(OutputTarget::Stdout, log_sender.clone())?;
@@ -463,7 +528,7 @@ mod tests {
     }
 
     impl LogSender for MockLogSender {
-        fn send(&self, output_target: OutputTarget, payload: Vec<u8>) -> anyhow::Result<()> {
+        fn send(&mut self, output_target: OutputTarget, payload: Vec<u8>) -> anyhow::Result<()> {
             // For testing purposes, convert to string if it's valid UTF-8
             let line = match std::str::from_utf8(&payload) {
                 Ok(s) => s.to_string(),

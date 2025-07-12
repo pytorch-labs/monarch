@@ -17,6 +17,7 @@ mod controller;
 pub mod convert;
 #[cfg(feature = "tensor_engine")]
 mod debugger;
+mod logging;
 #[cfg(feature = "tensor_engine")]
 mod mesh_controller;
 mod simulation_tools;
@@ -183,6 +184,11 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
     crate::blocking::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_extension.blocking",
+    )?)?;
+
+    crate::logging::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_extension.logging",
     )?)?;
 
     #[cfg(fbcode_build)]

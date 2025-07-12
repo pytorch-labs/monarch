@@ -23,6 +23,8 @@ from typing import (
     TypeVar,
 )
 
+from monarch._rust_bindings.monarch_extension.logging import LoggingMeshClient
+
 from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monarch/monarch_extension:monarch_extension
     Alloc,
     AllocConstraints,
@@ -98,6 +100,9 @@ class ProcMesh(MeshTrait):
         self._mailbox: Mailbox = self._proc_mesh.client
         self._rsync_mesh_client: Optional[RsyncMeshClient] = None
         self._auto_reload_actor: Optional[AutoReloadActor] = None
+        self._logging_mesh_client: LoggingMeshClient = LoggingMeshClient.spawn_blocking(
+            proc_mesh=self._proc_mesh,
+        )
         self._maybe_device_mesh: Optional["DeviceMesh"] = _device_mesh
         self._stopped = False
         if _mock_shape is None and HAS_TENSOR_ENGINE:
@@ -264,6 +269,19 @@ class ProcMesh(MeshTrait):
         if auto_reload:
             assert self._auto_reload_actor is not None
             await self._auto_reload_actor.reload.call()
+
+    def logging_option(self, stream_to_client: bool = False) -> None:
+        """
+        Set the logging options for the remote processes
+
+        Args:
+            stream_to_client (bool): If True, logs from the remote processes will be streamed to the client.
+            Defaults to False.
+
+        Returns:
+            None
+        """
+        self._logging_mesh_client.set_mode(stream_to_client)
 
     async def stop(self) -> None:
         await self._proc_mesh.stop()
