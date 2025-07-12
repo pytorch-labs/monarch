@@ -6,9 +6,14 @@
 
 # pyre-unsafe
 import asyncio
+import logging
 import operator
+import os
+import sys
+import tempfile
 import threading
 import time
+from logging import INFO
 from types import ModuleType
 
 import pytest
@@ -603,3 +608,99 @@ def test_actor_future():
 
     with pytest.raises(asyncio.exceptions.TimeoutError):
         f.get(timeout=0.1)
+
+
+class Printer(Actor):
+    def __init__(self):
+        self.logger = logging.getLogger()
+        self.logger.setLevel(INFO)
+
+    @endpoint
+    async def print(self, content: str):
+        print(f"{os.getpid()} {content}")
+
+    @endpoint
+    async def log(self, content: str):
+        self.logger.info(f"{os.getpid()} {content}")
+
+
+async def test_actor_log_streaming() -> None:
+    # Save original file descriptors
+    original_stdout_fd = os.dup(1)  # stdout
+    original_stderr_fd = os.dup(2)  # stderr
+
+    try:
+        # Create temporary files to capture output
+        with tempfile.NamedTemporaryFile(
+            mode="w+", delete=False
+        ) as stdout_file, tempfile.NamedTemporaryFile(
+            mode="w+", delete=False
+        ) as stderr_file:
+            stdout_path = stdout_file.name
+            stderr_path = stderr_file.name
+
+            # Redirect file descriptors to our temp files
+            # This will capture both Python and Rust output
+            os.dup2(stdout_file.fileno(), 1)
+            os.dup2(stderr_file.fileno(), 2)
+
+            # Also redirect Python's sys.stdout/stderr for completeness
+            original_sys_stdout = sys.stdout
+            original_sys_stderr = sys.stderr
+            sys.stdout = stdout_file
+            sys.stderr = stderr_file
+
+            try:
+                pm = await proc_mesh(gpus=2)
+                am = await pm.spawn("printer", Printer)
+
+                await am.print.call("hello 1")
+                await am.log.call("hello 2")
+
+                pm.logging_option(stream_to_client=True)
+
+                await am.print.call("hello 3")
+                await am.log.call("hello 4")
+
+                # Give it sometime to send log back
+                time.sleep(5)
+
+                # Flush all outputs
+                stdout_file.flush()
+                stderr_file.flush()
+                os.fsync(stdout_file.fileno())
+                os.fsync(stderr_file.fileno())
+
+            finally:
+                # Restore Python's sys.stdout/stderr
+                sys.stdout = original_sys_stdout
+                sys.stderr = original_sys_stderr
+
+        # Restore original file descriptors
+        os.dup2(original_stdout_fd, 1)
+        os.dup2(original_stderr_fd, 2)
+
+        # Read the captured output
+        with open(stdout_path, "r") as f:
+            stdout_content = f.read()
+
+        # Clean up temp files
+        os.unlink(stdout_path)
+        os.unlink(stderr_path)
+
+        # TODO: (@jamessun) we need to disable logging forwarder for python logger
+        # assert "hello 1" not in stdout_content
+        assert "hello 2" not in stdout_content
+
+        assert "hello 3" in stdout_content
+        # assert "hello 4" in stdout_content
+
+    finally:
+        # Ensure file descriptors are restored even if something goes wrong
+        try:
+            os.dup2(original_stdout_fd, 1)
+            os.dup2(original_stderr_fd, 2)
+            os.close(original_stdout_fd)
+            os.close(original_stderr_fd)
+        except OSError:
+            pass
