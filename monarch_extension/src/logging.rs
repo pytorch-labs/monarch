@@ -28,7 +28,6 @@ use pyo3::types::PyModule;
     module = "monarch._rust_bindings.monarch_extension.logging"
 )]
 pub struct LoggingMeshClient {
-    // TODO: add more interfaces so that users can opt in/out streaming anytime they want
     actor_mesh: SharedCell<RootActorMesh<'static, LogForwardActor>>,
 }
 
@@ -41,10 +40,10 @@ impl LoggingMeshClient {
         signal_safe_block_on(py, async move {
             let client_actor: ActorRef<LogClientActor> = proc_mesh
                 .client_proc()
-                .spawn("logging_client", ())
+                .spawn("log_client", ())
                 .await?
                 .bind();
-            let actor_mesh = proc_mesh.spawn("logging_source", &client_actor).await?;
+            let actor_mesh = proc_mesh.spawn("log_forwarder", &client_actor).await?;
             Ok(Self { actor_mesh })
         })?
     }

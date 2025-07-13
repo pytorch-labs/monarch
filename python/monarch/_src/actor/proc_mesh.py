@@ -100,9 +100,7 @@ class ProcMesh(MeshTrait):
         self._mailbox: Mailbox = self._proc_mesh.client
         self._rsync_mesh_client: Optional[RsyncMeshClient] = None
         self._auto_reload_actor: Optional[AutoReloadActor] = None
-        self._logging_mesh_client: LoggingMeshClient = LoggingMeshClient.spawn_blocking(
-            proc_mesh=self._proc_mesh,
-        )
+        self._logging_mesh_client: Optional[LoggingMeshClient] = None
         self._maybe_device_mesh: Optional["DeviceMesh"] = _device_mesh
         self._stopped = False
         if _mock_shape is None and HAS_TENSOR_ENGINE:
@@ -281,6 +279,10 @@ class ProcMesh(MeshTrait):
         Returns:
             None
         """
+        if self._logging_mesh_client is None:
+            self._logging_mesh_client = LoggingMeshClient.spawn_blocking(
+                proc_mesh=self._proc_mesh,
+            )
         self._logging_mesh_client.set_mode(stream_to_client)
 
     async def stop(self) -> None:
