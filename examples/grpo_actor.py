@@ -107,6 +107,7 @@ class ReplayBuffer(Actor):
     def __init__(self):
         """Initialize an empty buffer."""
         self.storage: List[Tuple[int, TrajectorySlice]] = []  # (version, slice)
+        self.storage_event = asyncio.Event()
 
     @endpoint
     async def put(self, slice: TrajectorySlice) -> None:
@@ -116,12 +117,18 @@ class ReplayBuffer(Actor):
             slice: The trajectory slice to add
         """
         self.storage.append((slice.policy_version, slice))
+        self.storage_event.set()
+
+    async def _wait_for_storage(self):
+        if not self.storage:
+            await self.storage_event.wait()
 
     @endpoint
     async def sample_from(self, k: int) -> List[TrajectorySlice]:
         """Sample k trajectory slices using weighted sampling.
 
         Items from newer policy versions have higher probability of being selected.
+        If the buffer is empty, waits for it to be populated with a timeout.
 
         Args:
             k: Number of slices to sample
@@ -130,10 +137,12 @@ class ReplayBuffer(Actor):
             List of sampled trajectory slices
 
         Raises:
-            RuntimeError: If buffer is empty
+            RuntimeError: If buffer is empty after timeout
         """
-        if not self.storage:
-            raise RuntimeError("ReplayBuffer is empty")
+        try:
+            await asyncio.wait_for(self._wait_for_storage(), timeout=10.0)
+        except asyncio.TimeoutError:
+            raise RuntimeError("Timeout waiting for ReplayBuffer to be populated")
 
         # Extract policy versions and add 1 to ensure all weights are positive
         policy_versions = [version + 1 for version, _ in self.storage]
@@ -200,8 +209,14 @@ class Scorer(Actor):
         self.running = True
         try:
             while self.running:
-                slice_ = await self.trajectory_queue.get.call_one()
-                await self._score_slice(slice_)
+                try:
+                    slice_ = await asyncio.wait_for(
+                        self.trajectory_queue.get.call_one(),
+                        timeout=1.0,
+                    )
+                    await self._score_slice(slice_)
+                except asyncio.TimeoutError:
+                    continue
         except Exception as e:
             print(f"Scorer event loop error: {e}")
         finally:
