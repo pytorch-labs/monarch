@@ -383,6 +383,7 @@ pub(crate) mod testing {
     use super::*;
     use crate::alloc::test_utils::TestActor;
     use crate::alloc::test_utils::Wait;
+    use crate::proc_mesh::mesh_agent::GspawnResult;
     use crate::proc_mesh::mesh_agent::MeshAgentMessageClient;
 
     #[macro_export]
@@ -517,8 +518,13 @@ pub(crate) mod testing {
             )
             .await
             .unwrap();
-        let (_, actor_id) = completed_receiver.recv().await.unwrap();
-        ActorRef::attest(actor_id)
+        let result = completed_receiver.recv().await.unwrap();
+        match result {
+            GspawnResult::Success { actor_id, .. } => ActorRef::attest(actor_id),
+            GspawnResult::Error(error_msg) => {
+                panic!("gspawn failed: {}", error_msg);
+            }
+        }
     }
 
     /// In order to simulate stuckness, we have to do two things:

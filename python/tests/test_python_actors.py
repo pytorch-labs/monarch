@@ -704,3 +704,19 @@ async def test_actor_log_streaming() -> None:
             os.close(original_stderr_fd)
         except OSError:
             pass
+
+
+@pytest.mark.timeout(15)
+async def test_same_actor_twice() -> None:
+    pm = await proc_mesh(gpus=1)
+    await pm.spawn("dup", Counter, 0)
+
+    # The second spawn with the same name should fail with a specific error
+    with pytest.raises(Exception) as exc_info:
+        await pm.spawn("dup", Counter, 0)
+
+    # Assert that the error message contains the expected text about duplicate actor name
+    error_msg = str(exc_info.value)
+    assert (
+        "gspawn failed: an actor with name 'dup' has already been spawned" in error_msg
+    ), f"Expected error message about duplicate actor name, got: {error_msg}"

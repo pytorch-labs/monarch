@@ -46,6 +46,12 @@ use hyperactor::supervision::ActorSupervisionEvent;
 use serde::Deserialize;
 use serde::Serialize;
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Named)]
+pub enum GspawnResult {
+    Success { rank: usize, actor_id: ActorId },
+    Error(String),
+}
+
 #[derive(
     Debug,
     Clone,
@@ -83,7 +89,7 @@ pub(crate) enum MeshAgentMessage {
         /// serialized parameters
         params_data: Data,
         /// reply port; the proc should send its rank to indicated a spawned actor
-        status_port: PortRef<(usize, ActorId)>,
+        status_port: PortRef<GspawnResult>,
     },
 }
 
@@ -194,16 +200,28 @@ impl MeshAgentMessageHandler for MeshAgent {
         actor_type: String,
         actor_name: String,
         params_data: Data,
-        status_port: PortRef<(usize, ActorId)>,
+        status_port: PortRef<GspawnResult>,
     ) -> Result<(), anyhow::Error> {
-        let actor_id = self
+        let actor_id = match self
             .remote
             .gspawn(&self.proc, &actor_type, &actor_name, params_data)
-            .await?;
-        let rank = self
-            .rank
-            .ok_or_else(|| anyhow::anyhow!("tried to spawn on unconfigured proc"))?;
-        status_port.send(cx, (rank, actor_id))?;
+            .await
+        {
+            Ok(id) => id,
+            Err(err) => {
+                status_port.send(cx, GspawnResult::Error(format!("gspawn failed: {}", err)))?;
+                return Err(anyhow::anyhow!("gspawn failed"));
+            }
+        };
+        let rank = match self.rank {
+            Some(rank) => rank,
+            None => {
+                let err = "tried to spawn on unconfigured proc";
+                status_port.send(cx, GspawnResult::Error(err.to_string()))?;
+                return Err(anyhow::anyhow!(err));
+            }
+        };
+        status_port.send(cx, GspawnResult::Success { rank, actor_id })?;
         Ok(())
     }
 }

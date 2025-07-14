@@ -52,6 +52,7 @@ use crate::alloc::ProcState;
 use crate::alloc::ProcStopReason;
 use crate::assign::Ranks;
 use crate::comm::CommActorMode;
+use crate::proc_mesh::mesh_agent::GspawnResult;
 use crate::proc_mesh::mesh_agent::MeshAgent;
 use crate::proc_mesh::mesh_agent::MeshAgentMessageClient;
 use crate::reference::ProcMeshId;
@@ -352,9 +353,16 @@ impl ProcMesh {
         }
         let mut completed = Ranks::new(n);
         while !completed.is_full() {
-            let (rank, actor_id) = completed_receiver.recv().await?;
-            if completed.insert(rank, actor_id).is_some() {
-                tracing::warn!("multiple completions received for rank {}", rank);
+            let result = completed_receiver.recv().await?;
+            match result {
+                GspawnResult::Success { rank, actor_id } => {
+                    if completed.insert(rank, actor_id).is_some() {
+                        tracing::warn!("multiple completions received for rank {}", rank);
+                    }
+                }
+                GspawnResult::Error(error_msg) => {
+                    anyhow::bail!("gspawn failed: {}", error_msg);
+                }
             }
         }
 
@@ -760,5 +768,21 @@ mod tests {
 
         assert!(events.next().await.is_none());
         assert!(actors.next().await.is_none());
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 5)]
+    async fn test_spawn_twice() {
+        let alloc = LocalAllocator
+            .allocate(AllocSpec {
+                shape: shape! { replica = 1  },
+                constraints: Default::default(),
+            })
+            .await
+            .unwrap();
+        let mesh = ProcMesh::allocate(alloc).await.unwrap();
+
+        mesh.spawn::<TestActor>("dup", &()).await.unwrap();
+        let result = mesh.spawn::<TestActor>("dup", &()).await;
+        assert!(result.is_err());
     }
 }
