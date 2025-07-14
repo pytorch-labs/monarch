@@ -156,6 +156,16 @@ impl<T> SharedCell<T> {
         SharedCellRef::from(self.inner.clone().try_read_owned()?)
     }
 
+    /// Execute given closure with write access to the underlying data. If the cell is empty, returns an error.
+    pub async fn with_mut<F, R>(&self, f: F) -> Result<R, EmptyCellError>
+    where
+        F: FnOnce(&mut T) -> R,
+    {
+        let mut inner = self.inner.write(true).await;
+        let value = inner.value.as_mut().ok_or(EmptyCellError {})?;
+        Ok(f(value))
+    }
+
     /// Take the item out of the cell, leaving it in an unusable state.
     pub async fn take(&self) -> Result<T, EmptyCellError> {
         let mut inner = self.inner.write(true).await;

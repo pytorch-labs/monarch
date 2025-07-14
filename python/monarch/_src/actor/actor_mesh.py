@@ -44,7 +44,12 @@ from typing import (
 )
 
 from monarch._rust_bindings.monarch_hyperactor.actor import PanicFlag, PythonMessage
-from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
+from monarch._rust_bindings.monarch_hyperactor.actor_mesh import (
+    ActorMeshMonitor,
+    MonitoredOncePortReceiver,
+    MonitoredPortReceiver,
+    PythonActorMesh,
+)
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     Mailbox,
     OncePortReceiver,
@@ -54,6 +59,7 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
 )
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.shape import Point as HyPoint, Shape
+from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
 
 from monarch._rust_bindings.monarch_hyperactor.telemetry import enter_span, exit_span
 from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator
@@ -181,7 +187,18 @@ class _ActorMeshRefImpl:
         self._actor_mesh = None
         self._shape, self._please_replace_me_actor_ids, self._mailbox = state
 
+    def _check_state(self) -> None:
+        # This is temporary until we have real cast integration here. We need to actively check
+        # supervision error here is because all communication is done through direct mailbox sending
+        # and not through comm actor casting.
+        # TODO: remove this when casting integration is done.
+        if self._actor_mesh is not None:
+            event = self._actor_mesh.get_supervision_event()
+            if event is not None:
+                raise SupervisionError(f"actor mesh is not in a healthy state: {event}")
+
     def send(self, rank: int, message: PythonMessage) -> None:
+        self._check_state()
         actor = self._please_replace_me_actor_ids[rank]
         self._mailbox.post(actor, message)
 
@@ -190,6 +207,8 @@ class _ActorMeshRefImpl:
         message: PythonMessage,
         selection: Selection,
     ) -> None:
+        self._check_state()
+
         # TODO: use the actual actor mesh when available. We cannot currently use it
         # directly because we risk bifurcating the message delivery paths from the same
         # client, since slicing the mesh will produce a reference, which calls actors
@@ -295,8 +314,6 @@ class Endpoint(ABC, Generic[P, R]):
         return r.recv()
 
     def call(self, *args: P.args, **kwargs: P.kwargs) -> "Future[ValueMesh[R]]":
-        p: Port[R]
-        r: RankedPortReceiver[R]
         p, r = ranked_port(self)
         # pyre-ignore
         extent = self._send(args, kwargs, port=p)
@@ -387,7 +404,12 @@ class ActorEndpoint(Endpoint[P, R]):
         return Extent(shape.labels, shape.ndslice.sizes)
 
     def _port(self, once: bool = False) -> "PortTuple[R]":
-        return PortTuple.create(self._mailbox, once)
+        monitor = (
+            None
+            if self._actor_mesh._actor_mesh is None
+            else self._actor_mesh._actor_mesh.monitor()
+        )
+        return PortTuple.create(self._mailbox, monitor, once)
 
 
 class Accumulator(Generic[P, R, A]):
@@ -526,11 +548,21 @@ if TYPE_CHECKING:
         receiver: "PortReceiver[R]"
 
         @staticmethod
-        def create(mailbox: Mailbox, once: bool = False) -> "PortTuple[Any]":
+        def create(
+            mailbox: Mailbox, monitor: Optional[ActorMeshMonitor], once: bool = False
+        ) -> "PortTuple[Any]":
             handle, receiver = mailbox.open_once_port() if once else mailbox.open_port()
             port_ref = handle.bind()
+            if monitor is not None:
+                receiver = (
+                    MonitoredOncePortReceiver(receiver, monitor)
+                    if isinstance(receiver, OncePortReceiver)
+                    else MonitoredPortReceiver(receiver, monitor)
+                )
+
             return PortTuple(
-                Port(port_ref, mailbox, rank=None), PortReceiver(mailbox, receiver)
+                Port(port_ref, mailbox, rank=None),
+                PortReceiver(mailbox, receiver),
             )
 else:
 
@@ -539,11 +571,21 @@ else:
         receiver: "PortReceiver[Any]"
 
         @staticmethod
-        def create(mailbox: Mailbox, once: bool = False) -> "PortTuple[Any]":
+        def create(
+            mailbox: Mailbox, monitor: Optional[ActorMeshMonitor], once: bool = False
+        ) -> "PortTuple[Any]":
             handle, receiver = mailbox.open_once_port() if once else mailbox.open_port()
             port_ref = handle.bind()
+            if monitor is not None:
+                receiver = (
+                    MonitoredOncePortReceiver(receiver, monitor)
+                    if isinstance(receiver, OncePortReceiver)
+                    else MonitoredPortReceiver(receiver, monitor)
+                )
+
             return PortTuple(
-                Port(port_ref, mailbox, rank=None), PortReceiver(mailbox, receiver)
+                Port(port_ref, mailbox, rank=None),
+                PortReceiver(mailbox, receiver),
             )
 
 
@@ -565,10 +607,18 @@ class PortReceiver(Generic[R]):
     def __init__(
         self,
         mailbox: Mailbox,
-        receiver: HyPortReceiver | OncePortReceiver,
+        receiver: MonitoredPortReceiver
+        | MonitoredOncePortReceiver
+        | HyPortReceiver
+        | OncePortReceiver,
     ) -> None:
         self._mailbox: Mailbox = mailbox
-        self._receiver: HyPortReceiver | OncePortReceiver = receiver
+        self._receiver: (
+            MonitoredPortReceiver
+            | MonitoredOncePortReceiver
+            | HyPortReceiver
+            | OncePortReceiver
+        ) = receiver
 
     async def _recv(self) -> R:
         return self._process(await self._receiver.recv())

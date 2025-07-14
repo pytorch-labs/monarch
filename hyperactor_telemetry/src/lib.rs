@@ -505,13 +505,13 @@ pub fn initialize_logging(clock: impl TelemetryClock + Send + 'static) {
             } else {
                 None
             })
+            .with(file_layer)
+            .with(stderr_layer)
             .with(if is_layer_enabled(DISABLE_RECORDER_TRACING) {
                 Some(recorder().layer())
             } else {
                 None
             })
-            .with(file_layer)
-            .with(stderr_layer)
             .try_init()
         {
             tracing::debug!("logging already initialized for this process: {}", err);
