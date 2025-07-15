@@ -61,7 +61,6 @@ from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.shape import Point as HyPoint, Shape
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
 
-from monarch._rust_bindings.monarch_hyperactor.telemetry import enter_span, exit_span
 from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator
 from monarch._src.actor.future import Future
 from monarch._src.actor.pdb_wrapper import PdbWrapper
@@ -69,8 +68,11 @@ from monarch._src.actor.pdb_wrapper import PdbWrapper
 from monarch._src.actor.pickle import flatten, unpickle
 
 from monarch._src.actor.shape import MeshTrait, NDSlice
+from monarch._src.actor.telemetry.rust_span_tracing import get_monarch_tracer
 
 logger: logging.Logger = logging.getLogger(__name__)
+
+TRACER = get_monarch_tracer()
 
 Allocator = ProcessAllocator | LocalAllocator
 
@@ -718,31 +720,28 @@ class _Actor:
             if inspect.iscoroutinefunction(the_method):
 
                 async def instrumented():
-                    enter_span(
-                        the_method.__module__,
+                    with TRACER.start_as_current_span(
                         message.method,
-                        str(ctx.mailbox.actor_id),
-                    )
-                    try:
-                        result = await the_method(self.instance, *args, **kwargs)
-                        self._maybe_exit_debugger()
-                    except Exception as e:
-                        logging.critical(
-                            "Unhandled exception in actor endpoint",
-                            exc_info=e,
-                        )
-                        raise e
-                    exit_span()
-                    return result
+                        attributes={"actor_id": str(ctx.mailbox.actor_id)},
+                    ):
+                        try:
+                            result = await the_method(self.instance, *args, **kwargs)
+                            self._maybe_exit_debugger()
+                        except Exception as e:
+                            logging.critical(
+                                "Unhandled exception in actor endpoint",
+                                exc_info=e,
+                            )
+                            raise e
+                        return result
 
                 result = await instrumented()
             else:
-                enter_span(
-                    the_method.__module__, message.method, str(ctx.mailbox.actor_id)
-                )
-                result = the_method(self.instance, *args, **kwargs)
-                self._maybe_exit_debugger()
-                exit_span()
+                with TRACER.start_as_current_span(
+                    message.method, attributes={"actor_id": str(ctx.mailbox.actor_id)}
+                ):
+                    result = the_method(self.instance, *args, **kwargs)
+                    self._maybe_exit_debugger()
 
             if port is not None:
                 port.send("result", result)
@@ -808,6 +807,10 @@ class Actor(MeshTrait):
         lgr = logging.getLogger(cls.__class__.__name__)
         lgr.setLevel(logging.DEBUG)
         return lgr
+
+    @property
+    def tracer(self):
+        return TRACER
 
     @property
     def _ndslice(self) -> NDSlice:
