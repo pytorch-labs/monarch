@@ -119,7 +119,8 @@ impl RsyncMeshClient {
         let shape = self.shape.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let mesh = SlicedActorMesh::new(&inner_mesh, shape);
-            Ok(rsync::rsync_mesh(&mesh, workspace).await?)
+            rsync::rsync_mesh(&mesh, workspace).await?;
+            Ok(())
         })
     }
 }

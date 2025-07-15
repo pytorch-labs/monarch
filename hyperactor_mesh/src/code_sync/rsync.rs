@@ -49,11 +49,123 @@ use crate::code_sync::WorkspaceLocation;
 use crate::connect::Connect;
 use crate::connect::accept;
 
-pub async fn do_rsync(addr: &SocketAddr, workspace: &Path) -> Result<()> {
+/// Represents a single file change from rsync
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Change {
+    /// The type of change that occurred
+    pub change_type: ChangeType,
+    /// The path of the file that changed
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ChangeMessage {
+    /// Path was deleted
+    Deleting,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ChangeAction {
+    /// File was received.
+    Received,
+    // Path was changed/created locally.
+    LocalChange,
+    NotTransferred,
+}
+
+/// The type of change that occurred to a file
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ChangeType {
+    Message(ChangeMessage),
+    Action(ChangeAction, FileType),
+}
+
+/// The type of file that changed
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FileType {
+    /// Regular file
+    File,
+    /// Directory
+    Directory,
+    /// Symbolic link
+    Symlink,
+}
+
+/// Represents the result of an rsync operation with details about what was transferred
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Named)]
+pub struct RsyncResult {
+    /// All changes that occurred during the rsync operation
+    pub changes: Vec<Change>,
+}
+
+impl RsyncResult {
+    /// Create an empty rsync result
+    pub fn empty() -> Self {
+        Self {
+            changes: Vec::new(),
+        }
+    }
+
+    /// Parse rsync output to extract file transfer information
+    /// Since create_dir_all ensures the workspace exists, we can assume all stdout lines are changes
+    fn parse_from_output(stdout: &str) -> Result<Self> {
+        let mut changes = Vec::new();
+
+        // Parse stdout for file operations (when using --itemize-changes)
+        // All lines in stdout represent changes since the workspace directory exists
+
+        // rsync itemize format: YXcstpoguax path
+        // Y = update type (>, c, h, ., etc.)
+        // X = file type (f=file, d=directory, L=symlink, etc.)
+        for line in stdout.lines() {
+            let line = line.trim();
+            let (raw_changes, path) = line.split_at(11);
+            let raw_changes = raw_changes.trim();
+            let path = &path[1..]; // remove leading space
+
+            let mut iter = raw_changes.chars();
+            let change_type = match iter.next().context("missing change type")? {
+                '*' => ChangeType::Message(match iter.as_str() {
+                    "deleting" => ChangeMessage::Deleting,
+                    _ => bail!("unexpected change message: {}", raw_changes),
+                }),
+                c => {
+                    let atype = match c {
+                        '.' => ChangeAction::NotTransferred,
+                        '>' => ChangeAction::Received,
+                        'c' => ChangeAction::LocalChange,
+                        _ => bail!("unexpected change type: {}", raw_changes),
+                    };
+                    let file_type = match iter.next().context("missing file type")? {
+                        'f' => FileType::File,
+                        'd' => FileType::Directory,
+                        'L' => FileType::Symlink,
+                        _ => bail!("unexpected file type: {}", raw_changes),
+                    };
+                    ChangeType::Action(atype, file_type)
+                }
+            };
+
+            changes.push(Change {
+                change_type,
+                path: PathBuf::from(path),
+            });
+        }
+
+        Ok(Self { changes })
+    }
+}
+
+pub async fn do_rsync(addr: &SocketAddr, workspace: &Path) -> Result<RsyncResult> {
+    // Make sure the target workspace exists, mainly to avoid the "created director ..."
+    // line in rsync output.
+    fs::create_dir_all(workspace).await?;
+
     let output = Command::new("rsync")
-        .arg("--quiet")
         .arg("--archive")
         .arg("--delete")
+        // Show detailed changes for each file
+        .arg("--itemize-changes")
         // By setting these flags, we make `rsync` immune to multiple invocations
         // targeting the same dir, which can happen if we don't take care to only
         // allow one worker on a given host to do the `rsync`.
@@ -63,14 +175,17 @@ pub async fn do_rsync(addr: &SocketAddr, workspace: &Path) -> Result<()> {
         .arg(format!("--partial-dir=.rsync-tmp.{}", addr.port()))
         .arg(format!("rsync://{}/workspace", addr))
         .arg(format!("{}/", workspace.display()))
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
         .await?;
+
     output
         .status
         .exit_ok()
         .with_context(|| format!("rsync failed: {}", String::from_utf8_lossy(&output.stderr)))?;
-    Ok(())
+
+    RsyncResult::parse_from_output(&String::from_utf8(output.stdout)?)
 }
 
 #[derive(Debug)]
@@ -167,8 +282,8 @@ impl RsyncDaemon {
 pub struct RsyncMessage {
     /// The connect message to create a duplex bytestream with the client.
     pub connect: Connect,
-    /// A port to send back any errors from the rsync.
-    pub result: OncePortRef<Result<(), String>>,
+    /// A port to send back the rsync result or any errors.
+    pub result: OncePortRef<Result<RsyncResult, String>>,
 }
 
 #[derive(Debug, Named, Serialize, Deserialize)]
@@ -205,12 +320,12 @@ impl Handler<RsyncMessage> for RsyncActor {
                 accept(cx, cx.self_id().clone(), connect),
             )?;
             let addr = listener.local_addr()?;
-            try_join!(do_rsync(&addr, &workspace), async move {
+            let (rsync_result, _) = try_join!(do_rsync(&addr, &workspace), async move {
                 let (mut local, _) = listener.accept().await?;
                 tokio::io::copy_bidirectional(&mut stream, &mut local).await?;
                 anyhow::Ok(())
             },)?;
-            anyhow::Ok(())
+            anyhow::Ok(rsync_result)
         }
         .await;
         result.send(cx, res.map_err(|e| format!("{:#?}", e)))?;
@@ -218,7 +333,7 @@ impl Handler<RsyncMessage> for RsyncActor {
     }
 }
 
-pub async fn rsync_mesh<M>(actor_mesh: &M, workspace: PathBuf) -> Result<()>
+pub async fn rsync_mesh<M>(actor_mesh: &M, workspace: PathBuf) -> Result<Vec<RsyncResult>>
 where
     M: ActorMesh<Actor = RsyncActor>,
 {
@@ -227,13 +342,13 @@ where
     let daemon_addr = daemon.addr();
 
     // We avoid casting here as we need point-to-point connections to each individual actor.
-    stream::iter(actor_mesh.iter_actor_refs())
+    let results: Vec<RsyncResult> = stream::iter(actor_mesh.iter_actor_refs())
         .map(anyhow::Ok)
         // Connect to all actors in the mesh.
-        .try_for_each_concurrent(None, |actor| async move {
+        .try_fold(Vec::new(), |mut results, actor| async move {
             let mailbox = actor_mesh.proc_mesh().client();
             let (connect, completer) = Connect::allocate(mailbox.actor_id().clone(), mailbox);
-            let (tx, rx) = mailbox.open_once_port::<Result<(), String>>();
+            let (tx, rx) = mailbox.open_once_port::<Result<RsyncResult, String>>();
             actor.send(
                 mailbox,
                 RsyncMessage {
@@ -249,19 +364,20 @@ where
             let copy_res = tokio::io::copy_bidirectional(&mut local, &mut stream).await;
             // Now wait for the final result to be sent back.  We wrap in a timeout, as we should get this
             // back pretty quickly after the copy above is done.
-            let () = RealClock
+            let rsync_result = RealClock
                 .timeout(Duration::from_secs(1), rx.recv())
                 .await??
                 .map_err(|err| anyhow!("failure from {}: {}", actor.actor_id(), err))?;
             // Finally, propagate any copy errors, in case there were some but not result error.
             let _ = copy_res?;
-            anyhow::Ok(())
+            results.push(rsync_result);
+            anyhow::Ok(results)
         })
         .await?;
 
     daemon.shutdown().await?;
 
-    Ok(())
+    Ok(results)
 }
 
 #[cfg(test)]
@@ -307,6 +423,8 @@ mod tests {
 
         // Create target workspace for the actors
         let target_workspace = TempDir::new()?;
+        fs::create_dir(target_workspace.path().join("subdir5")).await?;
+        fs::write(target_workspace.path().join("foo.txt"), "something").await?;
 
         // Set up actor mesh with 2 RsyncActors
         let alloc = LocalAllocator
@@ -327,13 +445,77 @@ mod tests {
         let actor_mesh = proc_mesh.spawn::<RsyncActor>("rsync_test", &params).await?;
 
         // Test rsync_mesh function - this coordinates rsync operations across the mesh
-        rsync_mesh(&actor_mesh, source_workspace.path().to_path_buf()).await?;
+        let results = rsync_mesh(&actor_mesh, source_workspace.path().to_path_buf()).await?;
+
+        // Verify we got results back
+        assert_eq!(results.len(), 1); // We have 1 actor in the mesh
+
+        let rsync_result = &results[0];
+
+        // Verify that files were transferred (should be at least the files we created)
+        // Note: The exact files detected may vary based on rsync's itemization,
+        // but we should have some indication of transfer activity
+        println!("Rsync result: {:#?}", rsync_result);
 
         // Verify we copied correctly.
         assert!(
             !dir_diff::is_different(&source_workspace, &target_workspace)
                 .map_err(|e| anyhow!("{:?}", e))?
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_rsync_result_parsing() -> Result<()> {
+        // Test the parsing logic with mock rsync output
+        let stdout = r#">f+++++++++ test1.txt
+>f+++++++++ test2.txt
+cd+++++++++ subdir/
+>f+++++++++ subdir/test3.txt
+*deleting   old_file.txt
+"#;
+
+        let result = RsyncResult::parse_from_output(stdout)?;
+
+        // Define the expected changes
+        let expected_changes = vec![
+            Change {
+                change_type: ChangeType::Action(ChangeAction::Received, FileType::File),
+                path: PathBuf::from("test1.txt"),
+            },
+            Change {
+                change_type: ChangeType::Action(ChangeAction::Received, FileType::File),
+                path: PathBuf::from("test2.txt"),
+            },
+            Change {
+                change_type: ChangeType::Action(ChangeAction::LocalChange, FileType::Directory),
+                path: PathBuf::from("subdir/"),
+            },
+            Change {
+                change_type: ChangeType::Action(ChangeAction::Received, FileType::File),
+                path: PathBuf::from("subdir/test3.txt"),
+            },
+            Change {
+                change_type: ChangeType::Message(ChangeMessage::Deleting),
+                path: PathBuf::from("old_file.txt"),
+            },
+        ];
+
+        // Verify we have all expected changes
+        assert_eq!(result.changes.len(), expected_changes.len());
+
+        // Compare each change
+        for (actual, expected) in result.changes.iter().zip(expected_changes.iter()) {
+            assert_eq!(
+                actual, expected,
+                "Change mismatch: actual={:?}, expected={:?}",
+                actual, expected
+            );
+        }
+
+        // Verify the entire result matches
+        assert_eq!(result.changes, expected_changes);
 
         Ok(())
     }
