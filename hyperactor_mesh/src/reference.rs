@@ -75,8 +75,6 @@ pub struct ActorMeshId(pub ProcMeshId, pub String);
 pub struct ActorMeshRef<A: RemoteActor> {
     pub(crate) mesh_id: ActorMeshId,
     shape: Shape,
-    /// The shape of the underlying Proc Mesh.
-    proc_mesh_shape: Shape,
     /// The reference to the comm actor of the underlying Proc Mesh.
     comm_actor_ref: ActorRef<CommActor>,
     phantom: PhantomData<A>,
@@ -90,13 +88,11 @@ impl<A: RemoteActor> ActorMeshRef<A> {
     pub(crate) fn attest(
         mesh_id: ActorMeshId,
         shape: Shape,
-        proc_mesh_shape: Shape,
         comm_actor_ref: ActorRef<CommActor>,
     ) -> Self {
         Self {
             mesh_id,
             shape,
-            proc_mesh_shape,
             comm_actor_ref,
             phantom: PhantomData,
         }
@@ -142,7 +138,6 @@ impl<A: RemoteActor> Clone for ActorMeshRef<A> {
         Self {
             mesh_id: self.mesh_id.clone(),
             shape: self.shape.clone(),
-            proc_mesh_shape: self.proc_mesh_shape.clone(),
             comm_actor_ref: self.comm_actor_ref.clone(),
             phantom: PhantomData,
         }
@@ -161,12 +156,11 @@ impl<A: RemoteActor> Eq for ActorMeshRef<A> {}
 mod tests {
     use async_trait::async_trait;
     use hyperactor::Actor;
+    use hyperactor::Bind;
     use hyperactor::Context;
     use hyperactor::Handler;
     use hyperactor::PortRef;
-    use hyperactor::message::Bind;
-    use hyperactor::message::Bindings;
-    use hyperactor::message::Unbind;
+    use hyperactor::Unbind;
     use hyperactor_mesh_macros::sel;
     use ndslice::shape;
 
@@ -183,11 +177,11 @@ mod tests {
         shape! { replica = 4 }
     }
 
-    #[derive(Debug, Serialize, Deserialize, Named, Clone)]
+    #[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
     struct MeshPingPongMessage(
         /*ttl:*/ u64,
         ActorMeshRef<MeshPingPongActor>,
-        /*completed port:*/ PortRef<bool>,
+        /*completed port:*/ #[binding(include)] PortRef<bool>,
     );
 
     #[derive(Debug, Clone)]
@@ -203,7 +197,6 @@ mod tests {
     struct MeshPingPongActorParams {
         mesh_id: ActorMeshId,
         shape: Shape,
-        proc_mesh_shape: Shape,
         comm_actor_ref: ActorRef<CommActor>,
     }
 
@@ -213,12 +206,7 @@ mod tests {
 
         async fn new(params: Self::Params) -> Result<Self, anyhow::Error> {
             Ok(Self {
-                mesh_ref: ActorMeshRef::attest(
-                    params.mesh_id,
-                    params.shape,
-                    params.proc_mesh_shape,
-                    params.comm_actor_ref,
-                ),
+                mesh_ref: ActorMeshRef::attest(params.mesh_id, params.shape, params.comm_actor_ref),
             })
         }
     }
@@ -237,18 +225,6 @@ mod tests {
             let msg = MeshPingPongMessage(ttl - 1, self.mesh_ref.clone(), done_tx);
             sender_mesh.cast(cx, sel!(?), msg)?;
             Ok(())
-        }
-    }
-
-    impl Unbind for MeshPingPongMessage {
-        fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
-            self.2.unbind(bindings)
-        }
-    }
-
-    impl Bind for MeshPingPongMessage {
-        fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
-            self.2.bind(bindings)
         }
     }
 
@@ -278,7 +254,6 @@ mod tests {
                         "ping".to_string(),
                     ),
                     shape: ping_proc_mesh.shape().clone(),
-                    proc_mesh_shape: ping_proc_mesh.shape().clone(),
                     comm_actor_ref: ping_proc_mesh.comm_actor().clone(),
                 },
             )
@@ -296,7 +271,6 @@ mod tests {
                         "pong".to_string(),
                     ),
                     shape: pong_proc_mesh.shape().clone(),
-                    proc_mesh_shape: pong_proc_mesh.shape().clone(),
                     comm_actor_ref: pong_proc_mesh.comm_actor().clone(),
                 },
             )

@@ -6,6 +6,7 @@
 
 # pyre-strict
 
+from collections.abc import Mapping
 from typing import AsyncIterator, final
 
 from monarch._rust_bindings.monarch_hyperactor.actor import PythonMessage
@@ -19,7 +20,35 @@ from monarch._rust_bindings.monarch_hyperactor.selection import Selection
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape
 
 @final
+class PythonActorMeshRef:
+    """
+    A reference to a remote actor mesh over which PythonMessages can be sent.
+    """
+
+    def cast(
+        self, mailbox: Mailbox, selection: Selection, message: PythonMessage
+    ) -> None:
+        """Cast a message to the selected actors in the mesh."""
+        ...
+
+    @property
+    def shape(self) -> Shape:
+        """
+        The Shape object that describes how the rank of an actor
+        retrieved with get corresponds to coordinates in the
+        mesh.
+        """
+        ...
+
+@final
 class PythonActorMesh:
+    def bind(self) -> PythonActorMeshRef:
+        """
+        Bind this actor mesh. The returned mesh ref can be used to reach the
+        mesh remotely.
+        """
+        ...
+
     def cast(self, selection: Selection, message: PythonMessage) -> None:
         """
         Cast a message to the selected actors in the mesh.

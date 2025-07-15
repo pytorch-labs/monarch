@@ -17,13 +17,18 @@ use hyperactor_mesh::Mesh;
 use hyperactor_mesh::RootActorMesh;
 use hyperactor_mesh::actor_mesh::ActorMesh;
 use hyperactor_mesh::actor_mesh::ActorSupervisionEvents;
+use hyperactor_mesh::reference::ActorMeshRef;
 use hyperactor_mesh::shared_cell::SharedCell;
 use hyperactor_mesh::shared_cell::SharedCellRef;
 use pyo3::exceptions::PyEOFError;
 use pyo3::exceptions::PyException;
+use pyo3::exceptions::PyNotImplementedError;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3::types::PyBytes;
+use serde::Deserialize;
+use serde::Serialize;
 use tokio::sync::Mutex;
 
 use crate::actor::PythonActor;
@@ -101,6 +106,14 @@ impl PythonActorMesh {
             .borrow()
             .map_err(|_| PyRuntimeError::new_err("`PythonActorMesh` has already been stopped"))
     }
+
+    fn pickling_err(&self) -> PyErr {
+        PyErr::new::<PyNotImplementedError, _>(
+            "PythonActorMesh cannot be pickled. If applicable, use bind() \
+            to get a PythonActorMeshRef, and use that instead."
+                .to_string(),
+        )
+    }
 }
 
 #[pymethods]
@@ -121,6 +134,11 @@ impl PythonActorMesh {
             .cast(selection.inner().clone(), message.clone())
             .map_err(|err| PyException::new_err(err.to_string()))?;
         Ok(())
+    }
+
+    fn bind(&self) -> PyResult<PythonActorMeshRef> {
+        let mesh = self.try_inner()?;
+        Ok(PythonActorMeshRef { inner: mesh.bind() })
     }
 
     fn get_supervision_event(&self) -> PyResult<Option<PyActorSupervisionEvent>> {
@@ -168,6 +186,64 @@ impl PythonActorMesh {
     #[getter]
     fn shape(&self) -> PyResult<PyShape> {
         Ok(PyShape::from(self.try_inner()?.shape().clone()))
+    }
+
+    // Override the pickling methods to provide a meaningful error message.
+    fn __reduce__(&self) -> PyResult<()> {
+        Err(self.pickling_err())
+    }
+
+    fn __reduce_ex__(&self, _proto: u8) -> PyResult<()> {
+        Err(self.pickling_err())
+    }
+}
+
+#[pyclass(
+    frozen,
+    name = "PythonActorMeshRef",
+    module = "monarch._rust_bindings.monarch_hyperactor.actor_mesh"
+)]
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct PythonActorMeshRef {
+    inner: ActorMeshRef<PythonActor>,
+}
+
+#[pymethods]
+impl PythonActorMeshRef {
+    fn cast(
+        &self,
+        client: &PyMailbox,
+        selection: &PySelection,
+        message: &PythonMessage,
+    ) -> PyResult<()> {
+        self.inner
+            .cast(&client.inner, selection.inner().clone(), message.clone())
+            .map_err(|err| PyException::new_err(err.to_string()))?;
+        Ok(())
+    }
+
+    #[getter]
+    fn shape(&self) -> PyShape {
+        PyShape::from(self.inner.shape().clone())
+    }
+
+    #[staticmethod]
+    fn from_bytes(bytes: &Bound<'_, PyBytes>) -> PyResult<Self> {
+        bincode::deserialize(bytes.as_bytes())
+            .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))
+    }
+
+    fn __reduce__<'py>(
+        slf: &Bound<'py, Self>,
+    ) -> PyResult<(Bound<'py, PyAny>, (Bound<'py, PyBytes>,))> {
+        let bytes = bincode::serialize(&*slf.borrow())
+            .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
+        let py_bytes = PyBytes::new(slf.py(), &bytes);
+        Ok((slf.as_any().getattr("from_bytes")?, (py_bytes,)))
+    }
+
+    fn __repr__(&self) -> String {
+        format!("{:?}", self)
     }
 }
 
@@ -379,6 +455,7 @@ impl From<ActorSupervisionEvent> for PyActorSupervisionEvent {
 
 pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResult<()> {
     hyperactor_mod.add_class::<PythonActorMesh>()?;
+    hyperactor_mod.add_class::<PythonActorMeshRef>()?;
     hyperactor_mod.add_class::<PyActorMeshMonitor>()?;
     hyperactor_mod.add_class::<MonitoredPythonPortReceiver>()?;
     hyperactor_mod.add_class::<MonitoredPythonOncePortReceiver>()?;

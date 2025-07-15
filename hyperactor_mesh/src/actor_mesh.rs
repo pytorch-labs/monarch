@@ -145,7 +145,6 @@ pub trait ActorMesh: Mesh<Id = ActorMeshId> {
                 self.name().to_string(),
             ),
             self.shape().clone(),
-            self.proc_mesh().shape().clone(),
             self.proc_mesh().comm_actor().clone(),
         )
     }

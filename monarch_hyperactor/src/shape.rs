@@ -21,6 +21,7 @@ use crate::ndslice::PySlice;
     module = "monarch._rust_bindings.monarch_hyperactor.shape",
     frozen
 )]
+#[derive(Clone)]
 pub struct PyShape {
     pub(super) inner: Shape,
 }
@@ -110,6 +111,14 @@ impl PyShape {
 
     fn __len__(&self) -> usize {
         self.inner.slice().len()
+    }
+
+    fn __eq__(&self, other: &Bound<'_, PyAny>) -> PyResult<bool> {
+        if let Ok(other) = other.extract::<PyShape>() {
+            Ok(self.inner == other.inner)
+        } else {
+            Ok(false)
+        }
     }
 
     #[staticmethod]
