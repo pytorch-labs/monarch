@@ -82,7 +82,6 @@ where
         sender.clone(),
         actor_mesh_shape.clone(),
         message,
-        None, // TODO: reducer typehash
     )?;
 
     comm_actor_ref.send(

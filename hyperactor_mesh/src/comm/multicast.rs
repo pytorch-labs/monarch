@@ -54,8 +54,6 @@ pub struct CastMessageEnvelope {
     dest_port: DestinationPort,
     /// The serialized message.
     data: ErasedUnbound,
-    /// typehash of the reducer used to accumulate the message in split ports.
-    pub reducer_typehash: Option<u64>,
     /// The shape of the cast.
     shape: Shape,
 }
@@ -67,7 +65,6 @@ impl CastMessageEnvelope {
         sender: ActorId,
         shape: Shape,
         message: M,
-        reducer_typehash: Option<u64>,
     ) -> Result<Self, anyhow::Error>
     where
         A: RemoteActor + RemoteHandles<IndexedErasedUnbound<M>>,
@@ -80,7 +77,6 @@ impl CastMessageEnvelope {
             sender,
             dest_port: DestinationPort::new::<A, M>(actor_name),
             data,
-            reducer_typehash,
             shape,
         })
     }
@@ -100,7 +96,6 @@ impl CastMessageEnvelope {
             sender,
             dest_port,
             data: ErasedUnbound::new(data),
-            reducer_typehash: None,
             shape,
         }
     }
