@@ -15,23 +15,23 @@ use std::time::Duration;
 
 use anyhow::Context;
 use anyhow::Result;
-use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::ensure;
 use async_trait::async_trait;
+use futures::FutureExt;
 use futures::StreamExt;
 use futures::TryFutureExt;
 use futures::TryStreamExt;
-use futures::stream;
 use futures::try_join;
 use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Handler;
 use hyperactor::Named;
-use hyperactor::OncePortRef;
+use hyperactor::PortRef;
 use hyperactor::Unbind;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
+use ndslice::Selection;
 use nix::sys::signal;
 use nix::sys::signal::Signal;
 use nix::unistd::Pid;
@@ -48,6 +48,7 @@ use crate::actor_mesh::ActorMesh;
 use crate::code_sync::WorkspaceLocation;
 use crate::connect::Connect;
 use crate::connect::accept;
+use crate::sel;
 
 /// Represents a single file change from rsync
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -281,9 +282,9 @@ impl RsyncDaemon {
 #[derive(Debug, Named, Serialize, Deserialize, Bind, Unbind)]
 pub struct RsyncMessage {
     /// The connect message to create a duplex bytestream with the client.
-    pub connect: Connect,
+    pub connect: PortRef<Connect>,
     /// A port to send back the rsync result or any errors.
-    pub result: OncePortRef<Result<RsyncResult, String>>,
+    pub result: PortRef<Result<RsyncResult, String>>,
 }
 
 #[derive(Debug, Named, Serialize, Deserialize)]
@@ -315,9 +316,11 @@ impl Handler<RsyncMessage> for RsyncActor {
     ) -> Result<(), anyhow::Error> {
         let res = async {
             let workspace = self.workspace.resolve()?;
+            let (connect_msg, completer) = Connect::allocate(cx.self_id().clone(), cx);
+            connect.send(cx, connect_msg)?;
             let (listener, mut stream) = try_join!(
                 TcpListener::bind(("::1", 0)).err_into(),
-                accept(cx, cx.self_id().clone(), connect),
+                completer.complete(),
             )?;
             let addr = listener.local_addr()?;
             let (rsync_result, _) = try_join!(do_rsync(&addr, &workspace), async move {
@@ -337,43 +340,43 @@ pub async fn rsync_mesh<M>(actor_mesh: &M, workspace: PathBuf) -> Result<Vec<Rsy
 where
     M: ActorMesh<Actor = RsyncActor>,
 {
-    // Spawn a rsync daemon to acceopt incoming connections from actors.
+    // Spawn a rsync daemon to accept incoming connections from actors.
     let daemon = RsyncDaemon::spawn(TcpListener::bind(("::1", 0)).await?, &workspace).await?;
     let daemon_addr = daemon.addr();
 
-    // We avoid casting here as we need point-to-point connections to each individual actor.
-    let results: Vec<RsyncResult> = stream::iter(actor_mesh.iter_actor_refs())
-        .map(anyhow::Ok)
-        // Connect to all actors in the mesh.
-        .try_fold(Vec::new(), |mut results, actor| async move {
-            let mailbox = actor_mesh.proc_mesh().client();
-            let (connect, completer) = Connect::allocate(mailbox.actor_id().clone(), mailbox);
-            let (tx, rx) = mailbox.open_once_port::<Result<RsyncResult, String>>();
-            actor.send(
-                mailbox,
+    let mailbox = actor_mesh.proc_mesh().client();
+    let (rsync_conns_tx, rsync_conns_rx) = mailbox.open_port::<Connect>();
+
+    let ((), results) = try_join!(
+        rsync_conns_rx
+            .take(actor_mesh.shape().slice().len())
+            .err_into::<anyhow::Error>()
+            .try_for_each_concurrent(None, |connect| async move {
+                let (mut local, mut stream) = try_join!(
+                    TcpStream::connect(daemon_addr.clone()).err_into(),
+                    accept(mailbox, mailbox.actor_id().clone(), connect),
+                )?;
+                tokio::io::copy_bidirectional(&mut local, &mut stream).await?;
+                anyhow::Ok(())
+            })
+            .boxed(),
+        async move {
+            let (result_tx, result_rx) = mailbox.open_port::<Result<RsyncResult, String>>();
+            actor_mesh.cast(
+                sel!(*),
                 RsyncMessage {
-                    connect,
-                    result: tx.bind(),
+                    connect: rsync_conns_tx.bind(),
+                    result: result_tx.bind(),
                 },
             )?;
-            let (mut local, mut stream) = try_join!(
-                TcpStream::connect(daemon_addr.clone()).err_into(),
-                completer.complete(),
-            )?;
-            // Pipe the remote rsync client to the local rsync server, but don't propagate failures yet.
-            let copy_res = tokio::io::copy_bidirectional(&mut local, &mut stream).await;
-            // Now wait for the final result to be sent back.  We wrap in a timeout, as we should get this
-            // back pretty quickly after the copy above is done.
-            let rsync_result = RealClock
-                .timeout(Duration::from_secs(1), rx.recv())
-                .await??
-                .map_err(|err| anyhow!("failure from {}: {}", actor.actor_id(), err))?;
-            // Finally, propagate any copy errors, in case there were some but not result error.
-            let _ = copy_res?;
-            results.push(rsync_result);
-            anyhow::Ok(results)
-        })
-        .await?;
+            let res: Vec<RsyncResult> = result_rx
+                .take(actor_mesh.shape().slice().len())
+                .map(|res| res?.map_err(anyhow::Error::msg))
+                .try_collect()
+                .await?;
+            anyhow::Ok(res)
+        },
+    )?;
 
     daemon.shutdown().await?;
 
