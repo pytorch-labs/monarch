@@ -25,13 +25,17 @@ use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Named;
+use hyperactor::OncePortRef;
 use hyperactor::PortHandle;
 use hyperactor::PortRef;
 use hyperactor::ProcId;
 use hyperactor::RefClient;
+use hyperactor::actor::ActorStatus;
 use hyperactor::actor::remote::Remote;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
+use hyperactor::clock::Clock;
+use hyperactor::clock::RealClock;
 use hyperactor::mailbox::BoxedMailboxSender;
 use hyperactor::mailbox::DeliveryError;
 use hyperactor::mailbox::DialMailboxRouter;
@@ -56,7 +60,6 @@ pub enum GspawnResult {
     Debug,
     Clone,
     PartialEq,
-    Eq,
     Serialize,
     Deserialize,
     Handler,
@@ -90,6 +93,17 @@ pub(crate) enum MeshAgentMessage {
         params_data: Data,
         /// reply port; the proc should send its rank to indicated a spawned actor
         status_port: PortRef<GspawnResult>,
+    },
+
+    /// Stop actors of a specific mesh name
+    StopActor {
+        /// The name of the actor mesh to stop
+        mesh_name: String,
+        /// The timeout for waiting for the actor to stop
+        timeout_ms: u64,
+        /// ActorId if the actor was stopped or None
+        #[reply]
+        stopped_actor: OncePortRef<Option<ActorId>>,
     },
 }
 
@@ -223,6 +237,30 @@ impl MeshAgentMessageHandler for MeshAgent {
         };
         status_port.send(cx, GspawnResult::Success { rank, actor_id })?;
         Ok(())
+    }
+
+    async fn stop_actor(
+        &mut self,
+        _cx: &Context<Self>,
+        mesh_name: String,
+        timeout_ms: u64,
+    ) -> Result<Option<ActorId>, anyhow::Error> {
+        let actor_id = ActorId(self.proc.proc_id().clone(), mesh_name, 0);
+
+        tracing::info!("Stopping actor: {}", actor_id);
+
+        if let Some(mut status) = self.proc.stop_actor(&actor_id) {
+            Ok(RealClock
+                .timeout(
+                    tokio::time::Duration::from_millis(timeout_ms),
+                    status.wait_for(|state: &ActorStatus| matches!(*state, ActorStatus::Stopped)),
+                )
+                .await
+                .ok()
+                .map(|_| actor_id))
+        } else {
+            Ok(None)
+        }
     }
 }
 

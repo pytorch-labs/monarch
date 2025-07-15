@@ -250,6 +250,9 @@ class _ActorMeshRefImpl:
     def __len__(self) -> int:
         return len(self._shape)
 
+    async def stop(self):
+        await self._actor_mesh.stop()
+
 
 class Extent(NamedTuple):
     labels: Sequence[str]
@@ -917,6 +920,9 @@ class ActorMeshRef(MeshTrait):
 
     def __repr__(self) -> str:
         return f"ActorMeshRef(class={self._class}, shape={self._actor_mesh_ref._shape})"
+
+    async def stop(self):
+        await self._actor_mesh_ref.stop()
 
 
 class ActorError(Exception):
