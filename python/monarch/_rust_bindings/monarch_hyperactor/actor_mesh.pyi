@@ -62,6 +62,12 @@ class PythonActorMesh:
         """
         ...
 
+    async def stop(self) -> None:
+        """
+        Stop the mesh.
+        """
+        ...
+
 @final
 class ActorMeshMonitor:
     def __aiter__(self) -> AsyncIterator["ActorSupervisionEvent"]:

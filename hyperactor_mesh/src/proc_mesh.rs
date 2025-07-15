@@ -449,6 +449,18 @@ impl ProcMesh {
     pub fn shape(&self) -> &Shape {
         &self.shape
     }
+    /// Send stop actors message to all mesh agents for a specific mesh name
+    pub async fn stop_actor_by_name(&self, mesh_name: &str) -> Result<(), anyhow::Error> {
+        for agent in self.agents() {
+            if let Some(stopped_actor) = agent
+                .stop_actor(&self.client, mesh_name.to_string(), 1000)
+                .await?
+            {
+                tracing::info!("Stopped actor {}", stopped_actor);
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Proc lifecycle events.

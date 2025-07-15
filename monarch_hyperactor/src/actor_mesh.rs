@@ -169,6 +169,20 @@ impl PythonActorMesh {
     fn shape(&self) -> PyResult<PyShape> {
         Ok(PyShape::from(self.try_inner()?.shape().clone()))
     }
+
+    fn stop<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let actor_mesh = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let actor_mesh = actor_mesh
+                .take()
+                .await
+                .map_err(|_| PyRuntimeError::new_err("`ActorMesh` has already been stopped"))?;
+            actor_mesh.stop().await.map_err(|err| {
+                PyException::new_err(format!("Failed to stop actor mesh: {}", err))
+            })?;
+            Ok(())
+        })
+    }
 }
 
 impl Drop for PythonActorMesh {
