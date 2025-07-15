@@ -9,7 +9,7 @@
 // sections of code adapted from https://github.com/jonhoo/rust-ibverbs
 // Copyright (c) 2016 Jon Gjengset under MIT License (MIT)
 
-#[repr(C, align(4))]
+#[repr(C, packed(1))]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct mlx5_wqe_ctrl_seg {
     pub opmod_idx_opcode: u32,
