@@ -21,7 +21,11 @@ extensions = ["sphinx_design",
     "sphinx_sitemap",
     "sphinxcontrib.mermaid",
     "pytorch_sphinx_theme2",
-    "sphinxext.opengraph",]
+    "sphinxext.opengraph",
+    'myst_parser',
+    #'nbsphinx',
+    #'myst_nb',
+    ]
 
 templates_path = ['_templates']
 exclude_patterns = []
@@ -101,3 +105,10 @@ myst_enable_extensions = [
     "deflist",
     "html_image",
 ]
+
+
+# The suffix(es) of source filenames.
+source_suffix = {
+    ".rst": "restructuredtext",
+    ".md": "markdown",
+}

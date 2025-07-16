@@ -6,17 +6,17 @@
 
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="generator" content="Docutils 0.19: https://docutils.sourceforge.io/" />
-<meta property="og:title" content="Welcome to Monarch’s documentation!" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta property="og:title" content="Monarch 🦋" />
 <meta property="og:type" content="website" />
 <meta property="og:url" content="http://pytorch.org/index.html" />
 <meta property="og:site_name" content="Monarch" />
-<meta property="og:description" content="Indices and tables: Index, Module Index, Search Page." />
+<meta property="og:description" content="Monarch is a distributed execution engine for PyTorch. Our overall goal is to deliver the high-quality user experience that people get from single-GPU PyTorch, but at cluster scale. ⚠️ Early Develo..." />
 <meta property="og:image" content="https://pytorch.org/assets/images/social-share.jpg" />
 <meta property="og:image:alt" content="Monarch" />
-<meta name="description" content="Indices and tables: Index, Module Index, Search Page." />
+<meta name="description" content="Monarch is a distributed execution engine for PyTorch. Our overall goal is to deliver the high-quality user experience that people get from single-GPU PyTorch, but at cluster scale. ⚠️ Early Develo..." />
 
-    <title>Welcome to Monarch’s documentation! &#8212; Monarch &#34;&#34; documentation</title>
+    <title>Monarch 🦋 &#8212; Monarch &#34;&#34; documentation</title>
   
   
   
@@ -37,7 +37,7 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
     <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=b1dec5cf" />
+    <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=059a1b48" />
     <link rel="stylesheet" type="text/css" href="_static/sphinx-design.min.css?v=95c83b7e" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
@@ -141,7 +141,7 @@
   <meta name="docsearch:language" content="en"/>
 
   </head>
-<body data-feedback-url="https://github.com/pytorch-labs/monarch" class="pytorch-body">
+<body data-feedback-url="https://github.com/sekyondaMeta/monarch" class="pytorch-body">
      <div class="container-fluid header-holder tutorials-header" id="header-holder">
    <div class="header-container-wrapper">
     <div class="header-container">
@@ -631,7 +631,7 @@ document.write(`
           
           
           
-          <a href="https://github.com/pytorch-labs/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+          <a href="https://github.com/sekyondaMeta/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
             <span class="sr-only">GitHub</span></a>
         </li>
         <li class="nav-item">
@@ -763,7 +763,7 @@ document.write(`
           
           
           
-          <a href="https://github.com/pytorch-labs/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+          <a href="https://github.com/sekyondaMeta/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
             <span class="sr-only">GitHub</span></a>
         </li>
         <li class="nav-item">
@@ -821,7 +821,7 @@ document.write(`
    <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
       
       <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
-        <meta itemprop="name" content="Welcome to Monarch’s documentation!">
+        <meta itemprop="name" content="Monarch 🦋">
         <meta itemprop="position" content="1">
       </div>
    </div>
@@ -833,28 +833,71 @@ document.write(`
 <div id="searchbox"></div>
                 <article class="bd-article">
                   
-  <section id="welcome-to-monarch-s-documentation">
-<h1>Welcome to Monarch’s documentation!<a class="headerlink" href="#welcome-to-monarch-s-documentation" title="Link to this heading">#</a></h1>
-<div class="toctree-wrapper compound">
+  <section id="monarch">
+<h1>Monarch 🦋<a class="headerlink" href="#monarch" title="Link to this heading">#</a></h1>
+<p><strong>Monarch</strong> is a distributed execution engine for PyTorch. Our overall goal is
+to deliver the high-quality user experience that people get from single-GPU
+PyTorch, but at cluster scale.</p>
+<blockquote>
+<div><p>⚠️ <strong>Early Development Warning</strong> Monarch is currently in an experimental
+stage. You should expect bugs, incomplete features, and APIs that may change
+in future versions. The project welcomes bugfixes, but to make sure things are
+well coordinated you should discuss any significant change before starting the
+work. It’s recommended that you signal your intention to contribute in the
+issue tracker, either by filing a new issue or by claiming an existing one.</p>
+</div></blockquote>
+<p>Note: Monarch is currently only supported on Linux systems</p>
+<section id="installation">
+<h2>Installation<a class="headerlink" href="#installation" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">torchmonarch-nightly</span></code></p>
+<p>or manually</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="c1"># Create and activate the conda environment</span>
+conda<span class="w"> </span>create<span class="w"> </span>-n<span class="w"> </span>monarchenv<span class="w"> </span><span class="nv">python</span><span class="o">=</span><span class="m">3</span>.10<span class="w"> </span>-y
+conda<span class="w"> </span>activate<span class="w"> </span>monarchenv
+
+<span class="c1"># Install nightly rust toolchain</span>
+curl<span class="w"> </span>--proto<span class="w"> </span><span class="s1">&#39;=https&#39;</span><span class="w"> </span>--tlsv1.2<span class="w"> </span>-sSf<span class="w"> </span>https://sh.rustup.rs<span class="w"> </span><span class="p">|</span><span class="w"> </span>sh
+rustup<span class="w"> </span>toolchain<span class="w"> </span>install<span class="w"> </span>nightly
+rustup<span class="w"> </span>default<span class="w"> </span>nightly
+
+<span class="c1"># Install non-python dependencies</span>
+conda<span class="w"> </span>install<span class="w"> </span>libunwind<span class="w"> </span>-y
+
+<span class="c1"># Install the correct cuda and cuda-toolkit versions for your machine</span>
+sudo<span class="w"> </span>dnf<span class="w"> </span>install<span class="w"> </span>cuda-toolkit-12-0<span class="w"> </span>cuda-12-0
+
+<span class="c1"># Install clang-dev and nccl-dev</span>
+sudo<span class="w"> </span>dnf<span class="w"> </span>install<span class="w"> </span>clang-devel<span class="w"> </span>libnccl-devel
+<span class="c1"># Or, in some envrionments, the following may be necessary instead</span>
+conda<span class="w"> </span>install<span class="w"> </span>-c<span class="w"> </span>conda-forge<span class="w"> </span>clangdev<span class="w"> </span>nccl
+conda<span class="w"> </span>update<span class="w"> </span>-n<span class="w"> </span>monarchenv<span class="w"> </span>--all<span class="w"> </span>-c<span class="w"> </span>conda-forge<span class="w"> </span>-y
+
+<span class="c1"># Install build dependencies</span>
+pip<span class="w"> </span>install<span class="w"> </span>-r<span class="w"> </span>build-requirements.txt
+<span class="c1"># Install test dependencies</span>
+pip<span class="w"> </span>install<span class="w"> </span>-r<span class="w"> </span>python/tests/requirements.txt
+
+<span class="c1"># Build and install Monarch</span>
+pip<span class="w"> </span>install<span class="w"> </span>--no-build-isolation<span class="w"> </span>.
+<span class="c1"># or setup for development</span>
+pip<span class="w"> </span>install<span class="w"> </span>--no-build-isolation<span class="w"> </span>-e<span class="w"> </span>.
+
+<span class="c1"># Run unit tests. consider -s for more verbose output</span>
+pytest<span class="w"> </span>python/tests/<span class="w"> </span>-v<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;not oss_skip&quot;</span>
+</pre></div>
 </div>
-<div class="toctree-wrapper compound">
-</div>
-<div class="toctree-wrapper compound">
-</div>
-<div class="toctree-wrapper compound">
-</div>
-<div class="toctree-wrapper compound">
-</div>
+</section>
+<section id="running-examples">
+<h2>Running examples<a class="headerlink" href="#running-examples" title="Link to this heading">#</a></h2>
+<p>Check out the <code class="docutils literal notranslate"><span class="pre">examples/</span></code> directory for demonstrations of how to use Monarch’s APIs.</p>
+<p>We’ll be adding more examples as we stabilize and polish functionality!</p>
+</section>
+<section id="license">
+<h2>License<a class="headerlink" href="#license" title="Link to this heading">#</a></h2>
+<p>Monarch is BSD-3 licensed, as found in the <a class="reference internal" href="#LICENSE"><span class="xref myst">LICENSE</span></a> file.</p>
 <div class="toctree-wrapper compound">
 </div>
 </section>
-<section id="indices-and-tables">
-<h1>Indices and tables<a class="headerlink" href="#indices-and-tables" title="Link to this heading">#</a></h1>
-<ul class="simple">
-<li><p><a class="reference internal" href="genindex.html"><span class="std std-ref">Index</span></a></p></li>
-<li><p><a class="reference internal" href="py-modindex.html"><span class="std std-ref">Module Index</span></a></p></li>
-<li><p><a class="reference internal" href="search.html"><span class="std std-ref">Search Page</span></a></p></li>
-</ul>
 </section>
 
 
@@ -887,12 +930,10 @@ document.write(`
   </div>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
-<li class="toc-h1 nav-item toc-entry"><a class="reference internal nav-link" href="#">Welcome to Monarch’s documentation!</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#installation">Installation</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#running-examples">Running examples</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#license">License</a></li>
 </ul>
-</li>
-<li class="toc-h1 nav-item toc-entry"><a class="reference internal nav-link" href="#indices-and-tables">Indices and tables</a></li>
-</ul>
-
   </nav></div>
     
 
@@ -903,17 +944,19 @@ document.write(`
   <div class="sidebar-heading">PyTorch Libraries</div>
   <ul style="list-style-type: none; padding: 0; padding-bottom: 80px;">
   
-   <li><a class="nav-link nav-external" href="https://pytorch.org/ao" style="color: var(--pst-color-text-muted)">torchao</a></li>
+   <li><a class="nav-link nav-external" href="https://docs.ppytorch.org/ao" style="color: var(--pst-color-text-muted)">torchao</a></li>
   
-   <li><a class="nav-link nav-external" href="https://pytorch.org/torchrec" style="color: var(--pst-color-text-muted)">torchrec</a></li>
+   <li><a class="nav-link nav-external" href="https://docs.ppytorch.org/torchrec" style="color: var(--pst-color-text-muted)">torchrec</a></li>
   
-   <li><a class="nav-link nav-external" href="https://pytorch.org/torchcodec" style="color: var(--pst-color-text-muted)">TorchCodec</a></li>
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/torchft" style="color: var(--pst-color-text-muted)">torchft</a></li>
   
-   <li><a class="nav-link nav-external" href="https://pytorch.org/vision" style="color: var(--pst-color-text-muted)">torchvision</a></li>
+   <li><a class="nav-link nav-external" href="https://docs.ppytorch.org/torchcodec" style="color: var(--pst-color-text-muted)">TorchCodec</a></li>
   
-   <li><a class="nav-link nav-external" href="https://pytorch.org/executorch" style="color: var(--pst-color-text-muted)">ExecuTorch</a></li>
+   <li><a class="nav-link nav-external" href="https://docs.ppytorch.org/vision" style="color: var(--pst-color-text-muted)">torchvision</a></li>
   
-   <li><a class="nav-link nav-external" href="https://pytorch.org/xla" style="color: var(--pst-color-text-muted)">PyTorch on XLA Devices</a></li>
+   <li><a class="nav-link nav-external" href="https://docs.ppytorch.org/executorch" style="color: var(--pst-color-text-muted)">ExecuTorch</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.ppytorch.org/xla" style="color: var(--pst-color-text-muted)">PyTorch on XLA Devices</a></li>
   
   </ul>
 </div>
@@ -1076,7 +1119,7 @@ document.write(`
       {
          "@context": "https://schema.org",
          "@type": "Article",
-         "headline": "Welcome to Monarch’s documentation!",
+         "headline": "Monarch 🦋",
          "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment. Discover tutorials, API references, and guides to help you build and deploy deep learning models efficiently.",
          "author": {
            "@type": "Organization",
@@ -1089,7 +1132,7 @@ document.write(`
          },
          "datePublished": "",
          "dateModified": "",
-         "articleBody": "Welcome to Monarch’s documentation!# Indices and tables# Index Module Index Search Page"
+         "articleBody": "Monarch 🦋# Monarch is a distributed execution engine for PyTorch. Our overall goal is to deliver the high-quality user experience that people get from single-GPU PyTorch, but at cluster scale. ⚠️ Early Development Warning Monarch is currently in an experimental stage. You should expect bugs, incomplete features, and APIs that may change in future versions. The project welcomes bugfixes, but to make sure things are well coordinated you should discuss any significant change before starting the work. It’s recommended that you signal your intention to contribute in the issue tracker, either by filing a new issue or by claiming an existing one. Note: Monarch is currently only supported on Linux systems Installation# pip install torchmonarch-nightly or manually # Create and activate the conda environment conda create -n monarchenv python=3.10 -y conda activate monarchenv # Install nightly rust toolchain curl --proto &#39;=https&#39; --tlsv1.2 -sSf https://sh.rustup.rs | sh rustup toolchain install nightly rustup default nightly # Install non-python dependencies conda install libunwind -y # Install the correct cuda and cuda-toolkit versions for your machine sudo dnf install cuda-toolkit-12-0 cuda-12-0 # Install clang-dev and nccl-dev sudo dnf install clang-devel libnccl-devel # Or, in some envrionments, the following may be necessary instead conda install -c conda-forge clangdev nccl conda update -n monarchenv --all -c conda-forge -y # Install build dependencies pip install -r build-requirements.txt # Install test dependencies pip install -r python/tests/requirements.txt # Build and install Monarch pip install --no-build-isolation . # or setup for development pip install --no-build-isolation -e . # Run unit tests. consider -s for more verbose output pytest python/tests/ -v -m &#34;not oss_skip&#34; Running examples# Check out the examples/ directory for demonstrations of how to use Monarch’s APIs. We’ll be adding more examples as we stabilize and polish functionality! License# Monarch is BSD-3 licensed, as found in the LICENSE file."
        }
    </script>
 
