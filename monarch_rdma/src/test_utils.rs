@@ -31,6 +31,40 @@ pub mod test_utils {
     use crate::rdma_manager_actor::RdmaManagerActor;
     use crate::rdma_manager_actor::RdmaManagerMessageClient;
 
+    // Utility to validate execution context.  Remote Exectuion environments do
+    // not always have access to the nvidia_peermem module and/or set the PeerMappingOverride
+    // parameter due to security.  This function can be used to validate that the execution context when
+    // running the tests that need this functionality (ie. cudaHostRegisterIoMemory)
+    pub async fn validate_execution_context() -> Result<(), anyhow::Error> {
+        // Check for nvidia peermem
+        match std::fs::read_to_string("/proc/modules") {
+            Ok(contents) => {
+                if !contents.contains("nvidia_peermem") {
+                    return Err(anyhow::anyhow!(
+                        "nvidia_peermem module not found in /proc/modules"
+                    ));
+                }
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!(e));
+            }
+        }
+
+        // Test file access to nvidia params
+        match std::fs::read_to_string("/proc/driver/nvidia/params") {
+            Ok(contents) => {
+                if !contents.contains("PeerMappingOverride=1") {
+                    return Err(anyhow::anyhow!(
+                        "PeerMappingOverride=1 not found in /proc/driver/nvidia/params"
+                    ));
+                }
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!(e));
+            }
+        }
+        Ok(())
+    }
     // Waits for the completion of an RDMA operation.
 
     // This function polls for the completion of an RDMA operation by repeatedly
