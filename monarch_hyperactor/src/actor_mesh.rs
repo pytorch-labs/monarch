@@ -97,7 +97,12 @@ impl PythonActorMesh {
 
             // Ignore the sender error when there is no receiver, which happens when there
             // is no active requests to this mesh.
-            let _ = user_sender.send(event);
+            let _ = user_sender.send(event.clone());
+
+            if event.is_none() {
+                // The mesh is stopped, so we can stop the monitor.
+                break;
+            }
         }
     }
 
