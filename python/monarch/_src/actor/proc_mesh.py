@@ -285,14 +285,24 @@ class ProcMesh(MeshTrait):
             )
         self._logging_mesh_client.set_mode(stream_to_client)
 
-    async def stop(self) -> None:
-        await self._proc_mesh.stop()
-        self._stopped = True
-
     async def __aenter__(self) -> "ProcMesh":
         if self._stopped:
             raise RuntimeError("`ProcMesh` has already been stopped")
         return self
+
+    def stop(self) -> Future[None]:
+        async def _stop_nonblocking() -> None:
+            await self._proc_mesh.stop_nonblocking()
+            self._stopped = True
+
+        def _stop_blocking() -> None:
+            self._proc_mesh.stop_blocking()
+            self._stopped = True
+
+        return Future(
+            lambda: _stop_nonblocking(),
+            lambda: _stop_blocking(),
+        )
 
     async def __aexit__(
         self, exc_type: object, exc_val: object, exc_tb: object

@@ -227,6 +227,32 @@ impl PyProcMesh {
             .borrow()
             .map_err(|_| PyRuntimeError::new_err("`ProcMesh` has already been stopped"))
     }
+
+    async fn stop_mesh(
+        inner: SharedCell<TrackedProcMesh>,
+        proc_events: SharedCell<Mutex<ProcEvents>>,
+    ) -> Result<(), anyhow::Error> {
+        // "Take" the proc mesh wrapper.  Once we do, it should be impossible for new
+        // actor meshes to be spawned.
+        let tracked_proc_mesh = inner.take().await.map_err(|e| {
+            PyRuntimeError::new_err(format!("`ProcMesh` has already been stopped: {}", e))
+        })?;
+        let (proc_mesh, children) = tracked_proc_mesh.into_inner();
+
+        // Now we discard all in-flight actor meshes.  After this, the `ProcMesh` should be "unused".
+        children.discard_all().await?;
+
+        // Finally, take ownership of the inner proc mesh, which will allowing dropping it.
+        let _proc_mesh = proc_mesh.take().await?;
+
+        // Grab the alloc back from `ProcEvents` and use that to stop the mesh.
+        let proc_events_taken = proc_events.take().await?;
+        let mut alloc = proc_events_taken.into_inner().into_alloc();
+
+        alloc.stop_and_wait().await?;
+
+        anyhow::Ok(())
+    }
 }
 
 #[pymethods]
@@ -350,31 +376,27 @@ impl PyProcMesh {
         Ok(self.try_inner()?.shape().clone().into())
     }
 
-    fn stop<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let tracked_proc_mesh = self.inner.clone();
+    fn stop_nonblocking<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        // Clone the necessary fields from self to avoid capturing self in the async block
+        let inner = self.inner.clone();
         let proc_events = self.proc_events.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            async {
-                // "Take" the proc mesh wrapper.  Once we do, it should be impossible for new
-                // actor meshes to be spawned.
-                let (proc_mesh, children) = tracked_proc_mesh
-                    .take()
-                    .await
-                    .map_err(|_| PyRuntimeError::new_err("`ProcMesh` has already been stopped"))?
-                    .into_inner();
-                // Now we discard all in-flight actor meshes.  After this, the `ProcMesh` should be "unused".
-                children.discard_all().await?;
-                // Finally, take ownership of the inner proc mesh, which will allowing dropping it.
-                let _proc_mesh = proc_mesh.take().await?;
-                // Grab the alloc back from `ProcEvents` and use that to stop the mesh.
-                let mut alloc = proc_events.take().await?.into_inner().into_alloc();
-                alloc.stop_and_wait().await?;
 
-                anyhow::Ok(())
-            }
-            .await?;
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            Self::stop_mesh(inner, proc_events).await?;
             PyResult::Ok(())
         })
+    }
+
+    fn stop_blocking<'py>(&self, py: Python<'py>) -> PyResult<()> {
+        // Clone the necessary fields from self to avoid capturing self in the async block
+        let inner = self.inner.clone();
+        let proc_events = self.proc_events.clone();
+
+        signal_safe_block_on(py, async move {
+            Self::stop_mesh(inner, proc_events)
+                .await
+                .map_err(|e| PyRuntimeError::new_err(format!("{}", e)))
+        })?
     }
 }
 
