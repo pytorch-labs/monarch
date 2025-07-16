@@ -23,8 +23,7 @@ jobs:
         run: |
           set -eux
 
-          sudo apt-get install -y protobuf-compiler
-
+          pip install -r requirements.txt -v
           pip install .[dev] -v
 
           pip install -r docs/requirements.txt
