@@ -269,6 +269,16 @@ impl Alloc for LocalAlloc {
     }
 }
 
+impl Drop for LocalAlloc {
+    fn drop(&mut self) {
+        tracing::debug!(
+            "dropping LocalAlloc of name: {}, world id: {}",
+            self.name,
+            self.world_id
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
