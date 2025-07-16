@@ -6,6 +6,7 @@
 
 # pyre-unsafe
 
+import asyncio
 import pickle
 from typing import Any, List
 
@@ -34,7 +35,7 @@ from monarch._rust_bindings.monarch_hyperactor.shape import Shape
 
 
 async def allocate() -> ProcMesh:
-    spec = AllocSpec(AllocConstraints(), replica=2, gpus=3, hosts=8)
+    spec = AllocSpec(AllocConstraints(), replicas=3, hosts=8, gpus=8)
     allocator = monarch.LocalAllocator()
     alloc = await allocator.allocate(spec)
     proc_mesh = await ProcMesh.allocate_nonblocking(alloc)
@@ -108,15 +109,17 @@ async def verify_cast(
         assert rank is not None
         rcv_ranks.append(rank)
     rcv_ranks.sort()
-    for i in cast_ranks:
-        assert rcv_ranks[i] == i
+    assert rcv_ranks == cast_ranks
+    # verify no more messages are received
+    with pytest.raises(asyncio.exceptions.TimeoutError):
+        await asyncio.wait_for(receiver.recv(), timeout=1)
 
 
 @pytest.mark.timeout(30)
 async def test_cast_handle() -> None:
     proc_mesh = await allocate()
     actor_mesh = await proc_mesh.spawn_nonblocking("test", MyActor)
-    await verify_cast(actor_mesh, proc_mesh.client, list(range(2 * 3 * 8)))
+    await verify_cast(actor_mesh, proc_mesh.client, list(range(3 * 8 * 8)))
 
 
 @pytest.mark.timeout(30)
@@ -124,4 +127,76 @@ async def test_cast_ref() -> None:
     proc_mesh = await allocate()
     actor_mesh = await proc_mesh.spawn_nonblocking("test", MyActor)
     actor_mesh_ref = actor_mesh.bind()
-    await verify_cast(actor_mesh_ref, proc_mesh.client, list(range(2 * 3 * 8)))
+    await verify_cast(actor_mesh_ref, proc_mesh.client, list(range(3 * 8 * 8)))
+
+
+async def verify_slice(
+    actor_mesh: PythonActorMesh | PythonActorMeshRef,
+    mailbox: Mailbox,
+) -> None:
+    sliced_mesh = actor_mesh.slice(
+        gpus=slice(2, 8, 2),
+        replicas=slice(None, 2),
+        hosts=slice(3, 7),
+    )
+    sliced_shape = sliced_mesh.shape
+    # fmt: off
+    # turn off formatting to make the following list more readable
+    replica_0_ranks = [
+        #  gpus=2,4,6
+        24 + 2, 24 + 4, 24 + 6,  # hosts=3
+        32 + 2, 32 + 4, 32 + 6,  # hosts=4
+        40 + 2, 40 + 4, 40 + 6,  # hosts=5
+        48 + 2, 48 + 4, 48 + 6,  # hosts=6
+    ]
+    # fmt: on
+    replica_1_ranks = [rank + 64 for rank in replica_0_ranks]
+    assert (
+        sliced_shape.ranks() == replica_0_ranks + replica_1_ranks
+    ), f"left is {sliced_shape.ranks()}"
+    await verify_cast(sliced_mesh, mailbox, sliced_shape.ranks())
+
+    assert sliced_shape.labels == ["replicas", "hosts", "gpus"]
+    assert sliced_shape.ndslice.sizes == [2, 4, 3]
+    # When slicing a sliced mesh, the user treats this sliced mesh as a
+    # continuous mesh, and calculates the dimensions based on that assumption,
+    # without considering the original mesh.
+    #
+    # e.g, the following slicing operation selects index 0 and 2 of the hosts
+    # dimension on the sliced mesh. But corresponding index on the original
+    #  mesh is 3 and 5.
+    sliced_again = sliced_mesh.slice(
+        replicas=1,
+        hosts=slice(None, None, 2),
+        gpus=slice(1, 3),
+    )
+    again_shape = sliced_again.shape
+    assert again_shape.labels == ["replicas", "hosts", "gpus"]
+    assert again_shape.ndslice.sizes == [1, 2, 2]
+    # fmt: off
+    # turn off formatting to make the following list more readable
+    selected_ranks = [
+        rank + 64 for rank in
+        [
+            #  gpus=4,6
+            24 + 4, 24 + 6,  # hosts=3
+            40 + 4, 40 + 6,  # hosts=5
+        ]
+    ]
+    # fmt: on
+    assert again_shape.ranks() == selected_ranks, f"left is {sliced_shape.ranks()}"
+
+
+@pytest.mark.timeout(30)
+async def test_slice_actor_mesh_handle() -> None:
+    proc_mesh = await allocate()
+    actor_mesh = await proc_mesh.spawn_nonblocking("test", MyActor)
+    await verify_slice(actor_mesh, proc_mesh.client)
+
+
+@pytest.mark.timeout(30)
+async def test_slice_actor_mesh_ref() -> None:
+    proc_mesh = await allocate()
+    actor_mesh = await proc_mesh.spawn_nonblocking("test", MyActor)
+    actor_mesh_ref = actor_mesh.bind()
+    await verify_slice(actor_mesh_ref, proc_mesh.client)

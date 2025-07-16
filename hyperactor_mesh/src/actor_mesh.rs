@@ -36,6 +36,7 @@ use ndslice::Range;
 use ndslice::Selection;
 use ndslice::Shape;
 use ndslice::ShapeError;
+use ndslice::SliceError;
 use ndslice::selection;
 use ndslice::selection::EvalOpts;
 use ndslice::selection::ReifyView;
@@ -93,6 +94,47 @@ where
     )?;
 
     Ok(())
+}
+
+#[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `CastError`.
+pub(crate) fn cast_to_sliced_mesh<A, M>(
+    caps: &impl cap::CanSend,
+    actor_mesh_id: ActorMeshId,
+    sender: &ActorId,
+    comm_actor_ref: &ActorRef<CommActor>,
+    sel_of_sliced: &Selection,
+    message: M,
+    sliced_shape: &Shape,
+    base_shape: &Shape,
+) -> Result<(), CastError>
+where
+    A: RemoteActor + RemoteHandles<IndexedErasedUnbound<M>>,
+    M: Castable + RemoteMessage,
+{
+    let base_slice = base_shape.slice();
+
+    // Casting to `*`?
+    let sel_of_base = if selection::normalize(sel_of_sliced) == normal::NormalizedSelection::True {
+        // Reify this view into base.
+        base_slice.reify_view(sliced_shape.slice())?
+    } else {
+        // No, fall back on `of_ranks`.
+        let ranks = sel_of_sliced
+            .eval(&EvalOpts::strict(), sliced_shape.slice())?
+            .collect::<BTreeSet<_>>();
+        Selection::of_ranks(base_slice, &ranks)?
+    };
+
+    // Cast.
+    actor_mesh_cast::<A, M>(
+        caps,
+        actor_mesh_id,
+        base_shape,
+        sender,
+        comm_actor_ref,
+        sel_of_base,
+        message,
+    )
 }
 
 /// A mesh of actors, all of which reside on the same [`ProcMesh`].
@@ -350,31 +392,15 @@ impl<A: RemoteActor> ActorMesh for SlicedActorMesh<'_, A> {
         Self::Actor: RemoteHandles<IndexedErasedUnbound<M>>,
         M: Castable + RemoteMessage,
     {
-        let base_shape = self.0.shape();
-        let base_slice = base_shape.slice();
-
-        // Casting to `*`?
-        let selection = if selection::normalize(&sel) == normal::NormalizedSelection::True {
-            // Reify this view into base.
-            base_slice.reify_view(self.shape().slice()).unwrap()
-        } else {
-            // No, fall back on `of_ranks`.
-            let ranks = sel
-                .eval(&EvalOpts::strict(), self.shape().slice())
-                .unwrap()
-                .collect::<BTreeSet<_>>();
-            Selection::of_ranks(base_slice, &ranks).unwrap()
-        };
-
-        // Cast.
-        actor_mesh_cast::<A, M>(
-            self.proc_mesh().client(),            // send capability
-            self.id(),                            // actor mesh id (destination mesh)
-            base_shape,                           // actor mesh shape
-            self.proc_mesh().client().actor_id(), // sender
-            self.proc_mesh().comm_actor(),        // comm actor
-            selection,                            // the selected actors
-            message,                              // the message
+        cast_to_sliced_mesh::<A, M>(
+            /*caps=*/ self.proc_mesh().client(),
+            /*actor_mesh_id=*/ self.id(),
+            /*sender=*/ self.proc_mesh().client().actor_id(),
+            /*comm_actor_ref*/ self.proc_mesh().comm_actor(),
+            /*sel_of_sliced=*/ &sel,
+            /*message=*/ message,
+            /*sliced_shape=*/ self.shape(),
+            /*base_shape=*/ self.0.shape(),
         )
     }
 }
@@ -393,6 +419,9 @@ pub enum CastError {
 
     #[error(transparent)]
     ShapeError(#[from] ShapeError),
+
+    #[error(transparent)]
+    SliceError(#[from] SliceError),
 
     #[error(transparent)]
     SerializationError(#[from] bincode::Error),

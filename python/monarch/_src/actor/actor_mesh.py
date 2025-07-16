@@ -13,6 +13,8 @@ import importlib
 import inspect
 import itertools
 import logging
+import os
+import pickle
 import random
 import traceback
 
@@ -55,6 +57,7 @@ from monarch._rust_bindings.monarch_hyperactor.actor_mesh import (
     MonitoredOncePortReceiver,
     MonitoredPortReceiver,
     PythonActorMesh,
+    PythonActorMeshRef,
 )
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     Mailbox,
@@ -64,9 +67,9 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     PortRef,
 )
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
+from monarch._rust_bindings.monarch_hyperactor.selection import Selection as HySelection
 from monarch._rust_bindings.monarch_hyperactor.shape import Point as HyPoint, Shape
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
-
 from monarch._rust_bindings.monarch_hyperactor.telemetry import enter_span, exit_span
 from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator
 from monarch._src.actor.future import Future
@@ -75,6 +78,7 @@ from monarch._src.actor.pdb_wrapper import PdbWrapper
 from monarch._src.actor.pickle import flatten, unflatten
 
 from monarch._src.actor.shape import MeshTrait, NDSlice
+from pyre_extensions import override
 
 if TYPE_CHECKING:
     from monarch._src.actor.proc_mesh import ProcMesh
@@ -144,10 +148,32 @@ _load_balancing_seed = random.Random(4)
 Selection = Literal["all", "choose"] | int  # TODO: replace with real selection objects
 
 
+def to_hy_sel(selection: Selection, shape: Shape) -> HySelection:
+    if selection == "choose":
+        dim = len(shape.labels)
+        assert dim > 0
+        query = ",".join(["?"] * dim)
+        return HySelection.from_string(f"{query}")
+    elif selection == "all":
+        return HySelection.from_string("*")
+    else:
+        raise ValueError(f"invalid selection: {selection}")
+
+
+# A temporary gate used by the PythonActorMesh/PythonActorMeshRef migration.
+# We can use this gate to quickly roll back to using _ActorMeshRefImpl, if we
+# encounter any issues with the migration.
+#
+# This should be removed once we confirm PythonActorMesh/PythonActorMeshRef is
+# working correctly in production.
+def _use_standin_mesh() -> bool:
+    return bool(os.getenv("USE_STANDIN_ACTOR_MESH", default=False))
+
+
 # standin class for whatever is the serializable python object we use
 # to name an actor mesh. Hacked up today because ActorMesh
 # isn't plumbed to non-clients
-class _ActorMeshRefImpl:
+class _ActorMeshRefImpl(MeshTrait):
     def __init__(
         self,
         mailbox: Mailbox,
@@ -156,6 +182,10 @@ class _ActorMeshRefImpl:
         shape: Shape,
         actor_ids: List[ActorId],
     ) -> None:
+        if not _use_standin_mesh():
+            raise ValueError(
+                "ActorMeshRefImpl should only be used when USE_STANDIN_ACTOR_MESH is set"
+            )
         self._mailbox = mailbox
         self._actor_mesh = hy_actor_mesh
         # actor meshes do not have a way to look this up at the moment,
@@ -177,16 +207,24 @@ class _ActorMeshRefImpl:
             [cast(ActorId, hy_actor_mesh.get(i)) for i in range(len(shape))],
         )
 
-    @staticmethod
-    def from_actor_id(mailbox: Mailbox, actor_id: ActorId) -> "_ActorMeshRefImpl":
-        return _ActorMeshRefImpl(mailbox, None, None, singleton_shape, [actor_id])
+    def monitor(self) -> Optional[ActorMeshMonitor]:
+        return self._actor_mesh.monitor() if self._actor_mesh is not None else None
 
-    @staticmethod
-    def from_actor_ref_with_shape(
-        ref: "_ActorMeshRefImpl", shape: Shape
-    ) -> "_ActorMeshRefImpl":
+    @property
+    def shape(self) -> Shape:
+        return self._shape
+
+    @property
+    def _ndslice(self) -> NDSlice:
+        return self._shape.ndslice
+
+    @property
+    def _labels(self) -> Iterable[str]:
+        return self._shape.labels
+
+    def _new_with_shape(self, shape: Shape) -> "_ActorMeshRefImpl":
         return _ActorMeshRefImpl(
-            ref._mailbox, None, None, shape, ref._please_replace_me_actor_ids
+            self._mailbox, None, None, shape, self._please_replace_me_actor_ids
         )
 
     def __getstate__(
@@ -265,9 +303,142 @@ class _ActorMeshRefImpl:
         return len(self._shape)
 
     @property
-    def _name_pid(self):
+    def _name_pid(self) -> Tuple[str, int]:
         actor_id0 = self._please_replace_me_actor_ids[0]
         return actor_id0.actor_name, actor_id0.pid
+
+
+class ActorIdFakeMesh:
+    """
+    Fake mesh that represents a single actor. This is used to allow sending a
+    message to a single actor through the mesh API.
+    """
+
+    def __init__(
+        self,
+        actor_id: ActorId,
+        mailbox: Mailbox,
+    ) -> None:
+        self._actor_id = actor_id
+        self._mailbox = mailbox
+
+    def cast(
+        self,
+        selection: Selection,
+        message: PythonMessage,
+    ) -> None:
+        self._mailbox.post(self._actor_id, message)
+
+    @property
+    def shape(self) -> Shape:
+        return singleton_shape
+
+    def monitor(self) -> Optional[ActorMeshMonitor]:
+        return None
+
+
+# A temporary wrapper used by the PythonActorMesh/PythonActorMeshRef migration.
+# This wrapper is used to enable switching between PythonActorMeshRef and
+# _ActorMeshRefImpl through the `USE_STANDIN_ACTOR_MESH` env var.
+#
+# This should be removed once we confirm PythonActorMesh/PythonActorMeshRef is
+# working correctly in production.
+class EitherPyActorMeshRef:
+    def __init__(self, inner: PythonActorMeshRef | _ActorMeshRefImpl) -> None:
+        if _use_standin_mesh():
+            assert isinstance(
+                inner, _ActorMeshRefImpl
+            ), "expect _ActorMeshRefImpl because env var USE_STANDIN_ACTOR_MESH is set"
+        else:
+            assert isinstance(
+                inner, PythonActorMeshRef
+            ), "expect PythonActorMeshRef because env var USE_STANDIN_ACTOR_MESH is not set"
+        self._inner: PythonActorMeshRef | _ActorMeshRefImpl = inner
+
+    def cast(
+        self, mailbox: Mailbox, selection: Selection, message: PythonMessage
+    ) -> None:
+        inner = self._inner
+        if isinstance(inner, _ActorMeshRefImpl):
+            inner.cast(message, selection)
+        elif isinstance(inner, PythonActorMeshRef):
+            inner.cast(mailbox, to_hy_sel(selection, self.shape), message)
+        else:
+            raise ValueError(f"unsupported mesh type: {inner.__class__.__name__}")
+
+    def slice(self, **kwargs) -> "EitherPyActorMeshRef":
+        return EitherPyActorMeshRef(self._inner.slice(**kwargs))
+
+    @property
+    def shape(self) -> Shape:
+        return self._inner.shape
+
+    def monitor(self) -> Optional[ActorMeshMonitor]:
+        return None
+
+
+# A temporary wrapper used by the PythonActorMesh/PythonActorMesh migration.
+# This wrapper is used to enable switching between PythonActorMesh and
+# _ActorMeshRefImpl through the `USE_STANDIN_ACTOR_MESH` env var.
+#
+# This should be removed once we confirm PythonActorMesh/PythonActorMeshRef is
+# working correctly in production.
+class EitherPyActorMesh:
+    def __init__(
+        self, actor_mesh: PythonActorMesh, mailbox: Mailbox, proc_mesh: "ProcMesh"
+    ) -> None:
+        if _use_standin_mesh():
+            inner = _ActorMeshRefImpl.from_hyperactor_mesh(
+                mailbox, actor_mesh, proc_mesh
+            )
+        else:
+            inner = actor_mesh
+        self._inner: PythonActorMesh | _ActorMeshRefImpl = inner
+        self._proc_mesh = proc_mesh
+
+    def bind(self) -> "EitherPyActorMeshRef":
+        inner = self._inner
+        if isinstance(inner, PythonActorMesh):
+            return EitherPyActorMeshRef(inner.bind())
+        elif isinstance(inner, _ActorMeshRefImpl):
+            return EitherPyActorMeshRef(inner)
+        else:
+            raise ValueError(f"unsupported mesh type: {inner.__class__.__name__}")
+
+    def cast(self, selection: Selection, message: PythonMessage) -> None:
+        inner = self._inner
+        if isinstance(inner, _ActorMeshRefImpl):
+            inner.cast(message, selection)
+        elif isinstance(inner, PythonActorMesh):
+            inner.cast(to_hy_sel(selection, self.shape), message)
+        else:
+            raise ValueError(f"unsupported mesh type: {inner.__class__.__name__}")
+
+    def slice(self, **kwargs) -> "EitherPyActorMeshRef":
+        return EitherPyActorMeshRef(self._inner.slice(**kwargs))
+
+    @property
+    def shape(self) -> Shape:
+        return self._inner.shape
+
+    def monitor(self) -> Optional[ActorMeshMonitor]:
+        return self._inner.monitor()
+
+    @property
+    def proc_mesh(self) -> "ProcMesh":
+        return self._proc_mesh
+
+    @property
+    def name_pid(self) -> Tuple[str, int]:
+        inner = self._inner
+        if isinstance(inner, _ActorMeshRefImpl):
+            return inner._name_pid
+        elif isinstance(inner, PythonActorMesh):
+            actor_id0 = inner.get(0)
+            assert actor_id0 is not None
+            return actor_id0.actor_name, actor_id0.pid
+        else:
+            raise ValueError(f"unsupported mesh type: {inner.__class__.__name__}")
 
 
 class Extent(NamedTuple):
@@ -338,7 +509,7 @@ class Endpoint(ABC, Generic[P, R]):
         extent = self._send(args, kwargs, port=p)
 
         async def process() -> ValueMesh[R]:
-            results: List[R] = [None] * extent.nelements  # pyre-fixme[9]
+            results: Dict[int, R] = dict()
             for _ in range(extent.nelements):
                 rank, value = await r.recv()
                 results[rank] = value
@@ -346,10 +517,11 @@ class Endpoint(ABC, Generic[P, R]):
                 extent.labels,
                 NDSlice.new_row_major(extent.sizes),
             )
-            return ValueMesh(call_shape, results)
+            sorted_values = [results[rank] for rank in sorted(results)]
+            return ValueMesh(call_shape, sorted_values)
 
         def process_blocking() -> ValueMesh[R]:
-            results: List[R] = [None] * extent.nelements  # pyre-fixme[9]
+            results: Dict[int, R] = dict()
             for _ in range(extent.nelements):
                 rank, value = r.recv().get()
                 results[rank] = value
@@ -357,7 +529,8 @@ class Endpoint(ABC, Generic[P, R]):
                 extent.labels,
                 NDSlice.new_row_major(extent.sizes),
             )
-            return ValueMesh(call_shape, results)
+            sorted_values = [results[rank] for rank in sorted(results)]
+            return ValueMesh(call_shape, sorted_values)
 
         return Future(process, process_blocking)
 
@@ -389,7 +562,7 @@ class Endpoint(ABC, Generic[P, R]):
 class ActorEndpoint(Endpoint[P, R]):
     def __init__(
         self,
-        actor_mesh_ref: _ActorMeshRefImpl,
+        actor_mesh_ref: EitherPyActorMesh | EitherPyActorMeshRef | ActorIdFakeMesh,
         name: str,
         impl: Callable[Concatenate[Any, P], Awaitable[R]],
         mailbox: Mailbox,
@@ -412,7 +585,16 @@ class ActorEndpoint(Endpoint[P, R]):
         This sends the message to all actors but does not wait for any result.
         """
         self._signature.bind(None, *args, **kwargs)
-        objects, bytes = flatten((args, kwargs), _is_ref_or_mailbox)
+        # ActorMeshHandle contains states and cannot be pickled. We need to bind
+        # it to ActorMeshRef so it can be pickled and sent to the remote actor.
+        bound_args: Tuple[Any, ...] = tuple(
+            [arg.bind() if isinstance(arg, ActorMeshHandle) else arg for arg in args]
+        )
+        bound_kwargs: Dict[str, Any] = {
+            k: v.bind() if isinstance(v, ActorMeshHandle) else v
+            for k, v in kwargs.items()
+        }
+        objects, bytes = flatten((bound_args, bound_kwargs), _is_ref_or_mailbox)
         refs = [obj for obj in objects if hasattr(obj, "__monarch_ref__")]
         if not refs:
             message = PythonMessage(
@@ -421,20 +603,24 @@ class ActorEndpoint(Endpoint[P, R]):
                 ),
                 bytes,
             )
-            self._actor_mesh.cast(message, selection)
+            mesh = self._actor_mesh
+            if isinstance(mesh, EitherPyActorMeshRef):
+                mesh.cast(self._mailbox, selection, message)
+            elif isinstance(mesh, EitherPyActorMesh) or isinstance(
+                mesh, ActorIdFakeMesh
+            ):
+                mesh.cast(selection, message)
+            else:
+                raise ValueError(f"unsupported mesh type: {mesh.__class__.__name__}")
         else:
             importlib.import_module("monarch." + "mesh_controller").actor_send(
                 self, self._name, bytes, refs, port
             )
-        shape = self._actor_mesh._shape
+        shape = self._actor_mesh.shape
         return Extent(shape.labels, shape.ndslice.sizes)
 
     def _port(self, once: bool = False) -> "PortTuple[R]":
-        monitor = (
-            None
-            if self._actor_mesh._actor_mesh is None
-            else self._actor_mesh._actor_mesh.monitor()
-        )
+        monitor = self._actor_mesh.monitor()
         return PortTuple.create(self._mailbox, monitor, once)
 
 
@@ -877,19 +1063,24 @@ class Actor(MeshTrait):
             "actor implementations are not meshes, but we can't convince the typechecker of it..."
         )
 
-    def _new_with_shape(self, shape: Shape) -> "ActorMeshRef":
+    def _new_with_shape(self, shape: Shape) -> "Actor":
         raise NotImplementedError(
             "actor implementations are not meshes, but we can't convince the typechecker of it..."
         )
 
 
-class ActorMeshRef(MeshTrait):
+class _ActorMeshTrait(MeshTrait):
     def __init__(
-        self, Class: Type[T], actor_mesh_ref: _ActorMeshRefImpl, mailbox: Mailbox
+        self,
+        Class: Type[T],
+        actor_mesh_ref: EitherPyActorMesh | EitherPyActorMeshRef | ActorIdFakeMesh,
+        mailbox: Mailbox,
     ) -> None:
         self.__name__: str = Class.__name__
         self._class: Type[T] = Class
-        self._actor_mesh_ref: _ActorMeshRefImpl = actor_mesh_ref
+        self._actor_mesh_ref: (
+            EitherPyActorMesh | EitherPyActorMeshRef | ActorIdFakeMesh
+        ) = actor_mesh_ref
         self._mailbox: Mailbox = mailbox
         for attr_name in dir(self._class):
             attr_value = getattr(self._class, attr_name, None)
@@ -931,6 +1122,48 @@ class ActorMeshRef(MeshTrait):
             f"'{self.__class__.__name__}' object has no attribute '{name}'"
         )
 
+    @override
+    @property
+    def _ndslice(self) -> NDSlice:
+        raise NotImplementedError(
+            "should not be called because def slice is overridden"
+        )
+
+    @override
+    @property
+    def _labels(self) -> Iterable[str]:
+        raise NotImplementedError(
+            "should not be called because def slice is overridden"
+        )
+
+    @override
+    def _new_with_shape(self, shape: Shape) -> "ActorMeshRef":
+        raise NotImplementedError(
+            "should not be called because def slice is overridden"
+        )
+
+
+class ActorMeshHandle(_ActorMeshTrait, Generic[T]):
+    def __init__(
+        self,
+        Class: Type[T],
+        actor_mesh: PythonActorMesh,
+        mailbox: Mailbox,
+        proc_mesh: "ProcMesh",
+    ) -> None:
+        wrapper = EitherPyActorMesh(actor_mesh, mailbox, proc_mesh)
+        super().__init__(Class, wrapper, mailbox)
+
+    def _inner(self) -> "EitherPyActorMesh":
+        mesh = self._actor_mesh_ref
+        assert isinstance(
+            mesh, EitherPyActorMesh
+        ), f"mesh type is {mesh.__class__.__name__}"
+        return mesh
+
+    def bind(self) -> "ActorMeshRef[T]":
+        return ActorMeshRef(self._class, self._inner().bind(), self._mailbox)
+
     def _create(
         self,
         args: Iterable[Any],
@@ -949,6 +1182,47 @@ class ActorMeshRef(MeshTrait):
 
     def __reduce_ex__(
         self, protocol: ...
+    ) -> "Tuple[Type[ActorMeshHandle], Tuple[Any, ...]]":
+        raise pickle.PicklingError(
+            "ActorMeshHandle cannot be pickled, or sent to a remote actor. "
+            "As a result, it cannot be used as actor method's argument type. "
+            "If applicable, use bind() to get a ActorMeshRef, and use that instead."
+        )
+
+    def slice(self, **kwargs) -> "ActorMeshRef[T]":
+        sliced = self._inner().slice(**kwargs)
+        return ActorMeshRef(self._class, sliced, self._mailbox)
+
+    def __repr__(self) -> str:
+        return f"ActorMeshHandle(class={self._class}, shape={self._inner().shape})"
+
+    @property
+    def proc_mesh(self) -> "Optional[ProcMesh]":
+        return self._inner()._proc_mesh
+
+    @property
+    def name_pid(self) -> Tuple[str, int]:
+        return self._inner().name_pid
+
+
+class ActorMeshRef(_ActorMeshTrait, Generic[T]):
+    def __init__(
+        self,
+        Class: Type[T],
+        actor_mesh: EitherPyActorMeshRef,
+        mailbox: Mailbox,
+    ) -> None:
+        super().__init__(Class, actor_mesh, mailbox)
+
+    def _inner(self) -> "EitherPyActorMeshRef":
+        mesh = self._actor_mesh_ref
+        assert isinstance(
+            mesh, EitherPyActorMeshRef
+        ), f"mesh type is {mesh.__class__.__name__}"
+        return mesh
+
+    def __reduce_ex__(
+        self, protocol: ...
     ) -> "Tuple[Type[ActorMeshRef], Tuple[Any, ...]]":
         return ActorMeshRef, (
             self._class,
@@ -956,23 +1230,37 @@ class ActorMeshRef(MeshTrait):
             self._mailbox,
         )
 
-    @property
-    def _ndslice(self) -> NDSlice:
-        return self._actor_mesh_ref._shape.ndslice
-
-    @property
-    def _labels(self) -> Iterable[str]:
-        return self._actor_mesh_ref._shape.labels
-
-    def _new_with_shape(self, shape: Shape) -> "ActorMeshRef":
-        return ActorMeshRef(
-            self._class,
-            _ActorMeshRefImpl.from_actor_ref_with_shape(self._actor_mesh_ref, shape),
-            self._mailbox,
-        )
+    @override
+    def slice(self, **kwargs) -> "ActorMeshRef":
+        sliced = self._inner().slice(**kwargs)
+        return ActorMeshRef(self._class, sliced, self._mailbox)
 
     def __repr__(self) -> str:
-        return f"ActorMeshRef(class={self._class}, shape={self._actor_mesh_ref._shape})"
+        return f"ActorMeshRef(class={self._class}, shape={self._inner().shape})"
+
+
+class ActorIdRef(_ActorMeshTrait, Generic[T]):
+    def __init__(
+        self,
+        Class: Type[T],
+        actor_id: ActorId,
+        mailbox: Mailbox,
+    ) -> None:
+        super().__init__(Class, ActorIdFakeMesh(actor_id, mailbox), mailbox)
+
+    def _inner(self) -> "ActorId":
+        mesh = self._actor_mesh_ref
+        assert isinstance(
+            mesh, ActorIdFakeMesh
+        ), f"mesh type is {mesh.__class__.__name__}"
+        return mesh._actor_id
+
+    @override
+    def slice(self, **kwargs) -> "ActorIdRef":
+        raise NotImplementedError("ActorIdRef does not support slicing")
+
+    def __repr__(self) -> str:
+        return f"ActorIdRef(class={self._class}, actor_id={self._inner()})"
 
 
 class ActorError(Exception):

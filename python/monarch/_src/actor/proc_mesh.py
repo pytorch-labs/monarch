@@ -36,7 +36,7 @@ from monarch._rust_bindings.monarch_hyperactor.proc_mesh import (
     ProcMeshMonitor,
 )
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape, Slice
-from monarch._src.actor.actor_mesh import _Actor, _ActorMeshRefImpl, Actor, ActorMeshRef
+from monarch._src.actor.actor_mesh import _Actor, Actor, ActorMeshHandle
 from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator, SimAllocator
 from monarch._src.actor.code_sync import RsyncMeshClient, WorkspaceLocation
 from monarch._src.actor.code_sync.auto_reload import AutoReloadActor
@@ -173,10 +173,11 @@ class ProcMesh(MeshTrait):
             )
 
         actor_mesh = self._proc_mesh.spawn_blocking(name, _Actor)
-        service = ActorMeshRef(
+        service = ActorMeshHandle(
             Class,
-            _ActorMeshRefImpl.from_hyperactor_mesh(self._mailbox, actor_mesh, self),
+            actor_mesh,
             self._mailbox,
+            self._proc_mesh,
         )
         # useful to have this separate, because eventually we can reconstitute ActorMeshRef objects across pickling by
         # doing `ActorMeshRef(Class, actor_handle)` but not calling _create.
@@ -198,10 +199,11 @@ class ProcMesh(MeshTrait):
             )
 
         actor_mesh = await self._proc_mesh.spawn_nonblocking(name, _Actor)
-        service = ActorMeshRef(
+        service = ActorMeshHandle(
             Class,
-            _ActorMeshRefImpl.from_hyperactor_mesh(self._mailbox, actor_mesh, self),
+            actor_mesh,
             self._mailbox,
+            self._proc_mesh,
         )
         # useful to have this separate, because eventually we can reconstitute ActorMeshRef objects across pickling by
         # doing `ActorMeshRef(Class, actor_handle)` but not calling _create.
