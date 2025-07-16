@@ -23,8 +23,8 @@ jobs:
         run: |
           set -eux
 
-          pip install -r requirements.txt -v
-          pip install .[dev] -v
+          --pip install -r requirements.txt -v
+          --#pip install .[dev] -v
 
           pip install -r docs/requirements.txt
       - name: Build Sphinx Docs
