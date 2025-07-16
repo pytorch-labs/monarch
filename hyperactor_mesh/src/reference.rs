@@ -19,14 +19,17 @@ use hyperactor::actor::RemoteActor;
 use hyperactor::cap;
 use hyperactor::message::Castable;
 use hyperactor::message::IndexedErasedUnbound;
+use ndslice::Range;
 use ndslice::Selection;
 use ndslice::Shape;
+use ndslice::ShapeError;
 use serde::Deserialize;
 use serde::Serialize;
 
 use crate::CommActor;
 use crate::actor_mesh::CastError;
 use crate::actor_mesh::actor_mesh_cast;
+use crate::actor_mesh::cast_to_sliced_mesh;
 
 #[macro_export]
 macro_rules! mesh_id {
@@ -71,10 +74,15 @@ pub struct ProcMeshId(pub String);
 pub struct ActorMeshId(pub ProcMeshId, pub String);
 
 /// Types references to Actor Meshes.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct ActorMeshRef<A: RemoteActor> {
     pub(crate) mesh_id: ActorMeshId,
-    shape: Shape,
+    /// The shape of the root mesh.
+    root: Shape,
+    /// If some, it mean this mesh ref points to a sliced mesh, and this field
+    /// is this sliced mesh's shape. If None, it means this mesh ref points to
+    /// the root mesh.
+    sliced: Option<Shape>,
     /// The reference to the comm actor of the underlying Proc Mesh.
     comm_actor_ref: ActorRef<CommActor>,
     phantom: PhantomData<A>,
@@ -87,12 +95,13 @@ impl<A: RemoteActor> ActorMeshRef<A> {
     /// line argument) is a valid reference.
     pub(crate) fn attest(
         mesh_id: ActorMeshId,
-        shape: Shape,
+        root: Shape,
         comm_actor_ref: ActorRef<CommActor>,
     ) -> Self {
         Self {
             mesh_id,
-            shape,
+            root,
+            sliced: None,
             comm_actor_ref,
             phantom: PhantomData,
         }
@@ -105,7 +114,10 @@ impl<A: RemoteActor> ActorMeshRef<A> {
 
     /// Shape of the Actor Mesh.
     pub fn shape(&self) -> &Shape {
-        &self.shape
+        match &self.sliced {
+            Some(s) => s,
+            None => &self.root,
+        }
     }
 
     /// Cast an [`M`]-typed message to the ranks selected by `sel`
@@ -121,15 +133,38 @@ impl<A: RemoteActor> ActorMeshRef<A> {
         A: RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,
         M: Castable + RemoteMessage,
     {
-        actor_mesh_cast::<A, M>(
-            caps,
-            self.mesh_id.clone(),
-            self.shape(),
-            caps.mailbox().actor_id(),
-            &self.comm_actor_ref,
-            selection,
-            message,
-        )
+        match &self.sliced {
+            Some(sliced_shape) => cast_to_sliced_mesh::<A, M>(
+                caps,
+                self.mesh_id.clone(),
+                caps.mailbox().actor_id(),
+                &self.comm_actor_ref,
+                &selection,
+                message,
+                sliced_shape,
+                &self.root,
+            ),
+            None => actor_mesh_cast::<A, M>(
+                caps,
+                self.mesh_id.clone(),
+                &self.root,
+                caps.mailbox().actor_id(),
+                &self.comm_actor_ref,
+                selection,
+                message,
+            ),
+        }
+    }
+
+    pub fn select<R: Into<Range>>(&self, label: &str, range: R) -> Result<Self, ShapeError> {
+        let sliced = self.shape().select(label, range)?;
+        Ok(Self {
+            mesh_id: self.mesh_id.clone(),
+            root: self.root.clone(),
+            sliced: Some(sliced),
+            comm_actor_ref: self.comm_actor_ref.clone(),
+            phantom: PhantomData,
+        })
     }
 }
 
@@ -137,20 +172,13 @@ impl<A: RemoteActor> Clone for ActorMeshRef<A> {
     fn clone(&self) -> Self {
         Self {
             mesh_id: self.mesh_id.clone(),
-            shape: self.shape.clone(),
+            root: self.root.clone(),
+            sliced: self.sliced.clone(),
             comm_actor_ref: self.comm_actor_ref.clone(),
             phantom: PhantomData,
         }
     }
 }
-
-impl<A: RemoteActor> PartialEq for ActorMeshRef<A> {
-    fn eq(&self, other: &Self) -> bool {
-        self.mesh_id == other.mesh_id && self.shape == other.shape
-    }
-}
-
-impl<A: RemoteActor> Eq for ActorMeshRef<A> {}
 
 #[cfg(test)]
 mod tests {
