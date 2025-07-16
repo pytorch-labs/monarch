@@ -27,6 +27,8 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
+use pyo3::types::PyDict;
+use pyo3::types::PySlice;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::Mutex;
@@ -178,6 +180,11 @@ impl PythonActorMesh {
         Ok(monitor_instance.into_py(py))
     }
 
+    #[pyo3(signature = (**kwargs))]
+    fn slice(&self, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<PythonActorMeshRef> {
+        self.bind()?.slice(kwargs)
+    }
+
     #[getter]
     pub fn client(&self) -> PyMailbox {
         self.client.clone()
@@ -220,6 +227,75 @@ impl PythonActorMeshRef {
             .cast(&client.inner, selection.inner().clone(), message.clone())
             .map_err(|err| PyException::new_err(err.to_string()))?;
         Ok(())
+    }
+
+    #[pyo3(signature = (**kwargs))]
+    fn slice(&self, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<Self> {
+        // When the input type is `int`, convert it into `ndslice::Range`.
+        fn convert_int(index: isize) -> PyResult<ndslice::Range> {
+            if index < 0 {
+                return Err(PyException::new_err(format!(
+                    "does not support negative index in selection: {}",
+                    index
+                )));
+            }
+            Ok(ndslice::Range::from(index as usize))
+        }
+
+        // When the input type is `slice`, convert it into `ndslice::Range`.
+        fn convert_py_slice<'py>(s: &Bound<'py, PySlice>) -> PyResult<ndslice::Range> {
+            fn get_attr<'py>(s: &Bound<'py, PySlice>, attr: &str) -> PyResult<Option<isize>> {
+                let v = s.getattr(attr)?.extract::<Option<isize>>()?;
+                if v.is_some() && v.unwrap() < 0 {
+                    return Err(PyException::new_err(format!(
+                        "does not support negative {} in slice: {}",
+                        attr,
+                        v.unwrap(),
+                    )));
+                }
+                Ok(v)
+            }
+
+            let start = get_attr(s, "start")?.unwrap_or(0);
+            let stop: Option<isize> = get_attr(s, "stop")?;
+            let step = get_attr(s, "step")?.unwrap_or(1);
+            Ok(ndslice::Range(
+                start as usize,
+                stop.map(|s| s as usize),
+                step as usize,
+            ))
+        }
+
+        if kwargs.is_none() || kwargs.unwrap().is_empty() {
+            return Err(PyException::new_err("selection cannot be empty"));
+        }
+
+        let mut sliced = self.inner.clone();
+
+        for entry in kwargs.unwrap().items() {
+            let label = entry.get_item(0)?.str()?;
+            let label_str = label.to_str()?;
+
+            let value = entry.get_item(1)?;
+
+            let range = if let Ok(index) = value.extract::<isize>() {
+                convert_int(index)?
+            } else if let Ok(s) = value.downcast::<PySlice>() {
+                convert_py_slice(s)?
+            } else {
+                return Err(PyException::new_err(
+                    "selection only supports type int or slice",
+                ));
+            };
+            sliced = sliced.select(label_str, range).map_err(|err| {
+                PyException::new_err(format!(
+                    "failed to select label {}; error is: {}",
+                    label_str, err
+                ))
+            })?;
+        }
+
+        Ok(Self { inner: sliced })
     }
 
     #[getter]
