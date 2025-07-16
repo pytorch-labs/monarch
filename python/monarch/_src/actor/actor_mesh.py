@@ -985,7 +985,7 @@ class ActorError(Exception):
     def __init__(
         self,
         exception: Exception,
-        message: str = "A remote actor call has failed asynchronously.",
+        message: str = "A remote actor call has failed.",
     ) -> None:
         self.exception = exception
         self.actor_mesh_ref_frames: StackSummary = extract_tb(exception.__traceback__)
