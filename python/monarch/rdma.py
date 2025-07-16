@@ -14,13 +14,7 @@ from typing import cast, Dict, Optional, Tuple
 import torch
 
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
-from monarch._src.actor.actor_mesh import (
-    _ActorMeshRefImpl,
-    Actor,
-    ActorMeshRef,
-    endpoint,
-    MonarchContext,
-)
+from monarch._src.actor.actor_mesh import Actor, ActorIdRef, endpoint, MonarchContext
 
 
 @dataclass
@@ -56,12 +50,9 @@ class RDMAManager(Actor):
         ctx = MonarchContext.get()
         return cast(
             RDMAManager,
-            ActorMeshRef(
+            ActorIdRef(
                 RDMAManager,
-                _ActorMeshRefImpl.from_actor_id(
-                    ctx.mailbox,
-                    ActorId.from_string(f"{proc_id}.rdma_manager[0]"),
-                ),
+                ActorId.from_string(f"{proc_id}.rdma_manager[0]"),
                 ctx.mailbox,
             ),
         )
