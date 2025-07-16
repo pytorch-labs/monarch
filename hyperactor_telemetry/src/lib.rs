@@ -57,6 +57,10 @@ use tracing_subscriber::Layer;
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::filter::Targets;
 use tracing_subscriber::fmt;
+use tracing_subscriber::fmt::FormatEvent;
+use tracing_subscriber::fmt::FormatFields;
+use tracing_subscriber::fmt::format::Writer;
+use tracing_subscriber::registry::LookupSpan;
 
 use crate::recorder::Recorder;
 
@@ -79,6 +83,7 @@ impl TelemetryClock for DefaultTelemetryClock {
 
 fn try_create_appender(
     path: &str,
+    filename: &str,
     create_dir: bool,
 ) -> Result<RollingFileAppender, Box<dyn std::error::Error>> {
     if create_dir {
@@ -86,45 +91,43 @@ fn try_create_appender(
     }
     Ok(RollingFileAppender::builder()
         .rotation(Rotation::DAILY)
-        .filename_prefix("dedicated_log_monarch")
+        .filename_prefix(filename)
         .filename_suffix("log")
         .build(path)?)
 }
 
-// Need to keep this around so that the tracing subscriber doesn't drop the writer.
-lazy_static! {
-    static ref FILE_WRITER_GUARD: Arc<(NonBlocking, WorkerGuard)> = {
-        let writer: Box<dyn Write + Send> = {
-            let logs_dir_exists = std::fs::metadata("/logs/").map(|m| m.is_dir()).unwrap_or(false);
+fn writer() -> Box<dyn Write + Send> {
+    let username = if whoami::username().is_empty() {
+        "monarch".to_string()
+    } else {
+        whoami::username()
+    };
+    let (path, filename) = match env::Env::current() {
+        env::Env::Test => (String::new(), String::new()),
+        env::Env::Local | env::Env::MastEmulator => {
+            (format!("/tmp/{}/", username), "monarch_log".to_string())
+        }
+        env::Env::Mast => ("/logs/".to_string(), "dedicated_log_monarch".to_string()),
+    };
 
-            // First try /logs/ if it exists and is a directory
-            let logs_result = if logs_dir_exists {
-                try_create_appender("/logs/", false)
-            } else {
-                Err("logs directory not available".into())
-            };
-
-            // Fall back to /tmp/monarch_log if not.
-            match logs_result {
+    match env::Env::current() {
+        env::Env::Test => Box::new(std::io::stderr()),
+        env::Env::Local | env::Env::MastEmulator | env::Env::Mast => {
+            match try_create_appender(&path, &filename, true) {
                 Ok(file_appender) => Box::new(file_appender),
-                Err(_) => {
-                    match try_create_appender("/tmp/monarch_log/", true) {
-                        Ok(file_appender) => Box::new(file_appender),
-                        // Fall back to stderr as a last resort
-                        Err(e) => {
-                            eprintln!("unable to create log file in /tmp/monarch_log/: {}. Falling back to stderr", e);
-                            Box::new(std::io::stderr())
-                        }
-                    }
+                Err(e) => {
+                    eprintln!(
+                        "unable to create log file in {}: {}. Falling back to stderr",
+                        path, e
+                    );
+                    Box::new(std::io::stderr())
                 }
             }
-        };
-        return Arc::new(
-            tracing_appender::non_blocking::NonBlockingBuilder::default()
-                .lossy(false)
-                .finish(writer),
-        );
-    };
+        }
+    }
+}
+
+lazy_static! {
     static ref TELEMETRY_CLOCK: Arc<Mutex<Box<dyn TelemetryClock + Send>>> =
         { Arc::new(Mutex::new(Box::new(DefaultTelemetryClock {}))) };
 }
@@ -433,6 +436,52 @@ macro_rules! declare_static_histogram {
     };
 }
 
+static FILE_WRITER_GUARD: std::sync::OnceLock<Arc<(NonBlocking, WorkerGuard)>> =
+    std::sync::OnceLock::new();
+
+/// A custom formatter that prepends prefix from env_var to log messages.
+struct PrefixedFormatter {
+    formatter: Glog<LocalTime>,
+    prefix_env_var: Option<String>,
+}
+
+impl PrefixedFormatter {
+    fn new(prefix_env_var: Option<String>) -> Self {
+        let formatter = Glog::default().with_timer(LocalTime::default());
+        Self {
+            formatter,
+            prefix_env_var,
+        }
+    }
+}
+
+impl<S, N> FormatEvent<S, N> for PrefixedFormatter
+where
+    S: tracing::Subscriber + for<'a> LookupSpan<'a>,
+    N: for<'a> FormatFields<'a> + 'static,
+{
+    fn format_event(
+        &self,
+        ctx: &tracing_subscriber::fmt::FmtContext<'_, S, N>,
+        mut writer: Writer<'_>,
+        event: &tracing::Event<'_>,
+    ) -> std::fmt::Result {
+        let prefix: String = if self.prefix_env_var.is_some() {
+            std::env::var(self.prefix_env_var.clone().unwrap()).unwrap_or_default()
+        } else {
+            "".to_string()
+        };
+
+        if prefix.is_empty() {
+            write!(writer, "[-]")?;
+        } else {
+            write!(writer, "[{}]", prefix)?;
+        }
+
+        self.formatter.format_event(ctx, writer, event)
+    }
+}
+
 /// Set up logging based on the given execution environment. We specialize logging based on how the
 /// logs are consumed. The destination scuba table is specialized based on the execution environment.
 /// mast -> monarch_tracing/prod
@@ -442,6 +491,27 @@ macro_rules! declare_static_histogram {
 /// you don't need to worry about your tests being flakey due to scuba logging. You have to manually call initialize_logging()
 /// to get this behavior.
 pub fn initialize_logging(clock: impl TelemetryClock + Send + 'static) {
+    initialize_logging_with_log_prefix(clock, None);
+}
+
+/// Set up logging based on the given execution environment. We specialize logging based on how the
+/// logs are consumed. The destination scuba table is specialized based on the execution environment.
+/// mast -> monarch_tracing/prod
+/// devserver -> monarch_tracing/local
+/// unit test  -> monarch_tracing/test
+/// scuba logging won't normally be enabled for a unit test unless we are specifically testing logging, so
+/// you don't need to worry about your tests being flakey due to scuba logging. You have to manually call initialize_logging()
+/// to get this behavior.
+///
+/// tracing logs will be prefixed with the given prefix and routed to:
+/// test -> stderr
+/// local -> /tmp/monarch_log.log
+/// mast -> /logs/dedicated_monarch_logs.log
+/// Additionally, is MONARCH_STDERR_LOG sets logs level, then logs will be routed to stderr as well.
+pub fn initialize_logging_with_log_prefix(
+    clock: impl TelemetryClock + Send + 'static,
+    prefix_env_var: Option<String>,
+) {
     swap_telemetry_clock(clock);
     let file_log_level = match env::Env::current() {
         env::Env::Local => "info",
@@ -449,10 +519,15 @@ pub fn initialize_logging(clock: impl TelemetryClock + Send + 'static) {
         env::Env::Mast => "info",
         env::Env::Test => "debug",
     };
-    let file_writer: &NonBlocking = &FILE_WRITER_GUARD.0;
+    let (non_blocking, guard) = tracing_appender::non_blocking::NonBlockingBuilder::default()
+        .lossy(false)
+        .finish(writer());
+    let writer_guard = Arc::new((non_blocking, guard));
+    let _ = FILE_WRITER_GUARD.set(writer_guard.clone());
+
     let file_layer = fmt::Layer::default()
-        .with_writer(file_writer.clone())
-        .event_format(Glog::default().with_timer(LocalTime::default()))
+        .with_writer(writer_guard.0.clone())
+        .event_format(PrefixedFormatter::new(prefix_env_var.clone()))
         .fmt_fields(GlogFields::default().compact())
         .with_ansi(false)
         .with_filter(
@@ -474,7 +549,7 @@ pub fn initialize_logging(clock: impl TelemetryClock + Send + 'static) {
     };
     let stderr_layer = fmt::Layer::default()
         .with_writer(std::io::stderr)
-        .event_format(Glog::default().with_timer(LocalTime::default()))
+        .event_format(PrefixedFormatter::new(prefix_env_var))
         .fmt_fields(GlogFields::default().compact())
         .with_ansi(std::io::stderr().is_terminal())
         .with_filter(
