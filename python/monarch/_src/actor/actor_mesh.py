@@ -13,6 +13,7 @@ import importlib
 import inspect
 import itertools
 import logging
+import pickle
 import random
 import traceback
 
@@ -274,7 +275,7 @@ class _ActorMeshRefImpl(MeshTrait):
         return len(self._shape)
 
     @property
-    def _name_pid(self):
+    def _name_pid(self) -> Tuple[str, int]:
         actor_id0 = self._please_replace_me_actor_ids[0]
         return actor_id0.actor_name, actor_id0.pid
 
@@ -450,7 +451,16 @@ class ActorEndpoint(Endpoint[P, R]):
         This sends the message to all actors but does not wait for any result.
         """
         self._signature.bind(None, *args, **kwargs)
-        objects, bytes = flatten((args, kwargs), _is_ref_or_mailbox)
+        # ActorMeshHandle contains states and cannot be pickled. We need to bind
+        # it to ActorMeshRef so it can be pickled and sent to the remote actor.
+        bound_args: Tuple[Any, ...] = tuple(
+            [arg.bind() if isinstance(arg, ActorMeshHandle) else arg for arg in args]
+        )
+        bound_kwargs: Dict[str, Any] = {
+            k: v.bind() if isinstance(v, ActorMeshHandle) else v
+            for k, v in kwargs.items()
+        }
+        objects, bytes = flatten((bound_args, bound_kwargs), _is_ref_or_mailbox)
         refs = [obj for obj in objects if hasattr(obj, "__monarch_ref__")]
         if not refs:
             message = PythonMessage(
@@ -989,7 +999,7 @@ class _ActorMeshTrait(MeshTrait):
         )
 
 
-class ActorMeshRef(_ActorMeshTrait, Generic[T]):
+class ActorMeshHandle(_ActorMeshTrait, Generic[T]):
     def __init__(
         self,
         Class: Type[T],
@@ -1004,6 +1014,9 @@ class ActorMeshRef(_ActorMeshTrait, Generic[T]):
             mesh, _ActorMeshRefImpl
         ), f"mesh type is {mesh.__class__.__name__}"
         return mesh
+
+    def bind(self) -> "ActorMeshRef[T]":
+        return ActorMeshRef(self._class, self._inner(), self._mailbox)
 
     def _create(
         self,
@@ -1020,6 +1033,47 @@ class ActorMeshRef(_ActorMeshTrait, Generic[T]):
             self._mailbox,
         )
         send(ep, (self._class, *args), kwargs)
+
+    def __reduce_ex__(
+        self, protocol: ...
+    ) -> "Tuple[Type[ActorMeshHandle], Tuple[Any, ...]]":
+        raise pickle.PicklingError(
+            "ActorMeshHandle cannot be pickled, or sent to a remote actor. "
+            "As a result, it cannot be used as actor method's argument type. "
+            "If applicable, use bind() to get a ActorMeshRef, and use that instead."
+        )
+
+    def slice(self, **kwargs) -> "ActorMeshRef[T]":
+        sliced = self._inner().slice(**kwargs)
+        return ActorMeshRef(self._class, sliced, self._mailbox)
+
+    def __repr__(self) -> str:
+        return f"ActorMeshHandle(class={self._class}, shape={self._inner().shape})"
+
+    @property
+    def proc_mesh(self) -> "Optional[ProcMesh]":
+        return self._inner()._proc_mesh
+
+    @property
+    def name_pid(self) -> Tuple[str, int]:
+        return self._inner()._name_pid
+
+
+class ActorMeshRef(_ActorMeshTrait, Generic[T]):
+    def __init__(
+        self,
+        Class: Type[T],
+        actor_mesh: _ActorMeshRefImpl,
+        mailbox: Mailbox,
+    ) -> None:
+        super().__init__(Class, actor_mesh, mailbox)
+
+    def _inner(self) -> "_ActorMeshRefImpl":
+        mesh = self._actor_mesh_ref
+        assert isinstance(
+            mesh, _ActorMeshRefImpl
+        ), f"mesh type is {mesh.__class__.__name__}"
+        return mesh
 
     def __reduce_ex__(
         self, protocol: ...

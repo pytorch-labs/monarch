@@ -36,7 +36,12 @@ from monarch._rust_bindings.monarch_hyperactor.proc_mesh import (
     ProcMeshMonitor,
 )
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape, Slice
-from monarch._src.actor.actor_mesh import _Actor, _ActorMeshRefImpl, Actor, ActorMeshRef
+from monarch._src.actor.actor_mesh import (
+    _Actor,
+    _ActorMeshRefImpl,
+    Actor,
+    ActorMeshHandle,
+)
 from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator, SimAllocator
 from monarch._src.actor.code_sync import RsyncMeshClient, WorkspaceLocation
 from monarch._src.actor.code_sync.auto_reload import AutoReloadActor
@@ -173,7 +178,7 @@ class ProcMesh(MeshTrait):
             )
 
         actor_mesh = self._proc_mesh.spawn_blocking(name, _Actor)
-        service = ActorMeshRef(
+        service = ActorMeshHandle(
             Class,
             _ActorMeshRefImpl.from_hyperactor_mesh(self._mailbox, actor_mesh, self),
             self._mailbox,
@@ -198,7 +203,7 @@ class ProcMesh(MeshTrait):
             )
 
         actor_mesh = await self._proc_mesh.spawn_nonblocking(name, _Actor)
-        service = ActorMeshRef(
+        service = ActorMeshHandle(
             Class,
             _ActorMeshRefImpl.from_hyperactor_mesh(self._mailbox, actor_mesh, self),
             self._mailbox,

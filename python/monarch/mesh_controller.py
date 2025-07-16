@@ -34,7 +34,7 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
 from monarch._rust_bindings.monarch_hyperactor.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
     ActorId,
 )
-from monarch._src.actor.actor_mesh import ActorMeshRef, Port, PortTuple
+from monarch._src.actor.actor_mesh import ActorMeshHandle, Port, PortTuple
 from monarch._src.actor.shape import NDSlice
 from monarch.common import device_mesh, messages, stream
 from monarch.common.controller_api import TController
@@ -264,7 +264,7 @@ class RemoteException(Exception):
 
 
 def actor_send(
-    actor_mesh: ActorMeshRef,
+    actor_mesh: ActorMeshHandle,
     method: str,
     args_kwargs_tuple: bytes,
     refs: Sequence[Any],
@@ -283,10 +283,7 @@ def actor_send(
         # TODO: move propagators into Endpoint abstraction and run the propagator to get the
         # mutates
         checker.check_permission(())
-    selected_device_mesh = (
-        actor_mesh._actor_mesh._proc_mesh
-        and actor_mesh._actor_mesh._proc_mesh._device_mesh
-    )
+    selected_device_mesh = actor_mesh.proc_mesh and actor_mesh.proc_mesh._device_mesh
     if selected_device_mesh is not checker.mesh:
         raise ValueError(
             f"monarch Tensors sent to an actor must be located on the same process as the actor. However {checker.mesh} is not {selected_device_mesh}."
@@ -300,7 +297,7 @@ def actor_send(
 
     ident = client.new_node([], tensors, cast("OldFuture", fut))
 
-    actor_name, actor_index = actor_mesh._actor_mesh._name_pid
+    actor_name, actor_index = actor_mesh.name_pid
     msg = SendResultOfActorCall(
         ident,
         actor_name,
