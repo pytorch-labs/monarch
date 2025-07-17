@@ -7,12 +7,14 @@
  */
 
 #![allow(unsafe_op_in_unsafe_fn)]
+#![feature(exit_status_error)]
 
 pub mod actor;
 pub mod actor_mesh;
 pub mod alloc;
 pub mod bootstrap;
 pub mod channel;
+pub mod code_sync;
 pub mod config;
 pub mod local_state_broker;
 pub mod mailbox;

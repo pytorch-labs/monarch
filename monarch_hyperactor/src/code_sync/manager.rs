@@ -28,6 +28,15 @@ use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::Unbind;
 use hyperactor::forward;
+use hyperactor_mesh::RootActorMesh;
+use hyperactor_mesh::SlicedActorMesh;
+use hyperactor_mesh::actor_mesh::ActorMesh;
+use hyperactor_mesh::connect::Connect;
+use hyperactor_mesh::connect::accept;
+use hyperactor_mesh::reference::ActorMeshId;
+use hyperactor_mesh::reference::ActorMeshRef;
+use hyperactor_mesh::reference::ProcMeshId;
+use hyperactor_mesh::sel;
 use ndslice::Selection;
 use ndslice::Shape;
 use ndslice::ShapeError;
@@ -36,21 +45,12 @@ use serde::Serialize;
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
 
-use crate::RootActorMesh;
-use crate::SlicedActorMesh;
-use crate::actor_mesh::ActorMesh;
 use crate::code_sync::WorkspaceLocation;
 use crate::code_sync::rsync::RsyncActor;
 use crate::code_sync::rsync::RsyncDaemon;
 use crate::code_sync::rsync::RsyncMessage;
 use crate::code_sync::rsync::RsyncParams;
 use crate::code_sync::rsync::RsyncResult;
-use crate::connect::Connect;
-use crate::connect::accept;
-use crate::reference::ActorMeshId;
-use crate::reference::ActorMeshRef;
-use crate::reference::ProcMeshId;
-use crate::sel;
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub enum Method {
@@ -310,15 +310,15 @@ pub async fn code_sync_mesh(
 #[cfg(test)]
 mod tests {
     use anyhow::anyhow;
+    use hyperactor_mesh::alloc::AllocSpec;
+    use hyperactor_mesh::alloc::Allocator;
+    use hyperactor_mesh::alloc::local::LocalAllocator;
+    use hyperactor_mesh::proc_mesh::ProcMesh;
     use ndslice::shape;
     use tempfile::TempDir;
     use tokio::fs;
 
     use super::*;
-    use crate::alloc::AllocSpec;
-    use crate::alloc::Allocator;
-    use crate::alloc::local::LocalAllocator;
-    use crate::proc_mesh::ProcMesh;
 
     #[test]
     fn test_workspace_shape_owners() {

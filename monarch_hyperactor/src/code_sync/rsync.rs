@@ -31,6 +31,10 @@ use hyperactor::PortRef;
 use hyperactor::Unbind;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
+use hyperactor_mesh::actor_mesh::ActorMesh;
+use hyperactor_mesh::connect::Connect;
+use hyperactor_mesh::connect::accept;
+use hyperactor_mesh::sel;
 use ndslice::Selection;
 use nix::sys::signal;
 use nix::sys::signal::Signal;
@@ -44,11 +48,7 @@ use tokio::net::TcpStream;
 use tokio::process::Child;
 use tokio::process::Command;
 
-use crate::actor_mesh::ActorMesh;
 use crate::code_sync::WorkspaceLocation;
-use crate::connect::Connect;
-use crate::connect::accept;
-use crate::sel;
 
 /// Represents a single file change from rsync
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -398,16 +398,16 @@ where
 mod tests {
     use anyhow::Result;
     use anyhow::anyhow;
+    use hyperactor_mesh::alloc::AllocSpec;
+    use hyperactor_mesh::alloc::Allocator;
+    use hyperactor_mesh::alloc::local::LocalAllocator;
+    use hyperactor_mesh::proc_mesh::ProcMesh;
     use ndslice::shape;
     use tempfile::TempDir;
     use tokio::fs;
     use tokio::net::TcpListener;
 
     use super::*;
-    use crate::alloc::AllocSpec;
-    use crate::alloc::Allocator;
-    use crate::alloc::local::LocalAllocator;
-    use crate::proc_mesh::ProcMesh;
 
     #[tokio::test]
     async fn test_simple() -> Result<()> {

@@ -9,11 +9,14 @@ license = "BSD-3-Clause"
 
 [dependencies]
 anyhow = "1.0.98"
+async-once-cell = "0.4.2"
 async-trait = "0.1.86"
 bincode = "1.3.3"
 clap = { version = "4.5.38", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 erased-serde = "0.3.27"
 fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
+futures = { version = "0.3.30", features = ["async-await", "compat"] }
+futures-util = { version = "0.3.30", features = ["compat"] }
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }
 hyperactor_multiprocess = { version = "0.0.0", path = "../hyperactor_multiprocess" }
@@ -21,10 +24,15 @@ hyperactor_telemetry = { version = "0.0.0", path = "../hyperactor_telemetry" }
 inventory = "0.3.8"
 monarch_types = { version = "0.0.0", path = "../monarch_types" }
 ndslice = { version = "0.0.0", path = "../ndslice" }
+nix = { version = "0.29.0", features = ["dir", "event", "hostname", "inotify", "ioctl", "mman", "mount", "net", "poll", "ptrace", "reboot", "resource", "sched", "signal", "term", "time", "user", "zerocopy"] }
 pyo3 = { version = "0.24", features = ["anyhow", "multiple-pymethods"] }
 pyo3-async-runtimes = { version = "0.24", features = ["attributes", "tokio-runtime"] }
 serde = { version = "1.0.185", features = ["derive", "rc"] }
 serde_bytes = "0.11"
+tempfile = "3.15"
 thiserror = "2.0.12"
 tokio = { version = "1.45.0", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
+
+[dev-dependencies]
+dir-diff = "0.3"
