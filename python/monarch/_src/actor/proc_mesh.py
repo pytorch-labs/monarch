@@ -271,7 +271,7 @@ class ProcMesh(MeshTrait):
             assert self._auto_reload_actor is not None
             await self._auto_reload_actor.reload.call()
 
-    def logging_option(self, stream_to_client: bool = False) -> None:
+    async def logging_option(self, stream_to_client: bool = False) -> None:
         """
         Set the logging options for the remote processes
 
@@ -283,7 +283,7 @@ class ProcMesh(MeshTrait):
             None
         """
         if self._logging_mesh_client is None:
-            self._logging_mesh_client = LoggingMeshClient.spawn_blocking(
+            self._logging_mesh_client = await LoggingMeshClient.spawn(
                 proc_mesh=self._proc_mesh,
             )
         self._logging_mesh_client.set_mode(stream_to_client)

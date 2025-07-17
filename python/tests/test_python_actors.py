@@ -659,7 +659,7 @@ async def test_actor_log_streaming() -> None:
                 await am.print.call("hello 1")
                 await am.log.call("hello 2")
 
-                pm.logging_option(stream_to_client=True)
+                await pm.logging_option(stream_to_client=True)
 
                 await am.print.call("hello 3")
                 await am.log.call("hello 4")
