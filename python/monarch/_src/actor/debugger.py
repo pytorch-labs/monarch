@@ -16,9 +16,8 @@ from typing import cast, Dict, Generator, List, Tuple, Union
 
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._src.actor.actor_mesh import (
-    _ActorMeshRefImpl,
     Actor,
-    ActorMeshRef,
+    ActorIdRef,
     DebugContext,
     endpoint,
     MonarchContext,
@@ -511,14 +510,9 @@ class DebugManager(Actor):
         ctx = MonarchContext.get()
         return cast(
             DebugManager,
-            ActorMeshRef(
+            ActorIdRef(
                 DebugManager,
-                _ActorMeshRefImpl.from_actor_id(
-                    ctx.mailbox,
-                    ActorId.from_string(
-                        f"{ctx.proc_id}.{_DEBUG_MANAGER_ACTOR_NAME}[0]"
-                    ),
-                ),
+                ActorId.from_string(f"{ctx.proc_id}.{_DEBUG_MANAGER_ACTOR_NAME}[0]"),
                 ctx.mailbox,
             ),
         )
