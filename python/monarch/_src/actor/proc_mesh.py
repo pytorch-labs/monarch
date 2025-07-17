@@ -38,7 +38,12 @@ from monarch._rust_bindings.monarch_hyperactor.proc_mesh import (
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape, Slice
 from monarch._src.actor.actor_mesh import _Actor, _ActorMeshRefImpl, Actor, ActorMeshRef
 from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator, SimAllocator
-from monarch._src.actor.code_sync import RsyncMeshClient, WorkspaceLocation
+from monarch._src.actor.code_sync import (
+    CodeSyncMeshClient,
+    RemoteWorkspace,
+    WorkspaceLocation,
+    WorkspaceShape,
+)
 from monarch._src.actor.code_sync.auto_reload import AutoReloadActor
 from monarch._src.actor.debugger import (
     _DEBUG_MANAGER_ACTOR_NAME,
@@ -98,7 +103,7 @@ class ProcMesh(MeshTrait):
         self._rdma_manager: Optional["RDMAManager"] = None
         self._debug_manager: Optional[DebugManager] = None
         self._mailbox: Mailbox = self._proc_mesh.client
-        self._rsync_mesh_client: Optional[RsyncMeshClient] = None
+        self._code_sync_client: Optional[CodeSyncMeshClient] = None
         self._auto_reload_actor: Optional[AutoReloadActor] = None
         self._logging_mesh_client: Optional[LoggingMeshClient] = None
         self._maybe_device_mesh: Optional["DeviceMesh"] = _device_mesh
@@ -238,32 +243,31 @@ class ProcMesh(MeshTrait):
         return self._device_mesh.ranks
 
     async def sync_workspace(self, auto_reload: bool = False) -> None:
-        if self._rsync_mesh_client is None:
-            # TODO(agallagher): We need some way to configure and pass this
-            # in -- right now we're assuming the `gpu` dimension, which isn't
-            # correct.
-            assert set(self._proc_mesh.shape.labels).issubset({"gpus", "hosts"})
-            # The workspace shape (i.e. only perform one rsync per host).
-            workspace_shape = self.slice(gpus=slice(0, 1, 1))._mock_shape
-            assert workspace_shape is not None
-            # TODO(agallagher): We should probably hide this behind something
-            # like a `Workspace` class and support abstracting/configuring
-            # different sync methods.
-            self._rsync_mesh_client = RsyncMeshClient.spawn_blocking(
+        if self._code_sync_client is None:
+            self._code_sync_client = CodeSyncMeshClient.spawn_blocking(
                 proc_mesh=self._proc_mesh,
-                shape=workspace_shape,
-                # TODO(agallagher): Is there a better way to infer/set the local
-                # workspace dir, rather than use PWD?
-                local_workspace=os.getcwd(),
-                remote_workspace=WorkspaceLocation.FromEnvVar("WORKSPACE_DIR"),
             )
+            # TODO(agallagher): Merge this into the `CodeSyncMeshClient` actor.
             self._auto_reload_actor = self._spawn_blocking(
                 "auto_reload",
                 AutoReloadActor,
                 WorkspaceLocation.FromEnvVar("WORKSPACE_DIR"),
             )
-        assert self._rsync_mesh_client is not None
-        await self._rsync_mesh_client.sync_workspace()
+        # TODO(agallagher): We need some way to configure and pass this
+        # in -- right now we're assuming the `gpu` dimension, which isn't
+        # correct.
+        # The workspace shape (i.e. only perform one rsync per host).
+        assert set(self._proc_mesh.shape.labels).issubset({"gpus", "hosts"})
+        assert self._code_sync_client is not None
+        await self._code_sync_client.sync_workspace(
+            # TODO(agallagher): Is there a better way to infer/set the local
+            # workspace dir, rather than use PWD?
+            local=os.getcwd(),
+            remote=RemoteWorkspace(
+                location=WorkspaceLocation.FromEnvVar("WORKSPACE_DIR"),
+                shape=WorkspaceShape.shared("gpus"),
+            ),
+        )
         if auto_reload:
             assert self._auto_reload_actor is not None
             await self._auto_reload_actor.reload.call()
