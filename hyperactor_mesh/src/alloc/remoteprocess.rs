@@ -429,6 +429,8 @@ struct RemoteProcessAllocHostState {
     world_id: Option<WorldId>,
     /// If remote allocator sent us ProcState::Failed.
     failed: bool,
+    /// If remote allocater has ever allocated a proc.
+    allocated: bool,
 }
 
 #[automock]
@@ -652,6 +654,7 @@ impl RemoteProcessAlloc {
                     offset,
                     world_id: None,
                     failed: false,
+                    allocated: false,
                 },
             );
         }
@@ -708,6 +711,7 @@ impl RemoteProcessAlloc {
             // Should not happen but we can ignore
             tracing::error!("proc id already in host state: {}", proc_id);
         }
+        task_state.allocated = true;
         Ok(())
     }
 
@@ -900,6 +904,17 @@ impl Alloc for RemoteProcessAlloc {
                     closed_host_id = self.comm_watcher_rx.recv() => {
                         if let Some(closed_host_id) = closed_host_id {
                             tracing::debug!("host {} channel closed, cleaning up", closed_host_id);
+                            if let Some(state) = self.host_states.get(&closed_host_id) {
+                                if !state.allocated {
+                                    break Some(ProcState::Failed {
+                                        world_id: self.world_id.clone(),
+                                        description: format!(
+                                            "no process has ever been allocated on {} before the channel is closed; \
+                                            a common issue could be the channel was never established",
+                                            closed_host_id
+                                        )});
+                                }
+                            }
                             let proc_ids = match self.cleanup_host_channel_closed(closed_host_id) {
                                 Ok(proc_ids) => proc_ids,
                                 Err(err) => {

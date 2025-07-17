@@ -222,6 +222,26 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
                 proc_mesh.spawn("test_actor", TestActor).get()
             del actor
 
+    async def test_wrong_address(self) -> None:
+        hosts = 1
+        gpus = 1
+        spec = AllocSpec(AllocConstraints(), host=hosts, gpu=gpus)
+
+        # create 2x process-allocators (on their own bind addresses) to simulate 2 hosts
+        with remote_process_allocator():
+            wrong_host = ChannelAddr.any(ChannelTransport.Unix)
+            allocator = RemoteAllocator(
+                world_id="test_remote_allocator",
+                initializer=StaticRemoteAllocInitializer(wrong_host),
+                heartbeat_interval=_100_MILLISECONDS,
+            )
+            alloc = await allocator.allocate(spec)
+
+            with self.assertRaisesRegex(
+                Exception, r"no process has ever been allocated.*"
+            ):
+                await ProcMesh.from_alloc(alloc)
+
     async def test_stop_proc_mesh(self) -> None:
         spec = AllocSpec(AllocConstraints(), host=2, gpu=4)
 
