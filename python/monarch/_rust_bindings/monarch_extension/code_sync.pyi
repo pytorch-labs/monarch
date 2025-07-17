@@ -30,15 +30,41 @@ class WorkspaceLocation:
         ...
 
 @final
-class RsyncMeshClient:
+class WorkspaceShape:
     """
-    Python binding for the Rust RsyncMeshClient.
+    Python binding for the Rust WorkspaceShape struct.
+    """
+    @staticmethod
+    def shared(label: str) -> "WorkspaceShape": ...
+    @staticmethod
+    def exclusive() -> "WorkspaceShape": ...
+
+@final
+class RemoteWorkspace:
+    """
+    Python binding for the Rust RemoteWorkspace struct.
+    """
+    def __init__(self, location: WorkspaceLocation, shape: WorkspaceShape) -> None: ...
+
+@final
+class CodeSyncMeshClient:
+    """
+    Python binding for the Rust CodeSyncMeshClient.
     """
     @staticmethod
     def spawn_blocking(
         proc_mesh: ProcMesh,
-        shape: Shape,
-        local_workspace: str,
-        remote_workspace: WorkspaceLocation,
-    ) -> RsyncMeshClient: ...
-    async def sync_workspace(self) -> None: ...
+    ) -> CodeSyncMeshClient: ...
+    async def sync_workspace(
+        self,
+        *,
+        local: str,
+        remote: RemoteWorkspace,
+        auto_reload: bool = False,
+    ) -> None: ...
+    async def sync_workspaces(
+        self,
+        *,
+        workspaces: list[tuple[str, RemoteWorkspace]],
+        auto_reload: bool = False,
+    ) -> None: ...
