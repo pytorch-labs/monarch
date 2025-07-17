@@ -10,3 +10,4 @@ myst-parser #==0.18.1  # if want to contribute in markdown
 sphinx-gallery==0.14.0  # only if hosting interactive tutorials
 sphinx-sitemap==2.7.1
 sphinxext-opengraph
+nbsphinx
