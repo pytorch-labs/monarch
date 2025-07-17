@@ -52,6 +52,12 @@ install_wheel_from_artifact() {
     pip install "${RUNNER_ARTIFACT_DIR}"/*.whl
 }
 
+# Setup and install dependencies for Tensor Engine
+setup_tensor_engine() {
+    echo "Installing Tensor Engine dependencies..."
+    dnf install -y libibverbs rdma-core libmlx5 libibverbs-devel rdma-core-devel
+}
+
 # Build process allocator binary
 build_process_allocator() {
     echo "Building process allocator binary..."

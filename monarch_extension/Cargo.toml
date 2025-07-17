@@ -25,6 +25,7 @@ hyperactor_multiprocess = { version = "0.0.0", path = "../hyperactor_multiproces
 libc = "0.2.139"
 monarch_hyperactor = { version = "0.0.0", path = "../monarch_hyperactor" }
 monarch_messages = { version = "0.0.0", path = "../monarch_messages", optional = true }
+monarch_rdma_extension = { version = "0.0.0", path = "../monarch_rdma/extension", optional = true }
 monarch_simulator_lib = { version = "0.0.0", path = "../monarch_simulator", optional = true }
 monarch_tensor_worker = { version = "0.0.0", path = "../monarch_tensor_worker", optional = true }
 monarch_types = { version = "0.0.0", path = "../monarch_types" }
@@ -40,4 +41,4 @@ tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 
 [features]
 default = ["tensor_engine"]
-tensor_engine = ["dep:controller", "dep:monarch_messages", "dep:monarch_simulator_lib", "dep:monarch_tensor_worker", "dep:nccl-sys", "dep:torch-sys", "dep:torch-sys-cuda"]
+tensor_engine = ["dep:controller", "dep:monarch_messages", "dep:monarch_rdma_extension", "dep:monarch_simulator_lib", "dep:monarch_tensor_worker", "dep:nccl-sys", "dep:torch-sys", "dep:torch-sys-cuda"]

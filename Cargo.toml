@@ -12,7 +12,10 @@ members = [
     "ndslice",
     "monarch_extension",
     "monarch_tensor_worker",
+    "monarch_rdma",
     "nccl-sys",
     "rdmacore-sys",
     "torch-sys",
+    "rdmacore-sys",
+    "cuda-sys",
 ]

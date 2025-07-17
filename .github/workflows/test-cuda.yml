@@ -44,6 +44,9 @@ jobs:
         chmod +x cargo_bin/process_allocator
         export PATH=$(pwd)/cargo_bin:$PATH
 
+        # Setup Tensor Engine dependencies
+        setup_tensor_engine
+
         # Install the built wheel from artifact
         install_wheel_from_artifact
 
