@@ -37,6 +37,8 @@ use hyperactor_mesh::actor_mesh::RootActorMesh;
 use hyperactor_mesh::shared_cell::SharedCell;
 use hyperactor_mesh::shared_cell::SharedCellRef;
 use monarch_hyperactor::actor::PythonMessage;
+use monarch_hyperactor::actor::PythonMessageKind;
+use monarch_hyperactor::local_state_broker::LocalStateBrokerActor;
 use monarch_hyperactor::mailbox::PyPortId;
 use monarch_hyperactor::ndslice::PySlice;
 use monarch_hyperactor::proc_mesh::PyProcMesh;
@@ -77,6 +79,7 @@ pub(crate) fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult
 struct _Controller {
     controller_handle: Arc<Mutex<ActorHandle<MeshControllerActor>>>,
     all_ranks: Slice,
+    broker_id: (String, usize),
 }
 
 static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
@@ -122,7 +125,15 @@ impl _Controller {
         Ok(Self {
             controller_handle,
             all_ranks,
+            // note that 0 is the _pid_ of the broker, which will be 0 for
+            // top-level spawned actors.
+            broker_id: (format!("tensor_engine_brokers_{}", id), 0),
         })
+    }
+
+    #[getter]
+    fn broker_id(&self) -> (String, usize) {
+        self.broker_id.clone()
     }
 
     #[pyo3(signature = (seq, defs, uses, response_port, tracebacks))]
@@ -334,7 +345,7 @@ impl Invocation {
                             Some(PortInfo { port, ranks }) => {
                                 *unreported_exception = None;
                                 for rank in ranks.iter() {
-                                    let msg = exception.as_ref().clone().with_rank(rank);
+                                    let msg = exception.as_ref().clone().into_rank(rank);
                                     port.send(sender, msg)?;
                                 }
                             }
@@ -527,7 +538,7 @@ impl History {
                 .call1((exception.backtrace, traceback, rank))
                 .unwrap();
             let data: Vec<u8> = pickle.call1((exe,)).unwrap().extract().unwrap();
-            PythonMessage::new_from_buf("exception".to_string(), data, None, Some(rank))
+            PythonMessage::new_from_buf(PythonMessageKind::Exception { rank: Some(rank) }, data)
         }));
 
         let mut invocation = invocation.lock().unwrap();
@@ -570,7 +581,10 @@ impl History {
                     Some(exception) => exception.as_ref().clone(),
                     None => {
                         // the byte string is just a Python None
-                        PythonMessage::new("result".to_string(), b"\x80\x04N.", None, None)
+                        PythonMessage::new_from_buf(
+                            PythonMessageKind::Result { rank: None },
+                            b"\x80\x04N.".to_vec(),
+                        )
                     }
                 };
                 port.send(sender, result)?;
@@ -622,6 +636,7 @@ enum ClientToControllerMessage {
 struct MeshControllerActor {
     proc_mesh: SharedCell<TrackedProcMesh>,
     workers: Option<SharedCell<RootActorMesh<'static, WorkerActor>>>,
+    brokers: Option<SharedCell<RootActorMesh<'static, LocalStateBrokerActor>>>,
     history: History,
     id: usize,
     debugger_active: Option<ActorRef<DebuggerActor>>,
@@ -726,6 +741,7 @@ impl Actor for MeshControllerActor {
         Ok(MeshControllerActor {
             proc_mesh: proc_mesh.clone(),
             workers: None,
+            brokers: None,
             history: History::new(world_size),
             id,
             debugger_active: None,
@@ -754,6 +770,10 @@ impl Actor for MeshControllerActor {
             .cast(selection::dsl::true_(), AssignRankMessage::AssignRank())?;
 
         self.workers = Some(workers);
+        let brokers = proc_mesh
+            .spawn(&format!("tensor_engine_brokers_{}", self.id), &())
+            .await?;
+        self.brokers = Some(brokers);
         Ok(())
     }
 }

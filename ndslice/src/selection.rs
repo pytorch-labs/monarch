@@ -560,12 +560,39 @@ impl Selection {
     /// feasible because the precise type depends on dynamic selection
     /// structure. Boxing erases this variability and allows a uniform
     /// return type.
+    ///
+    /// # Canonical handling of 0-dimensional slices
+    ///
+    /// A `Slice` with zero dimensions represents the empty product
+    /// `∏_{i=1}^{0} Xᵢ`, which has exactly one element: the empty
+    /// tuple. To ensure that evaluation behaves uniformly across
+    /// dimensions, we canonically embed the 0-dimensional case into a
+    /// 1-dimensional slice of extent 1. That is, we reinterpret the
+    /// 0D slice as `Slice::new(offset, [1], [1])`, which is
+    /// semantically equivalent and enables evaluation to proceed
+    /// through the normal recursive machinery without special-casing.
+    /// The result is that selection expressions are always evaluated
+    /// over a slice with at least one dimension, and uniform logic
+    /// applies.
     pub fn eval<'a>(
         &self,
         opts: &EvalOpts,
         slice: &'a Slice,
     ) -> Result<Box<dyn Iterator<Item = usize> + 'a>, ShapeError> {
-        Ok(Self::validate(self, opts, slice)?.eval_rec(slice, vec![0; slice.num_dim()], 0))
+        // Canonically embed 0D as 1D (extent 1).
+        if slice.num_dim() == 0 {
+            let slice = Slice::new(slice.offset(), vec![1], vec![1]).unwrap();
+            return Ok(Box::new(
+                self.validate(opts, &slice)?
+                    .eval_rec(&slice, vec![0; 1], 0)
+                    .collect::<Vec<_>>()
+                    .into_iter(),
+            ));
+        }
+
+        Ok(self
+            .validate(opts, slice)?
+            .eval_rec(slice, vec![0; slice.num_dim()], 0))
     }
 
     fn eval_rec<'a>(
@@ -865,26 +892,28 @@ impl Selection {
         }
     }
 
-    // "Pads out" a selection so that if `Selection::True` appears before
-    // the final dimension, it becomes All(All(...(True))), enough to fill
-    // the remaining dimensions.
-    pub(crate) fn promote_terminal_true(self, dim: usize, max_dim: usize) -> Selection {
+    /// Pads out a terminal selection (e.g., `True`, `False`) with
+    /// `All(...)` to reach `max_dim` dimensions.
+    pub(crate) fn promote_terminal(self, dim: usize, max_dim: usize) -> Selection {
         use crate::selection::dsl::*;
 
         match self {
             Selection::True if dim < max_dim => all(true_()),
-            Selection::All(inner) => all(inner.promote_terminal_true(dim + 1, max_dim)),
-            Selection::Range(r, inner) => range(r, inner.promote_terminal_true(dim + 1, max_dim)),
+            Selection::False if dim < max_dim => all(false_()),
+
+            Selection::All(inner) => all(inner.promote_terminal(dim + 1, max_dim)),
+            Selection::Range(r, inner) => range(r, inner.promote_terminal(dim + 1, max_dim)),
             Selection::Intersection(a, b) => intersection(
-                a.promote_terminal_true(dim, max_dim),
-                b.promote_terminal_true(dim, max_dim),
+                a.promote_terminal(dim, max_dim),
+                b.promote_terminal(dim, max_dim),
             ),
             Selection::Union(a, b) => union(
-                a.promote_terminal_true(dim, max_dim),
-                b.promote_terminal_true(dim, max_dim),
+                a.promote_terminal(dim, max_dim),
+                b.promote_terminal(dim, max_dim),
             ),
-            Selection::First(inner) => first(inner.promote_terminal_true(dim + 1, max_dim)),
-            Selection::Any(inner) => any(inner.promote_terminal_true(dim + 1, max_dim)),
+            Selection::First(inner) => first(inner.promote_terminal(dim + 1, max_dim)),
+            Selection::Any(inner) => any(inner.promote_terminal(dim + 1, max_dim)),
+
             other => other,
         }
     }
@@ -1021,16 +1050,22 @@ impl ReifyView for Slice {
     /// matches all coordinates in the given `view`, expressed in the
     /// coordinate system of the provided `base` slice (`self`).
     ///
-    /// The resulting expression uses nested `range(start..end, ...)`
-    /// combinators to represent the rectangular region selected by
-    /// the view within the base slice.
+    /// The result is a nested sequence of `range(start..end, step)`
+    /// combinators that match the rectangular region covered by `view`
+    /// in base coordinates. This preserves geometry and layout when
+    /// `view` is *layout-aligned* — that is, each of its strides is
+    /// a multiple of the corresponding base stride.
     ///
-    /// Returns [`dsl::false_()`] for empty views.
+    /// If any dimension is not layout-aligned, the view is reified
+    /// by explicitly enumerating its coordinates.
+    ///
+    /// Returns [`dsl::false_()`] if the view is empty.
     ///
     /// # Errors
     ///
     /// Returns an error if:
-    /// - The view lies outside the bounds of the base slice
+    /// - The base is not contiguous and row-major
+    /// - The view lies outside the bounds of the base
     ///
     /// # Example
     ///
@@ -1043,6 +1078,11 @@ impl ReifyView for Slice {
     /// let selection = base.reify_view(view).unwrap();
     /// ```
     fn reify_view(&self, view: &Slice) -> Result<Selection, SliceError> {
+        // Precondition: the base is contiguous and row major.
+        if !self.is_contiguous() {
+            return Err(SliceError::NonContiguous);
+        }
+
         if view.is_empty() {
             return Ok(dsl::false_());
         }
@@ -1055,8 +1095,21 @@ impl ReifyView for Slice {
 
         let origin = self.coordinates(view.offset())?;
         let mut acc = dsl::true_();
-        for (&start, &len) in origin.iter().zip(view.sizes()).rev() {
-            acc = dsl::range(start..start + len, acc);
+        for ((&start, &len), (&view_stride, &base_stride)) in origin
+            .iter()
+            .zip(view.sizes())
+            .zip(view.strides().iter().zip(self.strides()))
+            .rev()
+        {
+            if view_stride % base_stride == 0 {
+                // Layout-aligned with base.
+                let step = view_stride / base_stride;
+                let end = start + step * len;
+                acc = dsl::range(crate::shape::Range(start, Some(end), step), acc);
+            } else {
+                // Irregular layout; fallback to explicit enumeration.
+                return Selection::of_ranks(self, &view.iter().collect::<BTreeSet<_>>());
+            }
         }
 
         Ok(acc)
@@ -1338,6 +1391,7 @@ mod tests {
     use super::Selection;
     use super::dsl::*;
     use super::is_equivalent_true;
+    use crate::Range;
     use crate::Slice;
     use crate::assert_structurally_eq;
     use crate::select;
@@ -1832,6 +1886,21 @@ mod tests {
     }
 
     #[test]
+    fn test_eval_zero_dim_slice() {
+        let slice_0d = Slice::new(1, vec![], vec![]).unwrap();
+        // Let s be a slice with dim(s) = 0. Then: ∃! x ∈ s :
+        // coordsₛ(x) = ().
+        assert_eq!(slice_0d.coordinates(1).unwrap(), vec![]);
+
+        assert_eq!(eval(true_(), &slice_0d), vec![1]);
+        assert_eq!(eval(false_(), &slice_0d), vec![]);
+        assert_eq!(eval(all(true_()), &slice_0d), vec![1]);
+        assert_eq!(eval(all(false_()), &slice_0d), vec![]);
+        assert_eq!(eval(union(true_(), true_()), &slice_0d), vec![1]);
+        assert_eq!(eval(intersection(true_(), false_()), &slice_0d), vec![]);
+    }
+
+    #[test]
     fn test_selection_10() {
         let slice = &test_slice();
         let opts = EvalOpts {
@@ -2132,6 +2201,55 @@ mod tests {
                 base.location(&[2, 4]).unwrap(),
             ]
         );
+    }
+
+    #[test]
+    #[allow(clippy::identity_op)]
+    fn test_reify_view_1d_with_stride() {
+        let shape = shape!(x = 7); // 1D shape with 7 elements
+        let selected = shape.select("x", Range(0, None, 2)).unwrap();
+        let view = selected.slice();
+        assert_eq!(view, &Slice::new(0, vec![4], vec![1 * 2]).unwrap());
+
+        let base = shape.slice();
+        let selection = base.reify_view(view).unwrap();
+        // Note: ceil(7 / 2) = 4, hence end = 0 + 2 × 4 = 8. See the
+        // more detailed explanation in
+        // `test_reify_view_2d_with_stride`.
+        let expected = range(Range(0, Some(8), 2), true_());
+        assert_structurally_eq!(&selection, expected);
+
+        let flat: Vec<_> = selection.eval(&EvalOpts::strict(), base).unwrap().collect();
+        assert_eq!(flat, vec![0, 2, 4, 6]);
+    }
+
+    #[test]
+    #[allow(clippy::identity_op)]
+    fn test_reify_view_2d_with_stride() {
+        // 4 x 4: x = 4, y = 4.
+        let base = shape!(x = 4, y = 4);
+        // Step 1: select odd rows (x = 1..4 step 2)
+        let shape = base.select("x", Range(1, Some(4), 2)).unwrap();
+        // Step 2: then select odd columns (y = 1..4 step 2)
+        let shape = shape.select("y", Range(1, Some(4), 2)).unwrap();
+        let view = shape.slice();
+        assert_eq!(
+            view,
+            &Slice::new(5, vec![2, 2], vec![4 * 2, 1 * 2]).unwrap()
+        );
+
+        let base = base.slice();
+        let selection = base.reify_view(view).unwrap();
+        // We use `end = start + step * len` to reify the selection.
+        // Note: This may yield `end > original_end` (e.g., 5 instead of 4)
+        // when the selection length was computed via ceiling division.
+        // This is safe: the resulting range will still select the correct
+        // indices (e.g., 1 and 3 for Range(1, Some(5), 2)).
+        let expected = range(Range(1, Some(5), 2), range(Range(1, Some(5), 2), true_()));
+        assert_structurally_eq!(&selection, expected);
+
+        let flat: Vec<_> = selection.eval(&EvalOpts::strict(), base).unwrap().collect();
+        assert_eq!(flat, vec![5, 7, 13, 15]);
     }
 
     #[test]

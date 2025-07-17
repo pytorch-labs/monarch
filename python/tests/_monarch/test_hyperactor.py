@@ -10,6 +10,7 @@ import multiprocessing
 import os
 import signal
 import time
+from typing import Any, Iterable
 
 import monarch
 
@@ -33,6 +34,7 @@ class MyActor:
         shape: Shape,
         message: PythonMessage,
         panic_flag: PanicFlag,
+        local_state: Iterable[Any],
     ) -> None:
         raise NotImplementedError()
 

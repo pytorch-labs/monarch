@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "controller",
+    "cuda-sys",
     "hyper",
     "hyperactor",
     "hyperactor_macros",
@@ -12,5 +13,6 @@ members = [
     "monarch_extension",
     "monarch_tensor_worker",
     "nccl-sys",
+    "rdmacore-sys",
     "torch-sys",
 ]

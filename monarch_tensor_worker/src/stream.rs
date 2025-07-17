@@ -37,9 +37,15 @@ use hyperactor::mailbox::OncePortHandle;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::proc::Proc;
 use monarch_hyperactor::actor::PythonMessage;
+use monarch_hyperactor::actor::PythonMessageKind;
+use monarch_hyperactor::local_state_broker::BrokerId;
+use monarch_hyperactor::local_state_broker::LocalState;
+use monarch_hyperactor::local_state_broker::LocalStateBrokerMessage;
+use monarch_hyperactor::mailbox::EitherPortRef;
 use monarch_messages::controller::ControllerMessageClient;
 use monarch_messages::controller::Seq;
 use monarch_messages::controller::WorkerError;
+use monarch_messages::worker::ActorCallParams;
 use monarch_messages::worker::CallFunctionError;
 use monarch_messages::worker::CallFunctionParams;
 use monarch_messages::worker::StreamRef;
@@ -229,10 +235,12 @@ pub enum StreamMessage {
 
     GetRefUnitTestsOnly(
         Ref, // value
-        #[reply] OncePortHandle<Option<Result<WireValue, Arc<CallFunctionError>>>>,
+        #[reply] OncePortHandle<Option<Result<WireValue, String>>>,
     ),
 
     GetTensorRefUnitTestsOnly(Ref, #[reply] OncePortHandle<Option<TensorCellResult>>),
+
+    SendResultOfActorCall(ActorId, ActorCallParams),
 }
 
 impl StreamMessage {
@@ -653,10 +661,10 @@ impl StreamActor {
                     .filter_map(|(result, ref_)| ref_.map(|ref_| (ref_, result)))
                     .collect::<Vec<(Ref, RValue)>>())
             } else {
-                Err(CallFunctionError::UnexpectedNumberOfReturns {
-                    expected: result_refs.len(),
-                    actual: actual_results.len(),
-                })
+                Err(CallFunctionError::UnexpectedNumberOfReturns(
+                    result_refs.len(),
+                    actual_results.len(),
+                ))
             }
         });
 
@@ -1002,10 +1010,10 @@ impl StreamActor {
                         .extract()
                         .unwrap();
                     Ok(PythonMessage::new_from_buf(
-                        "result".to_string(),
+                        PythonMessageKind::Result {
+                            rank: Some(worker_actor_id.rank()),
+                        },
                         data,
-                        None,
-                        Some(worker_actor_id.rank()),
                     ))
                 })
         });
@@ -1612,10 +1620,10 @@ impl StreamMessageHandler for StreamActor {
                             }
                         })
                 }),
-                _ => Err(CallFunctionError::TooManyArgsForValue {
-                    args: format!("{:?}", args),
-                    kwargs: format!("{:?}", kwargs),
-                }),
+                _ => Err(CallFunctionError::TooManyArgsForValue(
+                    format!("{:?}", args),
+                    format!("{:?}", kwargs),
+                )),
             }
         };
 
@@ -1666,6 +1674,82 @@ impl StreamMessageHandler for StreamActor {
         Ok(())
     }
 
+    async fn send_result_of_actor_call(
+        &mut self,
+        cx: &Context<Self>,
+        worker_actor_id: ActorId,
+        params: ActorCallParams,
+    ) -> anyhow::Result<()> {
+        // TODO: handle mutates
+        let local_state: Result<Vec<PyObject>> = Python::with_gil(|py| {
+            params
+                .local_state
+                .into_iter()
+                .map(|elem| {
+                    // SAFETY: python is gonna make unsafe copies of this stuff anyway
+                    unsafe {
+                        let x = self.ref_to_rvalue(&elem)?.try_to_object_unsafe(py)?.into();
+                        Ok(x)
+                    }
+                })
+                .collect()
+        });
+
+        let (send, recv) = cx.open_once_port();
+        let send = send.bind();
+        let send = EitherPortRef::Once(send.into());
+
+        let state = LocalState {
+            response_port: send,
+            state: local_state?,
+        };
+        let x: u64 = params.seq.into();
+        let message = LocalStateBrokerMessage::Set(x as usize, state);
+
+        let broker = BrokerId::new(params.broker_id).resolve(cx).unwrap();
+        broker.send(message)?;
+        let result = recv.recv().await?;
+        match result.kind {
+            PythonMessageKind::Exception { .. } => {
+                // If result has "exception" as its kind, then
+                // we need to unpickle and turn it into a WorkerError
+                // and call remote_function_failed otherwise the
+                // controller assumes the object is correct and doesn't handle
+                // dependency tracking correctly.
+                let err = Python::with_gil(|py| -> Result<WorkerError, SerializablePyErr> {
+                    let err = py
+                        .import("pickle")
+                        .unwrap()
+                        .call_method1("loads", (result.message,))?;
+                    Ok(WorkerError {
+                        worker_actor_id,
+                        backtrace: err.to_string(),
+                    })
+                })?;
+                self.controller_actor
+                    .remote_function_failed(cx, params.seq, err)
+                    .await?;
+            }
+            PythonMessageKind::Result { .. } => {
+                let result = PythonMessage::new_from_buf(
+                    PythonMessageKind::Result {
+                        rank: Some(worker_actor_id.rank()),
+                    },
+                    result.message,
+                );
+                let result = Serialized::serialize(&result).unwrap();
+                self.controller_actor
+                    .fetch_result(cx, params.seq, Ok(result))
+                    .await?;
+            }
+            _ => panic!(
+                "Unexpected response kind from PythonActor: {:?}",
+                result.kind
+            ),
+        }
+        Ok(())
+    }
+
     async fn set_value(
         &mut self,
         cx: &Context<Self>,
@@ -1685,7 +1769,6 @@ impl StreamMessageHandler for StreamActor {
                 CallFunctionError::DependentError(dep_err) => {
                     Err(CallFunctionError::DependentError(dep_err.clone()))
                 }
-                CallFunctionError::RefNotFound(ref_) => Err(CallFunctionError::RefNotFound(*ref_)),
                 _ => bail!("unexpected error for pipe in set_value: {:?}", err),
             },
         };
@@ -1950,11 +2033,11 @@ impl StreamMessageHandler for StreamActor {
                                     .messages
                                     .get(index)
                                     .unwrap();
-                                error = Some(Arc::new(CallFunctionError::RecordingFailed {
+                                error = Some(Arc::new(CallFunctionError::RecordingFailed(
                                     index,
-                                    message: format!("{message:?}"),
-                                    error: err.clone(),
-                                }));
+                                    format!("{message:?}"),
+                                    err.clone(),
+                                )));
                                 // Report failure to the controller.
                                 self.controller_actor
                                     .remote_function_failed(
@@ -2033,7 +2116,7 @@ impl StreamMessageHandler for StreamActor {
         &mut self,
         _cx: &Context<Self>,
         reference: Ref,
-    ) -> Result<Option<Result<WireValue, Arc<CallFunctionError>>>> {
+    ) -> Result<Option<Result<WireValue, String>>> {
         /// For testing only, doesn't support Tensor or TensorList.
         fn rvalue_to_wire(
             value: Result<RValue, Arc<CallFunctionError>>,
@@ -2055,7 +2138,7 @@ impl StreamMessageHandler for StreamActor {
         Ok(self
             .env
             .get(&reference)
-            .map(|rvalue| rvalue_to_wire(rvalue.clone())))
+            .map(|rvalue| rvalue_to_wire(rvalue.clone()).map_err(|err| err.to_string())))
     }
 
     async fn get_tensor_ref_unit_tests_only(
@@ -2169,11 +2252,12 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .unwrap();
-            allclose(
+            let x = allclose(
                 &factory_float_tensor(data, "cpu".try_into().unwrap()),
                 &actual.borrow(),
             )
-            .unwrap()
+            .unwrap();
+            x
         }
 
         async fn validate_dependent_error(
@@ -2650,17 +2734,19 @@ mod tests {
                 .await
                 .unwrap();
             let error = result.unwrap().unwrap_err();
-            match error.as_ref() {
-                CallFunctionError::RecordingFailed {
-                    error: inner_error, ..
-                } => match inner_error.as_ref() {
-                    CallFunctionError::RefNotFound(err_ref) => {
-                        assert_eq!(*err_ref, nonexistent_ref)
-                    }
-                    _ => panic!("Unexpected error inside RecordingFailed: {:?}", inner_error),
-                },
-                _ => panic!("Unexpected error instead of RecordingFailed: {:?}", error),
-            };
+
+            // Check that the error contains the expected strings
+            let error_str = format!("{:?}", error);
+            assert!(
+                error_str.contains("recording failed"),
+                "Error should contain 'recording failed': {}",
+                error_str
+            );
+            assert!(
+                error_str.contains("ref not found"),
+                "Error should contain 'ref not found': {}",
+                error_str
+            );
         }
 
         assert_refs_do_not_exist(&test_setup, &[formal0_ref, formal1_ref]).await;
@@ -2947,16 +3033,18 @@ mod tests {
                 .await?
                 .unwrap()
                 .unwrap_err();
-            match result_error.as_ref() {
-                CallFunctionError::RecordingFailed { error, .. } => match error.as_ref() {
-                    CallFunctionError::OperatorFailed(_) => (),
-                    _ => panic!("Unexpected error inside RecordingFailed: {:?}", error),
-                },
-                _ => panic!(
-                    "Unexpected error instead of RecordingFailed: {:?}",
-                    result_error
-                ),
-            }
+            // Check that the error contains the expected strings
+            let error_str = format!("{:?}", result_error);
+            assert!(
+                error_str.contains("recording failed"),
+                "Error should contain 'recording failed': {}",
+                error_str
+            );
+            assert!(
+                error_str.contains("torch operator failed"),
+                "Error should contain 'torch operator failed': {}",
+                error_str
+            );
         }
 
         let controller_msg = test_setup.controller_rx.recv().await.unwrap();
@@ -3007,16 +3095,18 @@ mod tests {
                 .await?
                 .unwrap()
                 .unwrap_err();
-            match result_error.as_ref() {
-                CallFunctionError::DependentError(dep_err) => match dep_err.as_ref() {
-                    CallFunctionError::RecordingFailed { .. } => (),
-                    _ => panic!("Unexpected error inside DependentError: {:?}", dep_err),
-                },
-                _ => panic!(
-                    "Unexpected error instead of DependentError: {:?}",
-                    result_error
-                ),
-            }
+            // Check that the error contains the expected strings
+            let error_str = format!("{:?}", result_error);
+            assert!(
+                error_str.contains("Computation depended on an input that failed"),
+                "Error should contain dependency message: {}",
+                error_str
+            );
+            assert!(
+                error_str.contains("recording failed"),
+                "Error should contain 'recording failed': {}",
+                error_str
+            );
         }
 
         // This tests that the DependentError was never reported to the controller.
@@ -3386,12 +3476,22 @@ mod tests {
             .unwrap()
             .unwrap_err();
 
-        match result_error.as_ref() {
-            CallFunctionError::DependentError(dep_err) => {
-                assert!(Arc::ptr_eq(dep_err, &input_error));
-            }
-            _ => panic!("Unexpected error: {:?}", result_error),
-        }
+        // Check that the error contains the expected strings
+        let error_str = format!("{:?}", result_error);
+        assert!(
+            error_str.contains("Computation depended on an input that failed"),
+            "Error should contain dependency message: {}",
+            error_str
+        );
+
+        // Since we're checking for pointer equality in the original code, we need to ensure
+        // the error is propagated correctly. We can check that the original error message is contained.
+        let input_error_str = format!("{:?}", input_error);
+        assert!(
+            error_str.contains(&input_error_str),
+            "Error should contain the original error: {}",
+            error_str
+        );
 
         // Verify that neither stream sends a failure message to the controller.
         check_fetch_result_error(
@@ -4131,10 +4231,13 @@ mod tests {
             .await?
             .unwrap()
             .unwrap_err();
-        assert!(matches!(
-            real_result_err.as_ref(),
-            CallFunctionError::RecordingFailed { .. }
-        ));
+        // Check that the error contains the expected string
+        let error_str = format!("{:?}", real_result_err);
+        assert!(
+            error_str.contains("recording failed"),
+            "Error should contain 'recording failed': {}",
+            error_str
+        );
 
         let controller_msg = test_setup.controller_rx.recv().await.unwrap();
         match controller_msg {
@@ -4205,15 +4308,18 @@ mod tests {
             .await?
             .unwrap()
             .unwrap_err();
-        match real_result_err.as_ref() {
-            CallFunctionError::DependentError(err) => match err.as_ref() {
-                CallFunctionError::Anyhow(err) => {
-                    assert!(err.to_string().contains("bad pipe"));
-                }
-                _ => panic!("Unexpected error: {:?}", real_result_err),
-            },
-            _ => panic!("Unexpected error: {:?}", real_result_err),
-        }
+        // Check that the error contains the expected strings
+        let error_str = format!("{:?}", real_result_err);
+        assert!(
+            error_str.contains("Computation depended on an input that failed"),
+            "Error should contain dependency message: {}",
+            error_str
+        );
+        assert!(
+            error_str.contains("bad pipe"),
+            "Error should contain 'bad pipe': {}",
+            error_str
+        );
 
         check_fetch_result_error(
             &test_setup.client,

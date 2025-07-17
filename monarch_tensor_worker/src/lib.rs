@@ -71,6 +71,7 @@ use monarch_messages::controller::ControllerActor;
 use monarch_messages::controller::ControllerMessageClient;
 use monarch_messages::controller::Seq;
 use monarch_messages::wire_value::WireValue;
+use monarch_messages::worker::ActorCallParams;
 use monarch_messages::worker::CallFunctionError;
 use monarch_messages::worker::CallFunctionParams;
 use monarch_messages::worker::Factory;
@@ -79,7 +80,6 @@ use monarch_messages::worker::Ref;
 use monarch_messages::worker::ResolvableFunction;
 use monarch_messages::worker::StreamCreationMode;
 use monarch_messages::worker::StreamRef;
-use monarch_messages::worker::ValueError;
 use monarch_messages::worker::WorkerMessage;
 use monarch_messages::worker::WorkerMessageHandler;
 use monarch_messages::worker::WorkerParams;
@@ -678,10 +678,9 @@ impl WorkerMessageHandler for WorkerActor {
                         (k, RValue::PyObject(object.into_py_object().unwrap()).into())
                     })
                     .collect();
-                let device_mesh = self
-                    .device_meshes
-                    .get(&device_mesh)
-                    .ok_or_else(|| CallFunctionError::RefNotFound(device_mesh))?;
+                let device_mesh = self.device_meshes.get(&device_mesh).ok_or_else(|| {
+                    CallFunctionError::Error(anyhow::anyhow!("ref not found: {}", device_mesh))
+                })?;
                 let pipe = PipeActor::spawn(
                     cx,
                     PipeParams {
@@ -859,6 +858,17 @@ impl WorkerMessageHandler for WorkerActor {
             .await
     }
 
+    async fn send_result_of_actor_call(
+        &mut self,
+        cx: &hyperactor::Context<Self>,
+        params: ActorCallParams,
+    ) -> Result<()> {
+        let stream = self.try_get_stream(params.stream)?;
+        stream
+            .send_result_of_actor_call(cx, cx.self_id().clone(), params)
+            .await?;
+        Ok(())
+    }
     async fn split_comm(
         &mut self,
         cx: &hyperactor::Context<Self>,
@@ -977,10 +987,15 @@ impl WorkerMessageHandler for WorkerActor {
 
         // Get a port for the pipe
         let pipe = match self.pipes.get(&pipe) {
-            None => Err(Arc::new(CallFunctionError::RefNotFound(pipe))),
+            None => Err(Arc::new(CallFunctionError::Error(anyhow::anyhow!(
+                "ref not found: {}",
+                pipe
+            )))),
             Some(pipe) => match pipe.as_ref() {
                 Ok(pipe) => Ok(pipe.port()),
-                Err(e) => Err(Arc::new(CallFunctionError::DependentError(e.clone()))),
+                Err(e) => Err(Arc::new(CallFunctionError::DependentError(
+                    e.unwrap_dependent_error().unwrap_or(e.clone()),
+                ))),
             },
         };
 
@@ -1008,7 +1023,7 @@ impl WorkerMessageHandler for WorkerActor {
         cx: &hyperactor::Context<Self>,
         ref_id: Ref,
         stream: StreamRef,
-    ) -> Result<Option<Result<WireValue, ValueError>>> {
+    ) -> Result<Option<Result<WireValue, String>>> {
         let stream = self.try_get_stream(stream)?;
         Ok(stream
             .get_ref_unit_tests_only(cx, ref_id.clone())
@@ -1425,8 +1440,7 @@ mod tests {
         let mutated_ref = result
             .context("no such ref")?
             .err()
-            .context("expected error")?
-            .into_call_function_error()?;
+            .context("expected error")?;
         assert!(mutated_ref.contains("InvalidRemoteFunction"));
 
         let responses = controller_rx.drain();
@@ -2530,7 +2544,7 @@ mod tests {
             ]))
             .unwrap();
 
-        let value: Result<_, ValueError> = handle
+        let value: Result<_, String> = handle
             .get_ref_unit_tests_only(&client, 3.into(), 0.into())
             .await
             .unwrap()

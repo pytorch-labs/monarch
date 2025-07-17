@@ -31,12 +31,27 @@ pub(crate) fn get_runtime() -> tokio::runtime::Handle {
 /// - Initialize logging defaults.
 /// - Store the provided tokio runtime handle for use by the hyperactor system.
 pub fn initialize(handle: tokio::runtime::Handle) {
+    initialize_with_log_prefix(handle, Option::None);
+}
+
+/// Initialize the Hyperactor runtime. Specifically:
+/// - Set up panic handling, so that we get consistent panic stack traces in Actors.
+/// - Initialize logging defaults.
+/// - Store the provided tokio runtime handle for use by the hyperactor system.
+/// - Set the env var whose value should be used to prefix log messages.
+pub fn initialize_with_log_prefix(
+    handle: tokio::runtime::Handle,
+    env_var_log_prefix: Option<String>,
+) {
     RUNTIME
         .set(handle)
         .expect("hyperactor::initialize must only be called once");
 
     panic_handler::set_panic_hook();
-    hyperactor_telemetry::initialize_logging(ClockKind::default());
+    hyperactor_telemetry::initialize_logging_with_log_prefix(
+        ClockKind::default(),
+        env_var_log_prefix,
+    );
 }
 
 /// Initialize the Hyperactor runtime using the current tokio runtime handle.

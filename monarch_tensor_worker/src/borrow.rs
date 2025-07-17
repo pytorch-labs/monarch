@@ -422,10 +422,9 @@ mod tests {
         let error = result
             .context("no such ref")?
             .err()
-            .context("expected error")?
-            .into_call_function_error()?;
+            .context("expected error")?;
         assert!(
-            error.starts_with("DependentError"),
+            error.contains("Computation depended on an input that failed"),
             "If a borrowed value contains an error, downstream calls should propagate that error (unexpected error string: {})",
             error,
         );

@@ -21,6 +21,7 @@ use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Named;
+use hyperactor::cap::CanSend;
 use hyperactor::forward;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
@@ -43,6 +44,8 @@ use tokio::sync::Mutex;
 use tokio::sync::oneshot;
 
 use crate::config::SHARED_ASYNCIO_RUNTIME;
+use crate::local_state_broker::BrokerId;
+use crate::local_state_broker::LocalStateBrokerMessage;
 use crate::mailbox::EitherPortRef;
 use crate::mailbox::PyMailbox;
 use crate::proc::InstanceWrapper;
@@ -171,41 +174,130 @@ impl PickledMessageClientActor {
     }
 }
 
+#[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.actor")]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum UnflattenArg {
+    Mailbox,
+    PyObject,
+}
+
+#[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.actor")]
+#[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq)]
+pub enum PythonMessageKind {
+    CallMethod {
+        name: String,
+        response_port: Option<EitherPortRef>,
+    },
+    Result {
+        rank: Option<usize>,
+    },
+    Exception {
+        rank: Option<usize>,
+    },
+    Uninit {},
+    CallMethodIndirect {
+        name: String,
+        local_state_broker: (String, usize),
+        id: usize,
+        // specify whether the argument to unflatten the local mailbox,
+        // or the next argument of the local state.
+        unflatten_args: Vec<UnflattenArg>,
+    },
+}
+
+impl Default for PythonMessageKind {
+    fn default() -> Self {
+        PythonMessageKind::Uninit {}
+    }
+}
+
+fn mailbox<'py, T: Actor>(py: Python<'py>, cx: &Context<'_, T>) -> Bound<'py, PyAny> {
+    let mailbox: PyMailbox = cx.mailbox_for_py().clone().into();
+    mailbox.into_bound_py_any(py).unwrap()
+}
+
 #[pyclass(frozen, module = "monarch._rust_bindings.monarch_hyperactor.actor")]
-#[derive(Default, Clone, Serialize, Deserialize, Named, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, Named, PartialEq, Default)]
 pub struct PythonMessage {
-    pub(crate) method: String,
-    pub(crate) message: ByteBuf,
-    response_port: Option<EitherPortRef>,
-    rank: Option<usize>,
+    pub kind: PythonMessageKind,
+    pub message: Vec<u8>,
 }
 
 impl PythonMessage {
-    pub fn with_rank(self, rank: usize) -> PythonMessage {
-        PythonMessage {
-            rank: Some(rank),
-            ..self
+    pub fn new_from_buf(kind: PythonMessageKind, message: Vec<u8>) -> Self {
+        Self { kind, message }
+    }
+
+    pub fn into_rank(self, rank: usize) -> Self {
+        let rank = Some(rank);
+        match self.kind {
+            PythonMessageKind::Result { .. } => PythonMessage {
+                kind: PythonMessageKind::Result { rank },
+                message: self.message,
+            },
+            PythonMessageKind::Exception { .. } => PythonMessage {
+                kind: PythonMessageKind::Exception { rank },
+                message: self.message,
+            },
+            _ => panic!("PythonMessage is not a response but {:?}", self),
         }
     }
-    pub fn new_from_buf(
-        method: String,
-        message: Vec<u8>,
-        response_port: Option<EitherPortRef>,
-        rank: Option<usize>,
-    ) -> Self {
-        Self {
-            method,
-            message: message.into(),
-            response_port,
-            rank,
-        }
+
+    pub async fn resolve_indirect_call<T: Actor>(
+        mut self,
+        cx: &Context<'_, T>,
+    ) -> anyhow::Result<(Self, PyObject)> {
+        let local_state: PyObject;
+        match self.kind {
+            PythonMessageKind::CallMethodIndirect {
+                name,
+                local_state_broker,
+                id,
+                unflatten_args,
+            } => {
+                let broker = BrokerId::new(local_state_broker).resolve(cx).unwrap();
+                let (send, recv) = cx.open_once_port();
+                broker.send(LocalStateBrokerMessage::Get(id, send))?;
+                let state = recv.recv().await?;
+                let mut state_it = state.state.into_iter();
+                local_state = Python::with_gil(|py| {
+                    let mailbox = mailbox(py, cx);
+                    PyList::new(
+                        py,
+                        unflatten_args.into_iter().map(|x| -> Bound<'_, PyAny> {
+                            match x {
+                                UnflattenArg::Mailbox => mailbox.clone(),
+                                UnflattenArg::PyObject => state_it.next().unwrap().into_bound(py),
+                            }
+                        }),
+                    )
+                    .unwrap()
+                    .into()
+                });
+                self.kind = PythonMessageKind::CallMethod {
+                    name,
+                    response_port: Some(state.response_port),
+                }
+            }
+            _ => {
+                local_state = Python::with_gil(|py| {
+                    let mailbox = mailbox(py, cx);
+                    py.import("itertools")
+                        .unwrap()
+                        .call_method1("repeat", (mailbox.clone(),))
+                        .unwrap()
+                        .unbind()
+                });
+            }
+        };
+        Ok((self, local_state))
     }
 }
 
 impl std::fmt::Debug for PythonMessage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PythonMessage")
-            .field("method", &self.method)
+            .field("kind", &self.kind)
             .field(
                 "message",
                 &hyperactor::data::HexFmt(self.message.as_slice()).to_string(),
@@ -216,47 +308,38 @@ impl std::fmt::Debug for PythonMessage {
 
 impl Unbind for PythonMessage {
     fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        self.response_port.unbind(bindings)
+        match &self.kind {
+            PythonMessageKind::CallMethod { response_port, .. } => response_port.unbind(bindings),
+            _ => Ok(()),
+        }
     }
 }
 
 impl Bind for PythonMessage {
     fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        self.response_port.bind(bindings)
+        match &mut self.kind {
+            PythonMessageKind::CallMethod { response_port, .. } => response_port.bind(bindings),
+            _ => Ok(()),
+        }
     }
 }
 
 #[pymethods]
 impl PythonMessage {
     #[new]
-    #[pyo3(signature = (method, message, response_port, rank))]
-    pub fn new(
-        method: String,
-        message: &[u8],
-        response_port: Option<EitherPortRef>,
-        rank: Option<usize>,
-    ) -> Self {
-        Self::new_from_buf(method, message.into(), response_port, rank)
+    #[pyo3(signature = (kind, message))]
+    pub fn new(kind: PythonMessageKind, message: &[u8]) -> Self {
+        PythonMessage::new_from_buf(kind, message.to_vec())
     }
 
     #[getter]
-    fn method(&self) -> &String {
-        &self.method
+    fn kind(&self) -> PythonMessageKind {
+        self.kind.clone()
     }
 
     #[getter]
     fn message<'a>(&self, py: Python<'a>) -> Bound<'a, PyBytes> {
         PyBytes::new(py, self.message.as_ref())
-    }
-
-    #[getter]
-    fn response_port(&self) -> Option<EitherPortRef> {
-        self.response_port.clone()
-    }
-
-    #[getter]
-    fn rank(&self) -> Option<usize> {
-        self.rank
     }
 }
 
@@ -288,7 +371,7 @@ impl PythonActorHandle {
         PythonMessage { cast = true },
     ],
 )]
-pub(super) struct PythonActor {
+pub struct PythonActor {
     /// The Python object that we delegate message handling to. An instance of
     /// `monarch.actor_mesh._Actor`.
     pub(super) actor: PyObject,
@@ -400,14 +483,14 @@ impl PanicFlag {
 #[async_trait]
 impl Handler<PythonMessage> for PythonActor {
     async fn handle(&mut self, cx: &Context<Self>, message: PythonMessage) -> anyhow::Result<()> {
-        let mailbox = PyMailbox {
-            inner: cx.mailbox_for_py().clone(),
-        };
+        let (message, local_state) = message.resolve_indirect_call(cx).await?;
+
         // Create a channel for signaling panics in async endpoints.
         // See [Panics in async endpoints].
         let (sender, receiver) = oneshot::channel();
 
         let future = Python::with_gil(|py| -> Result<_, SerializablePyErr> {
+            let mailbox = mailbox(py, cx);
             let (rank, shape) = cx.cast_info();
             let awaitable = self.actor.call_method(
                 py,
@@ -420,6 +503,7 @@ impl Handler<PythonMessage> for PythonActor {
                     PanicFlag {
                         sender: Some(sender),
                     },
+                    local_state,
                 ),
                 None,
             )?;
@@ -543,6 +627,8 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
     hyperactor_mod.add_class::<PickledMessageClientActor>()?;
     hyperactor_mod.add_class::<PythonActorHandle>()?;
     hyperactor_mod.add_class::<PythonMessage>()?;
+    hyperactor_mod.add_class::<PythonMessageKind>()?;
+    hyperactor_mod.add_class::<UnflattenArg>()?;
     hyperactor_mod.add_class::<PanicFlag>()?;
     Ok(())
 }
@@ -570,10 +656,11 @@ mod tests {
             Some(reducer_spec),
         );
         let message = PythonMessage {
-            method: "test".to_string(),
-            message: ByteBuf::from(vec![1, 2, 3]),
-            response_port: Some(EitherPortRef::Unbounded(port_ref.clone().into())),
-            rank: None,
+            kind: PythonMessageKind::CallMethod {
+                name: "test".to_string(),
+                response_port: Some(EitherPortRef::Unbounded(port_ref.clone().into())),
+            },
+            message: vec![1, 2, 3],
         };
         {
             let mut erased = ErasedUnbound::try_from_message(message.clone()).unwrap();
@@ -590,7 +677,10 @@ mod tests {
         }
 
         let no_port_message = PythonMessage {
-            response_port: None,
+            kind: PythonMessageKind::CallMethod {
+                name: "test".to_string(),
+                response_port: None,
+            },
             ..message
         };
         {

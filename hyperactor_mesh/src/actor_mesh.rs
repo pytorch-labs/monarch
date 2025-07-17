@@ -36,6 +36,7 @@ use ndslice::Range;
 use ndslice::Selection;
 use ndslice::Shape;
 use ndslice::ShapeError;
+use ndslice::SliceError;
 use ndslice::selection;
 use ndslice::selection::EvalOpts;
 use ndslice::selection::ReifyView;
@@ -82,7 +83,6 @@ where
         sender.clone(),
         actor_mesh_shape.clone(),
         message,
-        None, // TODO: reducer typehash
     )?;
 
     comm_actor_ref.send(
@@ -94,6 +94,47 @@ where
     )?;
 
     Ok(())
+}
+
+#[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `CastError`.
+pub(crate) fn cast_to_sliced_mesh<A, M>(
+    caps: &impl cap::CanSend,
+    actor_mesh_id: ActorMeshId,
+    sender: &ActorId,
+    comm_actor_ref: &ActorRef<CommActor>,
+    sel_of_sliced: &Selection,
+    message: M,
+    sliced_shape: &Shape,
+    base_shape: &Shape,
+) -> Result<(), CastError>
+where
+    A: RemoteActor + RemoteHandles<IndexedErasedUnbound<M>>,
+    M: Castable + RemoteMessage,
+{
+    let base_slice = base_shape.slice();
+
+    // Casting to `*`?
+    let sel_of_base = if selection::normalize(sel_of_sliced) == normal::NormalizedSelection::True {
+        // Reify this view into base.
+        base_slice.reify_view(sliced_shape.slice())?
+    } else {
+        // No, fall back on `of_ranks`.
+        let ranks = sel_of_sliced
+            .eval(&EvalOpts::strict(), sliced_shape.slice())?
+            .collect::<BTreeSet<_>>();
+        Selection::of_ranks(base_slice, &ranks)?
+    };
+
+    // Cast.
+    actor_mesh_cast::<A, M>(
+        caps,
+        actor_mesh_id,
+        base_shape,
+        sender,
+        comm_actor_ref,
+        sel_of_base,
+        message,
+    )
 }
 
 /// A mesh of actors, all of which reside on the same [`ProcMesh`].
@@ -145,7 +186,6 @@ pub trait ActorMesh: Mesh<Id = ActorMeshId> {
                 self.name().to_string(),
             ),
             self.shape().clone(),
-            self.proc_mesh().shape().clone(),
             self.proc_mesh().comm_actor().clone(),
         )
     }
@@ -179,7 +219,9 @@ pub struct RootActorMesh<'a, A: RemoteActor> {
     proc_mesh: ProcMeshRef<'a>,
     name: String,
     pub(crate) ranks: Vec<ActorRef<A>>, // temporary until we remove `ArcActorMesh`.
-    actor_supervision_rx: mpsc::UnboundedReceiver<ActorSupervisionEvent>,
+    // The receiver of supervision events. It is None if it has been transferred to
+    // an actor event observer.
+    actor_supervision_rx: Option<mpsc::UnboundedReceiver<ActorSupervisionEvent>>,
 }
 
 impl<'a, A: RemoteActor> RootActorMesh<'a, A> {
@@ -193,7 +235,7 @@ impl<'a, A: RemoteActor> RootActorMesh<'a, A> {
             proc_mesh: ProcMeshRef::Borrowed(proc_mesh),
             name,
             ranks,
-            actor_supervision_rx,
+            actor_supervision_rx: Some(actor_supervision_rx),
         }
     }
 
@@ -207,7 +249,7 @@ impl<'a, A: RemoteActor> RootActorMesh<'a, A> {
             proc_mesh: ProcMeshRef::Shared(Box::new(proc_mesh)),
             name,
             ranks,
-            actor_supervision_rx,
+            actor_supervision_rx: Some(actor_supervision_rx),
         }
     }
 
@@ -216,21 +258,35 @@ impl<'a, A: RemoteActor> RootActorMesh<'a, A> {
         self.proc_mesh.client().open_port()
     }
 
-    /// An event stream of proc events. Each ProcMesh can produce only one such
+    /// An event stream of actor events. Each RootActorMesh can produce only one such
     /// stream, returning None after the first call.
+    pub fn events(&mut self) -> Option<ActorSupervisionEvents> {
+        self.actor_supervision_rx
+            .take()
+            .map(|actor_supervision_rx| ActorSupervisionEvents {
+                actor_supervision_rx,
+                mesh_id: self.id(),
+            })
+    }
+}
+
+/// Supervision event stream for actor mesh. It emits actor supervision events.
+pub struct ActorSupervisionEvents {
+    // The receiver of supervision events from proc mesh.
+    actor_supervision_rx: mpsc::UnboundedReceiver<ActorSupervisionEvent>,
+    // The name of the actor mesh.
+    mesh_id: ActorMeshId,
+}
+
+impl ActorSupervisionEvents {
     pub async fn next(&mut self) -> Option<ActorSupervisionEvent> {
         let result = self.actor_supervision_rx.recv().await;
-        match result.as_ref() {
-            Some(event) => {
-                tracing::debug!("Received supervision event: {event:?}");
-            }
-            None => {
-                tracing::info!(
-                    "Supervision stream for actor mesh {} was closed!",
-                    self.name
-                );
-            }
-        };
+        if result.is_none() {
+            tracing::info!(
+                "supervision stream for actor mesh {:?} was closed!",
+                self.mesh_id
+            );
+        }
         result
     }
 }
@@ -336,31 +392,15 @@ impl<A: RemoteActor> ActorMesh for SlicedActorMesh<'_, A> {
         Self::Actor: RemoteHandles<IndexedErasedUnbound<M>>,
         M: Castable + RemoteMessage,
     {
-        let base_shape = self.0.shape();
-        let base_slice = base_shape.slice();
-
-        // Casting to `*`?
-        let selection = if selection::normalize(&sel) == normal::NormalizedSelection::True {
-            // Reify this view into base.
-            base_slice.reify_view(self.shape().slice()).unwrap()
-        } else {
-            // No, fall back on `of_ranks`.
-            let ranks = sel
-                .eval(&EvalOpts::strict(), self.shape().slice())
-                .unwrap()
-                .collect::<BTreeSet<_>>();
-            Selection::of_ranks(base_slice, &ranks).unwrap()
-        };
-
-        // Cast.
-        actor_mesh_cast::<A, M>(
-            self.proc_mesh().client(),            // send capability
-            self.id(),                            // actor mesh id (destination mesh)
-            base_shape,                           // actor mesh shape
-            self.proc_mesh().client().actor_id(), // sender
-            self.proc_mesh().comm_actor(),        // comm actor
-            selection,                            // the selected actors
-            message,                              // the message
+        cast_to_sliced_mesh::<A, M>(
+            /*caps=*/ self.proc_mesh().client(),
+            /*actor_mesh_id=*/ self.id(),
+            /*sender=*/ self.proc_mesh().client().actor_id(),
+            /*comm_actor_ref*/ self.proc_mesh().comm_actor(),
+            /*sel_of_sliced=*/ &sel,
+            /*message=*/ message,
+            /*sliced_shape=*/ self.shape(),
+            /*base_shape=*/ self.0.shape(),
         )
     }
 }
@@ -379,6 +419,9 @@ pub enum CastError {
 
     #[error(transparent)]
     ShapeError(#[from] ShapeError),
+
+    #[error(transparent)]
+    SliceError(#[from] SliceError),
 
     #[error(transparent)]
     SerializationError(#[from] bincode::Error),

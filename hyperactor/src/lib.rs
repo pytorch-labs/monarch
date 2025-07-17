@@ -137,6 +137,8 @@ pub use hyperactor_telemetry::kv_pairs;
 pub use init::initialize;
 #[doc(inline)]
 pub use init::initialize_with_current_runtime;
+#[doc(inline)]
+pub use init::initialize_with_log_prefix;
 // Re-exported to make this available to callers of the `register!` macro.
 #[doc(hidden)]
 pub use inventory::submit;

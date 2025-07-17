@@ -81,9 +81,15 @@ class ProcMesh:
         """
         ...
 
-    async def stop(self) -> None:
+    async def stop_nonblocking(self) -> None:
         """
         Stop the proc mesh.
+        """
+        ...
+
+    def stop_blocking(self) -> None:
+        """
+        Stop the proc mesh. Blocks until the mesh is fully stopped.
         """
         ...
 

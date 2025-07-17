@@ -144,7 +144,7 @@ class Remote(Generic[P, R], Endpoint[P, R]):
                 "Cannot create raw port objects with an old-style tensor engine controller."
             )
         mailbox: Mailbox = mesh_controller._mailbox
-        return PortTuple.create(mailbox, once)
+        return PortTuple.create(mailbox, None, once)
 
     @property
     def _resolvable(self):

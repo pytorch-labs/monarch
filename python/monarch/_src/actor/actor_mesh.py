@@ -9,7 +9,9 @@
 import collections
 import contextvars
 import functools
+import importlib
 import inspect
+import itertools
 import logging
 import random
 import traceback
@@ -43,8 +45,17 @@ from typing import (
     TypeVar,
 )
 
-from monarch._rust_bindings.monarch_hyperactor.actor import PanicFlag, PythonMessage
-from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
+from monarch._rust_bindings.monarch_hyperactor.actor import (
+    PanicFlag,
+    PythonMessage,
+    PythonMessageKind,
+)
+from monarch._rust_bindings.monarch_hyperactor.actor_mesh import (
+    ActorMeshMonitor,
+    MonitoredOncePortReceiver,
+    MonitoredPortReceiver,
+    PythonActorMesh,
+)
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     Mailbox,
     OncePortReceiver,
@@ -54,15 +65,19 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
 )
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.shape import Point as HyPoint, Shape
+from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
 
 from monarch._rust_bindings.monarch_hyperactor.telemetry import enter_span, exit_span
 from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator
 from monarch._src.actor.future import Future
 from monarch._src.actor.pdb_wrapper import PdbWrapper
 
-from monarch._src.actor.pickle import flatten, unpickle
+from monarch._src.actor.pickle import flatten, unflatten
 
 from monarch._src.actor.shape import MeshTrait, NDSlice
+
+if TYPE_CHECKING:
+    from monarch._src.actor.proc_mesh import ProcMesh
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -137,36 +152,41 @@ class _ActorMeshRefImpl:
         self,
         mailbox: Mailbox,
         hy_actor_mesh: Optional[PythonActorMesh],
+        proc_mesh: "Optional[ProcMesh]",
         shape: Shape,
         actor_ids: List[ActorId],
     ) -> None:
         self._mailbox = mailbox
         self._actor_mesh = hy_actor_mesh
+        # actor meshes do not have a way to look this up at the moment,
+        # so we fake it here
+        self._proc_mesh = proc_mesh
         self._shape = shape
         self._please_replace_me_actor_ids = actor_ids
 
     @staticmethod
     def from_hyperactor_mesh(
-        mailbox: Mailbox, hy_actor_mesh: PythonActorMesh
+        mailbox: Mailbox, hy_actor_mesh: PythonActorMesh, proc_mesh: "ProcMesh"
     ) -> "_ActorMeshRefImpl":
         shape: Shape = hy_actor_mesh.shape
         return _ActorMeshRefImpl(
             mailbox,
             hy_actor_mesh,
+            proc_mesh,
             hy_actor_mesh.shape,
             [cast(ActorId, hy_actor_mesh.get(i)) for i in range(len(shape))],
         )
 
     @staticmethod
     def from_actor_id(mailbox: Mailbox, actor_id: ActorId) -> "_ActorMeshRefImpl":
-        return _ActorMeshRefImpl(mailbox, None, singleton_shape, [actor_id])
+        return _ActorMeshRefImpl(mailbox, None, None, singleton_shape, [actor_id])
 
     @staticmethod
     def from_actor_ref_with_shape(
         ref: "_ActorMeshRefImpl", shape: Shape
     ) -> "_ActorMeshRefImpl":
         return _ActorMeshRefImpl(
-            ref._mailbox, None, shape, ref._please_replace_me_actor_ids
+            ref._mailbox, None, None, shape, ref._please_replace_me_actor_ids
         )
 
     def __getstate__(
@@ -181,7 +201,18 @@ class _ActorMeshRefImpl:
         self._actor_mesh = None
         self._shape, self._please_replace_me_actor_ids, self._mailbox = state
 
+    def _check_state(self) -> None:
+        # This is temporary until we have real cast integration here. We need to actively check
+        # supervision error here is because all communication is done through direct mailbox sending
+        # and not through comm actor casting.
+        # TODO: remove this when casting integration is done.
+        if self._actor_mesh is not None:
+            event = self._actor_mesh.get_supervision_event()
+            if event is not None:
+                raise SupervisionError(f"actor mesh is not in a healthy state: {event}")
+
     def send(self, rank: int, message: PythonMessage) -> None:
+        self._check_state()
         actor = self._please_replace_me_actor_ids[rank]
         self._mailbox.post(actor, message)
 
@@ -190,6 +221,8 @@ class _ActorMeshRefImpl:
         message: PythonMessage,
         selection: Selection,
     ) -> None:
+        self._check_state()
+
         # TODO: use the actual actor mesh when available. We cannot currently use it
         # directly because we risk bifurcating the message delivery paths from the same
         # client, since slicing the mesh will produce a reference, which calls actors
@@ -230,6 +263,11 @@ class _ActorMeshRefImpl:
 
     def __len__(self) -> int:
         return len(self._shape)
+
+    @property
+    def _name_pid(self):
+        actor_id0 = self._please_replace_me_actor_ids[0]
+        return actor_id0.actor_name, actor_id0.pid
 
 
 class Extent(NamedTuple):
@@ -295,8 +333,6 @@ class Endpoint(ABC, Generic[P, R]):
         return r.recv()
 
     def call(self, *args: P.args, **kwargs: P.kwargs) -> "Future[ValueMesh[R]]":
-        p: Port[R]
-        r: RankedPortReceiver[R]
         p, r = ranked_port(self)
         # pyre-ignore
         extent = self._send(args, kwargs, port=p)
@@ -376,18 +412,30 @@ class ActorEndpoint(Endpoint[P, R]):
         This sends the message to all actors but does not wait for any result.
         """
         self._signature.bind(None, *args, **kwargs)
-        message = PythonMessage(
-            self._name,
-            _pickle((args, kwargs)),
-            None if port is None else port._port_ref,
-            None,
-        )
-        self._actor_mesh.cast(message, selection)
+        objects, bytes = flatten((args, kwargs), _is_ref_or_mailbox)
+        refs = [obj for obj in objects if hasattr(obj, "__monarch_ref__")]
+        if not refs:
+            message = PythonMessage(
+                PythonMessageKind.CallMethod(
+                    self._name, None if port is None else port._port_ref
+                ),
+                bytes,
+            )
+            self._actor_mesh.cast(message, selection)
+        else:
+            importlib.import_module("monarch." + "mesh_controller").actor_send(
+                self, bytes, refs, port, selection
+            )
         shape = self._actor_mesh._shape
         return Extent(shape.labels, shape.ndslice.sizes)
 
     def _port(self, once: bool = False) -> "PortTuple[R]":
-        return PortTuple.create(self._mailbox, once)
+        monitor = (
+            None
+            if self._actor_mesh._actor_mesh is None
+            else self._actor_mesh._actor_mesh.monitor()
+        )
+        return PortTuple.create(self._mailbox, monitor, once)
 
 
 class Accumulator(Generic[P, R, A]):
@@ -501,16 +549,31 @@ def endpoint(method):
 
 class Port(Generic[R]):
     def __init__(
-        self, port_ref: PortRef | OncePortRef, mailbox: Mailbox, rank: Optional[int]
+        self,
+        port_ref: PortRef | OncePortRef | None,
+        mailbox: Mailbox,
+        rank: Optional[int],
     ) -> None:
         self._port_ref = port_ref
         self._mailbox = mailbox
         self._rank = rank
 
-    def send(self, method: str, obj: R) -> None:
+    def send(self, obj: R) -> None:
+        if self._port_ref is None:
+            return
         self._port_ref.send(
             self._mailbox,
-            PythonMessage(method, _pickle(obj), None, self._rank),
+            PythonMessage(PythonMessageKind.Result(self._rank), _pickle(obj)),
+        )
+
+    def exception(self, obj: Exception) -> None:
+        # we deliver each error exactly once, so if there is no port to respond to,
+        # the error is sent to the current actor as an exception.
+        if self._port_ref is None:
+            raise obj from None
+        self._port_ref.send(
+            self._mailbox,
+            PythonMessage(PythonMessageKind.Exception(self._rank), _pickle(obj)),
         )
 
 
@@ -526,11 +589,21 @@ if TYPE_CHECKING:
         receiver: "PortReceiver[R]"
 
         @staticmethod
-        def create(mailbox: Mailbox, once: bool = False) -> "PortTuple[Any]":
+        def create(
+            mailbox: Mailbox, monitor: Optional[ActorMeshMonitor], once: bool = False
+        ) -> "PortTuple[Any]":
             handle, receiver = mailbox.open_once_port() if once else mailbox.open_port()
             port_ref = handle.bind()
+            if monitor is not None:
+                receiver = (
+                    MonitoredOncePortReceiver(receiver, monitor)
+                    if isinstance(receiver, OncePortReceiver)
+                    else MonitoredPortReceiver(receiver, monitor)
+                )
+
             return PortTuple(
-                Port(port_ref, mailbox, rank=None), PortReceiver(mailbox, receiver)
+                Port(port_ref, mailbox, rank=None),
+                PortReceiver(mailbox, receiver),
             )
 else:
 
@@ -539,11 +612,21 @@ else:
         receiver: "PortReceiver[Any]"
 
         @staticmethod
-        def create(mailbox: Mailbox, once: bool = False) -> "PortTuple[Any]":
+        def create(
+            mailbox: Mailbox, monitor: Optional[ActorMeshMonitor], once: bool = False
+        ) -> "PortTuple[Any]":
             handle, receiver = mailbox.open_once_port() if once else mailbox.open_port()
             port_ref = handle.bind()
+            if monitor is not None:
+                receiver = (
+                    MonitoredOncePortReceiver(receiver, monitor)
+                    if isinstance(receiver, OncePortReceiver)
+                    else MonitoredPortReceiver(receiver, monitor)
+                )
+
             return PortTuple(
-                Port(port_ref, mailbox, rank=None), PortReceiver(mailbox, receiver)
+                Port(port_ref, mailbox, rank=None),
+                PortReceiver(mailbox, receiver),
             )
 
 
@@ -565,10 +648,18 @@ class PortReceiver(Generic[R]):
     def __init__(
         self,
         mailbox: Mailbox,
-        receiver: HyPortReceiver | OncePortReceiver,
+        receiver: MonitoredPortReceiver
+        | MonitoredOncePortReceiver
+        | HyPortReceiver
+        | OncePortReceiver,
     ) -> None:
         self._mailbox: Mailbox = mailbox
-        self._receiver: HyPortReceiver | OncePortReceiver = receiver
+        self._receiver: (
+            MonitoredPortReceiver
+            | MonitoredOncePortReceiver
+            | HyPortReceiver
+            | OncePortReceiver
+        ) = receiver
 
     async def _recv(self) -> R:
         return self._process(await self._receiver.recv())
@@ -578,13 +669,14 @@ class PortReceiver(Generic[R]):
 
     def _process(self, msg: PythonMessage) -> R:
         # TODO: Try to do something more structured than a cast here
-        payload = cast(R, unpickle(msg.message, self._mailbox))
-        if msg.method == "result":
-            return payload
-        else:
-            assert msg.method == "exception"
-            # pyre-ignore
-            raise payload
+        payload = cast(R, unflatten(msg.message, itertools.repeat(self._mailbox)))
+        match msg.kind:
+            case PythonMessageKind.Result():
+                return payload
+            case PythonMessageKind.Exception():
+                raise cast(Exception, payload)
+            case _:
+                raise ValueError(f"Unexpected message kind: {msg.kind}")
 
     def recv(self) -> "Future[R]":
         return Future(lambda: self._recv(), self._blocking_recv)
@@ -592,9 +684,12 @@ class PortReceiver(Generic[R]):
 
 class RankedPortReceiver(PortReceiver[Tuple[int, R]]):
     def _process(self, msg: PythonMessage) -> Tuple[int, R]:
-        if msg.rank is None:
-            raise ValueError("RankedPort receiver got a message without a rank")
-        return msg.rank, super()._process(msg)
+        rank = getattr(msg.kind, "rank", None)
+        if rank is None:
+            raise ValueError(
+                f"RankedPort receiver got a message without a rank {msg}",
+            )
+        return rank, super()._process(msg)
 
 
 singleton_shape = Shape([], NDSlice(offset=0, sizes=[], strides=[]))
@@ -625,12 +720,16 @@ class _Actor:
         shape: Shape,
         message: PythonMessage,
         panic_flag: PanicFlag,
+        local_state: Iterable[Any],
     ) -> None:
-        port = (
-            Port(message.response_port, mailbox, rank)
-            if message.response_port
-            else None
-        )
+        match message.kind:
+            case PythonMessageKind.CallMethod(response_port=response_port):
+                pass
+            case _:
+                response_port = None
+        # response_port can be None. If so, then sending to port will drop the response,
+        # and raise any exceptions to the caller.
+        port = Port(response_port, mailbox, rank)
         try:
             ctx: MonarchContext = MonarchContext(
                 mailbox, mailbox.actor_id.proc_id, Point(rank, shape)
@@ -639,12 +738,18 @@ class _Actor:
 
             DebugContext.set(DebugContext())
 
-            args, kwargs = unpickle(message.message, mailbox)
+            args, kwargs = unflatten(message.message, local_state)
 
-            if message.method == "__init__":
-                Class, *args = args
-                self.instance = Class(*args, **kwargs)
-                return None
+            match message.kind:
+                case PythonMessageKind.CallMethod(name=name):
+                    method = name
+                    if method == "__init__":
+                        Class, *args = args
+                        self.instance = Class(*args, **kwargs)
+                        port.send(None)
+                        return None
+                case _:
+                    raise ValueError(f"Unexpected message kind: {message.kind}")
 
             if self.instance is None:
                 # This could happen because of the following reasons. Both
@@ -659,18 +764,18 @@ class _Actor:
                 #    mixed the usage of cast and direct send.
                 raise AssertionError(
                     f"""
-                    actor object is missing when executing method {message.method}
+                    actor object is missing when executing method {method}
                     on actor {mailbox.actor_id}
                     """
                 )
-            the_method = getattr(self.instance, message.method)._method
+            the_method = getattr(self.instance, method)._method
 
             if inspect.iscoroutinefunction(the_method):
 
                 async def instrumented():
                     enter_span(
                         the_method.__module__,
-                        message.method,
+                        method,
                         str(ctx.mailbox.actor_id),
                     )
                     try:
@@ -687,26 +792,16 @@ class _Actor:
 
                 result = await instrumented()
             else:
-                enter_span(
-                    the_method.__module__, message.method, str(ctx.mailbox.actor_id)
-                )
+                enter_span(the_method.__module__, method, str(ctx.mailbox.actor_id))
                 result = the_method(self.instance, *args, **kwargs)
                 self._maybe_exit_debugger()
                 exit_span()
 
-            if port is not None:
-                port.send("result", result)
+            port.send(result)
         except Exception as e:
             self._post_mortem_debug(e.__traceback__)
             traceback.print_exc()
-            s = ActorError(e)
-
-            # The exception is delivered to exactly one of:
-            # (1) our caller, (2) our supervisor
-            if port is not None:
-                port.send("exception", s)
-            else:
-                raise s from None
+            port.exception(ActorError(e))
         except BaseException as e:
             self._post_mortem_debug(e.__traceback__)
             # A BaseException can be thrown in the case of a Rust panic.
@@ -744,7 +839,15 @@ class _Actor:
 
 
 def _is_mailbox(x: object) -> bool:
+    if hasattr(x, "__monarch_ref__"):
+        raise NotImplementedError(
+            "Sending monarch tensor references directly to a port."
+        )
     return isinstance(x, Mailbox)
+
+
+def _is_ref_or_mailbox(x: object) -> bool:
+    return hasattr(x, "__monarch_ref__") or isinstance(x, Mailbox)
 
 
 def _pickle(obj: object) -> bytes:
@@ -879,7 +982,7 @@ class ActorError(Exception):
     def __init__(
         self,
         exception: Exception,
-        message: str = "A remote actor call has failed asynchronously.",
+        message: str = "A remote actor call has failed.",
     ) -> None:
         self.exception = exception
         self.actor_mesh_ref_frames: StackSummary = extract_tb(exception.__traceback__)

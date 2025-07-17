@@ -432,6 +432,17 @@ fn create_map(py: Python) -> HashMap<u64, FnType> {
             p.parseWorkerMessageList("commands")?,
         ))
     });
+    m.insert(key("SendResultOfActorCall"), |p| {
+        Ok(WorkerMessage::SendResultOfActorCall(
+            worker::ActorCallParams {
+                seq: p.parseSeq("seq")?,
+                broker_id: p.parse("broker_id")?,
+                local_state: p.parseRefList("local_state")?,
+                mutates: p.parseRefList("mutates")?,
+                stream: p.parseStreamRef("stream")?,
+            },
+        ))
+    });
     m
 }
 

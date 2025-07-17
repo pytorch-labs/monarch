@@ -19,14 +19,17 @@ use hyperactor::actor::RemoteActor;
 use hyperactor::cap;
 use hyperactor::message::Castable;
 use hyperactor::message::IndexedErasedUnbound;
+use ndslice::Range;
 use ndslice::Selection;
 use ndslice::Shape;
+use ndslice::ShapeError;
 use serde::Deserialize;
 use serde::Serialize;
 
 use crate::CommActor;
 use crate::actor_mesh::CastError;
 use crate::actor_mesh::actor_mesh_cast;
+use crate::actor_mesh::cast_to_sliced_mesh;
 
 #[macro_export]
 macro_rules! mesh_id {
@@ -71,12 +74,15 @@ pub struct ProcMeshId(pub String);
 pub struct ActorMeshId(pub ProcMeshId, pub String);
 
 /// Types references to Actor Meshes.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct ActorMeshRef<A: RemoteActor> {
     pub(crate) mesh_id: ActorMeshId,
-    shape: Shape,
-    /// The shape of the underlying Proc Mesh.
-    proc_mesh_shape: Shape,
+    /// The shape of the root mesh.
+    root: Shape,
+    /// If some, it mean this mesh ref points to a sliced mesh, and this field
+    /// is this sliced mesh's shape. If None, it means this mesh ref points to
+    /// the root mesh.
+    sliced: Option<Shape>,
     /// The reference to the comm actor of the underlying Proc Mesh.
     comm_actor_ref: ActorRef<CommActor>,
     phantom: PhantomData<A>,
@@ -89,14 +95,13 @@ impl<A: RemoteActor> ActorMeshRef<A> {
     /// line argument) is a valid reference.
     pub(crate) fn attest(
         mesh_id: ActorMeshId,
-        shape: Shape,
-        proc_mesh_shape: Shape,
+        root: Shape,
         comm_actor_ref: ActorRef<CommActor>,
     ) -> Self {
         Self {
             mesh_id,
-            shape,
-            proc_mesh_shape,
+            root,
+            sliced: None,
             comm_actor_ref,
             phantom: PhantomData,
         }
@@ -109,7 +114,10 @@ impl<A: RemoteActor> ActorMeshRef<A> {
 
     /// Shape of the Actor Mesh.
     pub fn shape(&self) -> &Shape {
-        &self.shape
+        match &self.sliced {
+            Some(s) => s,
+            None => &self.root,
+        }
     }
 
     /// Cast an [`M`]-typed message to the ranks selected by `sel`
@@ -125,15 +133,38 @@ impl<A: RemoteActor> ActorMeshRef<A> {
         A: RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,
         M: Castable + RemoteMessage,
     {
-        actor_mesh_cast::<A, M>(
-            caps,
-            self.mesh_id.clone(),
-            self.shape(),
-            caps.mailbox().actor_id(),
-            &self.comm_actor_ref,
-            selection,
-            message,
-        )
+        match &self.sliced {
+            Some(sliced_shape) => cast_to_sliced_mesh::<A, M>(
+                caps,
+                self.mesh_id.clone(),
+                caps.mailbox().actor_id(),
+                &self.comm_actor_ref,
+                &selection,
+                message,
+                sliced_shape,
+                &self.root,
+            ),
+            None => actor_mesh_cast::<A, M>(
+                caps,
+                self.mesh_id.clone(),
+                &self.root,
+                caps.mailbox().actor_id(),
+                &self.comm_actor_ref,
+                selection,
+                message,
+            ),
+        }
+    }
+
+    pub fn select<R: Into<Range>>(&self, label: &str, range: R) -> Result<Self, ShapeError> {
+        let sliced = self.shape().select(label, range)?;
+        Ok(Self {
+            mesh_id: self.mesh_id.clone(),
+            root: self.root.clone(),
+            sliced: Some(sliced),
+            comm_actor_ref: self.comm_actor_ref.clone(),
+            phantom: PhantomData,
+        })
     }
 }
 
@@ -141,32 +172,23 @@ impl<A: RemoteActor> Clone for ActorMeshRef<A> {
     fn clone(&self) -> Self {
         Self {
             mesh_id: self.mesh_id.clone(),
-            shape: self.shape.clone(),
-            proc_mesh_shape: self.proc_mesh_shape.clone(),
+            root: self.root.clone(),
+            sliced: self.sliced.clone(),
             comm_actor_ref: self.comm_actor_ref.clone(),
             phantom: PhantomData,
         }
     }
 }
 
-impl<A: RemoteActor> PartialEq for ActorMeshRef<A> {
-    fn eq(&self, other: &Self) -> bool {
-        self.mesh_id == other.mesh_id && self.shape == other.shape
-    }
-}
-
-impl<A: RemoteActor> Eq for ActorMeshRef<A> {}
-
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
     use hyperactor::Actor;
+    use hyperactor::Bind;
     use hyperactor::Context;
     use hyperactor::Handler;
     use hyperactor::PortRef;
-    use hyperactor::message::Bind;
-    use hyperactor::message::Bindings;
-    use hyperactor::message::Unbind;
+    use hyperactor::Unbind;
     use hyperactor_mesh_macros::sel;
     use ndslice::shape;
 
@@ -183,11 +205,11 @@ mod tests {
         shape! { replica = 4 }
     }
 
-    #[derive(Debug, Serialize, Deserialize, Named, Clone)]
+    #[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
     struct MeshPingPongMessage(
         /*ttl:*/ u64,
         ActorMeshRef<MeshPingPongActor>,
-        /*completed port:*/ PortRef<bool>,
+        /*completed port:*/ #[binding(include)] PortRef<bool>,
     );
 
     #[derive(Debug, Clone)]
@@ -203,7 +225,6 @@ mod tests {
     struct MeshPingPongActorParams {
         mesh_id: ActorMeshId,
         shape: Shape,
-        proc_mesh_shape: Shape,
         comm_actor_ref: ActorRef<CommActor>,
     }
 
@@ -213,12 +234,7 @@ mod tests {
 
         async fn new(params: Self::Params) -> Result<Self, anyhow::Error> {
             Ok(Self {
-                mesh_ref: ActorMeshRef::attest(
-                    params.mesh_id,
-                    params.shape,
-                    params.proc_mesh_shape,
-                    params.comm_actor_ref,
-                ),
+                mesh_ref: ActorMeshRef::attest(params.mesh_id, params.shape, params.comm_actor_ref),
             })
         }
     }
@@ -237,18 +253,6 @@ mod tests {
             let msg = MeshPingPongMessage(ttl - 1, self.mesh_ref.clone(), done_tx);
             sender_mesh.cast(cx, sel!(?), msg)?;
             Ok(())
-        }
-    }
-
-    impl Unbind for MeshPingPongMessage {
-        fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
-            self.2.unbind(bindings)
-        }
-    }
-
-    impl Bind for MeshPingPongMessage {
-        fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
-            self.2.bind(bindings)
         }
     }
 
@@ -278,7 +282,6 @@ mod tests {
                         "ping".to_string(),
                     ),
                     shape: ping_proc_mesh.shape().clone(),
-                    proc_mesh_shape: ping_proc_mesh.shape().clone(),
                     comm_actor_ref: ping_proc_mesh.comm_actor().clone(),
                 },
             )
@@ -296,7 +299,6 @@ mod tests {
                         "pong".to_string(),
                     ),
                     shape: pong_proc_mesh.shape().clone(),
-                    proc_mesh_shape: pong_proc_mesh.shape().clone(),
                     comm_actor_ref: pong_proc_mesh.comm_actor().clone(),
                 },
             )

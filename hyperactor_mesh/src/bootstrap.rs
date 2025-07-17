@@ -26,8 +26,8 @@ use signal_hook::consts::signal::SIGTERM;
 
 use crate::proc_mesh::mesh_agent::MeshAgent;
 
-pub(crate) const BOOTSTRAP_ADDR_ENV: &str = "HYPERACTOR_MESH_BOOTSTRAP_ADDR";
-pub(crate) const BOOTSTRAP_INDEX_ENV: &str = "HYPERACTOR_MESH_INDEX";
+pub const BOOTSTRAP_ADDR_ENV: &str = "HYPERACTOR_MESH_BOOTSTRAP_ADDR";
+pub const BOOTSTRAP_INDEX_ENV: &str = "HYPERACTOR_MESH_INDEX";
 /// A channel used by each process to receive its own stdout and stderr
 /// Because stdout and stderr can only be obtained by the parent process,
 /// they need to be streamed back to the process.

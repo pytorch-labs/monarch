@@ -256,8 +256,6 @@ impl CommActor {
                 message.shape().clone(),
                 message.sender().clone(),
             );
-            // TODO(pzhang) split reply ports so children can reply to this comm
-            // actor instead of parent.
             cx.post(
                 cx.self_id()
                     .proc_id()

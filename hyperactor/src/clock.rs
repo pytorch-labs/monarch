@@ -12,6 +12,7 @@ use std::error::Error;
 use std::fmt;
 use std::sync::LazyLock;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::time::SystemTime;
 
 use futures::pin_mut;
@@ -21,7 +22,14 @@ use serde::Serialize;
 
 use crate::Mailbox;
 use crate::channel::ChannelAddr;
+use crate::data::Named;
 use crate::id;
+use crate::mailbox::DeliveryError;
+use crate::mailbox::MailboxSender;
+use crate::mailbox::MessageEnvelope;
+use crate::mailbox::Undeliverable;
+use crate::mailbox::UndeliverableMailboxSender;
+use crate::mailbox::monitored_return_handle;
 use crate::simnet::SleepEvent;
 use crate::simnet::simnet_handle;
 
@@ -184,7 +192,7 @@ pub struct SimClock;
 impl Clock for SimClock {
     /// Tell the simnet to wake up this green thread after the specified duration has pass on the simnet
     async fn sleep(&self, duration: tokio::time::Duration) {
-        let mailbox = Mailbox::new_detached(id!(proc[0].proc).clone());
+        let mailbox = SimClock::mailbox().clone();
         let (tx, rx) = mailbox.open_once_port::<()>();
 
         simnet_handle()
@@ -199,7 +207,7 @@ impl Clock for SimClock {
     }
 
     async fn non_advancing_sleep(&self, duration: tokio::time::Duration) {
-        let mailbox = Mailbox::new_detached(id!(proc[0].proc).clone());
+        let mailbox = SimClock::mailbox().clone();
         let (tx, rx) = mailbox.open_once_port::<()>();
 
         simnet_handle()
@@ -234,7 +242,7 @@ impl Clock for SimClock {
     where
         F: std::future::Future<Output = T>,
     {
-        let mailbox = Mailbox::new_detached(id!(proc[0].proc).clone());
+        let mailbox = SimClock::mailbox().clone();
         let (tx, deadline_rx) = mailbox.open_once_port::<()>();
 
         simnet_handle()
@@ -259,6 +267,28 @@ impl Clock for SimClock {
 }
 
 impl SimClock {
+    // TODO (SF, 2025-07-11): Remove this global, thread through a mailbox
+    // from upstack and handle undeliverable messages properly.
+    fn mailbox() -> &'static Mailbox {
+        static SIMCLOCK_MAILBOX: OnceLock<Mailbox> = OnceLock::new();
+        SIMCLOCK_MAILBOX.get_or_init(|| {
+            let mailbox = Mailbox::new_detached(id!(proc[0].proc).clone());
+            let (undeliverable_messages, mut rx) =
+                mailbox.open_port::<Undeliverable<MessageEnvelope>>();
+            undeliverable_messages.bind_to(Undeliverable::<MessageEnvelope>::port());
+            tokio::spawn(async move {
+                while let Ok(Undeliverable(mut envelope)) = rx.recv().await {
+                    envelope.try_set_error(DeliveryError::BrokenLink(
+                        "message returned to undeliverable port".to_string(),
+                    ));
+                    UndeliverableMailboxSender
+                        .post(envelope, /*unused */ monitored_return_handle())
+                }
+            });
+            mailbox
+        })
+    }
+
     /// Advance the sumulator's time to the specified instant
     pub fn advance_to(&self, millis: u64) {
         let mut guard = SIM_TIME.now.lock().unwrap();

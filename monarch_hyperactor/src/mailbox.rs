@@ -9,6 +9,7 @@
 use std::hash::DefaultHasher;
 use std::hash::Hash;
 use std::hash::Hasher;
+use std::ops::Deref;
 use std::sync::Arc;
 
 use hyperactor::Mailbox;
@@ -35,15 +36,18 @@ use hyperactor::message::Bindings;
 use hyperactor::message::Unbind;
 use hyperactor_mesh::comm::multicast::set_cast_info_on_headers;
 use monarch_types::PickledPyObject;
+use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyEOFError;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
+use pyo3::types::PyType;
 use serde::Deserialize;
 use serde::Serialize;
 
 use crate::actor::PythonMessage;
+use crate::actor::PythonMessageKind;
 use crate::proc::PyActorId;
 use crate::runtime::signal_safe_block_on;
 use crate::shape::PyShape;
@@ -53,7 +57,13 @@ use crate::shape::PyShape;
     module = "monarch._rust_bindings.monarch_hyperactor.mailbox"
 )]
 pub struct PyMailbox {
-    pub inner: Mailbox,
+    pub(super) inner: Mailbox,
+}
+
+impl PyMailbox {
+    pub fn get_inner(&self) -> &Mailbox {
+        &self.inner
+    }
 }
 
 #[pymethods]
@@ -81,7 +91,7 @@ impl PyMailbox {
         let receiver = Py::new(
             py,
             PythonOncePortReceiver {
-                inner: std::sync::Mutex::new(Some(receiver)),
+                inner: Arc::new(std::sync::Mutex::new(Some(receiver))),
             },
         )?;
         PyTuple::new(py, vec![handle.into_any(), receiver.into_any()])
@@ -158,7 +168,7 @@ impl PyMailbox {
     }
 
     #[getter]
-    fn actor_id(&self) -> PyActorId {
+    pub(super) fn actor_id(&self) -> PyActorId {
         PyActorId {
             inner: self.inner.actor_id().clone(),
         }
@@ -204,6 +214,12 @@ impl From<PortId> for PyPortId {
 impl From<PyPortId> for PortId {
     fn from(port_id: PyPortId) -> Self {
         port_id.inner
+    }
+}
+
+impl From<Mailbox> for PyMailbox {
+    fn from(inner: Mailbox) -> Self {
+        PyMailbox { inner }
     }
 }
 
@@ -319,6 +335,19 @@ pub struct PythonPortRef {
 
 #[pymethods]
 impl PythonPortRef {
+    #[new]
+    fn new(port: PyPortId) -> Self {
+        Self {
+            inner: PortRef::attest(port.into()),
+        }
+    }
+    fn __reduce__<'py>(
+        slf: Bound<'py, PythonPortRef>,
+    ) -> PyResult<(Bound<'py, PyType>, (PyPortId,))> {
+        let id: PyPortId = (*slf.borrow()).inner.port_id().clone().into();
+        Ok((slf.get_type(), (id,)))
+    }
+
     fn send(&self, mailbox: &PyMailbox, message: PythonMessage) -> PyResult<()> {
         self.inner
             .send(&mailbox.inner, message)
@@ -368,6 +397,12 @@ impl PythonPortReceiver {
         let receiver = self.inner.clone();
         signal_safe_block_on(py, async move { receiver.lock().await.recv().await })?
             .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))
+    }
+}
+
+impl PythonPortReceiver {
+    pub fn inner(&self) -> Arc<tokio::sync::Mutex<PortReceiver<PythonMessage>>> {
+        Arc::clone(&self.inner)
     }
 }
 
@@ -459,6 +494,22 @@ pub struct PythonOncePortRef {
 
 #[pymethods]
 impl PythonOncePortRef {
+    #[new]
+    fn new(port: Option<PyPortId>) -> Self {
+        Self {
+            inner: port.map(|port| PortRef::attest(port.inner).into_once()),
+        }
+    }
+    fn __reduce__<'py>(
+        slf: Bound<'py, PythonOncePortRef>,
+    ) -> PyResult<(Bound<'py, PyType>, (Option<PyPortId>,))> {
+        let id: Option<PyPortId> = (*slf.borrow())
+            .inner
+            .as_ref()
+            .map(|x| x.port_id().clone().into());
+        Ok((slf.get_type(), (id,)))
+    }
+
     fn send(&mut self, mailbox: &PyMailbox, message: PythonMessage) -> PyResult<()> {
         let Some(port_ref) = self.inner.take() else {
             return Err(PyErr::new::<PyValueError, _>("OncePortRef is already used"));
@@ -495,7 +546,7 @@ impl From<OncePortRef<PythonMessage>> for PythonOncePortRef {
     module = "monarch._rust_bindings.monarch_hyperactor.mailbox"
 )]
 pub(super) struct PythonOncePortReceiver {
-    inner: std::sync::Mutex<Option<OncePortReceiver<PythonMessage>>>,
+    inner: Arc<std::sync::Mutex<Option<OncePortReceiver<PythonMessage>>>>,
 }
 
 #[pymethods]
@@ -521,6 +572,12 @@ impl PythonOncePortReceiver {
     }
 }
 
+impl PythonOncePortReceiver {
+    pub fn inner(&self) -> Arc<std::sync::Mutex<Option<OncePortReceiver<PythonMessage>>>> {
+        Arc::clone(&self.inner)
+    }
+}
+
 #[derive(
     Clone,
     Serialize,
@@ -528,7 +585,8 @@ impl PythonOncePortReceiver {
     Named,
     PartialEq,
     FromPyObject,
-    IntoPyObject
+    IntoPyObject,
+    Debug
 )]
 pub enum EitherPortRef {
     Unbounded(PythonPortRef),
@@ -610,7 +668,7 @@ impl Accumulator for PythonAccumulator {
     fn accumulate(&self, state: &mut Self::State, update: Self::Update) -> anyhow::Result<()> {
         Python::with_gil(|py: Python<'_>| {
             // Initialize state if it is empty.
-            if state.message.is_empty() && state.method.is_empty() {
+            if matches!(state.kind, PythonMessageKind::Uninit {}) {
                 *state = self
                     .accumulator
                     .getattr(py, "initial_state")?

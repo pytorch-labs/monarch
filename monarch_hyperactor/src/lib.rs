@@ -14,6 +14,7 @@ pub mod alloc;
 pub mod bootstrap;
 pub mod channel;
 pub mod config;
+pub mod local_state_broker;
 pub mod mailbox;
 pub mod ndslice;
 pub mod proc;
@@ -21,6 +22,7 @@ pub mod proc_mesh;
 pub mod runtime;
 pub mod selection;
 pub mod shape;
+pub mod supervision;
 pub mod telemetry;
 
 #[cfg(fbcode_build)]

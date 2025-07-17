@@ -64,6 +64,7 @@ use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::Unbind;
 use pin_project::pin_project;
+use pin_project::pinned_drop;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::io::AsyncRead;
@@ -94,10 +95,15 @@ pub struct OwnedReadHalf {
 }
 
 /// Wrap a `PortRef<IoMsg>` as a `AsyncWrite`.
+#[pin_project(PinnedDrop)]
 pub struct OwnedWriteHalf<C: CanSend> {
     peer: ActorId,
+    #[pin]
     caps: C,
+    #[pin]
     port: PortRef<Io>,
+    #[pin]
+    shutdown: bool,
 }
 
 /// A duplex bytestream connection between two actors.  Can generally be used like a `TcpStream`.
@@ -144,7 +150,12 @@ impl OwnedReadHalf {
 
 impl<C: CanSend> OwnedWriteHalf<C> {
     fn new(peer: ActorId, caps: C, port: PortRef<Io>) -> Self {
-        Self { peer, caps, port }
+        Self {
+            peer,
+            caps,
+            port,
+            shutdown: false,
+        }
     }
 
     pub fn peer(&self) -> &ActorId {
@@ -159,10 +170,13 @@ impl<C: CanSend> OwnedWriteHalf<C> {
     }
 }
 
-impl<C: CanSend> Drop for OwnedWriteHalf<C> {
-    fn drop(&mut self) {
-        // Send EOF on drop.
-        let _ = self.port.send(&self.caps, Io::Eof);
+#[pinned_drop]
+impl<C: CanSend> PinnedDrop for OwnedWriteHalf<C> {
+    fn drop(self: Pin<&mut Self>) {
+        let this = self.project();
+        if !*this.shutdown {
+            let _ = this.port.send(&*this.caps, Io::Eof);
+        }
     }
 }
 
@@ -247,7 +261,14 @@ impl<C: CanSend> AsyncWrite for OwnedWriteHalf<C> {
         _cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, std::io::Error>> {
-        match self.port.send(&self.caps, Io::Data(buf.into())) {
+        let this = self.project();
+        if *this.shutdown {
+            return Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "write after shutdown",
+            )));
+        }
+        match this.port.send(&*this.caps, Io::Data(buf.into())) {
             Ok(()) => Poll::Ready(Ok(buf.len())),
             Err(e) => Poll::Ready(Err(std::io::Error::other(e))),
         }
@@ -263,7 +284,11 @@ impl<C: CanSend> AsyncWrite for OwnedWriteHalf<C> {
     ) -> Poll<Result<(), std::io::Error>> {
         // Send EOF on shutdown.
         match self.port.send(&self.caps, Io::Eof) {
-            Ok(()) => Poll::Ready(Ok(())),
+            Ok(()) => {
+                let mut this = self.project();
+                *this.shutdown = true;
+                Poll::Ready(Ok(()))
+            }
             Err(e) => Poll::Ready(Err(std::io::Error::other(e))),
         }
     }
@@ -468,6 +493,38 @@ mod tests {
         let mut recv = vec![];
         rd.read_to_end(&mut recv).await?;
         assert_eq!(&send, recv.as_slice());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_no_eof_on_drop_after_shutdown() -> Result<()> {
+        let proc = Proc::local();
+        let client = proc.attach("client")?;
+
+        let (connect, completer) = Connect::allocate(client.actor_id().clone(), client.clone());
+        let (mut rd, _) = accept(&client, client.actor_id().clone(), connect)
+            .await?
+            .into_split();
+        let (_, mut wr) = completer.complete().await?.into_split();
+
+        // Write some data
+        let send = [1u8, 2u8, 3u8];
+        wr.write_all(&send).await?;
+
+        // Explicitly shutdown the writer - this sends EOF and sets shutdown=true
+        wr.shutdown().await?;
+
+        // Reader should receive the data and then EOF (from explicit shutdown, not from drop)
+        let mut recv = vec![];
+        rd.read_to_end(&mut recv).await?;
+        assert_eq!(&send, recv.as_slice());
+
+        // Drop the writer after explicit shutdown - this should NOT send another EOF
+        drop(wr);
+
+        // Verify we didn't see another EOF message.
+        assert!(rd.inner.into_inner().port.try_recv().unwrap().is_none());
 
         Ok(())
     }

@@ -80,37 +80,36 @@ impl Shape {
         Ok(Self { labels, slice })
     }
 
-    /// Restrict this shape along a named dimension using a [`Range`]. The
-    /// provided range must be nonempty.
-    //
-    /// A shape defines a "strided view" where a strided view is a
-    /// triple (`offset, `sizes`, `strides`). Each coordinate maps to
-    /// a flat memory index using the formula:
-    /// ``` text
-    ///     index = offset + ∑ i_k * strides[k]
+    /// Restrict this shape along a named dimension using a [`Range`].
+    /// The provided range must be nonempty.
+    ///
+    /// A shape defines a **strided view**; a triple (`offset,
+    /// `sizes`, `strides`). Each coordinate maps to a flat memory
+    /// index using the formula:
+    /// ```text
+    /// index = offset + ∑ iₖ × strides[k]
     /// ```
-    /// where `i_k` is the coordinate in dimension `k`.
+    /// where `iₖ` is the coordinate in dimension `k`.
     ///
     /// The `select(dim, range)` operation restricts the view to a
     /// subrange along a single dimension. It refines the shape by
     /// updating the `offset`, `sizes[dim]`, and `strides[dim]` to
     /// describe a logically reindexed subregion:
-    ///
     /// ```text
-    ///     offset       += begin x strides[dim]
-    ///     sizes[dim]    = (end - begin) / step
-    ///     strides[dim] *= step
+    /// offset       += begin × strides[dim]
+    /// sizes[dim]    = ⎡(end - begin) / step⎤
+    /// strides[dim] ×= step
     /// ```
     ///
     /// This transformation preserves the strided layout and avoids
     /// copying data. After `select`, the view behaves as if indexing
     /// starts at zero in the selected dimension, with a new length
-    /// and stride. From the user's perspective, nothing changes —
+    /// and stride. From the user's perspective, nothing changes;
     /// indexing remains zero-based, and the resulting shape can be
     /// used like any other. The transformation is internal: the
     /// view's offset and stride absorb the selection logic.
     ///
-    /// `select` is composable — it can be applied repeatedly, even on
+    /// `select` is composable, it can be applied repeatedly, even on
     /// the same dimension, to refine the view incrementally.
     pub fn select<R: Into<Range>>(&self, label: &str, range: R) -> Result<Self, ShapeError> {
         let dim = self.dim(label)?;
@@ -133,7 +132,10 @@ impl Shape {
         }
 
         offset += begin * strides[dim];
-        sizes[dim] = (end - begin) / stride;
+        // The # of elems in `begin..end` with step `stride`. This is
+        // ⌈(end - begin) / stride⌉ — the number of stride steps that
+        // fit in the half-open interval.
+        sizes[dim] = (end - begin).div_ceil(stride);
         strides[dim] *= stride;
 
         Ok(Self {
@@ -624,6 +626,20 @@ mod tests {
             shape!(gpu = n_gpus)
                 .index(vec![("non-exist-dim".to_string(), 0)])
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn test_shape_select_stride_rounding() {
+        let shape = shape!(x = 10);
+        // Select x = 0..10 step 3 → expect indices [0, 3, 6, 9]
+        let sub = shape.select("x", Range(0, Some(10), 3)).unwrap();
+        let slice = sub.slice();
+        // 10 / 3 = 3.33..., so ceil(10 / 3) = 4
+        assert_eq!(
+            slice,
+            &Slice::new(0, vec![4], vec![3]).unwrap(),
+            "Expected offset 0, size 4, stride 3"
         );
     }
 }

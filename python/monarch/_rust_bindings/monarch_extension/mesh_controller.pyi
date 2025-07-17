@@ -40,3 +40,6 @@ class _Controller:
         to any future.
         """
         ...
+
+    @property
+    def broker_id(self) -> Tuple[str, int]: ...

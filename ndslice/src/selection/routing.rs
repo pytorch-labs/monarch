@@ -360,6 +360,26 @@ impl RoutingFrame {
     ///
     /// ---
     ///
+    /// ### Canonical Handling of Zero-Dimensional Slices
+    ///
+    /// A `Slice` with zero dimensions represents the empty product
+    /// `∏_{i=1}^{0} Xᵢ`, which has exactly one element: the empty
+    /// tuple. To maintain uniform routing semantics, we canonically
+    /// embed such 0D slices as 1D slices of extent 1:
+    ///
+    /// ```text
+    /// Slice::new(offset, [1], [1])
+    /// ```
+    ///
+    /// This embedding preserves the correct number of addressable
+    /// points and allows the routing machinery to proceed through the
+    /// usual recursive strategy without introducing special cases. The
+    /// selected coordinate is `vec![0]`, and `dim = 0` proceeds as
+    /// usual. This makes the routing logic consistent with evaluation
+    /// and avoids edge case handling throughout the codebase.
+    ///
+    /// ---
+    ///
     /// ### Summary
     ///
     /// - **Structure-driven**: Mirrors the shape of the selection
@@ -378,10 +398,18 @@ impl RoutingFrame {
         _chooser: &mut dyn FnMut(&Choice) -> usize,
         f: &mut dyn FnMut(RoutingStep) -> ControlFlow<()>,
     ) -> ControlFlow<()> {
+        if self.slice.num_dim() == 0 {
+            // Canonically embed 0D as 1D (extent 1).
+            let embedded = Slice::new(self.slice.offset(), vec![1], vec![1]).unwrap();
+            let mut this = self.clone();
+            this.slice = Arc::new(embedded);
+            this.here = vec![0];
+            return this.next_steps(_chooser, f);
+        }
         let selection = self
             .selection
             .clone()
-            .promote_terminal_true(self.dim, self.slice.num_dim());
+            .promote_terminal(self.dim, self.slice.num_dim());
         match &selection {
             Selection::True => ControlFlow::Continue(()),
             Selection::False => ControlFlow::Continue(()),
@@ -1589,5 +1617,49 @@ mod tests {
             result.is_err(),
             "Expected panic due to overdelivery, but no panic occurred"
         );
+    }
+
+    #[test]
+    fn test_next_steps_zero_dim_slice() {
+        use std::ops::ControlFlow;
+
+        use crate::selection::dsl::*;
+
+        let slice = Slice::new(42, vec![], vec![]).unwrap();
+        let selection = true_();
+        let frame = RoutingFrame::root(selection, slice.clone());
+
+        let mut steps = vec![];
+        let _ = frame.next_steps(
+            &mut |_| panic!("Unexpected Choice in 0D test"),
+            &mut |step| {
+                steps.push(step);
+                ControlFlow::Continue(())
+            },
+        );
+
+        assert_eq!(steps.len(), 1);
+        let step = steps[0].as_forward().unwrap();
+        assert_eq!(step.here, vec![0]);
+        assert!(step.deliver_here());
+        assert_eq!(step.slice.location(&step.here).unwrap(), 42);
+
+        let selection = false_();
+        let frame = RoutingFrame::root(selection, slice);
+
+        let mut steps = vec![];
+        let _ = frame.next_steps(
+            &mut |_| panic!("Unexpected Choice in 0D test"),
+            &mut |step| {
+                steps.push(step);
+                ControlFlow::Continue(())
+            },
+        );
+
+        assert_eq!(steps.len(), 1);
+        let step = steps[0].as_forward().unwrap();
+        assert_eq!(step.here, vec![0]);
+        assert!(!step.deliver_here());
+        assert_eq!(step.slice.location(&step.here).unwrap(), 42);
     }
 }

@@ -1171,7 +1171,7 @@ where
                                 match source {
                                     ChannelAddr::Tcp(source_addr) if source_addr.ip().is_loopback() => {},
                                     _ => {
-                                        tracing::error!(
+                                        tracing::info!(
                                             "serve: error processing peer connection {} <- {}: {:?}",
                                             dest, source, err
                                             );

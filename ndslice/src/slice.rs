@@ -35,6 +35,9 @@ pub enum SliceError {
 
     #[error("incompatible view: {reason}")]
     IncompatibleView { reason: String },
+
+    #[error("noncontiguous shape")]
+    NonContiguous,
 }
 
 /// Slice is a compact representation of indices into the flat

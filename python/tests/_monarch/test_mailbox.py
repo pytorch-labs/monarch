@@ -8,11 +8,19 @@
 
 import asyncio
 import pickle
-from typing import Callable, cast, final, Generic, TypeVar
+from typing import Any, Callable, cast, final, Generic, Iterable, TYPE_CHECKING, TypeVar
 
 import monarch
 
-from monarch._rust_bindings.monarch_hyperactor.actor import PanicFlag, PythonMessage
+from monarch._rust_bindings.monarch_hyperactor.actor import (
+    PanicFlag,
+    PythonMessage,
+    PythonMessageKind,
+)
+
+if TYPE_CHECKING:
+    from monarch._rust_bindings.monarch_hyperactor.actor import CallMethod
+
 
 from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints, AllocSpec
 
@@ -41,7 +49,7 @@ class Reducer(Generic[U]):
         l: U = cast(U, pickle.loads(left.message))
         r: U = cast(U, pickle.loads(right.message))
         result: U = self._reduce_f(l, r)
-        return PythonMessage(left.method, pickle.dumps(result), None, None)
+        return PythonMessage(left.kind, pickle.dumps(result))
 
 
 @final
@@ -62,12 +70,13 @@ class Accumulator(Generic[S, U]):
         s: S = cast(S, pickle.loads(state.message))
         u: U = cast(U, pickle.loads(update.message))
         result: S = self._accumulate_f(s, u)
-        return PythonMessage(state.method, pickle.dumps(result), None, None)
+        return PythonMessage(state.kind, pickle.dumps(result))
 
     @property
     def initial_state(self) -> PythonMessage:
         return PythonMessage(
-            " @Accumulator.initial_state", pickle.dumps(self._initial_state), None, None
+            PythonMessageKind.CallMethod(" @Accumulator.initial_state", None),
+            pickle.dumps(self._initial_state),
         )
 
     @property
@@ -97,7 +106,11 @@ async def test_accumulator() -> None:
 
     def post_message(value: int) -> None:
         port_ref.send(
-            mailbox, PythonMessage("test_accumulator", pickle.dumps(value), None, None)
+            mailbox,
+            PythonMessage(
+                PythonMessageKind.CallMethod("test_accumulator", None),
+                pickle.dumps(value),
+            ),
         )
 
     async def recv_message() -> str:
@@ -124,13 +137,21 @@ class MyActor:
         shape: Shape,
         message: PythonMessage,
         panic_flag: PanicFlag,
+        local_state: Iterable[Any],
     ) -> None:
-        assert message.response_port is not None
-        reply_port = message.response_port
-        reply_port.send(mailbox, PythonMessage("echo", message.message, None, None))
+        call_method = cast("CallMethod", message.kind)
+        assert call_method.response_port is not None
+        reply_port = call_method.response_port
+        reply_port.send(
+            mailbox,
+            PythonMessage(PythonMessageKind.CallMethod("echo", None), message.message),
+        )
         for i in range(100):
             reply_port.send(
-                mailbox, PythonMessage("echo", pickle.dumps(f"msg{i}"), None, None)
+                mailbox,
+                PythonMessage(
+                    PythonMessageKind.CallMethod("echo", None), pickle.dumps(f"msg{i}")
+                ),
             )
 
 
@@ -151,7 +172,9 @@ async def test_reducer() -> None:
 
     actor_mesh.cast(
         Selection.from_string("*"),
-        PythonMessage("echo", pickle.dumps("start"), port_ref, None),
+        PythonMessage(
+            PythonMessageKind.CallMethod("echo", port_ref), pickle.dumps("start")
+        ),
     )
 
     messge = await asyncio.wait_for(receiver.recv(), timeout=5)

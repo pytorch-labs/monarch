@@ -20,6 +20,8 @@ import pytest
 
 import torch
 
+from monarch._src.actor.actor_mesh import Port, PortTuple
+
 from monarch.actor import (
     Accumulator,
     Actor,
@@ -704,6 +706,24 @@ async def test_actor_log_streaming() -> None:
             os.close(original_stderr_fd)
         except OSError:
             pass
+
+
+class SendAlot(Actor):
+    @endpoint
+    async def send(self, port: Port[int]):
+        for i in range(100):
+            port.send(i)
+
+
+def test_port_as_argument():
+    proc_mesh = local_proc_mesh(gpus=1).get()
+    s = proc_mesh.spawn("send_alot", SendAlot).get()
+    send, recv = PortTuple.create(proc_mesh._mailbox, None)
+
+    s.send.broadcast(send)
+
+    for i in range(100):
+        assert i == recv.recv().get()
 
 
 @pytest.mark.timeout(15)

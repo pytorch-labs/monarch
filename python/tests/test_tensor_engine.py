@@ -8,7 +8,7 @@ import monarch
 import pytest
 import torch
 from monarch import remote
-from monarch.actor import proc_mesh
+from monarch.actor import Actor, endpoint, proc_mesh
 from monarch.mesh_controller import spawn_tensor_engine
 
 
@@ -59,3 +59,48 @@ def test_proc_mesh_tensor_engine() -> None:
     assert a == 0
     assert b == 10
     assert c == 100
+
+
+class AddWithState(Actor):
+    def __init__(self, state: torch.Tensor):
+        super().__init__()
+        self.state = state
+
+    @endpoint
+    def forward(self, x) -> torch.Tensor:
+        return x + self.state
+
+
+@two_gpu
+def test_actor_with_tensors() -> None:
+    pm = proc_mesh(gpus=1).get()
+    with pm.activate():
+        x = pm.spawn("adder", AddWithState, torch.ones(())).get()
+        y = torch.ones(())
+        assert x.forward.call(y).get(timeout=5).item(hosts=0, gpus=0).item() == 2
+
+
+class Counter(Actor):
+    def __init__(self):
+        super().__init__()
+        self.c = 0
+
+    @endpoint
+    def incr(self, x) -> int:
+        self.c += 1
+        return self.c - 1
+
+
+@two_gpu
+def test_actor_tensor_ordering() -> None:
+    pm = proc_mesh(gpus=1).get()
+    with pm.activate():
+        counter = pm.spawn("a", Counter).get()
+        results = []
+        for _ in range(0, 10, 2):
+            # tensor engine call
+            results.append(counter.incr.call(torch.ones(())))
+            # non-tensor engine call
+            results.append(counter.incr.call(1))
+
+        assert list(range(10)) == [r.get().item(hosts=0, gpus=0) for r in results]

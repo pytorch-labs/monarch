@@ -402,6 +402,19 @@ pub struct CallFunctionParams {
     pub remote_process_groups: Vec<Ref>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ActorCallParams {
+    pub seq: Seq,
+    // The BrokerId but we do not depend on hyperactor in messages.
+    pub broker_id: (String, usize),
+    /// Referenceable objects to pass to the actor as LocalState,
+    /// these will be put into the PythonMessage
+    /// during its unpickling.
+    pub local_state: Vec<Ref>,
+    /// Tensors that will be mutated by the call.
+    pub mutates: Vec<Ref>,
+    pub stream: StreamRef,
+}
 /// Type of reduction for [`WorkerMessage::Reduce`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Reduction {
@@ -493,48 +506,15 @@ pub enum StreamCreationMode {
     CreateNewStream,
 }
 
-/// The kinds of errors that a CallFunction message can return with.
-// TODO(agallagher): We should move most variants out into `ValueError`.
+/// When a worker runs any function, it may not succeed either because the function itself
+/// failed (Error) or because an input to the function already had an error value
+/// DependentError.
 #[derive(Error, Debug, Named)]
 pub enum CallFunctionError {
-    #[error("ref not found: {0}")]
-    RefNotFound(Ref),
-
-    #[error("dependent error {0}")]
-    DependentError(#[from] Arc<CallFunctionError>),
-
-    #[error("invalid remote function: {0}")]
-    InvalidRemoteFunction(String),
-
-    #[error("unsupported arg type for {0} function: {1}")]
-    UnsupportedArgType(String, String),
-
-    #[error("remote function failed: {0}")]
-    RemoteFunctionFailed(#[from] SerializablePyErr),
-
-    #[error("borrow failed: {0}")]
-    BorrowError(#[from] BorrowError),
-
-    #[error("torch operator failed: {0}")]
-    OperatorFailed(#[from] CallOpError),
-
-    #[error("unexpected number of returns from op, expected {expected}, got {actual}")]
-    UnexpectedNumberOfReturns { expected: usize, actual: usize },
-
-    #[error(
-        "expected only a single arg (and no kwargs) when no function is given: {args}, {kwargs}"
-    )]
-    TooManyArgsForValue { args: String, kwargs: String },
-
-    #[error("error: {0}")]
-    Anyhow(#[from] anyhow::Error),
-
-    #[error("recording failed at message {index}: ({message}). Error: {error}")]
-    RecordingFailed {
-        index: usize,
-        message: String,
-        error: Arc<CallFunctionError>,
-    },
+    #[error("{0}")]
+    Error(#[from] anyhow::Error),
+    #[error("Computation depended on an input that failed with errror: {0}")]
+    DependentError(Arc<CallFunctionError>),
 }
 
 impl CallFunctionError {
@@ -546,21 +526,92 @@ impl CallFunctionError {
             _ => None,
         }
     }
+
+    // Static functions for backward compatibility with existing enum cases
+
+    #[allow(non_snake_case)]
+    pub fn RefNotFound(r: Ref) -> Self {
+        Self::Error(anyhow::anyhow!("ref not found: {}", r))
+    }
+
+    #[allow(non_snake_case)]
+    pub fn InvalidRemoteFunction(msg: String) -> Self {
+        Self::Error(anyhow::anyhow!("invalid remote function: {}", msg))
+    }
+
+    #[allow(non_snake_case)]
+    pub fn UnsupportedArgType(function_type: String, arg_type: String) -> Self {
+        Self::Error(anyhow::anyhow!(
+            "unsupported arg type for {} function: {}",
+            function_type,
+            arg_type
+        ))
+    }
+
+    #[allow(non_snake_case)]
+    pub fn RemoteFunctionFailed(err: SerializablePyErr) -> Self {
+        Self::Error(anyhow::anyhow!("remote function failed: {}", err))
+    }
+
+    #[allow(non_snake_case)]
+    pub fn BorrowError(err: BorrowError) -> Self {
+        Self::Error(anyhow::anyhow!("borrow failed: {}", err))
+    }
+
+    #[allow(non_snake_case)]
+    pub fn OperatorFailed(err: CallOpError) -> Self {
+        Self::Error(anyhow::anyhow!("torch operator failed: {}", err))
+    }
+
+    #[allow(non_snake_case)]
+    pub fn UnexpectedNumberOfReturns(expected: usize, actual: usize) -> Self {
+        Self::Error(anyhow::anyhow!(
+            "unexpected number of returns from op, expected {}, got {}",
+            expected,
+            actual
+        ))
+    }
+
+    #[allow(non_snake_case)]
+    pub fn TooManyArgsForValue(args: String, kwargs: String) -> Self {
+        Self::Error(anyhow::anyhow!(
+            "expected only a single arg (and no kwargs) when no function is given: {}, {}",
+            args,
+            kwargs
+        ))
+    }
+
+    #[allow(non_snake_case)]
+    pub fn Anyhow(err: anyhow::Error) -> Self {
+        Self::Error(err)
+    }
+
+    #[allow(non_snake_case)]
+    pub fn RecordingFailed(index: usize, message: String, error: Arc<CallFunctionError>) -> Self {
+        Self::Error(anyhow::anyhow!(
+            "recording failed at message {}: ({}). Error: {}",
+            index,
+            message,
+            error
+        ))
+    }
 }
 
-/// Errors encountered during worker operations which get propagated in the
-/// refs-to-values maps used to store values.
-#[derive(Debug, Serialize, Deserialize, Error, Named, EnumAsInner)]
-pub enum ValueError {
-    // TODO(agallagher): Migrate to variants for each error (after we cleanup
-    // `CallFunctionError` to make it serializable).
-    #[error("call function error: {0}")]
-    CallFunctionError(String),
+impl From<SerializablePyErr> for CallFunctionError {
+    fn from(v: SerializablePyErr) -> CallFunctionError {
+        CallFunctionError::Error(v.into())
+    }
 }
 
-impl From<Arc<CallFunctionError>> for ValueError {
-    fn from(err: Arc<CallFunctionError>) -> Self {
-        ValueError::CallFunctionError(format!("{:?}", err))
+impl From<BorrowError> for CallFunctionError {
+    fn from(v: BorrowError) -> CallFunctionError {
+        CallFunctionError::Error(v.into())
+    }
+}
+
+impl From<CallOpError> for CallFunctionError {
+    fn from(v: CallOpError) -> CallFunctionError {
+        CallFunctionError::Error(v.into())
     }
 }
 
@@ -642,21 +693,30 @@ pub enum WorkerMessage {
 
     /// First use of the borrow on the receiving stream. This is a marker for
     /// synchronization.
-    BorrowFirstUse { borrow: u64 },
+    BorrowFirstUse {
+        borrow: u64,
+    },
 
     /// Last use of the borrow on the receiving stream. This is a marker for
     /// synchronization.
-    BorrowLastUse { borrow: u64 },
+    BorrowLastUse {
+        borrow: u64,
+    },
 
     /// Drop the borrow and free the resources associated with it.
-    BorrowDrop { borrow: u64 },
+    BorrowDrop {
+        borrow: u64,
+    },
 
     /// Delete these refs from the worker state.
     DeleteRefs(Vec<Ref>),
 
     /// A [`ControllerMessage::Status`] will be send to the controller
     /// when all streams have processed all the message sent before this one.
-    RequestStatus { seq: Seq, controller: bool },
+    RequestStatus {
+        seq: Seq,
+        controller: bool,
+    },
 
     /// Perform a reduction operation, using an efficient communication backend.
     /// Only NCCL is supported for now.
@@ -758,6 +818,7 @@ pub enum WorkerMessage {
         stream: StreamRef,
     },
 
+    SendResultOfActorCall(ActorCallParams),
     PipeRecv {
         seq: Seq,
         /// Result refs.
@@ -851,7 +912,7 @@ pub enum WorkerMessage {
         /// The stream to retrieve from.
         stream: StreamRef,
         #[reply]
-        response_port: hyperactor::OncePortRef<Option<Result<WireValue, ValueError>>>,
+        response_port: hyperactor::OncePortRef<Option<Result<WireValue, String>>>,
     },
 }
 

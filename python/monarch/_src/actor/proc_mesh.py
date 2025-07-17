@@ -175,7 +175,7 @@ class ProcMesh(MeshTrait):
         actor_mesh = self._proc_mesh.spawn_blocking(name, _Actor)
         service = ActorMeshRef(
             Class,
-            _ActorMeshRefImpl.from_hyperactor_mesh(self._mailbox, actor_mesh),
+            _ActorMeshRefImpl.from_hyperactor_mesh(self._mailbox, actor_mesh, self),
             self._mailbox,
         )
         # useful to have this separate, because eventually we can reconstitute ActorMeshRef objects across pickling by
@@ -200,7 +200,7 @@ class ProcMesh(MeshTrait):
         actor_mesh = await self._proc_mesh.spawn_nonblocking(name, _Actor)
         service = ActorMeshRef(
             Class,
-            _ActorMeshRefImpl.from_hyperactor_mesh(self._mailbox, actor_mesh),
+            _ActorMeshRefImpl.from_hyperactor_mesh(self._mailbox, actor_mesh, self),
             self._mailbox,
         )
         # useful to have this separate, because eventually we can reconstitute ActorMeshRef objects across pickling by
@@ -285,14 +285,24 @@ class ProcMesh(MeshTrait):
             )
         self._logging_mesh_client.set_mode(stream_to_client)
 
-    async def stop(self) -> None:
-        await self._proc_mesh.stop()
-        self._stopped = True
-
     async def __aenter__(self) -> "ProcMesh":
         if self._stopped:
             raise RuntimeError("`ProcMesh` has already been stopped")
         return self
+
+    def stop(self) -> Future[None]:
+        async def _stop_nonblocking() -> None:
+            await self._proc_mesh.stop_nonblocking()
+            self._stopped = True
+
+        def _stop_blocking() -> None:
+            self._proc_mesh.stop_blocking()
+            self._stopped = True
+
+        return Future(
+            lambda: _stop_nonblocking(),
+            lambda: _stop_blocking(),
+        )
 
     async def __aexit__(
         self, exc_type: object, exc_val: object, exc_tb: object
