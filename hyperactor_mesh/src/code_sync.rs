@@ -6,6 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+pub mod manager;
 pub mod rsync;
 mod workspace;
 
