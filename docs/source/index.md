@@ -11,72 +11,49 @@ PyTorch, but at cluster scale.
 > work. It's recommended that you signal your intention to contribute in the
 > issue tracker, either by filing a new issue or by claiming an existing one.
 
-Note: Monarch is currently only supported on Linux systems
+## What is Monarch?
 
-## Installation
+Monarch extends PyTorch's capabilities to efficiently run on distributed systems. It maintains the familiar PyTorch API while handling the complexities of distributed execution, making it easier to scale your deep learning workloads across multiple GPUs and nodes.
 
-`pip install torchmonarch-nightly`
+Key features:
+- **Familiar PyTorch API** - Use the same PyTorch code you're already familiar with
+- **Efficient Distribution** - Scale your models across multiple GPUs and nodes
+- **Simplified Communication** - Built-in primitives for distributed communication
+- **Performance Optimized** - Designed for high performance at scale
 
-or manually
+**Note:** Monarch is currently only supported on Linux systems.
 
-```sh
+## Getting Started
 
-# Create and activate the conda environment
-conda create -n monarchenv python=3.10 -y
-conda activate monarchenv
+Here are some suggested steps to get started with Monarch:
 
-# Install nightly rust toolchain
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-rustup toolchain install nightly
-rustup default nightly
+1. **Installation**: Install Monarch using pip: `pip install torchmonarch-nightly`
+2. **Learn the Basics**: Check out the [Getting Started](get_started) guide to learn the basics of Monarch
+3. **Explore Examples**: Review the [Examples](examples) to see Monarch in action
+4. **Dive Deeper**: Explore the [API Documentation](api) for more detailed information
 
-# Install non-python dependencies
-conda install libunwind -y
+## Documentation Contents
 
-# Install the correct cuda and cuda-toolkit versions for your machine
-sudo dnf install cuda-toolkit-12-0 cuda-12-0
+```{toctree}
+:maxdepth: 2
+:caption: Contents
 
-# Install clang-dev and nccl-dev
-sudo dnf install clang-devel libnccl-devel
-# Or, in some envrionments, the following may be necessary instead
-conda install -c conda-forge clangdev nccl
-conda update -n monarchenv --all -c conda-forge -y
-
-# Install build dependencies
-pip install -r build-requirements.txt
-# Install test dependencies
-pip install -r python/tests/requirements.txt
-
-# Build and install Monarch
-pip install --no-build-isolation .
-# or setup for development
-pip install --no-build-isolation -e .
-
-# Run unit tests. consider -s for more verbose output
-pytest python/tests/ -v -m "not oss_skip"
+get_started
+examples
+api
+howtos
+glossary
 ```
-
-## Running examples
-
-Check out the `examples/` directory for demonstrations of how to use Monarch's APIs.
-
-We'll be adding more examples as we stabilize and polish functionality!
 
 ## License
 
-Monarch is BSD-3 licensed, as found in the [LICENSE](LICENSE) file.
+Monarch is BSD-3 licensed, as found in the [LICENSE](https://github.com/pytorch-labs/monarch/blob/main/LICENSE) file.
 
+## Community
 
+We welcome contributions from the community! If you're interested in contributing, please:
 
-```{toctree}
-   :maxdepth: 2
-   :caption: Contents:
-   :hidden:
-
-   get_started
-   tutorials
-   api
-   howtos
-   glossary
-
-```
+1. Check the [GitHub repository](https://github.com/pytorch-labs/monarch)
+2. Review existing issues or create a new one
+3. Discuss your proposed changes before starting work
+4. Submit a pull request with your changes

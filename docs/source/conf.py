@@ -4,32 +4,30 @@
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
 
 
-
-
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
-project = 'Monarch'
-copyright = '2025, ""'
-author = '""'
-release = '""'
+project = "Monarch"
+copyright = "2025"
+author = ""
+release = ""
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
 
-extensions = ["sphinx_design",
+extensions = [
+    "sphinx_design",
     "sphinx_sitemap",
     "sphinxcontrib.mermaid",
     "pytorch_sphinx_theme2",
     "sphinxext.opengraph",
-    'myst_parser',
-    #'nbsphinx',
+    "myst_parser",
+    "nbsphinx",
     #'myst_nb',
-    ]
+]
 
-templates_path = ['_templates']
+templates_path = ["_templates"]
 exclude_patterns = []
-
 
 
 # -- Options for HTML output -------------------------------------------------
@@ -38,7 +36,9 @@ exclude_patterns = []
 import os
 import sys
 
+# Add the repository root to the path so Sphinx can find the notebook files
 sys.path.insert(0, os.path.abspath("."))
+sys.path.insert(0, os.path.abspath("../.."))
 import pytorch_sphinx_theme2
 
 html_theme = "pytorch_sphinx_theme2"
@@ -99,7 +99,7 @@ html_context = {
     "language_bindings_links": html_theme_options.get("language_bindings_links", []),
 }
 
-#not sure if this is needed
+# not sure if this is needed
 myst_enable_extensions = [
     "colon_fence",
     "deflist",
@@ -112,3 +112,6 @@ source_suffix = {
     ".rst": "restructuredtext",
     ".md": "markdown",
 }
+
+# Allow errors in notebook execution
+nbsphinx_allow_errors = True
