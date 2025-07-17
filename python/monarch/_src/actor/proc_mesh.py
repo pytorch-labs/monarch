@@ -251,7 +251,6 @@ class ProcMesh(MeshTrait):
             self._auto_reload_actor = self._spawn_blocking(
                 "auto_reload",
                 AutoReloadActor,
-                WorkspaceLocation.FromEnvVar("WORKSPACE_DIR"),
             )
         # TODO(agallagher): We need some way to configure and pass this
         # in -- right now we're assuming the `gpu` dimension, which isn't

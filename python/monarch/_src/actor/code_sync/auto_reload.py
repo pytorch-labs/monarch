@@ -10,6 +10,7 @@ import importlib
 import importlib.abc
 import importlib.util
 import itertools
+import site
 import sys
 import threading
 from pathlib import Path
@@ -17,7 +18,6 @@ from types import ModuleType
 from typing import Dict, List, Optional, Tuple
 
 from monarch._src.actor.actor_mesh import Actor, endpoint
-from monarch._src.actor.code_sync import WorkspaceLocation
 
 
 class SysAuditHookGuard(contextlib.AbstractContextManager):
@@ -144,11 +144,10 @@ class Fingerprint:
 
 class AutoReloader:
     """
-    Track changes to modules in a workspace and reload them when they change.
+    Track changes to modules and reloads them when they change.
     """
 
-    def __init__(self, workspace: Path, reload=importlib.reload):
-        self._workspace = workspace
+    def __init__(self, reload=importlib.reload):
         self._reload = reload
         self._tracked_modules: Dict[str, Tuple[Path, Fingerprint]] = {}
         self._track_all_imported()
@@ -157,11 +156,22 @@ class AutoReloader:
         filename = getattr(module, "__file__", None)
         if filename is None:
             return
+        if filename == "static-extension":
+            return
         filename = Path(filename)
 
-        # Ignore modules that are not in the workspace.
-        if not filename.is_relative_to(self._workspace):
+        # It's rare for modules to have relative path names, but can happen in
+        # weird special situations (e.g. `_ops.py` from `torch.ops`).
+        if not filename.is_absolute():
             return
+
+        # Ignore builtin modules.
+        if filename.is_relative_to(sys.prefix):
+            for dirpath in site.getsitepackages():
+                if filename.is_relative_to(dirpath):
+                    break
+            else:
+                return
 
         self._tracked_modules[name] = (
             filename,
@@ -202,8 +212,8 @@ class AutoReloader:
 
 
 class AutoReloadActor(Actor):
-    def __init__(self, workspace: WorkspaceLocation):
-        self._reloader = AutoReloader(workspace.resolve())
+    def __init__(self):
+        self._reloader = AutoReloader()
         self._hook_guard = SysAuditImportHook.install(self._reloader.import_callback)
 
     @endpoint
