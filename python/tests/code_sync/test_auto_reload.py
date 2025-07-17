@@ -44,7 +44,7 @@ def importable_workspace() -> Generator[Path, Any, Any]:
 class TestAutoReloader(unittest.TestCase):
     def test_source_change(self):
         with importable_workspace() as workspace:
-            reloader = AutoReloader(workspace)
+            reloader = AutoReloader()
             with SysAuditImportHook.install(reloader.import_callback):
                 filename = workspace / "test_module.py"
                 write_text(filename, "foo = 1\n")
@@ -69,7 +69,7 @@ class TestAutoReloader(unittest.TestCase):
 
     def test_pyc_only_change(self):
         with importable_workspace() as workspace:
-            reloader = AutoReloader(workspace)
+            reloader = AutoReloader()
             with SysAuditImportHook.install(reloader.import_callback):
                 filename = workspace / "test_module.py"
                 pyc = filename.with_suffix(".pyc")
