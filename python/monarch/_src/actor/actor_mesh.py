@@ -147,7 +147,7 @@ Selection = Literal["all", "choose"] | int  # TODO: replace with real selection 
 # standin class for whatever is the serializable python object we use
 # to name an actor mesh. Hacked up today because ActorMesh
 # isn't plumbed to non-clients
-class _ActorMeshRefImpl:
+class _ActorMeshRefImpl(MeshTrait):
     def __init__(
         self,
         mailbox: Mailbox,
@@ -181,12 +181,17 @@ class _ActorMeshRefImpl:
     def from_actor_id(mailbox: Mailbox, actor_id: ActorId) -> "_ActorMeshRefImpl":
         return _ActorMeshRefImpl(mailbox, None, None, singleton_shape, [actor_id])
 
-    @staticmethod
-    def from_actor_ref_with_shape(
-        ref: "_ActorMeshRefImpl", shape: Shape
-    ) -> "_ActorMeshRefImpl":
+    @property
+    def _ndslice(self) -> NDSlice:
+        return self._shape.ndslice
+
+    @property
+    def _labels(self) -> Iterable[str]:
+        return self._shape.labels
+
+    def _new_with_shape(self, shape: Shape) -> "_ActorMeshRefImpl":
         return _ActorMeshRefImpl(
-            ref._mailbox, None, None, shape, ref._please_replace_me_actor_ids
+            self._mailbox, None, None, shape, self._please_replace_me_actor_ids
         )
 
     def __getstate__(
@@ -874,7 +879,7 @@ class Actor(MeshTrait):
             "actor implementations are not meshes, but we can't convince the typechecker of it..."
         )
 
-    def _new_with_shape(self, shape: Shape) -> "ActorMeshRef":
+    def _new_with_shape(self, shape: Shape) -> "Actor":
         raise NotImplementedError(
             "actor implementations are not meshes, but we can't convince the typechecker of it..."
         )
@@ -955,18 +960,24 @@ class ActorMeshRef(MeshTrait):
 
     @property
     def _ndslice(self) -> NDSlice:
-        return self._actor_mesh_ref._shape.ndslice
+        raise NotImplementedError(
+            "should not be called because def slice is overridden"
+        )
 
     @property
     def _labels(self) -> Iterable[str]:
-        return self._actor_mesh_ref._shape.labels
+        raise NotImplementedError(
+            "should not be called because def slice is overridden"
+        )
 
     def _new_with_shape(self, shape: Shape) -> "ActorMeshRef":
-        return ActorMeshRef(
-            self._class,
-            _ActorMeshRefImpl.from_actor_ref_with_shape(self._actor_mesh_ref, shape),
-            self._mailbox,
+        raise NotImplementedError(
+            "should not be called because def slice is overridden"
         )
+
+    def slice(self, **kwargs) -> "ActorMeshRef":
+        sliced = self._actor_mesh_ref.slice(**kwargs)
+        return ActorMeshRef(self._class, sliced, self._mailbox)
 
     def __repr__(self) -> str:
         return f"ActorMeshRef(class={self._class}, shape={self._actor_mesh_ref._shape})"
