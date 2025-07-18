@@ -14,6 +14,8 @@ use clap::Parser;
 use common::Args;
 use common::main_impl;
 use hyperactor::channel::ChannelAddr;
+use tokio::process::Command;
+use tokio::time::Duration;
 
 #[tokio::main]
 async fn main() {
@@ -25,6 +27,12 @@ async fn main() {
         .unwrap_or_else(|| format!("tcp![::]:{}", args.port));
 
     let serve_address = ChannelAddr::from_str(&bind).unwrap();
+    let program = Command::new(args.program);
+    let timeout = if args.timeout > 0 {
+        Some(Duration::from_secs(args.timeout))
+    } else {
+        None
+    };
 
-    let _ = main_impl(serve_address, args.program).await.unwrap();
+    let _ = main_impl(serve_address, program, timeout).await.unwrap();
 }
