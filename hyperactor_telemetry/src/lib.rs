@@ -708,10 +708,6 @@ pub mod env {
             }
         }
     }
-
-    pub fn exporter_name() -> String {
-        std::env::var(OTEL_EXPORTER).unwrap_or("scribe_cat".into())
-    }
 }
 
 #[cfg(test)]
