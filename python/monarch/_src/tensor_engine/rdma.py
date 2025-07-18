@@ -9,11 +9,14 @@ import warnings
 from typing import Optional
 
 import torch
-from monarch._rust_bindings.rdma import _RdmaBuffer
 
+try:
+    from monarch._rust_bindings.rdma import _RdmaBuffer
+except ImportError as e:
+    logging.error("RDMA is not available: {}".format(e))
+    raise e
+from monarch._src.actor.actor_mesh import MonarchContext
 from monarch._src.actor.future import Future
-
-from monarch.actor import MonarchContext
 
 
 # RDMARead/WriteTransferWarnings are warnings that are only printed once per process.
@@ -30,7 +33,7 @@ warnings.simplefilter("once", RDMAReadTransferWarning)
 warnings.simplefilter("once", RDMAWriteTransferWarning)
 
 
-def rdma_supported():
+def is_available():
     return _RdmaBuffer.rdma_supported()
 
 
@@ -52,7 +55,9 @@ class RDMABuffer:
 
         TODO: Create TensorBuffer, which will be main user API supporting non-contiguous , multi-byte-per-elment tensors
         """
-        assert _RdmaBuffer.rdma_supported()
+        assert (
+            is_available()
+        ), "Tried to create an RDMABuffer, but RDMA is not available on this platform."
 
         if data.device.type != "cpu":
             # TODO - CUDA support for RDMABuffer exists at the Rust layer, but
