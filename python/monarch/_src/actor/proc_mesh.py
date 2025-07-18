@@ -126,7 +126,7 @@ class ProcMesh(MeshTrait):
     def _new_with_shape(self, shape: Shape) -> "ProcMesh":
         device_mesh = (
             None
-            if self._device_mesh is None
+            if self._maybe_device_mesh is None
             else self._device_mesh._new_with_shape(shape)
         )
         return ProcMesh(self._proc_mesh, _mock_shape=shape, _device_mesh=device_mesh)
