@@ -488,6 +488,7 @@ impl Handler<PythonMessage> for PythonActor {
         // Create a channel for signaling panics in async endpoints.
         // See [Panics in async endpoints].
         let (sender, receiver) = oneshot::channel();
+        let method_kind = message.kind.clone();
 
         let future = Python::with_gil(|py| -> Result<_, SerializablePyErr> {
             let mailbox = mailbox(py, cx);
@@ -516,7 +517,8 @@ impl Handler<PythonMessage> for PythonActor {
         })?;
 
         // Spawn a child actor to await the Python handler method.
-        let handler = AsyncEndpointTask::spawn(cx, ()).await?;
+        tracing::debug!("spawning handler for PythonMessage {:?}", method_kind);
+        let handler = AsyncEndpointTask::spawn(cx, method_kind).await?;
         handler.run(cx, PythonTask::new(future), receiver).await?;
         Ok(())
     }
@@ -554,7 +556,9 @@ impl fmt::Debug for PythonTask {
 /// - Actually waiting on the async endpoint can happen concurrently with other endpoints.
 /// - Any uncaught errors in the async endpoint will get propagated as a supervision event.
 #[derive(Debug)]
-struct AsyncEndpointTask {}
+struct AsyncEndpointTask {
+    message_kind: PythonMessageKind,
+}
 
 /// An invocation of an async endpoint on a [`PythonActor`].
 #[derive(Handler, HandleClient, Debug)]
@@ -564,10 +568,10 @@ enum AsyncEndpointInvocation {
 
 #[async_trait]
 impl Actor for AsyncEndpointTask {
-    type Params = ();
+    type Params = PythonMessageKind;
 
-    async fn new(_params: Self::Params) -> anyhow::Result<Self> {
-        Ok(Self {})
+    async fn new(message_kind: Self::Params) -> anyhow::Result<Self> {
+        Ok(Self { message_kind })
     }
 }
 
@@ -617,6 +621,10 @@ impl AsyncEndpointInvocationHandler for AsyncEndpointTask {
         result?;
 
         // Stop this actor now that its job is done.
+        tracing::debug!(
+            "Finished processing PythonMessage '{:?}'",
+            self.message_kind
+        );
         cx.stop()?;
         Ok(())
     }

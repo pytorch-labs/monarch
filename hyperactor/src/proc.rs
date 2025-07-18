@@ -523,6 +523,7 @@ impl Proc {
             match entry.value().upgrade() {
                 None => (), // the root's cell has been dropped
                 Some(cell) => {
+                    tracing::info!("sending stop signal to {}", cell.actor_id());
                     if let Err(err) = cell.signal(Signal::DrainAndStop) {
                         tracing::error!(
                             "{}: failed to send stop signal to pid {}: {:?}",
@@ -855,6 +856,7 @@ impl<A: Actor> Instance<A> {
     /// Signal the actor to stop.
     #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ActorError`.
     pub fn stop(&self) -> Result<(), ActorError> {
+        tracing::info!("Instance::stop called, {}", self.cell.actor_id());
         self.cell.signal(Signal::DrainAndStop)
     }
 
@@ -1053,6 +1055,7 @@ impl<A: Actor> Instance<A> {
                 }
                 signal = self.signal_receiver.recv() => {
                     let signal = signal.map_err(ActorError::from);
+                    tracing::debug!("Received signal {signal:?}");
                     match signal? {
                         signal@(Signal::Stop | Signal::DrainAndStop) => {
                             need_drain = matches!(signal, Signal::DrainAndStop);
