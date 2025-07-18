@@ -90,7 +90,6 @@ fn try_create_appender(
         std::fs::create_dir_all(path)?;
     }
     Ok(RollingFileAppender::builder()
-        .rotation(Rotation::DAILY)
         .filename_prefix(filename)
         .filename_suffix("log")
         .build(path)?)
