@@ -529,6 +529,7 @@ impl<A: Actor> ActorHandle<A> {
     /// Signal the actor to drain its current messages and then stop.
     #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ActorError`.
     pub fn drain_and_stop(&self) -> Result<(), ActorError> {
+        tracing::info!("ActorHandle::drain_and_stop called: {}", self.actor_id());
         self.cell.signal(Signal::DrainAndStop)
     }
 
