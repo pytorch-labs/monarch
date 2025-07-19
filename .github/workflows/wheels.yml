@@ -43,8 +43,11 @@ jobs:
 
         python setup.py bdist_wheel
 
-        # hacky until the right distribution wheel can be made...
-        find dist -name "*linux_x86_64.whl" -type f -exec bash -c 'mv "$1" "${1/linux_x86_64.whl/manylinux2014_x86_64.whl}"' _ {} \;
+        # Repair wheel (distribution support)
+        pip install auditwheel
+        auditwheel -v repair dist/* --plat manylinux2014_x86_64 --exclude libtorch_python.so --exclude libc10.so --exclude libtorch.so --exclude libtorch_cpu.so
+        rm -rf dist/*
+        mv wheelhouse/* dist/
         ls -la dist/
 
         # Run tests
