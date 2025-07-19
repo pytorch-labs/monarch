@@ -88,10 +88,15 @@ class PythonActorMesh:
         """
         ...
 
-    # TODO(albertli): remove this when pushing all supervision logic to Rust
-    def monitor(self) -> ActorMeshMonitor:
+    def supervise_port(self, r: PortReceiver) -> MonitoredPortReceiver:
         """
-        Returns a supervision monitor for this mesh.
+        Return a monitored port receiver.
+        """
+        ...
+
+    def supervise_once_port(self, r: OncePortReceiver) -> MonitoredOncePortReceiver:
+        """
+        Return a monitored once port receiver.
         """
         ...
 
@@ -114,30 +119,10 @@ class PythonActorMesh:
         ...
 
 @final
-class ActorMeshMonitor:
-    def __aiter__(self) -> AsyncIterator["ActorSupervisionEvent"]:
-        """
-        Returns an async iterator for this monitor.
-        """
-        ...
-
-    async def __anext__(self) -> "ActorSupervisionEvent":
-        """
-        Returns the next proc event in the proc mesh.
-        """
-        ...
-
-@final
 class MonitoredPortReceiver:
+    """A monitored receiver to which PythonMessages are sent. Values
+    of this type cannot be constructed directly in Python.
     """
-    A monitored receiver to which PythonMessages are sent.
-    """
-
-    def __init__(self, receiver: PortReceiver, monitor: ActorMeshMonitor) -> None:
-        """
-        Create a new monitored receiver from a PortReceiver.
-        """
-        ...
 
     async def recv(self) -> PythonMessage:
         """Receive a PythonMessage from the port's sender."""
@@ -148,15 +133,9 @@ class MonitoredPortReceiver:
 
 @final
 class MonitoredOncePortReceiver:
+    """A monitored once receiver to which PythonMessages are sent.
+    Values of this type cannot be constructed directly in Python.
     """
-    A variant of monitored PortReceiver that can only receive a single message.
-    """
-
-    def __init__(self, receiver: OncePortReceiver, monitor: ActorMeshMonitor) -> None:
-        """
-        Create a new monitored receiver from a PortReceiver.
-        """
-        ...
 
     async def recv(self) -> PythonMessage:
         """Receive a single PythonMessage from the port's sender."""
