@@ -1036,6 +1036,12 @@ impl Alloc for RemoteProcessAlloc {
     }
 }
 
+impl Drop for RemoteProcessAlloc {
+    fn drop(&mut self) {
+        tracing::debug!("dropping RemoteProcessAlloc of world_id {}", self.world_id);
+    }
+}
+
 #[cfg(test)]
 mod test {
     use std::assert_matches::assert_matches;
