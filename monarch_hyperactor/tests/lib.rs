@@ -6,9 +6,4 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-pub mod auto_reload;
-pub mod manager;
-pub mod rsync;
-mod workspace;
-
-pub use workspace::WorkspaceLocation;
+mod code_sync;
