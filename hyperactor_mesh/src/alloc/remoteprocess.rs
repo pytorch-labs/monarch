@@ -16,6 +16,7 @@ use anyhow::Context;
 use async_trait::async_trait;
 use futures::FutureExt;
 use futures::future::select_all;
+use futures::future::try_join_all;
 use hyperactor::Named;
 use hyperactor::ProcId;
 use hyperactor::WorldId;
@@ -37,6 +38,7 @@ use hyperactor::reference::Reference;
 use hyperactor::serde_json;
 use mockall::automock;
 use ndslice::Shape;
+use nix::sys::signal;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::io::AsyncWriteExt;
@@ -78,6 +80,8 @@ pub enum RemoteProcessAllocatorMessage {
     /// Heartbeat message to check if remote process allocator and its
     /// host are alive.
     HeartBeat,
+    /// Stop allocation and terminate
+    Terminate,
 }
 
 /// Control message sent from local allocator to remote allocator
@@ -216,6 +220,9 @@ impl RemoteProcessAllocator {
                                     continue;
                                 }
                             }
+                        }
+                        Ok(RemoteProcessAllocatorMessage::Terminate) => {
+                            self.terminate();
                         }
                         Ok(RemoteProcessAllocatorMessage::Stop) => {
                             tracing::info!("received stop request");
@@ -469,6 +476,58 @@ pub trait RemoteProcessAllocInitializer {
     async fn initialize_alloc(&mut self) -> Result<Vec<RemoteProcessAllocHost>, anyhow::Error>;
 }
 
+/// Wrapper struct around `HashMap<HostId, RemoteProcessAllocHostState>`
+/// to ensure that host addresses are synced with the signal handler
+struct HostStates {
+    inner: HashMap<HostId, RemoteProcessAllocHostState>,
+    host_address_tx: UnboundedSender<(HostId, Option<ChannelAddr>)>,
+}
+
+impl HostStates {
+    fn new(host_address_tx: UnboundedSender<(HostId, Option<ChannelAddr>)>) -> HostStates {
+        Self {
+            inner: HashMap::new(),
+            host_address_tx,
+        }
+    }
+
+    fn insert(
+        &mut self,
+        host_id: HostId,
+        state: RemoteProcessAllocHostState,
+        address: ChannelAddr,
+    ) {
+        let _ = self.host_address_tx.send((host_id.clone(), Some(address)));
+        self.inner.insert(host_id, state);
+    }
+
+    fn get(&self, host_id: &HostId) -> Option<&RemoteProcessAllocHostState> {
+        self.inner.get(host_id)
+    }
+
+    fn get_mut(&mut self, host_id: &HostId) -> Option<&mut RemoteProcessAllocHostState> {
+        self.inner.get_mut(host_id)
+    }
+
+    fn remove(&mut self, host_id: &HostId) -> Option<RemoteProcessAllocHostState> {
+        let _ = self.host_address_tx.send((host_id.clone(), None));
+        self.inner.remove(host_id)
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&HostId, &RemoteProcessAllocHostState)> {
+        self.inner.iter()
+    }
+
+    fn iter_mut(&mut self) -> impl Iterator<Item = (&HostId, &mut RemoteProcessAllocHostState)> {
+        self.inner.iter_mut()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+    // Any missing HashMap methods should be added here as needed
+}
+
 /// A generalized implementation of an Alloc using one or more hosts running
 /// RemoteProcessAlloc for process allocation.
 pub struct RemoteProcessAlloc {
@@ -488,7 +547,7 @@ pub struct RemoteProcessAlloc {
     // Inidicates that the allocation process has permanently failed.
     failed: bool,
     hosts_by_offset: HashMap<usize, HostId>,
-    host_states: HashMap<HostId, RemoteProcessAllocHostState>,
+    host_states: HostStates,
     world_shapes: HashMap<WorldId, Shape>,
     event_queue: VecDeque<ProcState>,
     comm_watcher_tx: UnboundedSender<HostId>,
@@ -496,6 +555,7 @@ pub struct RemoteProcessAlloc {
 
     bootstrap_addr: ChannelAddr,
     rx: ChannelRx<RemoteProcessProcStateMessage>,
+    signal_listener_handler: JoinHandle<()>,
 }
 
 impl RemoteProcessAlloc {
@@ -523,6 +583,63 @@ impl RemoteProcessAlloc {
 
         let (comm_watcher_tx, comm_watcher_rx) = unbounded_channel();
 
+        let (host_address_tx, mut host_address_rx) =
+            unbounded_channel::<(HostId, Option<ChannelAddr>)>();
+        let signal_listener_handler = tokio::spawn({
+            async move {
+                let mut signals = signal_hook_tokio::Signals::new([signal::SIGINT as i32]).unwrap();
+                let mut host_txs = HashMap::new();
+                loop {
+                    tokio::select! {
+                        Some((host_id, remote_addr)) = host_address_rx.recv() => {
+                            match remote_addr {
+                                Some(addr) => {
+                                    let Ok(tx) = channel::dial(addr.clone()) else {
+                                        tracing::error!(
+                                            "failed to dial remote {} for host {}",
+                                            addr, host_id
+                                        );
+                                        return;
+                                    };
+                                    host_txs.insert(host_id, tx);
+                                }
+                                None => {
+                                    host_txs.remove(&host_id);
+                                }
+                            }
+                        }
+                        signal = signals.next() => {
+                            if let Some(signal) = signal {
+                                if let Err(e) = try_join_all(
+                                    // send instead of post to ensure message has been delivered to the remote end of the
+                                    // channel before reraising signal and terminating this process
+                                    host_txs.values().map(|tx| tx.send(RemoteProcessAllocatorMessage::Terminate))
+                                )
+                                .await {
+                                    tracing::error!("error sending RemoteProcessAllocatorMessage: {}", e);
+                                }
+
+                                match signal::Signal::try_from(signal) {
+                                    Ok(sig @ signal::SIGINT) => {
+                                        // SAFETY: We're setting the handle to SigDfl (default system behaviour)
+                                        if let Err(err) = unsafe {
+                                            signal::signal(sig, signal::SigHandler::SigDfl)
+                                        } {
+                                            tracing::error!("failed to signal {}: {}", sig, err);
+                                        }
+                                        if let Err(err) = signal::raise(sig) {
+                                            tracing::error!("failed to raise {}: {}", sig, err);
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
         Ok(Self {
             spec,
             world_id,
@@ -533,7 +650,7 @@ impl RemoteProcessAlloc {
             world_shapes: HashMap::new(),
             ordered_hosts: Vec::new(),
             hosts_by_offset: HashMap::new(),
-            host_states: HashMap::new(),
+            host_states: HostStates::new(host_address_tx),
             bootstrap_addr,
             event_queue: VecDeque::new(),
             comm_watcher_tx,
@@ -542,6 +659,7 @@ impl RemoteProcessAlloc {
             started: false,
             running: true,
             failed: false,
+            signal_listener_handler,
         })
     }
 
@@ -655,7 +773,8 @@ impl RemoteProcessAlloc {
             };
 
             tracing::debug!("dialing remote: {} for host {}", remote_addr, host.id);
-            let tx = channel::dial(remote_addr.parse()?)
+            let remote_addr = remote_addr.parse::<ChannelAddr>()?;
+            let tx = channel::dial(remote_addr.clone())
                 .map_err(anyhow::Error::from)
                 .context(format!(
                     "failed to dial remote {} for host {}",
@@ -684,6 +803,7 @@ impl RemoteProcessAlloc {
                     failed: false,
                     allocated: false,
                 },
+                remote_addr,
             );
         }
 
@@ -808,6 +928,12 @@ impl RemoteProcessAlloc {
         let proc_ids = state.active_procs.iter().cloned().collect();
 
         Ok(proc_ids)
+    }
+}
+
+impl Drop for RemoteProcessAlloc {
+    fn drop(&mut self) {
+        self.signal_listener_handler.abort();
     }
 }
 
@@ -1630,8 +1756,11 @@ mod test {
 
 #[cfg(test)]
 mod test_alloc {
+    use std::os::unix::process::ExitStatusExt;
+
     use hyperactor::clock::ClockKind;
     use ndslice::shape;
+    use nix::unistd::Pid;
     use timed_test::async_timed_test;
 
     use super::*;
@@ -2007,5 +2136,68 @@ mod test_alloc {
         task1_allocator_handle.await.unwrap();
         task2_allocator.terminate();
         task2_allocator_handle.await.unwrap();
+    }
+
+    #[tracing_test::traced_test]
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_remote_process_alloc_signal_handler() {
+        let num_proc_meshes = 2;
+        let hosts_per_proc_mesh = 2;
+
+        let addresses = (0..(num_proc_meshes * hosts_per_proc_mesh))
+            .map(|_| ChannelAddr::any(ChannelTransport::Unix).to_string())
+            .collect::<Vec<_>>();
+
+        let remote_process_allocators = addresses
+            .iter()
+            .map(|addr| {
+                Command::new(
+                    buck_resources::get("monarch/hyperactor_mesh/remote_process_allocator")
+                        .unwrap(),
+                )
+                .env("RUST_LOG", "info")
+                .arg(format!("--addr={addr}"))
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+
+        let mut remote_process_alloc = Command::new(
+            buck_resources::get("monarch/hyperactor_mesh/remote_process_alloc").unwrap(),
+        )
+        .arg(format!("--addresses={}", addresses.join(",")))
+        .arg(format!("--num-proc-meshes={}", num_proc_meshes))
+        .arg(format!("--hosts-per-proc-mesh={}", hosts_per_proc_mesh))
+        .spawn()
+        .unwrap();
+
+        RealClock.sleep(tokio::time::Duration::from_secs(3)).await;
+
+        signal::kill(
+            Pid::from_raw(remote_process_alloc.id().unwrap() as i32),
+            signal::SIGINT,
+        )
+        .unwrap();
+
+        assert_eq!(
+            remote_process_alloc.wait().await.unwrap().signal(),
+            Some(signal::SIGINT as i32)
+        );
+
+        RealClock.sleep(tokio::time::Duration::from_secs(3)).await;
+
+        for remote_process_allocator in remote_process_allocators {
+            let output = remote_process_allocator.wait_with_output().await.unwrap();
+            assert!(output.status.success());
+            assert!(
+                String::from_utf8_lossy(&output.stdout)
+                    .contains("child stopped with ProcStopReason::Stopped")
+            );
+            assert!(
+                !String::from_utf8_lossy(&output.stdout)
+                    .contains("child stopped with ProcStopReason::Watchdog")
+            );
+        }
     }
 }
