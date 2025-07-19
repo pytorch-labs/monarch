@@ -45,6 +45,7 @@ use crate::runtime::signal_safe_block_on;
 use crate::selection::PySelection;
 use crate::shape::PyShape;
 use crate::supervision::SupervisionError;
+use crate::supervision::Unhealthy;
 
 #[pyclass(
     name = "PythonActorMesh",
@@ -54,7 +55,7 @@ pub struct PythonActorMesh {
     inner: SharedCell<RootActorMesh<'static, PythonActor>>,
     client: PyMailbox,
     _keepalive: Keepalive,
-    unhealthy_event: Arc<std::sync::Mutex<Option<Option<ActorSupervisionEvent>>>>,
+    unhealthy_event: Arc<std::sync::Mutex<Unhealthy<ActorSupervisionEvent>>>,
     user_monitor_sender: tokio::sync::broadcast::Sender<Option<ActorSupervisionEvent>>,
     monitor: tokio::task::JoinHandle<()>,
 }
@@ -70,11 +71,11 @@ impl PythonActorMesh {
     ) -> Self {
         let (user_monitor_sender, _) =
             tokio::sync::broadcast::channel::<Option<ActorSupervisionEvent>>(1);
-        let unhealthy_event = Arc::new(std::sync::Mutex::new(None));
+        let unhealthy_event = Arc::new(std::sync::Mutex::new(Unhealthy::SoFarSoGood));
         let monitor = tokio::spawn(Self::actor_mesh_monitor(
             events,
             user_monitor_sender.clone(),
-            unhealthy_event.clone(),
+            Arc::clone(&unhealthy_event),
         ));
         Self {
             inner,
@@ -91,15 +92,19 @@ impl PythonActorMesh {
     async fn actor_mesh_monitor(
         mut events: ActorSupervisionEvents,
         user_sender: tokio::sync::broadcast::Sender<Option<ActorSupervisionEvent>>,
-        unhealthy_event: Arc<std::sync::Mutex<Option<Option<ActorSupervisionEvent>>>>,
+        unhealthy_event: Arc<std::sync::Mutex<Unhealthy<ActorSupervisionEvent>>>,
     ) {
         loop {
             let event = events.next().await;
             let mut inner_unhealthy_event = unhealthy_event.lock().unwrap();
-            *inner_unhealthy_event = Some(event.clone());
+            match &event {
+                None => *inner_unhealthy_event = Unhealthy::StreamClosed,
+                Some(event) => *inner_unhealthy_event = Unhealthy::Crashed(event.clone()),
+            }
 
-            // Ignore the sender error when there is no receiver, which happens when there
-            // is no active requests to this mesh.
+            // Ignore the sender error when there is no receiver,
+            // which happens when there is no active requests to this
+            // mesh.
             let _ = user_sender.send(event.clone());
 
             if event.is_none() {
@@ -131,11 +136,20 @@ impl PythonActorMesh {
             .unhealthy_event
             .lock()
             .expect("failed to acquire unhealthy_event lock");
-        if let Some(ref event) = *unhealthy_event {
-            return Err(PyRuntimeError::new_err(format!(
-                "actor mesh is unhealthy with reason: {:?}",
-                event
-            )));
+
+        match &*unhealthy_event {
+            Unhealthy::SoFarSoGood => (),
+            Unhealthy::Crashed(event) => {
+                return Err(PyRuntimeError::new_err(format!(
+                    "actor mesh is unhealthy with reason: {:?}",
+                    event
+                )));
+            }
+            Unhealthy::StreamClosed => {
+                return Err(PyRuntimeError::new_err(
+                    "actor mesh is stopped due to proc mesh shutdown".to_string(),
+                ));
+            }
         }
 
         self.try_inner()?
@@ -155,15 +169,16 @@ impl PythonActorMesh {
             .lock()
             .expect("failed to acquire unhealthy_event lock");
 
-        Ok(unhealthy_event.as_ref().map(|event| match event {
-            None => PyActorSupervisionEvent {
+        match &*unhealthy_event {
+            Unhealthy::SoFarSoGood => Ok(None),
+            Unhealthy::StreamClosed => Ok(Some(PyActorSupervisionEvent {
                 // Dummy actor as place holder to indicate the whole mesh is stopped
                 // TODO(albertli): remove this when pushing all supervision logic to rust.
                 actor_id: id!(default[0].actor[0]).into(),
                 actor_status: "actor mesh is stopped due to proc mesh shutdown".to_string(),
-            },
-            Some(event) => PyActorSupervisionEvent::from(event.clone()),
-        }))
+            })),
+            Unhealthy::Crashed(event) => Ok(Some(PyActorSupervisionEvent::from(event.clone()))),
+        }
     }
 
     // Consider defining a "PythonActorRef", which carries specifically
