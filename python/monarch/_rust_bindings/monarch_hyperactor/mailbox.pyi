@@ -6,7 +6,8 @@
 
 # pyre-strict
 
-from typing import final, Generic, Protocol
+import asyncio
+from typing import Any, final, Generator, Generic, Protocol, TypeVar
 
 from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessage,
@@ -75,17 +76,17 @@ class PortRef:
     def port_id(self) -> PortId: ...
     def __repr__(self) -> str: ...
 
-@final
-class PortReceiver:
+class PortReceiverBase:
     """
     A receiver to which PythonMessages are sent.
     """
-    async def recv(self) -> PythonMessage:
-        """Receive a PythonMessage from the port's sender."""
+    def recv_task(self) -> "PythonTask[PythonMessage]":
+        """Receive a PythonMessage from the port's sender, returns a tokio Future for the completion."""
         ...
-    def blocking_recv(self) -> PythonMessage:
-        """Receive a single PythonMessage from the port's sender."""
-        ...
+
+@final
+class PortReceiver(PortReceiverBase):
+    pass
 
 @final
 class UndeliverablePortReceiver:
@@ -128,16 +129,8 @@ class OncePortRef:
     def __repr__(self) -> str: ...
 
 @final
-class OncePortReceiver:
-    """
-    A variant of PortReceiver that can only receive a single message.
-    """
-    async def recv(self) -> PythonMessage:
-        """Receive a single PythonMessage from the port's sender."""
-        ...
-    def blocking_recv(self) -> PythonMessage:
-        """Receive a single PythonMessage from the port's sender."""
-        ...
+class OncePortReceiver(PortReceiverBase):
+    pass
 
 @final
 class Mailbox:
@@ -226,3 +219,25 @@ class Reducer(Protocol):
 
     This method's Rust counterpart is `CommReducer::reduce`.
     """
+
+T = TypeVar("T")
+
+class PythonTask(Generic[T]):
+    """
+    A tokio::Future whose result returns a python object.
+    """
+    def into_future(self) -> asyncio.Future[T]:
+        """
+        Return an asyncio.Future that can be awaited to get the result of this task.
+        Consumes the PythonTask object.
+        """
+        ...
+
+    def block_on(self) -> T:
+        """
+        Synchronously wait on the result of this task, returning the result.
+        Consumes the PythonTask object.
+        """
+        ...
+
+    def __await__(self) -> Generator[T, None, T]: ...
