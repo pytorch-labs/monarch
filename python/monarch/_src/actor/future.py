@@ -12,14 +12,6 @@ from typing import Generator, Generic, Optional, TypeVar
 R = TypeVar("R")
 
 
-def _incomplete(impl, self):
-    try:
-        return self._set_result(impl())
-    except Exception as e:
-        self._set_exception(e)
-        raise
-
-
 async def _aincomplete(impl, self):
     try:
         return self._set_result(await impl())
@@ -57,14 +49,13 @@ async def _aincomplete(impl, self):
 
 
 class Future(Generic[R]):
-    def __init__(self, impl, blocking_impl=None, requires_loop=True):
-        if blocking_impl is None:
-            blocking_impl = partial(asyncio.run, impl())
-        self._get = partial(_incomplete, blocking_impl)
+    def __init__(self, *, impl, requires_loop=True):
         self._aget = partial(_aincomplete, impl)
         self._requires_loop = requires_loop
 
     def get(self, timeout: Optional[float] = None) -> R:
+        if asyncio._get_running_loop() is not None:
+            raise RuntimeError("get() cannot be called from within an async context")
         if timeout is not None:
             return asyncio.run(asyncio.wait_for(self._aget(self), timeout))
         if not self._requires_loop:
@@ -77,29 +68,23 @@ class Future(Generic[R]):
                 )
             except StopIteration as e:
                 return e.value
-        return self._get(self)
+        return asyncio.run(self._aget(self))
 
     def __await__(self) -> Generator[R, None, R]:
         return self._aget(self).__await__()
 
     def _set_result(self, result):
-        def f(self):
-            return result
-
         async def af(self):
             return result
 
-        self._get, self._aget = f, af
+        self._aget = af
         return result
 
     def _set_exception(self, e):
-        def f(self):
-            raise e
-
         async def af(self):
             raise e
 
-        self._get, self._aget = f, af
+        self._aget = af
 
     # compatibility with old tensor engine Future objects
     # hopefully we do not need done(), add_callback because

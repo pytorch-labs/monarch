@@ -31,6 +31,9 @@ from monarch._rust_bindings.monarch_hyperactor.channel import (
     ChannelAddr,
     ChannelTransport,
 )
+
+from monarch._src.actor.actor_mesh import fake_sync_state
+
 from monarch._src.actor.allocator import (
     ALLOC_LABEL_PROC_MESH_NAME,
     RemoteAllocator,
@@ -212,10 +215,14 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
                 initializer=StaticRemoteAllocInitializer(host1, host2),
                 heartbeat_interval=_100_MILLISECONDS,
             )
+
             alloc = await allocator.allocate(spec)
             proc_mesh = await ProcMesh.from_alloc(alloc)
-            actor = proc_mesh.spawn("test_actor", TestActor).get()
-            proc_mesh.stop().get()
+            # XXX - it is not clear why this trying to use
+            # async code in a sync context.
+            with fake_sync_state():
+                actor = proc_mesh.spawn("test_actor", TestActor).get()
+                proc_mesh.stop().get()
             with self.assertRaises(
                 RuntimeError, msg="`ProcMesh` has already been stopped"
             ):

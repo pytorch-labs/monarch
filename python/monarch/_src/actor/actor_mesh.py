@@ -353,18 +353,7 @@ class Endpoint(ABC, Generic[P, R]):
             )
             return ValueMesh(call_shape, results)
 
-        def process_blocking() -> ValueMesh[R]:
-            results: List[R] = [None] * extent.nelements  # pyre-fixme[9]
-            for _ in range(extent.nelements):
-                rank, value = r.recv().get()
-                results[rank] = value
-            call_shape = Shape(
-                extent.labels,
-                NDSlice.new_row_major(extent.sizes),
-            )
-            return ValueMesh(call_shape, results)
-
-        return Future(process, process_blocking)
+        return Future(impl=process, requires_loop=False)
 
     async def stream(self, *args: P.args, **kwargs: P.kwargs) -> AsyncGenerator[R, R]:
         """
@@ -460,7 +449,7 @@ class Accumulator(Generic[P, R, A]):
                 value = self._combine(value, x)
             return value
 
-        return Future(impl)
+        return Future(impl=impl)
 
 
 class ValueMesh(MeshTrait, Generic[R]):
@@ -673,7 +662,7 @@ class PortReceiver(Generic[R]):
                 raise ValueError(f"Unexpected message kind: {msg.kind}")
 
     def recv(self) -> "Future[R]":
-        return Future(lambda: self._recv(), None, requires_loop=False)
+        return Future(impl=lambda: self._recv(), requires_loop=False)
 
 
 class RankedPortReceiver(PortReceiver[Tuple[int, R]]):

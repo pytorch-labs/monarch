@@ -73,18 +73,13 @@ class RDMABuffer:
             size = storage.element_size() * data.numel()
             ctx = MonarchContext.get()
             f = Future(
-                lambda: _RdmaBuffer.create_rdma_buffer_nonblocking(
+                impl=lambda: _RdmaBuffer.create_rdma_buffer_nonblocking(
                     addr=addr,
                     size=size,
                     proc_id=ctx.proc_id,
                     client=ctx.mailbox,
                 ),
-                lambda: _RdmaBuffer.create_rdma_buffer_blocking(
-                    addr=addr,
-                    size=size,
-                    proc_id=ctx.proc_id,
-                    client=ctx.mailbox,
-                ),
+                requires_loop=False,
             )
             self._buffer: _RdmaBuffer = f.get()
         # TODO - specific exception
@@ -137,20 +132,7 @@ class RDMABuffer:
                 dst_gpu.copy_(dst)
             return res
 
-        def read_into_blocking() -> Optional[int]:
-            res = self._buffer.read_into_blocking(
-                addr=addr,
-                size=size,
-                local_proc_id=MonarchContext.get().proc_id,
-                client=MonarchContext.get().mailbox,
-                timeout=timeout,
-            )
-            # TODO - remove this once GPU support is added.
-            if dst_gpu is not None:
-                dst_gpu.copy_(dst)
-            return res
-
-        return Future(read_into_nonblocking, read_into_blocking)
+        return Future(impl=read_into_nonblocking, requires_loop=False)
 
     def write_from(
         self, src: torch.Tensor, offset: int = 0, timeout: int = 3
@@ -194,17 +176,4 @@ class RDMABuffer:
                 src_gpu.copy_(src)
             return res
 
-        def write_from_blocking() -> None:
-            res = self._buffer.write_from_blocking(
-                addr=addr,
-                size=size,
-                local_proc_id=MonarchContext.get().proc_id,
-                client=MonarchContext.get().mailbox,
-                timeout=timeout,
-            )
-            # TODO - remove this once GPU support is added.
-            if src_gpu is not None:
-                src_gpu.copy_(src)
-            return res
-
-        return Future(write_from_nonblocking, write_from_blocking)
+        return Future(impl=write_from_nonblocking, requires_loop=False)

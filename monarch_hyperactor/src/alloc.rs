@@ -37,6 +37,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use tokio::process::Command;
 
+use crate::actor::PyPythonTask;
 use crate::channel::PyChannelAddr;
 use crate::runtime::signal_safe_block_on;
 
@@ -190,36 +191,18 @@ impl PyLocalAllocator {
         PyLocalAllocator {}
     }
 
-    fn allocate_nonblocking<'py>(
-        &self,
-        py: Python<'py>,
-        spec: &PyAllocSpec,
-    ) -> PyResult<Bound<'py, PyAny>> {
+    fn allocate_nonblocking(&self, spec: &PyAllocSpec) -> PyResult<PyPythonTask> {
         // We could use Bound here, and acquire the GIL inside of `future_into_py`, but
         // it is rather awkward with the current APIs, and we can anyway support Arc/Mutex
         // pretty easily.
         let spec = spec.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        PyPythonTask::new(async move {
             LocalAllocator
                 .allocate(spec)
                 .await
                 .map(|inner| PyAlloc::new(Box::new(inner)))
                 .map_err(|e| PyRuntimeError::new_err(format!("{}", e)))
         })
-    }
-
-    fn allocate_blocking<'py>(&self, py: Python<'py>, spec: &PyAllocSpec) -> PyResult<PyAlloc> {
-        // We could use Bound here, and acquire the GIL inside of
-        // `signal_safe_block_on`, but it is rather awkward with the current
-        // APIs, and we can anyway support Arc/Mutex pretty easily.
-        let spec = spec.inner.clone();
-        signal_safe_block_on(py, async move {
-            LocalAllocator
-                .allocate(spec)
-                .await
-                .map(|inner| PyAlloc::new(Box::new(inner)))
-                .map_err(|e| PyRuntimeError::new_err(format!("{:?}", e)))
-        })?
     }
 }
 
@@ -237,36 +220,18 @@ impl PySimAllocator {
         PySimAllocator {}
     }
 
-    fn allocate_nonblocking<'py>(
-        &self,
-        py: Python<'py>,
-        spec: &PyAllocSpec,
-    ) -> PyResult<Bound<'py, PyAny>> {
+    fn allocate_nonblocking(&self, spec: &PyAllocSpec) -> PyResult<PyPythonTask> {
         // We could use Bound here, and acquire the GIL inside of `future_into_py`, but
         // it is rather awkward with the current APIs, and we can anyway support Arc/Mutex
         // pretty easily.
         let spec = spec.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        PyPythonTask::new(async move {
             SimAllocator
                 .allocate(spec)
                 .await
                 .map(|inner| PyAlloc::new(Box::new(inner)))
                 .map_err(|e| PyRuntimeError::new_err(format!("{}", e)))
         })
-    }
-
-    fn allocate_blocking<'py>(&self, py: Python<'py>, spec: &PyAllocSpec) -> PyResult<PyAlloc> {
-        // We could use Bound here, and acquire the GIL inside of
-        // `signal_safe_block_on`, but it is rather awkward with the current
-        // APIs, and we can anyway support Arc/Mutex pretty easily.
-        let spec = spec.inner.clone();
-        signal_safe_block_on(py, async move {
-            SimAllocator
-                .allocate(spec)
-                .await
-                .map(|inner| PyAlloc::new(Box::new(inner)))
-                .map_err(|e| PyRuntimeError::new_err(format!("{:?}", e)))
-        })?
     }
 }
 
@@ -296,17 +261,13 @@ impl PyProcessAllocator {
         }
     }
 
-    fn allocate_nonblocking<'py>(
-        &self,
-        py: Python<'py>,
-        spec: &PyAllocSpec,
-    ) -> PyResult<Bound<'py, PyAny>> {
+    fn allocate_nonblocking(&self, spec: &PyAllocSpec) -> PyResult<PyPythonTask> {
         // We could use Bound here, and acquire the GIL inside of `future_into_py`, but
         // it is rather awkward with the current APIs, and we can anyway support Arc/Mutex
         // pretty easily.
         let instance = Arc::clone(&self.inner);
         let spec = spec.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        PyPythonTask::new(async move {
             instance
                 .lock()
                 .await
@@ -315,23 +276,6 @@ impl PyProcessAllocator {
                 .map(|inner| PyAlloc::new(Box::new(inner)))
                 .map_err(|e| PyRuntimeError::new_err(format!("{:?}", e)))
         })
-    }
-
-    fn allocate_blocking<'py>(&self, py: Python<'py>, spec: &PyAllocSpec) -> PyResult<PyAlloc> {
-        // We could use Bound here, and acquire the GIL inside of
-        // `signal_safe_block_on`, but it is rather awkward with the current
-        // APIs, and we can anyway support Arc/Mutex pretty easily.
-        let instance = Arc::clone(&self.inner);
-        let spec = spec.inner.clone();
-        signal_safe_block_on(py, async move {
-            instance
-                .lock()
-                .await
-                .allocate(spec)
-                .await
-                .map(|inner| PyAlloc::new(Box::new(inner)))
-                .map_err(|e| PyRuntimeError::new_err(format!("{:?}", e)))
-        })?
     }
 }
 
@@ -486,33 +430,17 @@ impl PyRemoteAllocator {
         })
     }
 
-    fn allocate_nonblocking<'py>(
-        &self,
-        py: Python<'py>,
-        spec: &PyAllocSpec,
-    ) -> PyResult<Bound<'py, PyAny>> {
+    fn allocate_nonblocking(&self, spec: &PyAllocSpec) -> PyResult<PyPythonTask> {
         let spec = spec.inner.clone();
         let mut cloned = self.clone();
 
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        PyPythonTask::new(async move {
             cloned
                 .allocate(spec)
                 .await
                 .map(|alloc| PyAlloc::new(Box::new(alloc)))
                 .map_err(|e| PyRuntimeError::new_err(format!("{}", e)))
         })
-    }
-    fn allocate_blocking<'py>(&self, py: Python<'py>, spec: &PyAllocSpec) -> PyResult<PyAlloc> {
-        let spec = spec.inner.clone();
-        let mut cloned = self.clone();
-
-        signal_safe_block_on(py, async move {
-            cloned
-                .allocate(spec)
-                .await
-                .map(|alloc| PyAlloc::new(Box::new(alloc)))
-                .map_err(|e| PyRuntimeError::new_err(format!("{:?}", e)))
-        })?
     }
 }
 

@@ -10,6 +10,8 @@ from datetime import timedelta
 from typing import final, Optional
 
 from monarch._rust_bindings.monarch_hyperactor.alloc import Alloc, AllocSpec
+from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox, PythonTask
+
 from typing_extensions import Self
 
 class Alloc:
@@ -61,19 +63,9 @@ class ProcessAllocatorBase:
         """
         ...
 
-    async def allocate_nonblocking(self, spec: AllocSpec) -> Alloc:
+    def allocate_nonblocking(self, spec: AllocSpec) -> PythonTask[Alloc]:
         """
         Allocate a process according to the provided spec.
-
-        Arguments:
-        - `spec`: The spec to allocate according to.
-        """
-        ...
-
-    def allocate_blocking(self, spec: AllocSpec) -> Alloc:
-        """
-        Allocate a process according to the provided spec, blocking until an
-        alloc is returned.
 
         Arguments:
         - `spec`: The spec to allocate according to.
@@ -81,19 +73,9 @@ class ProcessAllocatorBase:
         ...
 
 class LocalAllocatorBase:
-    async def allocate_nonblocking(self, spec: AllocSpec) -> Alloc:
+    def allocate_nonblocking(self, spec: AllocSpec) -> PythonTask[Alloc]:
         """
         Allocate a process according to the provided spec.
-
-        Arguments:
-        - `spec`: The spec to allocate according to.
-        """
-        ...
-
-    def allocate_blocking(self, spec: AllocSpec) -> Alloc:
-        """
-        Allocate a process according to the provided spec, blocking until an
-        alloc is returned.
 
         Arguments:
         - `spec`: The spec to allocate according to.
@@ -101,19 +83,9 @@ class LocalAllocatorBase:
         ...
 
 class SimAllocatorBase:
-    async def allocate_nonblocking(self, spec: AllocSpec) -> Alloc:
+    def allocate_nonblocking(self, spec: AllocSpec) -> PythonTask[Alloc]:
         """
         Allocate a process according to the provided spec.
-
-        Arguments:
-        - `spec`: The spec to allocate according to.
-        """
-        ...
-
-    def allocate_blocking(self, spec: AllocSpec) -> Alloc:
-        """
-        Allocate a process according to the provided spec, blocking until an
-        alloc is returned.
 
         Arguments:
         - `spec`: The spec to allocate according to.
@@ -138,19 +110,9 @@ class RemoteAllocatorBase:
         """
         ...
 
-    async def allocate_nonblocking(self, spec: AllocSpec) -> Alloc:
+    def allocate_nonblocking(self, spec: AllocSpec) -> PythonTask[Alloc]:
         """
         Allocate a process according to the provided spec.
-
-        Arguments:
-        - `spec`: The spec to allocate according to.
-        """
-        ...
-
-    def allocate_blocking(self, spec: AllocSpec) -> Alloc:
-        """
-        Allocate a process according to the provided spec, blocking until an
-        alloc is returned.
 
         Arguments:
         - `spec`: The spec to allocate according to.
