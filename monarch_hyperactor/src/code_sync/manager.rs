@@ -8,6 +8,7 @@
 
 use std::path::PathBuf;
 
+use anyhow::Context as _;
 use anyhow::Result;
 use anyhow::ensure;
 use async_once_cell::OnceCell;
@@ -227,7 +228,17 @@ impl CodeSyncMessageHandler for CodeSyncManager {
             anyhow::Ok(())
         }
         .await;
-        result.send(cx, res.map_err(|e| format!("{:#?}", e)))?;
+        result.send(
+            cx,
+            res.map_err(|e| {
+                format!(
+                    "{:#?}",
+                    Err::<(), _>(e)
+                        .with_context(|| format!("code sync from {}", cx.self_id()))
+                        .unwrap_err()
+                )
+            }),
+        )?;
         Ok(())
     }
 
@@ -238,7 +249,17 @@ impl CodeSyncMessageHandler for CodeSyncManager {
     ) -> Result<()> {
         // TODO(agallagher): Add reload.
         let res = async move { anyhow::Ok(()) }.await;
-        result.send(cx, res.map_err(|e| format!("{:#?}", e)))?;
+        result.send(
+            cx,
+            res.map_err(|e| {
+                format!(
+                    "{:#?}",
+                    Err::<(), _>(e)
+                        .with_context(|| format!("module reload from {}", cx.self_id()))
+                        .unwrap_err()
+                )
+            }),
+        )?;
         Ok(())
     }
 }
