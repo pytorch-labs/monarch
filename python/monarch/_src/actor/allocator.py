@@ -42,10 +42,7 @@ class ProcessAllocator(ProcessAllocatorBase):
         Returns:
         - A future that will be fulfilled when the requested allocation is fulfilled.
         """
-        return Future(
-            lambda: self.allocate_nonblocking(spec),
-            lambda: self.allocate_blocking(spec),
-        )
+        return Future(impl=lambda: self.allocate_nonblocking(spec), requires_loop=False)
 
 
 @final
@@ -64,10 +61,7 @@ class LocalAllocator(LocalAllocatorBase):
         Returns:
         - A future that will be fulfilled when the requested allocation is fulfilled.
         """
-        return Future(
-            lambda: self.allocate_nonblocking(spec),
-            lambda: self.allocate_blocking(spec),
-        )
+        return Future(impl=lambda: self.allocate_nonblocking(spec), requires_loop=False)
 
 
 @final
@@ -86,10 +80,7 @@ class SimAllocator(SimAllocatorBase):
         Returns:
         - A future that will be fulfilled when the requested allocation is fulfilled.
         """
-        return Future(
-            lambda: self.allocate_nonblocking(spec),
-            lambda: self.allocate_blocking(spec),
-        )
+        return Future(impl=lambda: self.allocate_nonblocking(spec), requires_loop=False)
 
 
 class RemoteAllocInitializer(abc.ABC):
@@ -235,7 +226,4 @@ class RemoteAllocator(RemoteAllocatorBase):
         Returns:
         - A future that will be fulfilled when the requested allocation is fulfilled.
         """
-        return Future(
-            lambda: self.allocate_nonblocking(spec),
-            lambda: self.allocate_blocking(spec),
-        )
+        return Future(impl=lambda: self.allocate_nonblocking(spec), requires_loop=False)

@@ -519,7 +519,7 @@ async def awaitit(f):
     return await f
 
 
-def test_actor_future():
+def test_actor_future() -> None:
     v = 0
 
     async def incr():
@@ -529,32 +529,31 @@ def test_actor_future():
 
     # can use async implementation from sync
     # if no non-blocking is provided
-    f = Future(incr)
+    f = Future(impl=incr, requires_loop=False)
     assert f.get() == 1
     assert v == 1
     assert f.get() == 1
     assert asyncio.run(awaitit(f)) == 1
 
-    f = Future(incr)
+    f = Future(impl=incr, requires_loop=False)
     assert asyncio.run(awaitit(f)) == 2
     assert f.get() == 2
 
-    def incr2():
+    async def incr2():
         nonlocal v
         v += 2
         return v
 
     # Use non-blocking optimization if provided
-    f = Future(incr, incr2)
+    f = Future(impl=incr2)
     assert f.get() == 4
-    assert asyncio.run(awaitit(f)) == 4
 
     async def nope():
         nonlocal v
         v += 1
         raise ValueError("nope")
 
-    f = Future(nope)
+    f = Future(impl=nope, requires_loop=False)
 
     with pytest.raises(ValueError):
         f.get()
@@ -571,12 +570,12 @@ def test_actor_future():
 
     assert v == 5
 
-    def nope2():
+    async def nope2():
         nonlocal v
         v += 1
         raise ValueError("nope")
 
-    f = Future(incr, nope2)
+    f = Future(impl=nope2)
 
     with pytest.raises(ValueError):
         f.get()
@@ -598,7 +597,7 @@ def test_actor_future():
     async def seven():
         return 7
 
-    f = Future(seven)
+    f = Future(impl=seven, requires_loop=False)
 
     assert 7 == f.get(timeout=0.001)
 
@@ -606,7 +605,7 @@ def test_actor_future():
         f = asyncio.Future()
         await f
 
-    f = Future(neverfinish)
+    f = Future(impl=neverfinish, requires_loop=True)
 
     with pytest.raises(asyncio.exceptions.TimeoutError):
         f.get(timeout=0.1)

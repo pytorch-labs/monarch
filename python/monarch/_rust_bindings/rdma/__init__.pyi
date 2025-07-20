@@ -6,6 +6,8 @@
 
 from typing import Any, final, Optional
 
+from monarch._rust_bindings.monarch_hyperactor.mailbox import PythonTask
+
 @final
 class _RdmaMemoryRegionView:
     def __init__(self, addr: int, size_in_bytes: int) -> None: ...
@@ -22,47 +24,26 @@ class _RdmaBuffer:
     name: str
 
     @classmethod
-    def create_rdma_buffer_blocking(
+    def create_rdma_buffer_nonblocking(
         cls, addr: int, size: int, proc_id: str, client: Any
-    ) -> _RdmaBuffer: ...
-    @classmethod
-    async def create_rdma_buffer_nonblocking(
-        cls, addr: int, size: int, proc_id: str, client: Any
-    ) -> Any: ...
-    async def drop(self, client: Any): ...
-    def drop_blocking(self, client: Any): ...
-    async def read_into(
+    ) -> PythonTask[Any]: ...
+    def drop(self, client: Any) -> PythonTask[None]: ...
+    def read_into(
         self,
         addr: int,
         size: int,
         local_proc_id: str,
         client: Any,
         timeout: int,
-    ) -> Any: ...
-    def read_into_blocking(
+    ) -> PythonTask[Any]: ...
+    def write_from(
         self,
         addr: int,
         size: int,
         local_proc_id: str,
         client: Any,
         timeout: int,
-    ) -> Any: ...
-    async def write_from(
-        self,
-        addr: int,
-        size: int,
-        local_proc_id: str,
-        client: Any,
-        timeout: int,
-    ) -> Any: ...
-    def write_from_blocking(
-        self,
-        addr: int,
-        size: int,
-        local_proc_id: str,
-        client: Any,
-        timeout: int,
-    ) -> Any: ...
+    ) -> PythonTask[Any]: ...
     def __reduce__(self) -> tuple: ...
     def __repr__(self) -> str: ...
     @staticmethod

@@ -13,6 +13,7 @@ use hyperactor::Named;
 use hyperactor::ProcId;
 use hyperactor_mesh::RootActorMesh;
 use hyperactor_mesh::shared_cell::SharedCell;
+use monarch_hyperactor::actor::PyPythonTask;
 use monarch_hyperactor::mailbox::PyMailbox;
 use monarch_hyperactor::proc_mesh::PyProcMesh;
 use monarch_hyperactor::runtime::signal_safe_block_on;
@@ -67,26 +68,6 @@ async fn create_rdma_buffer(
 #[pymethods]
 impl PyRdmaBuffer {
     #[classmethod]
-    fn create_rdma_buffer_blocking<'py>(
-        _cls: &Bound<'_, PyType>,
-        py: Python<'py>,
-        addr: usize,
-        size: usize,
-        proc_id: String,
-        client: PyMailbox,
-    ) -> PyResult<PyRdmaBuffer> {
-        if !ibverbs_supported() {
-            return Err(PyException::new_err(
-                "ibverbs is not supported on this system",
-            ));
-        }
-        signal_safe_block_on(
-            py,
-            create_rdma_buffer(addr, size, proc_id.parse().unwrap(), client),
-        )?
-    }
-
-    #[classmethod]
     fn create_rdma_buffer_nonblocking<'py>(
         _cls: &Bound<'_, PyType>,
         py: Python<'py>,
@@ -94,16 +75,18 @@ impl PyRdmaBuffer {
         size: usize,
         proc_id: String,
         client: PyMailbox,
-    ) -> PyResult<Bound<'py, PyAny>> {
+    ) -> PyResult<PyPythonTask> {
         if !ibverbs_supported() {
             return Err(PyException::new_err(
                 "ibverbs is not supported on this system",
             ));
         }
-        pyo3_async_runtimes::tokio::future_into_py(
-            py,
-            create_rdma_buffer(addr, size, proc_id.parse().unwrap(), client),
-        )
+        PyPythonTask::new(create_rdma_buffer(
+            addr,
+            size,
+            proc_id.parse().unwrap(),
+            client,
+        ))
     }
 
     #[classmethod]
@@ -137,9 +120,9 @@ impl PyRdmaBuffer {
         local_proc_id: String,
         client: PyMailbox,
         timeout: u64,
-    ) -> PyResult<Bound<'py, PyAny>> {
+    ) -> PyResult<PyPythonTask> {
         let (local_owner_ref, buffer) = setup_rdma_context(self, local_proc_id);
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        PyPythonTask::new(async move {
             let caps = client.get_inner();
             let local_buffer = local_owner_ref.request_buffer(caps, addr, size).await?;
             let _result_ = local_buffer
@@ -148,41 +131,6 @@ impl PyRdmaBuffer {
                 .map_err(|e| PyException::new_err(format!("failed to read into buffer: {}", e)))?;
             Ok(())
         })
-    }
-
-    /// Reads data from the local buffer and places it into this remote RDMA buffer.
-    ///
-    /// This operation appears as "read_into" from the caller's perspective (reading from local memory
-    /// into the remote buffer), but internally it's implemented as a "write_from" operation on the
-    /// local buffer since the data flows from the local buffer to the remote one.
-    ///
-    /// This is the blocking version of `read_into`, compatible with non asyncio Python code.
-    ///
-    /// # Arguments
-    /// * `addr` - The address of the local buffer to read from
-    /// * `size` - The size of the data to transfer
-    /// * `local_proc_id` - The process ID where the local buffer resides
-    /// * `client` - The mailbox for communication
-    /// * `timeout` - Maximum time in milliseconds to wait for the operation
-    #[pyo3(signature = (addr, size, local_proc_id, client, timeout))]
-    fn read_into_blocking<'py>(
-        &self,
-        py: Python<'py>,
-        addr: usize,
-        size: usize,
-        local_proc_id: String,
-        client: PyMailbox,
-        timeout: u64,
-    ) -> PyResult<bool> {
-        let (local_owner_ref, buffer) = setup_rdma_context(self, local_proc_id);
-        signal_safe_block_on(py, async move {
-            let caps = client.get_inner();
-            let local_buffer = local_owner_ref.request_buffer(caps, addr, size).await?;
-            local_buffer
-                .write_from(caps, buffer, timeout)
-                .await
-                .map_err(|e| PyException::new_err(format!("failed to read into buffer: {}", e)))
-        })?
     }
 
     /// Writes data from this remote RDMA buffer into a local buffer.
@@ -206,9 +154,9 @@ impl PyRdmaBuffer {
         local_proc_id: String,
         client: PyMailbox,
         timeout: u64,
-    ) -> PyResult<Bound<'py, PyAny>> {
+    ) -> PyResult<PyPythonTask> {
         let (local_owner_ref, buffer) = setup_rdma_context(self, local_proc_id);
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        PyPythonTask::new(async move {
             let caps = client.get_inner();
             let local_buffer = local_owner_ref.request_buffer(caps, addr, size).await?;
             let _result_ = local_buffer
@@ -217,41 +165,6 @@ impl PyRdmaBuffer {
                 .map_err(|e| PyException::new_err(format!("failed to write from buffer: {}", e)))?;
             Ok(())
         })
-    }
-
-    /// Writes data from this remote RDMA buffer into a local buffer.
-    ///
-    /// This operation appears as "write_from" from the caller's perspective (writing from the remote
-    /// buffer into local memory), but internally it's implemented as a "read_into" operation on the
-    /// local buffer since the data flows from the remote buffer to the local one.
-    ///
-    /// This is the blocking version of `write_from`, compatible with non asyncio Python code.
-    ///
-    /// # Arguments
-    /// * `addr` - The address of the local buffer to write to
-    /// * `size` - The size of the data to transfer
-    /// * `local_proc_id` - The process ID where the local buffer resides
-    /// * `client` - The mailbox for communication
-    /// * `timeout` - Maximum time in milliseconds to wait for the operation
-    #[pyo3(signature = (addr, size, local_proc_id, client, timeout))]
-    fn write_from_blocking<'py>(
-        &self,
-        py: Python<'py>,
-        addr: usize,
-        size: usize,
-        local_proc_id: String,
-        client: PyMailbox,
-        timeout: u64,
-    ) -> PyResult<bool> {
-        let (local_owner_ref, buffer) = setup_rdma_context(self, local_proc_id);
-        signal_safe_block_on(py, async move {
-            let caps = client.get_inner();
-            let local_buffer = local_owner_ref.request_buffer(caps, addr, size).await?;
-            local_buffer
-                .read_into(caps, buffer, timeout)
-                .await
-                .map_err(|e| PyException::new_err(format!("failed to write from buffer: {}", e)))
-        })?
     }
 
     fn __reduce__(&self) -> PyResult<(PyObject, PyObject)> {
@@ -273,18 +186,10 @@ impl PyRdmaBuffer {
         Ok(deserialized)
     }
 
-    fn drop<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    fn drop<'py>(&self) -> PyResult<PyPythonTask> {
         // no op with CPUs, currently a stub.
         // TODO - replace with correct GPU behavior.
-        pyo3_async_runtimes::tokio::future_into_py(py, async move { Ok(()) })
-    }
-
-    fn drop_blocking<'py>(&self, py: Python<'py>) -> PyResult<()> {
-        signal_safe_block_on(py, async move {
-            // no op with CPUs, currently a stub.
-            // TODO - replace with correct GPU behavior.
-            Ok(())
-        })?
+        PyPythonTask::new(async move { Ok(()) })
     }
 }
 
