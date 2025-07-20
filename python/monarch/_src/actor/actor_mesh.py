@@ -152,7 +152,7 @@ Selection = Literal["all", "choose"] | int  # TODO: replace with real selection 
 # standin class for whatever is the serializable python object we use
 # to name an actor mesh. Hacked up today because ActorMesh
 # isn't plumbed to non-clients
-class _ActorMeshRefImpl:
+class _ActorMeshRefImpl(MeshTrait):
     def __init__(
         self,
         mailbox: Mailbox,
@@ -182,16 +182,24 @@ class _ActorMeshRefImpl:
             [cast(ActorId, hy_actor_mesh.get(i)) for i in range(len(shape))],
         )
 
-    @staticmethod
-    def from_actor_id(mailbox: Mailbox, actor_id: ActorId) -> "_ActorMeshRefImpl":
-        return _ActorMeshRefImpl(mailbox, None, None, singleton_shape, [actor_id])
+    def monitor(self) -> Optional[ActorMeshMonitor]:
+        return self._actor_mesh.monitor() if self._actor_mesh is not None else None
 
-    @staticmethod
-    def from_actor_ref_with_shape(
-        ref: "_ActorMeshRefImpl", shape: Shape
-    ) -> "_ActorMeshRefImpl":
+    @property
+    def shape(self) -> Shape:
+        return self._shape
+
+    @property
+    def _ndslice(self) -> NDSlice:
+        return self._shape.ndslice
+
+    @property
+    def _labels(self) -> Iterable[str]:
+        return self._shape.labels
+
+    def _new_with_shape(self, shape: Shape) -> "_ActorMeshRefImpl":
         return _ActorMeshRefImpl(
-            ref._mailbox, None, None, shape, ref._please_replace_me_actor_ids
+            self._mailbox, None, None, shape, self._please_replace_me_actor_ids
         )
 
     def __getstate__(
@@ -273,6 +281,35 @@ class _ActorMeshRefImpl:
     def _name_pid(self):
         actor_id0 = self._please_replace_me_actor_ids[0]
         return actor_id0.actor_name, actor_id0.pid
+
+
+class ActorIdFakeMesh:
+    """
+    Fake mesh that represents a single actor. This is used to allow sending a
+    message to a single actor through the mesh API.
+    """
+
+    def __init__(
+        self,
+        actor_id: ActorId,
+        mailbox: Mailbox,
+    ) -> None:
+        self._actor_id = actor_id
+        self._mailbox = mailbox
+
+    def cast(
+        self,
+        message: PythonMessage,
+        selection: Selection,
+    ) -> None:
+        self._mailbox.post(self._actor_id, message)
+
+    @property
+    def shape(self) -> Shape:
+        return singleton_shape
+
+    def monitor(self) -> Optional[ActorMeshMonitor]:
+        return None
 
 
 class Extent(NamedTuple):
@@ -383,7 +420,7 @@ class Endpoint(ABC, Generic[P, R]):
 class ActorEndpoint(Endpoint[P, R]):
     def __init__(
         self,
-        actor_mesh_ref: _ActorMeshRefImpl,
+        actor_mesh_ref: _ActorMeshRefImpl | ActorIdFakeMesh,
         name: str,
         impl: Callable[Concatenate[Any, P], Awaitable[R]],
         mailbox: Mailbox,
@@ -420,15 +457,11 @@ class ActorEndpoint(Endpoint[P, R]):
             importlib.import_module("monarch." + "mesh_controller").actor_send(
                 self, bytes, refs, port, selection
             )
-        shape = self._actor_mesh._shape
+        shape = self._actor_mesh.shape
         return Extent(shape.labels, shape.ndslice.sizes)
 
     def _port(self, once: bool = False) -> "PortTuple[R]":
-        monitor = (
-            None
-            if self._actor_mesh._actor_mesh is None
-            else self._actor_mesh._actor_mesh.monitor()
-        )
+        monitor = self._actor_mesh.monitor()
         return PortTuple.create(self._mailbox, monitor, once)
 
 
@@ -876,19 +909,22 @@ class Actor(MeshTrait):
             "actor implementations are not meshes, but we can't convince the typechecker of it..."
         )
 
-    def _new_with_shape(self, shape: Shape) -> "ActorMeshRef":
+    def _new_with_shape(self, shape: Shape) -> "Actor":
         raise NotImplementedError(
             "actor implementations are not meshes, but we can't convince the typechecker of it..."
         )
 
 
-class ActorMeshRef(MeshTrait):
+class _ActorMeshTrait(MeshTrait):
     def __init__(
-        self, Class: Type[T], actor_mesh_ref: _ActorMeshRefImpl, mailbox: Mailbox
+        self,
+        Class: Type[T],
+        actor_mesh_ref: _ActorMeshRefImpl | ActorIdFakeMesh,
+        mailbox: Mailbox,
     ) -> None:
         self.__name__: str = Class.__name__
         self._class: Type[T] = Class
-        self._actor_mesh_ref: _ActorMeshRefImpl = actor_mesh_ref
+        self._actor_mesh_ref: _ActorMeshRefImpl | ActorIdFakeMesh = actor_mesh_ref
         self._mailbox: Mailbox = mailbox
         for attr_name in dir(self._class):
             attr_value = getattr(self._class, attr_name, None)
@@ -930,6 +966,40 @@ class ActorMeshRef(MeshTrait):
             f"'{self.__class__.__name__}' object has no attribute '{name}'"
         )
 
+    @property
+    def _ndslice(self) -> NDSlice:
+        raise NotImplementedError(
+            "should not be called because def slice is overridden"
+        )
+
+    @property
+    def _labels(self) -> Iterable[str]:
+        raise NotImplementedError(
+            "should not be called because def slice is overridden"
+        )
+
+    def _new_with_shape(self, shape: Shape) -> "ActorMeshRef":
+        raise NotImplementedError(
+            "should not be called because def slice is overridden"
+        )
+
+
+class ActorMeshRef(_ActorMeshTrait, Generic[T]):
+    def __init__(
+        self,
+        Class: Type[T],
+        actor_mesh: _ActorMeshRefImpl,
+        mailbox: Mailbox,
+    ) -> None:
+        super().__init__(Class, actor_mesh, mailbox)
+
+    def _inner(self) -> "_ActorMeshRefImpl":
+        mesh = self._actor_mesh_ref
+        assert isinstance(
+            mesh, _ActorMeshRefImpl
+        ), f"mesh type is {mesh.__class__.__name__}"
+        return mesh
+
     def _create(
         self,
         args: Iterable[Any],
@@ -955,23 +1025,35 @@ class ActorMeshRef(MeshTrait):
             self._mailbox,
         )
 
-    @property
-    def _ndslice(self) -> NDSlice:
-        return self._actor_mesh_ref._shape.ndslice
-
-    @property
-    def _labels(self) -> Iterable[str]:
-        return self._actor_mesh_ref._shape.labels
-
-    def _new_with_shape(self, shape: Shape) -> "ActorMeshRef":
-        return ActorMeshRef(
-            self._class,
-            _ActorMeshRefImpl.from_actor_ref_with_shape(self._actor_mesh_ref, shape),
-            self._mailbox,
-        )
+    def slice(self, **kwargs) -> "ActorMeshRef":
+        sliced = self._inner().slice(**kwargs)
+        return ActorMeshRef(self._class, sliced, self._mailbox)
 
     def __repr__(self) -> str:
-        return f"ActorMeshRef(class={self._class}, shape={self._actor_mesh_ref._shape})"
+        return f"ActorMeshRef(class={self._class}, shape={self._inner().shape})"
+
+
+class ActorIdRef(_ActorMeshTrait, Generic[T]):
+    def __init__(
+        self,
+        Class: Type[T],
+        actor_id: ActorId,
+        mailbox: Mailbox,
+    ) -> None:
+        super().__init__(Class, ActorIdFakeMesh(actor_id, mailbox), mailbox)
+
+    def _inner(self) -> "ActorId":
+        mesh = self._actor_mesh_ref
+        assert isinstance(
+            mesh, ActorIdFakeMesh
+        ), f"mesh type is {mesh.__class__.__name__}"
+        return mesh._actor_id
+
+    def slice(self, **kwargs) -> "ActorIdRef":
+        raise NotImplementedError("ActorIdRef does not support slicing")
+
+    def __repr__(self) -> str:
+        return f"ActorIdRef(class={self._class}, actor_id={self._inner()})"
 
 
 class ActorError(Exception):
