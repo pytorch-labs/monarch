@@ -114,7 +114,7 @@ async def test_accumulator() -> None:
         )
 
     async def recv_message() -> str:
-        messge = await asyncio.wait_for(receiver.recv(), timeout=5)
+        messge = await asyncio.wait_for(receiver.recv_task().into_future(), timeout=5)
         value = pickle.loads(messge.message)
         return cast(str, value)
 
@@ -177,6 +177,6 @@ async def test_reducer() -> None:
         ),
     )
 
-    messge = await asyncio.wait_for(receiver.recv(), timeout=5)
+    messge = await asyncio.wait_for(receiver.recv_task().into_future(), timeout=5)
     value = cast(str, pickle.loads(messge.message))
     assert "[reduced](start+msg0)" in value
