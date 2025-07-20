@@ -35,6 +35,8 @@ use hyperactor_mesh::actor_mesh::ActorMesh;
 use hyperactor_mesh::connect::Connect;
 use hyperactor_mesh::connect::accept;
 use hyperactor_mesh::sel;
+#[cfg(feature = "packaged_rsync")]
+use lazy_static::lazy_static;
 use ndslice::Selection;
 use nix::sys::signal;
 use nix::sys::signal::Signal;
@@ -42,13 +44,47 @@ use nix::unistd::Pid;
 use serde::Deserialize;
 use serde::Serialize;
 use tempfile::TempDir;
+#[cfg(feature = "packaged_rsync")]
+use tempfile::TempPath;
 use tokio::fs;
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
 use tokio::process::Child;
 use tokio::process::Command;
+#[cfg(feature = "packaged_rsync")]
+use tokio::sync::OnceCell;
 
 use crate::code_sync::WorkspaceLocation;
+
+#[cfg(feature = "packaged_rsync")]
+lazy_static! {
+    static ref RSYNC_BIN_PATH: OnceCell<TempPath> = OnceCell::new();
+}
+
+async fn get_rsync_bin_path() -> Result<&'static Path> {
+    #[cfg(feature = "packaged_rsync")]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        Ok(RSYNC_BIN_PATH
+            .get_or_try_init(|| async {
+                tokio::task::spawn_blocking(|| {
+                    let mut tmp = tempfile::NamedTempFile::new()?;
+                    let rsync_bin = include_bytes!("rsync.bin");
+                    tmp.write_all(rsync_bin)?;
+                    let bin_path = tmp.into_temp_path();
+                    std::fs::set_permissions(&bin_path, std::fs::Permissions::from_mode(0o755))?;
+                    anyhow::Ok(bin_path)
+                })
+                .await?
+            })
+            .await?)
+    }
+    #[cfg(not(feature = "packaged_rsync"))]
+    {
+        Ok(Path::new("rsync"))
+    }
+}
 
 /// Represents a single file change from rsync
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -162,7 +198,7 @@ pub async fn do_rsync(addr: &SocketAddr, workspace: &Path) -> Result<RsyncResult
     // line in rsync output.
     fs::create_dir_all(workspace).await?;
 
-    let output = Command::new("rsync")
+    let output = Command::new(get_rsync_bin_path().await?)
         .arg("--archive")
         .arg("--delete")
         // Show detailed changes for each file
@@ -232,7 +268,7 @@ impl RsyncDaemon {
         std::mem::drop(listener);
 
         // Spawn the rsync daemon.
-        let mut child = Command::new("rsync")
+        let mut child = Command::new(get_rsync_bin_path().await?)
             .arg("--daemon")
             .arg("--no-detach")
             .arg(format!("--address={}", addr.ip()))
