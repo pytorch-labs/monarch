@@ -258,6 +258,32 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             ):
                 await ProcMesh.from_alloc(alloc)
 
+    async def test_init_failure(self) -> None:
+        class FailInitActor(Actor):
+            def __init__(self) -> None:
+                if current_rank().rank == 0:
+                    raise RuntimeError("fail on init")
+
+            @endpoint
+            def dummy(self) -> None:
+                pass
+
+        with remote_process_allocator() as host1, remote_process_allocator() as host2:
+            allocator = RemoteAllocator(
+                world_id="helloworld",
+                initializer=StaticRemoteAllocInitializer(host1, host2),
+                heartbeat_interval=_100_MILLISECONDS,
+            )
+            spec = AllocSpec(AllocConstraints(), host=2, gpu=2)
+            proc_mesh = await ProcMesh.from_alloc(await allocator.allocate(spec))
+            actor_mesh = await proc_mesh.spawn("actor", FailInitActor)
+
+            with self.assertRaisesRegex(
+                Exception,
+                r"(?s)Remote actor <class 'monarch.python.tests.test_allocator.FailInitActor'>.__init__ call failed.*fail on init",
+            ):
+                await actor_mesh.dummy.call()
+
     async def test_stop_proc_mesh(self) -> None:
         spec = AllocSpec(AllocConstraints(), host=2, gpu=4)
 

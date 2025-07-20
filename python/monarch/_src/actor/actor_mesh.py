@@ -713,6 +713,8 @@ class _Actor:
 
     def __init__(self) -> None:
         self.instance: object | None = None
+        # TODO: (@pzhang) remove this with T229200522
+        self._saved_error: ActorError | None = None
 
     async def handle(
         self,
@@ -746,7 +748,13 @@ class _Actor:
                     method = name
                     if method == "__init__":
                         Class, *args = args
-                        self.instance = Class(*args, **kwargs)
+                        try:
+                            self.instance = Class(*args, **kwargs)
+                        except Exception as e:
+                            self._saved_error = ActorError(
+                                e, f"Remote actor {Class}.__init__ call failed."
+                            )
+                            raise e
                         port.send(None)
                         return None
                 case _:
@@ -763,12 +771,12 @@ class _Actor:
                 #    should never happen. It indicates either a bug in the
                 #    message delivery mechanism, or the framework accidentally
                 #    mixed the usage of cast and direct send.
-                raise AssertionError(
-                    f"""
-                    actor object is missing when executing method {method}
-                    on actor {mailbox.actor_id}
-                    """
-                )
+                error_message = f"Actor object is missing when executing method {method} on actor {mailbox.actor_id}."
+                if self._saved_error is not None:
+                    error_message += (
+                        f" This is likely due to an earlier error: {self._saved_error}"
+                    )
+                raise AssertionError(error_message)
             the_method = getattr(self.instance, method)._method
 
             if inspect.iscoroutinefunction(the_method):
