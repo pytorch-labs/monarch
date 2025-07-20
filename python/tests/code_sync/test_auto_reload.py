@@ -67,6 +67,18 @@ class TestAutoReloader(unittest.TestCase):
                 )
                 self.assertEqual(test_module.foo, 2)
 
+    def test_builtin_module_no_file_attribute(self):
+        """Test that modules without __file__ attribute don't cause AttributeError."""
+        reloader = AutoReloader()
+        with SysAuditImportHook.install(reloader.import_callback):
+            # C extensions don't have a `__file__` attr and won't trigger an "exec"
+            # event, so we're verifying that an unrelated "exec" (via `eval`) won't
+            # cause issues.
+            assert "_tracemalloc" not in sys.modules
+            import _tracemalloc  # noqa
+
+            eval("5")  # trigger `exec` event in the reloader
+
     def test_pyc_only_change(self):
         with importable_workspace() as workspace:
             reloader = AutoReloader()
