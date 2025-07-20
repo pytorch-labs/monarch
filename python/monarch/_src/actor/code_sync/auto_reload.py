@@ -120,7 +120,7 @@ class SysAuditImportHook:
             module = sys.modules.get(module_name)
             if module is None:
                 return
-            if module.__file__ is None:
+            if getattr(module, "__file__", None) is None:
                 return
             (code_obj,) = args
             if code_obj.co_filename is None:
