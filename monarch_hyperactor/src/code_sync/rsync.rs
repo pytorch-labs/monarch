@@ -179,7 +179,8 @@ pub async fn do_rsync(addr: &SocketAddr, workspace: &Path) -> Result<RsyncResult
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
-        .await?;
+        .await
+        .context("spawning `rsync` binary")?;
 
     output
         .status
