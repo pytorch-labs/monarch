@@ -90,6 +90,8 @@ async def test_choose():
     proc = await local_proc_mesh(gpus=2)
     v = await proc.spawn("counter", Counter, 3)
     i = await proc.spawn("indirect", Indirect)
+    # wait for meshes to be created
+    asyncio.sleep(1)
     v.incr.broadcast()
     result = await v.value.choose()
 
@@ -329,6 +331,8 @@ async def test_sync_actor():
     proc = await local_proc_mesh(gpus=2)
     a = await proc.spawn("actor", SyncActor)
     c = await proc.spawn("counter", Counter, 5)
+    # wait for meshes to be created
+    await asyncio.sleep(1)
     r = await a.sync_endpoint.choose(c)
     assert r == 5
 

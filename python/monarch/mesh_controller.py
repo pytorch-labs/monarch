@@ -293,7 +293,7 @@ def actor_send(
         # mutates
         checker.check_permission(())
     selected_device_mesh = (
-        endpoint._actor_mesh._proc_mesh and endpoint._actor_mesh._proc_mesh._device_mesh
+        endpoint._actor_mesh.proc_mesh and endpoint._actor_mesh.proc_mesh._device_mesh
     )
     if selected_device_mesh is not checker.mesh:
         raise ValueError(
@@ -325,7 +325,7 @@ def actor_send(
         ),
         args_kwargs_tuple,
     )
-    endpoint._actor_mesh.cast(actor_msg, selection)
+    endpoint._actor_mesh.cast(actor_msg, selection, endpoint._mailbox)
     worker_msg = SendResultOfActorCall(ident, broker_id, tensors, [], stream_ref)
     client.send(checker.mesh._ndslice, worker_msg)
     # we have to ask for status updates
