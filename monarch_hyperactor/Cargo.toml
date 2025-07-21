@@ -39,5 +39,4 @@ tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 dir-diff = "0.3"
 
 [features]
-default = ["packaged_rsync"]
-packaged_rsync = []
+default = []
