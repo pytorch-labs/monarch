@@ -449,7 +449,7 @@ impl Actor for PythonActor {
 /// Create a new TaskLocals with its own asyncio event loop in a dedicated thread.
 fn create_task_locals() -> pyo3_async_runtimes::TaskLocals {
     let (tx, rx) = std::sync::mpsc::channel();
-    let _ = std::thread::spawn(move || {
+    let _ = std::thread::Builder::new().name("asyncio-event-loop".to_string()).spawn(move || {
         Python::with_gil(|py| {
             let asyncio = Python::import(py, "asyncio").unwrap();
             let event_loop = asyncio.call_method0("new_event_loop").unwrap();
@@ -461,7 +461,19 @@ fn create_task_locals() -> pyo3_async_runtimes::TaskLocals {
                 .copy_context(py)
                 .unwrap();
             tx.send(task_locals).unwrap();
-            event_loop.call_method0("run_forever").unwrap();
+            // The event loop can surface an error if one of the tasks it runs raises
+            // an exception.
+            event_loop.call_method0("run_forever").inspect_err(|err| {
+                eprintln!("Event loop exited with error: {}", err);
+            });
+            // Regardless of whether the event loop exited cleanly or not, we need
+            // to close the loop. Equivalent to finally in Python.
+            event_loop.call_method0("stop").inspect_err(|err| {
+                eprintln!("Failed to stop event loop: {}", err);
+            });
+            event_loop.call_method0("close").inspect_err(|err| {
+                eprintln!("Failed to close event loop: {}", err);
+            });
         });
     });
     rx.recv().unwrap()
