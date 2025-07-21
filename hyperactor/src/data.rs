@@ -456,6 +456,21 @@ impl Serialized {
 
         Ok(())
     }
+
+    /// The length of the underlying serialized message
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    /// Is the message empty. This should always return false.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Returns the 32bit crc of the serialized data
+    pub fn crc(&self) -> u32 {
+        crc32fast::hash(&self.data)
+    }
 }
 
 const MAX_BYTE_PREVIEW_LENGTH: usize = 8;
