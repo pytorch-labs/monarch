@@ -490,7 +490,7 @@ impl Proc {
     /// Call `abort` on the `JoinHandle` associated with the given
     /// root actor. If successful return `Some(root.clone())` else
     /// `None`.
-    pub fn abort_root_actor(&mut self, root: &ActorId) -> Option<ActorId> {
+    pub fn abort_root_actor(&self, root: &ActorId) -> Option<ActorId> {
         self.state()
             .ledger
             .roots
@@ -511,17 +511,12 @@ impl Proc {
             .next()
     }
 
-    // Iterating over a proc's root actors signaling each to stop.
-    // Return the root actor IDs and status observers.
-    async fn destroy(
-        &mut self,
-    ) -> Result<HashMap<ActorId, watch::Receiver<ActorStatus>>, anyhow::Error> {
-        tracing::debug!("{}: proc stopping", self.proc_id());
-
-        let mut statuses = HashMap::new();
-        for entry in self.state().ledger.roots.iter() {
+    /// Signals to a root actor to stop,
+    /// returning a status observer if successful.
+    pub fn stop_actor(&self, actor_id: &ActorId) -> Option<watch::Receiver<ActorStatus>> {
+        if let Some(entry) = self.state().ledger.roots.get(actor_id) {
             match entry.value().upgrade() {
-                None => (), // the root's cell has been dropped
+                None => None, // the root's cell has been dropped
                 Some(cell) => {
                     tracing::info!("sending stop signal to {}", cell.actor_id());
                     if let Err(err) = cell.signal(Signal::DrainAndStop) {
@@ -531,15 +526,16 @@ impl Proc {
                             cell.pid(),
                             err
                         );
-                        continue;
+                        None
+                    } else {
+                        Some(cell.status().clone())
                     }
-                    statuses.insert(cell.actor_id().clone(), cell.status().clone());
                 }
             }
+        } else {
+            tracing::error!("no actor {} found in {} roots", actor_id, self.proc_id());
+            None
         }
-
-        tracing::debug!("{}: proc stopped", self.proc_id());
-        Ok(statuses)
     }
 
     /// Stop the proc. Returns a pair of:
@@ -553,7 +549,23 @@ impl Proc {
         timeout: Duration,
         skip_waiting: Option<&ActorId>,
     ) -> Result<(Vec<ActorId>, Vec<ActorId>), anyhow::Error> {
-        let mut statuses = self.destroy().await?;
+        tracing::debug!("{}: proc stopping", self.proc_id());
+
+        let mut statuses = HashMap::new();
+        for actor_id in self
+            .state()
+            .ledger
+            .roots
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect::<Vec<_>>()
+        {
+            if let Some(status) = self.stop_actor(&actor_id) {
+                statuses.insert(actor_id, status);
+            }
+        }
+        tracing::debug!("{}: proc stopped", self.proc_id());
+
         let waits: Vec<_> = statuses
             .iter_mut()
             .filter(|(actor_id, _)| Some(*actor_id) != skip_waiting)

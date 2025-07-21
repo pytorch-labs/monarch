@@ -59,6 +59,7 @@ tracing-subscriber = { version = "0.3.19", features = ["chrono", "env-filter", "
 [dev-dependencies]
 maplit = "1.0"
 timed_test = { version = "0.0.0", path = "../timed_test" }
+tracing-test = { version = "0.2.3", features = ["no-env-filter"] }
 
 [lints]
 rust = { unexpected_cfgs = { check-cfg = ["cfg(fbcode_build)"], level = "warn" } }

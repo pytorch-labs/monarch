@@ -114,6 +114,20 @@ class PythonActorMesh:
         """
         ...
 
+    async def stop(self) -> None:
+        """
+        Stop all actors that are part of this mesh.
+        Using this mesh after stop() is called will raise an Exception.
+        """
+        ...
+
+    @property
+    def stopped(self) -> bool:
+        """
+        If the mesh has been stopped.
+        """
+        ...
+
 @final
 class ActorMeshMonitor:
     def __aiter__(self) -> AsyncIterator["ActorSupervisionEvent"]:

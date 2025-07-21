@@ -43,6 +43,9 @@ declare_attrs! {
 
     /// Maximum buffer size for split port messages
     pub attr SPLIT_MAX_BUFFER_SIZE: usize = 5;
+
+    /// Timeout used by proc mesh for stopping an actor.
+    pub attr STOP_ACTOR_TIMEOUT: Duration = Duration::from_secs(1);
 }
 
 /// Load configuration from environment variables

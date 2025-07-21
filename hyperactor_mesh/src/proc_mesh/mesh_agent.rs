@@ -25,13 +25,17 @@ use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Named;
+use hyperactor::OncePortRef;
 use hyperactor::PortHandle;
 use hyperactor::PortRef;
 use hyperactor::ProcId;
 use hyperactor::RefClient;
+use hyperactor::actor::ActorStatus;
 use hyperactor::actor::remote::Remote;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
+use hyperactor::clock::Clock;
+use hyperactor::clock::RealClock;
 use hyperactor::mailbox::BoxedMailboxSender;
 use hyperactor::mailbox::DeliveryError;
 use hyperactor::mailbox::DialMailboxRouter;
@@ -52,11 +56,17 @@ pub enum GspawnResult {
     Error(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
+pub enum StopActorResult {
+    Success,
+    Timeout,
+    NotFound,
+}
+
 #[derive(
     Debug,
     Clone,
     PartialEq,
-    Eq,
     Serialize,
     Deserialize,
     Handler,
@@ -90,6 +100,17 @@ pub(crate) enum MeshAgentMessage {
         params_data: Data,
         /// reply port; the proc should send its rank to indicated a spawned actor
         status_port: PortRef<GspawnResult>,
+    },
+
+    /// Stop actors of a specific mesh name
+    StopActor {
+        /// The actor to stop
+        actor_id: ActorId,
+        /// The timeout for waiting for the actor to stop
+        timeout_ms: u64,
+        /// The result when trying to stop the actor
+        #[reply]
+        stopped: OncePortRef<StopActorResult>,
     },
 }
 
@@ -223,6 +244,30 @@ impl MeshAgentMessageHandler for MeshAgent {
         };
         status_port.send(cx, GspawnResult::Success { rank, actor_id })?;
         Ok(())
+    }
+
+    async fn stop_actor(
+        &mut self,
+        _cx: &Context<Self>,
+        actor_id: ActorId,
+        timeout_ms: u64,
+    ) -> Result<StopActorResult, anyhow::Error> {
+        tracing::info!("Stopping actor: {}", actor_id);
+
+        if let Some(mut status) = self.proc.stop_actor(&actor_id) {
+            match RealClock
+                .timeout(
+                    tokio::time::Duration::from_millis(timeout_ms),
+                    status.wait_for(|state: &ActorStatus| matches!(*state, ActorStatus::Stopped)),
+                )
+                .await
+            {
+                Ok(_) => Ok(StopActorResult::Success),
+                Err(_) => Ok(StopActorResult::Timeout),
+            }
+        } else {
+            Ok(StopActorResult::NotFound)
+        }
     }
 }
 

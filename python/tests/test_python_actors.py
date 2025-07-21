@@ -13,14 +13,16 @@ import sys
 import tempfile
 import threading
 import time
+import unittest
 from logging import INFO
 from types import ModuleType
+from typing import cast
 
 import pytest
 
 import torch
 
-from monarch._src.actor.actor_mesh import Port, PortTuple
+from monarch._src.actor.actor_mesh import ActorMeshRef, Port, PortTuple
 
 from monarch.actor import (
     Accumulator,
@@ -739,3 +741,21 @@ async def test_same_actor_twice() -> None:
     assert (
         "gspawn failed: an actor with name 'dup' has already been spawned" in error_msg
     ), f"Expected error message about duplicate actor name, got: {error_msg}"
+
+
+class TestActorMeshStop(unittest.IsolatedAsyncioTestCase):
+    async def test_actor_mesh_stop(self) -> None:
+        pm = await proc_mesh(gpus=2)
+        am_1 = await pm.spawn("printer", Printer)
+        am_2 = await pm.spawn("printer2", Printer)
+        await am_1.print.call("hello 1")
+        await am_1.log.call("hello 2")
+        await cast(ActorMeshRef, am_1).stop()
+
+        with self.assertRaisesRegex(
+            RuntimeError, expected_regex="`ActorMesh` has been stopped"
+        ):
+            await am_1.print.call("hello 1")
+
+        await am_2.print.call("hello 3")
+        await am_2.log.call("hello 4")

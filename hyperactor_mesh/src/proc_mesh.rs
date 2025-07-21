@@ -14,7 +14,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use dashmap::DashMap;
+use futures::future::join_all;
 use hyperactor::Actor;
+use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Mailbox;
 use hyperactor::Named;
@@ -56,6 +58,7 @@ use crate::comm::CommActorMode;
 use crate::proc_mesh::mesh_agent::GspawnResult;
 use crate::proc_mesh::mesh_agent::MeshAgent;
 use crate::proc_mesh::mesh_agent::MeshAgentMessageClient;
+use crate::proc_mesh::mesh_agent::StopActorResult;
 use crate::reference::ProcMeshId;
 
 pub mod mesh_agent;
@@ -448,6 +451,40 @@ impl ProcMesh {
 
     pub fn shape(&self) -> &Shape {
         &self.shape
+    }
+
+    /// Send stop actors message to all mesh agents for a specific mesh name
+    pub async fn stop_actor_by_name(&self, mesh_name: &str) -> Result<(), anyhow::Error> {
+        let timeout = hyperactor::config::global::get(hyperactor::config::STOP_ACTOR_TIMEOUT);
+        let results = join_all(self.agents().map(|agent| async move {
+            let actor_id = ActorId(agent.actor_id().proc_id().clone(), mesh_name.to_string(), 0);
+            (
+                actor_id.clone(),
+                agent
+                    .clone()
+                    .stop_actor(&self.client, actor_id, timeout.as_millis() as u64)
+                    .await,
+            )
+        }))
+        .await;
+
+        for (actor_id, result) in results {
+            match result {
+                Ok(StopActorResult::Timeout) => {
+                    tracing::error!("timed out while stopping actor {}", actor_id);
+                }
+                Ok(StopActorResult::NotFound) => {
+                    tracing::error!("no actor {} on proc {}", actor_id, actor_id.proc_id());
+                }
+                Ok(StopActorResult::Success) => {
+                    tracing::info!("stopped actor {}", actor_id);
+                }
+                Err(e) => {
+                    tracing::error!("error stopping actor {}: {}", actor_id, e);
+                }
+            }
+        }
+        Ok(())
     }
 }
 

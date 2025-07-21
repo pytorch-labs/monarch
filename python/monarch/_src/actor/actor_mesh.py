@@ -212,6 +212,11 @@ class _ActorMeshRefImpl:
         # and not through comm actor casting.
         # TODO: remove this when casting integration is done.
         if self._actor_mesh is not None:
+            if self._actor_mesh.stopped:
+                raise SupervisionError(
+                    "actor mesh is not in a healthy state: `ActorMesh` has been stopped"
+                )
+
             event = self._actor_mesh.get_supervision_event()
             if event is not None:
                 raise SupervisionError(f"actor mesh is not in a healthy state: {event}")
@@ -273,6 +278,9 @@ class _ActorMeshRefImpl:
     def _name_pid(self):
         actor_id0 = self._please_replace_me_actor_ids[0]
         return actor_id0.actor_name, actor_id0.pid
+
+    async def stop(self):
+        await self._actor_mesh.stop()
 
 
 class Extent(NamedTuple):
@@ -971,6 +979,9 @@ class ActorMeshRef(MeshTrait):
 
     def __repr__(self) -> str:
         return f"ActorMeshRef(class={self._class}, shape={self._actor_mesh_ref._shape})"
+
+    async def stop(self):
+        await self._actor_mesh_ref.stop()
 
 
 class ActorError(Exception):
