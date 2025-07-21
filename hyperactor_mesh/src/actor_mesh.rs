@@ -138,6 +138,7 @@ where
 }
 
 /// A mesh of actors, all of which reside on the same [`ProcMesh`].
+#[async_trait]
 pub trait ActorMesh: Mesh<Id = ActorMeshId> {
     /// The type of actor in the mesh.
     type Actor: RemoteActor;
@@ -178,11 +179,8 @@ pub trait ActorMesh: Mesh<Id = ActorMeshId> {
         self.shape().slice().iter().map(move |rank| gang.rank(rank))
     }
 
-    fn stop(&self) -> impl std::future::Future<Output = Result<(), anyhow::Error>> + Send
-    where
-        Self: Sync,
-    {
-        async { self.proc_mesh().stop_actor_by_name(self.name()).await }
+    async fn stop(&self) -> Result<(), anyhow::Error> {
+        self.proc_mesh().stop_actor_by_name(self.name()).await
     }
 
     /// Get a serializeable reference to this mesh similar to ActorHandle::bind
