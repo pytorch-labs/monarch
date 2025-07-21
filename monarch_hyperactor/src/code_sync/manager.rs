@@ -6,6 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use anyhow::Context as _;
@@ -47,6 +48,9 @@ use tokio::net::TcpListener;
 use tokio::net::TcpStream;
 
 use crate::code_sync::WorkspaceLocation;
+use crate::code_sync::auto_reload::AutoReloadActor;
+use crate::code_sync::auto_reload::AutoReloadMessage;
+use crate::code_sync::auto_reload::AutoReloadParams;
 use crate::code_sync::rsync::RsyncActor;
 use crate::code_sync::rsync::RsyncDaemon;
 use crate::code_sync::rsync::RsyncMessage;
@@ -162,6 +166,7 @@ pub struct CodeSyncManagerParams {}
 )]
 pub struct CodeSyncManager {
     rsync: OnceCell<ActorHandle<RsyncActor>>,
+    auto_reload: OnceCell<ActorHandle<AutoReloadActor>>,
 }
 
 #[async_trait]
@@ -171,6 +176,7 @@ impl Actor for CodeSyncManager {
     async fn new(CodeSyncManagerParams {}: Self::Params) -> Result<Self> {
         Ok(Self {
             rsync: OnceCell::new(),
+            auto_reload: OnceCell::new(),
         })
     }
 }
@@ -182,6 +188,15 @@ impl CodeSyncManager {
     ) -> Result<&'a ActorHandle<RsyncActor>> {
         self.rsync
             .get_or_try_init(RsyncActor::spawn(cx, RsyncParams {}))
+            .await
+    }
+
+    async fn get_auto_reload_actor<'a>(
+        &'a mut self,
+        cx: &Context<'a, Self>,
+    ) -> Result<&'a ActorHandle<AutoReloadActor>> {
+        self.auto_reload
+            .get_or_try_init(AutoReloadActor::spawn(cx, AutoReloadParams {}))
             .await
     }
 }
@@ -217,12 +232,22 @@ impl CodeSyncMessageHandler for CodeSyncManager {
             if let Some(workspace_shape) = reload {
                 let mesh = workspace_shape.downstream_mesh(cx.self_id())?;
                 let (tx, rx) = cx.open_port::<Result<(), String>>();
-                mesh.cast(cx, sel!(*), CodeSyncMessage::Reload { result: tx.bind() })?;
-                let _: Vec<()> = rx
-                    .take(mesh.shape().slice().len())
-                    .map(|res| res?.map_err(anyhow::Error::msg))
-                    .try_collect()
-                    .await?;
+                let tx = tx.bind();
+                mesh.cast(
+                    cx,
+                    // We make sure to exclude the current rank from the sync, as this actor will
+                    // be blocked here waiting for results.  We just manually call `reload` to run
+                    // concurrently below.
+                    sel!(*).without(mesh.shape().slice(), &HashSet::from([cx.self_id().rank()]))?,
+                    CodeSyncMessage::Reload { result: tx.clone() },
+                )?;
+                let _: ((), Vec<()>) = try_join!(
+                    // Run reload for this rank.
+                    self.reload(cx, tx),
+                    rx.take(mesh.shape().slice().len())
+                        .map(|res| res?.map_err(anyhow::Error::msg))
+                        .try_collect(),
+                )?;
             }
 
             anyhow::Ok(())
@@ -247,8 +272,15 @@ impl CodeSyncMessageHandler for CodeSyncManager {
         cx: &Context<Self>,
         result: PortRef<Result<(), String>>,
     ) -> Result<()> {
-        // TODO(agallagher): Add reload.
-        let res = async move { anyhow::Ok(()) }.await;
+        let res = async move {
+            let (tx, mut rx) = cx.open_port();
+            self.get_auto_reload_actor(cx)
+                .await?
+                .send(AutoReloadMessage { result: tx.bind() })?;
+            rx.recv().await?.map_err(anyhow::Error::msg)?;
+            anyhow::Ok(())
+        }
+        .await;
         result.send(
             cx,
             res.map_err(|e| {

@@ -106,7 +106,6 @@ class ProcMesh(MeshTrait):
         self._debug_manager: Optional[DebugManager] = None
         self._mailbox: Mailbox = self._proc_mesh.client
         self._code_sync_client: Optional[CodeSyncMeshClient] = None
-        self._auto_reload_actor: Optional[AutoReloadActor] = None
         self._logging_mesh_client: Optional[LoggingMeshClient] = None
         self._maybe_device_mesh: Optional["DeviceMesh"] = _device_mesh
         self._stopped = False
@@ -235,12 +234,6 @@ class ProcMesh(MeshTrait):
             self._code_sync_client = CodeSyncMeshClient.spawn_blocking(
                 proc_mesh=self._proc_mesh,
             )
-            if auto_reload:
-                # TODO(agallagher): Merge this into the `CodeSyncMeshClient` actor.
-                self._auto_reload_actor = await self._spawn_nonblocking(
-                    "auto_reload",
-                    AutoReloadActor,
-                )
         # TODO(agallagher): We need some way to configure and pass this
         # in -- right now we're assuming the `gpu` dimension, which isn't
         # correct.
@@ -255,10 +248,8 @@ class ProcMesh(MeshTrait):
                 location=WorkspaceLocation.FromEnvVar("WORKSPACE_DIR"),
                 shape=WorkspaceShape.shared("gpus"),
             ),
+            auto_reload=auto_reload,
         )
-        if auto_reload:
-            assert self._auto_reload_actor is not None
-            await self._auto_reload_actor.reload.call()
 
     async def logging_option(self, stream_to_client: bool = False) -> None:
         """
