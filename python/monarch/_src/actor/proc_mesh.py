@@ -36,13 +36,7 @@ from monarch._rust_bindings.monarch_hyperactor.proc_mesh import (
     ProcMeshMonitor,
 )
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape, Slice
-from monarch._src.actor.actor_mesh import (
-    _Actor,
-    _ActorMeshRefImpl,
-    Actor,
-    ActorMeshRef,
-    fake_sync_state,
-)
+from monarch._src.actor.actor_mesh import _Actor, Actor, ActorMesh, fake_sync_state
 from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator, SimAllocator
 from monarch._src.actor.code_sync import (
     CodeSyncMeshClient,
@@ -190,14 +184,14 @@ class ProcMesh(MeshTrait):
                 f"{Class} must subclass monarch.service.Actor to spawn it."
             )
         actor_mesh = await self._proc_mesh.spawn_nonblocking(name, _Actor)
-        service = ActorMeshRef(
+        service = ActorMesh.create(
             Class,
-            _ActorMeshRefImpl.from_hyperactor_mesh(self._mailbox, actor_mesh, self),
+            actor_mesh,
             self._mailbox,
+            self._proc_mesh,
+            *args,
+            **kwargs,
         )
-        # useful to have this separate, because eventually we can reconstitute ActorMeshRef objects across pickling by
-        # doing `ActorMeshRef(Class, actor_handle)` but not calling _create.
-        service._create(args, kwargs)
         return cast(T, service)
 
     @property
