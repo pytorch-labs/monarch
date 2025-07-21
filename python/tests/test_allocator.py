@@ -102,7 +102,7 @@ def remote_process_allocator(
             f"--addr={addr}",
         ]
         if timeout is not None:
-            args.append(f"--timeout={timeout}")
+            args.append(f"--timeout-sec={timeout}")
 
         process_allocator = subprocess.Popen(
             args=args,

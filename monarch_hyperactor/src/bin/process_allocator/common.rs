@@ -42,10 +42,9 @@ pub struct Args {
 
     #[arg(
         long,
-        default_value_t = 0,
-        help = "If non-zero, a timeout for the allocator to wait before exiting. 0 means infinite wait"
+        help = "If specified, a timeout for the allocator to wait before exiting. Unspecified means no timeout"
     )]
-    pub timeout: u64,
+    pub timeout_sec: Option<u64>,
 }
 
 pub fn main_impl(

@@ -132,6 +132,8 @@ impl RemoteProcessAllocator {
     /// 4. Allocator sends Done message to bootstrap_addr when Alloc is done.
     ///
     /// At any point, client can send Stop message to serve_addr to stop the allocator.
+    /// If timeout is Some, the allocator will exit if no client connects within
+    /// that timeout, and no child allocation is running.
     pub async fn start(
         &self,
         cmd: Command,
@@ -145,8 +147,6 @@ impl RemoteProcessAllocator {
 
     /// Start a remote process allocator with given allocator listening for
     /// RemoteProcessAllocatorMessage on serve_addr.
-    /// If timeout is Some, the allocator will exit if no client connects within
-    /// that timeout, and no child allocation is running.
     /// Used for testing.
     pub async fn start_with_allocator<A: Allocator + Send + Sync + 'static>(
         &self,
@@ -247,7 +247,7 @@ impl RemoteProcessAllocator {
                     }
                     // Else, exit the loop as a client hasn't connected in a reasonable
                     // amount of time.
-                    tracing::warn!("timeout elapsed without any allocations, exiting");
+                    tracing::warn!("timeout of {} seconds elapsed without any allocations, exiting", timeout.unwrap_or_default().as_secs());
                     break;
                 }
             }

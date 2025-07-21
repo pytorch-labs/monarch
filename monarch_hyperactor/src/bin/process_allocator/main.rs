@@ -28,11 +28,7 @@ async fn main() {
 
     let serve_address = ChannelAddr::from_str(&bind).unwrap();
     let program = Command::new(args.program);
-    let timeout = if args.timeout > 0 {
-        Some(Duration::from_secs(args.timeout))
-    } else {
-        None
-    };
+    let timeout = args.timeout_sec.map(Duration::from_secs);
 
     let _ = main_impl(serve_address, program, timeout).await.unwrap();
 }
