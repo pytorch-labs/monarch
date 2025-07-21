@@ -90,6 +90,26 @@ impl PyRdmaBuffer {
     }
 
     #[classmethod]
+    fn create_rdma_buffer_blocking<'py>(
+        _cls: &Bound<'_, PyType>,
+        py: Python<'py>,
+        addr: usize,
+        size: usize,
+        proc_id: String,
+        client: PyMailbox,
+    ) -> PyResult<PyRdmaBuffer> {
+        if !ibverbs_supported() {
+            return Err(PyException::new_err(
+                "ibverbs is not supported on this system",
+            ));
+        }
+        signal_safe_block_on(
+            py,
+            create_rdma_buffer(addr, size, proc_id.parse().unwrap(), client),
+        )?
+    }
+
+    #[classmethod]
     fn rdma_supported<'py>(_cls: &Bound<'_, PyType>, _py: Python<'py>) -> bool {
         ibverbs_supported()
     }

@@ -6,6 +6,7 @@
 
 # pyre-strict
 
+import logging
 import os
 import sys
 import warnings
@@ -24,7 +25,6 @@ from typing import (
 )
 
 from monarch._rust_bindings.monarch_extension.logging import LoggingMeshClient
-
 from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monarch/monarch_extension:monarch_extension
     Alloc,
     AllocConstraints,
@@ -63,13 +63,14 @@ from monarch._src.actor.shape import MeshTrait
 
 HAS_TENSOR_ENGINE = False
 try:
-    # TODO: while the tensor_engine submodule doesn't exist yet, use the
-    # available of monarch.rdma as a proxy.
-    # type: ignore
-    from monarch.rdma import RDMAManager  # @manual
+    from monarch._rust_bindings.rdma import (  # type: ignore[import]
+        _RdmaManager,
+        create_rdma_manager_blocking,
+    )
 
     HAS_TENSOR_ENGINE = True
 except ImportError:
+    logging.warning("RDMA is not available on this platform")
     pass
 
 
@@ -102,7 +103,7 @@ class ProcMesh(MeshTrait):
         self._proc_mesh = hy_proc_mesh
         self._mock_shape: Optional[Shape] = _mock_shape
         # type: ignore[21]
-        self._rdma_manager: Optional["RDMAManager"] = None
+        self._rdma_manager: Optional["_RdmaManager"] = None
         self._debug_manager: Optional[DebugManager] = None
         self._mailbox: Mailbox = self._proc_mesh.client
         self._code_sync_client: Optional[CodeSyncMeshClient] = None
@@ -117,7 +118,7 @@ class ProcMesh(MeshTrait):
         with fake_sync_state():
             if _mock_shape is None and HAS_TENSOR_ENGINE:
                 # type: ignore[21]
-                self._rdma_manager = self.spawn("rdma_manager", RDMAManager).get()
+                self._rdma_manager = create_rdma_manager_blocking(self._proc_mesh)
             if not _is_initializing_debugger and _mock_shape is None:
                 self._debug_manager = self.spawn(
                     _DEBUG_MANAGER_ACTOR_NAME, DebugManager, debug_client()

@@ -24,6 +24,10 @@ class _RdmaBuffer:
     name: str
 
     @classmethod
+    def create_rdma_buffer_blocking(
+        cls, addr: int, size: int, proc_id: str, client: Any
+    ) -> _RdmaBuffer: ...
+    @classmethod
     def create_rdma_buffer_nonblocking(
         cls, addr: int, size: int, proc_id: str, client: Any
     ) -> PythonTask[Any]: ...
