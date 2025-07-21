@@ -42,6 +42,9 @@ sudo dnf install clang-devel libnccl-devel
 conda install -c conda-forge clangdev nccl
 conda update -n monarchenv --all -c conda-forge -y
 
+# If you are building with RDMA support, build monarch with `USE_TENSOR_ENGINE=1 pip install --no-build-isolation .` and dnf install the following packages
+sudo dnf install -y libibverbs rdma-core libmlx5 libibverbs-devel rdma-core-devel
+
 # Install build dependencies
 pip install -r build-requirements.txt
 # Install test dependencies
