@@ -95,7 +95,9 @@ def remote_process_allocator(
     """Start a remote process allocator on addr. If timeout is not None, have it
     timeout after that many seconds if no messages come in"""
 
-    with importlib.resources.path(__package__, "") as package_path:
+    with importlib.resources.as_file(
+        importlib.resources.files(__package__)
+    ) as package_path:
         addr = addr or ChannelAddr.any(ChannelTransport.Unix)
         args = [
             "process_allocator",

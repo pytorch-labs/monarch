@@ -48,7 +48,9 @@ def invoke_main():
 
     try:
         with (
-            importlib.resources.path("monarch", "py-spy") as pyspy,
+            importlib.resources.as_file(
+                importlib.resources.files("monarch") / "py-spy"
+            ) as pyspy,
         ):
             if pyspy.exists():
                 os.environ["PYSPY_BIN"] = str(pyspy)

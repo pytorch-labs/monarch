@@ -25,7 +25,9 @@ from later.unittest import TestCase
 
 @lru_cache()
 def hyper_bin() -> Path:
-    with resources.path((__package__ or "") + ".hyper", "hyper") as path:
+    with resources.as_file(
+        resources.files((__package__ or "") + ".hyper") / "hyper"
+    ) as path:
         return path
 
 

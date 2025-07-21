@@ -122,7 +122,9 @@ _PROC_ENV: dict[str, str] = {}
 
 def get_controller_main() -> tuple[Path, dict[str, str]]:
     with (
-        importlib.resources.path("monarch", "monarch_controller") as controller_main,
+        importlib.resources.as_file(
+            importlib.resources.files("monarch") / "monarch_controller"
+        ) as controller_main,
     ):
         if not controller_main.exists():
             if IN_PAR:

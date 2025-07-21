@@ -29,8 +29,8 @@ if IN_PAR:
         PYTHON_EXECUTABLE = os.environ["FB_XAR_INVOKED_NAME"]
     else:
         try:
-            with importlib.resources.path(
-                "monarch_tensor_worker_env", "worker_env"
+            with importlib.resources.as_file(
+                importlib.resources.files("monarch_tensor_worker_env") / "worker_env"
             ) as path:
                 if not path.exists():
                     raise ImportError()
