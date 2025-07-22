@@ -102,7 +102,7 @@ async def verify_cast(
 
     rcv_ranks = []
     for _ in range(len(cast_ranks)):
-        message = await receiver.recv()
+        message = await receiver.recv_task().into_future()
         result_kind = message.kind
         assert isinstance(result_kind, PythonMessageKind.Result)
         rank = result_kind.rank
@@ -112,7 +112,7 @@ async def verify_cast(
     assert rcv_ranks == cast_ranks
     # verify no more messages are received
     with pytest.raises(asyncio.exceptions.TimeoutError):
-        await asyncio.wait_for(receiver.recv(), timeout=1)
+        await asyncio.wait_for(receiver.recv_task().into_future(), timeout=1)
 
 
 @pytest.mark.timeout(30)

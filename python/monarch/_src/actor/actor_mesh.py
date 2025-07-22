@@ -6,6 +6,7 @@
 
 # pyre-unsafe
 
+import asyncio
 import collections
 import contextvars
 import functools
@@ -60,9 +61,12 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     Mailbox,
     OncePortReceiver,
     OncePortRef,
-    PortReceiver as HyPortReceiver,
     PortRef,
 )
+
+if TYPE_CHECKING:
+    from monarch._rust_bindings.monarch_hyperactor.mailbox import PortReceiverBase
+
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.shape import Point as HyPoint, Shape
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
@@ -75,6 +79,7 @@ from monarch._src.actor.pdb_wrapper import PdbWrapper
 from monarch._src.actor.pickle import flatten, unflatten
 
 from monarch._src.actor.shape import MeshTrait, NDSlice
+from monarch._src.actor.sync_state import fake_sync_state
 
 if TYPE_CHECKING:
     from monarch._src.actor.proc_mesh import ProcMesh
@@ -86,7 +91,7 @@ Allocator = ProcessAllocator | LocalAllocator
 try:
     from __manifest__ import fbmake  # noqa
 
-    IN_PAR = True
+    IN_PAR = bool(fbmake.get("par_style"))
 except ImportError:
     IN_PAR = False
 
@@ -207,6 +212,11 @@ class _ActorMeshRefImpl:
         # and not through comm actor casting.
         # TODO: remove this when casting integration is done.
         if self._actor_mesh is not None:
+            if self._actor_mesh.stopped:
+                raise SupervisionError(
+                    "actor mesh is not in a healthy state: `ActorMesh` has been stopped"
+                )
+
             event = self._actor_mesh.get_supervision_event()
             if event is not None:
                 raise SupervisionError(f"actor mesh is not in a healthy state: {event}")
@@ -268,6 +278,9 @@ class _ActorMeshRefImpl:
     def _name_pid(self):
         actor_id0 = self._please_replace_me_actor_ids[0]
         return actor_id0.actor_name, actor_id0.pid
+
+    async def stop(self):
+        await self._actor_mesh.stop()
 
 
 class Extent(NamedTuple):
@@ -348,18 +361,7 @@ class Endpoint(ABC, Generic[P, R]):
             )
             return ValueMesh(call_shape, results)
 
-        def process_blocking() -> ValueMesh[R]:
-            results: List[R] = [None] * extent.nelements  # pyre-fixme[9]
-            for _ in range(extent.nelements):
-                rank, value = r.recv().get()
-                results[rank] = value
-            call_shape = Shape(
-                extent.labels,
-                NDSlice.new_row_major(extent.sizes),
-            )
-            return ValueMesh(call_shape, results)
-
-        return Future(process, process_blocking)
+        return Future(impl=process, requires_loop=False)
 
     async def stream(self, *args: P.args, **kwargs: P.kwargs) -> AsyncGenerator[R, R]:
         """
@@ -455,7 +457,7 @@ class Accumulator(Generic[P, R, A]):
                 value = self._combine(value, x)
             return value
 
-        return Future(impl)
+        return Future(impl=impl)
 
 
 class ValueMesh(MeshTrait, Generic[R]):
@@ -648,24 +650,13 @@ class PortReceiver(Generic[R]):
     def __init__(
         self,
         mailbox: Mailbox,
-        receiver: MonitoredPortReceiver
-        | MonitoredOncePortReceiver
-        | HyPortReceiver
-        | OncePortReceiver,
+        receiver: "PortReceiverBase",
     ) -> None:
         self._mailbox: Mailbox = mailbox
-        self._receiver: (
-            MonitoredPortReceiver
-            | MonitoredOncePortReceiver
-            | HyPortReceiver
-            | OncePortReceiver
-        ) = receiver
+        self._receiver = receiver
 
     async def _recv(self) -> R:
-        return self._process(await self._receiver.recv())
-
-    def _blocking_recv(self) -> R:
-        return self._process(self._receiver.blocking_recv())
+        return self._process(await self._receiver.recv_task())
 
     def _process(self, msg: PythonMessage) -> R:
         # TODO: Try to do something more structured than a cast here
@@ -679,7 +670,7 @@ class PortReceiver(Generic[R]):
                 raise ValueError(f"Unexpected message kind: {msg.kind}")
 
     def recv(self) -> "Future[R]":
-        return Future(lambda: self._recv(), self._blocking_recv)
+        return Future(impl=lambda: self._recv(), requires_loop=False)
 
 
 class RankedPortReceiver(PortReceiver[Tuple[int, R]]):
@@ -693,6 +684,14 @@ class RankedPortReceiver(PortReceiver[Tuple[int, R]]):
 
 
 singleton_shape = Shape([], NDSlice(offset=0, sizes=[], strides=[]))
+
+
+# Currently the synchronous function of actors are run on a python thread that has an active event loop.
+# Technically it is unsafe for them to block at all because they will block the loop of other
+# calls, so all calls to .get() should be failing.
+# But in the meantime, to implement get() by reusing async functions,
+#  we need to signal to the consumer of the PythonTask object that the thread really isn't in an async context.
+# We do this by blanking out the running event loop during the call to the synchronous actor function.
 
 
 class _Actor:
@@ -712,6 +711,8 @@ class _Actor:
 
     def __init__(self) -> None:
         self.instance: object | None = None
+        # TODO: (@pzhang) remove this with T229200522
+        self._saved_error: ActorError | None = None
 
     async def handle(
         self,
@@ -745,7 +746,13 @@ class _Actor:
                     method = name
                     if method == "__init__":
                         Class, *args = args
-                        self.instance = Class(*args, **kwargs)
+                        try:
+                            self.instance = Class(*args, **kwargs)
+                        except Exception as e:
+                            self._saved_error = ActorError(
+                                e, f"Remote actor {Class}.__init__ call failed."
+                            )
+                            raise e
                         port.send(None)
                         return None
                 case _:
@@ -762,12 +769,12 @@ class _Actor:
                 #    should never happen. It indicates either a bug in the
                 #    message delivery mechanism, or the framework accidentally
                 #    mixed the usage of cast and direct send.
-                raise AssertionError(
-                    f"""
-                    actor object is missing when executing method {method}
-                    on actor {mailbox.actor_id}
-                    """
-                )
+                error_message = f"Actor object is missing when executing method {method} on actor {mailbox.actor_id}."
+                if self._saved_error is not None:
+                    error_message += (
+                        f" This is likely due to an earlier error: {self._saved_error}"
+                    )
+                raise AssertionError(error_message)
             the_method = getattr(self.instance, method)._method
 
             if inspect.iscoroutinefunction(the_method):
@@ -793,7 +800,8 @@ class _Actor:
                 result = await instrumented()
             else:
                 enter_span(the_method.__module__, method, str(ctx.mailbox.actor_id))
-                result = the_method(self.instance, *args, **kwargs)
+                with fake_sync_state():
+                    result = the_method(self.instance, *args, **kwargs)
                 self._maybe_exit_debugger()
                 exit_span()
 
@@ -826,16 +834,17 @@ class _Actor:
         from monarch._src.actor.debugger import DebugManager
 
         if (pdb_wrapper := DebugContext.get().pdb_wrapper) is not None:
-            ctx = MonarchContext.get()
-            pdb_wrapper = PdbWrapper(
-                ctx.point.rank,
-                ctx.point.shape.coordinates(ctx.point.rank),
-                ctx.mailbox.actor_id,
-                DebugManager.ref().get_debug_client.call_one().get(),
-            )
-            DebugContext.set(DebugContext(pdb_wrapper))
-            pdb_wrapper.post_mortem(exc_tb)
-            self._maybe_exit_debugger(do_continue=False)
+            with fake_sync_state():
+                ctx = MonarchContext.get()
+                pdb_wrapper = PdbWrapper(
+                    ctx.point.rank,
+                    ctx.point.shape.coordinates(ctx.point.rank),
+                    ctx.mailbox.actor_id,
+                    DebugManager.ref().get_debug_client.call_one().get(),
+                )
+                DebugContext.set(DebugContext(pdb_wrapper))
+                pdb_wrapper.post_mortem(exc_tb)
+                self._maybe_exit_debugger(do_continue=False)
 
 
 def _is_mailbox(x: object) -> bool:
@@ -970,6 +979,9 @@ class ActorMeshRef(MeshTrait):
 
     def __repr__(self) -> str:
         return f"ActorMeshRef(class={self._class}, shape={self._actor_mesh_ref._shape})"
+
+    async def stop(self):
+        await self._actor_mesh_ref.stop()
 
 
 class ActorError(Exception):

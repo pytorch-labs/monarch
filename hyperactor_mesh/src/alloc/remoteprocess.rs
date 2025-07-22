@@ -99,6 +99,13 @@ pub struct RemoteProcessAllocator {
     cancel_token: CancellationToken,
 }
 
+async fn conditional_sleeper<F: futures::Future<Output = ()>>(t: Option<F>) {
+    match t {
+        Some(timer) => timer.await,
+        None => futures::future::pending().await,
+    }
+}
+
 impl RemoteProcessAllocator {
     /// Create a new allocator. It will not start until start() is called.
     pub fn new() -> Arc<Self> {
@@ -125,9 +132,16 @@ impl RemoteProcessAllocator {
     /// 4. Allocator sends Done message to bootstrap_addr when Alloc is done.
     ///
     /// At any point, client can send Stop message to serve_addr to stop the allocator.
-    pub async fn start(&self, cmd: Command, serve_addr: ChannelAddr) -> Result<(), anyhow::Error> {
+    /// If timeout is Some, the allocator will exit if no client connects within
+    /// that timeout, and no child allocation is running.
+    pub async fn start(
+        &self,
+        cmd: Command,
+        serve_addr: ChannelAddr,
+        timeout: Option<Duration>,
+    ) -> Result<(), anyhow::Error> {
         let process_allocator = ProcessAllocator::new(cmd);
-        self.start_with_allocator(serve_addr, process_allocator)
+        self.start_with_allocator(serve_addr, process_allocator, timeout)
             .await
     }
 
@@ -138,6 +152,7 @@ impl RemoteProcessAllocator {
         &self,
         serve_addr: ChannelAddr,
         mut process_allocator: A,
+        timeout: Option<Duration>,
     ) -> Result<(), anyhow::Error>
     where
         <A as Allocator>::Alloc: Send,
@@ -156,16 +171,22 @@ impl RemoteProcessAllocator {
             if let Some(active_allocation) = active_allocation.take() {
                 tracing::info!("previous alloc found, stopping");
                 active_allocation.cancel_token.cancel();
-                // should be ok to wait even if original caller has gone since heartbeat
-                // will eventually timeout and exit the loop.
-                if let Err(e) = active_allocation.handle.await {
-                    tracing::error!("allocation handler failed: {}", e);
+                match active_allocation.handle.await {
+                    Ok(_) => {
+                        tracing::info!("allocation stopped.")
+                    }
+                    Err(e) => {
+                        tracing::error!("allocation handler failed: {}", e);
+                    }
                 }
             }
         }
 
         let mut active_allocation: Option<ActiveAllocation> = None;
         loop {
+            // Refresh each loop iteration so the timer updates whenever a message
+            // is received.
+            let sleep = conditional_sleeper(timeout.map(|t| RealClock.sleep(t)));
             tokio::select! {
                 msg = rx.recv() => {
                     match msg {
@@ -179,6 +200,7 @@ impl RemoteProcessAllocator {
 
                             ensure_previous_alloc_stopped(&mut active_allocation).await;
 
+                            tracing::info!("allocating...");
                             match process_allocator.allocate(spec.clone()).await {
                                 Ok(alloc) => {
                                     let cancel_token = CancellationToken::new();
@@ -218,6 +240,16 @@ impl RemoteProcessAllocator {
 
                     break;
                 }
+                _ = sleep => {
+                    // If there are any active allocations, reset the timeout.
+                    if active_allocation.is_some() {
+                        continue;
+                    }
+                    // Else, exit the loop as a client hasn't connected in a reasonable
+                    // amount of time.
+                    tracing::warn!("timeout of {} seconds elapsed without any allocations, exiting", timeout.unwrap_or_default().as_secs());
+                    break;
+                }
             }
         }
 
@@ -231,6 +263,7 @@ impl RemoteProcessAllocator {
         heartbeat_interval: Duration,
         cancel_token: CancellationToken,
     ) {
+        tracing::info!("handle allocation request, bootstrap_addr: {bootstrap_addr}");
         // start proc message forwarder
         let (forwarder_addr, forwarder_rx) =
             match channel::serve(ChannelAddr::any(bootstrap_addr.transport())).await {
@@ -298,6 +331,7 @@ impl RemoteProcessAllocator {
         heartbeat_interval: Duration,
         cancel_token: CancellationToken,
     ) {
+        tracing::info!("starting handle allocation loop");
         let tx = match channel::dial(bootstrap_addr) {
             Ok(tx) => tx,
             Err(err) => {
@@ -389,7 +423,7 @@ impl RemoteProcessAllocator {
                 }
             }
         }
-        tracing::debug!("allocation handler loop exited");
+        tracing::info!("allocation handler loop exited");
         if running {
             tracing::info!("stopping processes");
             if let Err(e) = alloc.stop_and_wait().await {
@@ -429,6 +463,8 @@ struct RemoteProcessAllocHostState {
     world_id: Option<WorldId>,
     /// If remote allocator sent us ProcState::Failed.
     failed: bool,
+    /// If remote allocater has ever allocated a proc.
+    allocated: bool,
 }
 
 #[automock]
@@ -652,6 +688,7 @@ impl RemoteProcessAlloc {
                     offset,
                     world_id: None,
                     failed: false,
+                    allocated: false,
                 },
             );
         }
@@ -708,6 +745,7 @@ impl RemoteProcessAlloc {
             // Should not happen but we can ignore
             tracing::error!("proc id already in host state: {}", proc_id);
         }
+        task_state.allocated = true;
         Ok(())
     }
 
@@ -900,6 +938,17 @@ impl Alloc for RemoteProcessAlloc {
                     closed_host_id = self.comm_watcher_rx.recv() => {
                         if let Some(closed_host_id) = closed_host_id {
                             tracing::debug!("host {} channel closed, cleaning up", closed_host_id);
+                            if let Some(state) = self.host_states.get(&closed_host_id) {
+                                if !state.allocated {
+                                    break Some(ProcState::Failed {
+                                        world_id: self.world_id.clone(),
+                                        description: format!(
+                                            "no process has ever been allocated on {} before the channel is closed; \
+                                            a common issue could be the channel was never established",
+                                            closed_host_id
+                                        )});
+                                }
+                            }
                             let proc_ids = match self.cleanup_host_channel_closed(closed_host_id) {
                                 Ok(proc_ids) => proc_ids,
                                 Err(err) => {
@@ -1128,7 +1177,7 @@ mod test {
             let remote_allocator = remote_allocator.clone();
             async move {
                 remote_allocator
-                    .start_with_allocator(serve_addr, allocator)
+                    .start_with_allocator(serve_addr, allocator, None)
                     .await
             }
         });
@@ -1265,7 +1314,7 @@ mod test {
             let remote_allocator = remote_allocator.clone();
             async move {
                 remote_allocator
-                    .start_with_allocator(serve_addr, allocator)
+                    .start_with_allocator(serve_addr, allocator, None)
                     .await
             }
         });
@@ -1361,7 +1410,7 @@ mod test {
             let remote_allocator = remote_allocator.clone();
             async move {
                 remote_allocator
-                    .start_with_allocator(serve_addr, allocator)
+                    .start_with_allocator(serve_addr, allocator, None)
                     .await
             }
         });
@@ -1468,7 +1517,7 @@ mod test {
             let remote_allocator = remote_allocator.clone();
             async move {
                 remote_allocator
-                    .start_with_allocator(serve_addr, allocator)
+                    .start_with_allocator(serve_addr, allocator, None)
                     .await
             }
         });
@@ -1551,7 +1600,7 @@ mod test {
             let remote_allocator = remote_allocator.clone();
             async move {
                 remote_allocator
-                    .start_with_allocator(serve_addr, allocator)
+                    .start_with_allocator(serve_addr, allocator, None)
                     .await
             }
         });
@@ -1625,14 +1674,14 @@ mod test_alloc {
         let task1_allocator_handle = tokio::spawn(async move {
             tracing::info!("spawning task1");
             task1_allocator_copy
-                .start(task1_cmd, task1_addr)
+                .start(task1_cmd, task1_addr, None)
                 .await
                 .unwrap();
         });
         let task2_allocator_copy = task2_allocator.clone();
         let task2_allocator_handle = tokio::spawn(async move {
             task2_allocator_copy
-                .start(task2_cmd, task2_addr)
+                .start(task2_cmd, task2_addr, None)
                 .await
                 .unwrap();
         });
@@ -1748,7 +1797,7 @@ mod test_alloc {
         let task1_allocator_handle = tokio::spawn(async move {
             tracing::info!("spawning task1");
             task1_allocator_copy
-                .start(task1_cmd, task1_addr)
+                .start(task1_cmd, task1_addr, None)
                 .await
                 .unwrap();
             tracing::info!("task1 terminated");
@@ -1756,7 +1805,7 @@ mod test_alloc {
         let task2_allocator_copy = task2_allocator.clone();
         let task2_allocator_handle = tokio::spawn(async move {
             task2_allocator_copy
-                .start(task2_cmd, task2_addr)
+                .start(task2_cmd, task2_addr, None)
                 .await
                 .unwrap();
             tracing::info!("task2 terminated");
@@ -1869,14 +1918,14 @@ mod test_alloc {
         let task1_allocator_handle = tokio::spawn(async move {
             tracing::info!("spawning task1");
             task1_allocator_copy
-                .start(task1_cmd, task1_addr)
+                .start(task1_cmd, task1_addr, None)
                 .await
                 .unwrap();
         });
         let task2_allocator_copy = task2_allocator.clone();
         let task2_allocator_handle = tokio::spawn(async move {
             task2_allocator_copy
-                .start(task2_cmd, task2_addr)
+                .start(task2_cmd, task2_addr, None)
                 .await
                 .unwrap();
         });

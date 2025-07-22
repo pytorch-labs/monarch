@@ -44,7 +44,7 @@ rustls-webpki = { version = "0.101.4", features = ["alloc", "std"], default-feat
 serde = { version = "1.0.185", features = ["derive", "rc"] }
 serde_bytes = "0.11"
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "unbounded_depth"] }
-serde_with = { version = "1.14.0", features = ["hex", "json"] }
+serde_with = { version = "3", features = ["hex", "json"] }
 serde_yaml = "0.9.25"
 thiserror = "2.0.12"
 tokio = { version = "1.45.0", features = ["full", "test-util", "tracing"] }

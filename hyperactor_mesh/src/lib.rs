@@ -16,7 +16,6 @@ pub mod actor_mesh;
 pub mod alloc;
 mod assign;
 pub mod bootstrap;
-pub mod code_sync;
 pub mod comm;
 pub mod connect;
 pub mod logging;

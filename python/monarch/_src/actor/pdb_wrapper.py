@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Dict, TYPE_CHECKING
 
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
+from monarch._src.actor.sync_state import fake_sync_state
 
 if TYPE_CHECKING:
     from monarch._src.actor.debugger import DebugClient
@@ -47,9 +48,9 @@ class PdbWrapper(pdb.Pdb):
         self._first = True
 
     def set_trace(self, frame):
-        self.client_ref.debugger_session_start.call_one(
+        self.client_ref.debugger_session_start.broadcast(
             self.rank, self.coords, socket.getfqdn(socket.gethostname()), self.actor_id
-        ).get()
+        )
         if self.header:
             self.message(self.header)
         super().set_trace(frame)
@@ -66,7 +67,7 @@ class PdbWrapper(pdb.Pdb):
             super().do_clear(arg)
 
     def end_debug_session(self):
-        self.client_ref.debugger_session_end.call_one(self.rank).get()
+        self.client_ref.debugger_session_end.broadcast(self.rank)
         # Once the debug client actor is notified of the session being over,
         # we need to prevent any additional requests being sent for the session
         # by redirecting stdin and stdout.
@@ -85,16 +86,19 @@ class ReadWrapper(io.RawIOBase):
         self.session = session
 
     def readinto(self, b):
-        response = self.session.client_ref.debugger_read.call_one(
-            self.session.rank, len(b)
-        ).get()
-        if response == "detach":
-            # this gets injected by the worker event loop to
-            # get the worker thread to exit on an Exit command.
-            raise bdb.BdbQuit
-        assert isinstance(response, DebuggerWrite) and len(response.payload) <= len(b)
-        b[: len(response.payload)] = response.payload
-        return len(response.payload)
+        with fake_sync_state():
+            response = self.session.client_ref.debugger_read.call_one(
+                self.session.rank, len(b)
+            ).get()
+            if response == "detach":
+                # this gets injected by the worker event loop to
+                # get the worker thread to exit on an Exit command.
+                raise bdb.BdbQuit
+            assert isinstance(response, DebuggerWrite) and len(response.payload) <= len(
+                b
+            )
+            b[: len(response.payload)] = response.payload
+            return len(response.payload)
 
     def readable(self) -> bool:
         return True
@@ -119,14 +123,14 @@ class WriteWrapper:
             function = f"{inspect.getmodulename(self.session.curframe.f_code.co_filename)}.{self.session.curframe.f_code.co_name}"
             # pyre-ignore
             lineno = self.session.curframe.f_lineno
-        self.session.client_ref.debugger_write.call_one(
+        self.session.client_ref.debugger_write.broadcast(
             self.session.rank,
             DebuggerWrite(
                 s.encode(),
                 function,
                 lineno,
             ),
-        ).get()
+        )
 
     def flush(self):
         pass

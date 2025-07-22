@@ -6,6 +6,7 @@
 
 # pyre-strict
 
+import asyncio
 import contextlib
 import importlib.resources
 import logging
@@ -31,12 +32,14 @@ from monarch._rust_bindings.monarch_hyperactor.channel import (
     ChannelAddr,
     ChannelTransport,
 )
+
 from monarch._src.actor.allocator import (
     ALLOC_LABEL_PROC_MESH_NAME,
     RemoteAllocator,
     StaticRemoteAllocInitializer,
     TorchXRemoteAllocInitializer,
 )
+from monarch._src.actor.sync_state import fake_sync_state
 from monarch.actor import (
     Actor,
     current_rank,
@@ -86,15 +89,25 @@ class TestActor(Actor):
 
 
 @contextlib.contextmanager
-def remote_process_allocator(addr: Optional[str] = None) -> Generator[str, None, None]:
-    with importlib.resources.path(__package__, "") as package_path:
+def remote_process_allocator(
+    addr: Optional[str] = None, timeout: Optional[int] = None
+) -> Generator[str, None, None]:
+    """Start a remote process allocator on addr. If timeout is not None, have it
+    timeout after that many seconds if no messages come in"""
+
+    with importlib.resources.as_file(
+        importlib.resources.files(__package__)
+    ) as package_path:
         addr = addr or ChannelAddr.any(ChannelTransport.Unix)
+        args = [
+            "process_allocator",
+            f"--addr={addr}",
+        ]
+        if timeout is not None:
+            args.append(f"--timeout-sec={timeout}")
 
         process_allocator = subprocess.Popen(
-            args=[
-                "process_allocator",
-                f"--addr={addr}",
-            ],
+            args=args,
             env={
                 # prefix PATH with this test module's directory to
                 # give 'process_allocator' and 'monarch_bootstrap' binary resources
@@ -212,15 +225,65 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
                 initializer=StaticRemoteAllocInitializer(host1, host2),
                 heartbeat_interval=_100_MILLISECONDS,
             )
+
             alloc = await allocator.allocate(spec)
             proc_mesh = await ProcMesh.from_alloc(alloc)
-            actor = proc_mesh.spawn("test_actor", TestActor).get()
-            proc_mesh.stop().get()
+            # XXX - it is not clear why this trying to use
+            # async code in a sync context.
+            with fake_sync_state():
+                actor = proc_mesh.spawn("test_actor", TestActor).get()
+                proc_mesh.stop().get()
             with self.assertRaises(
                 RuntimeError, msg="`ProcMesh` has already been stopped"
             ):
                 proc_mesh.spawn("test_actor", TestActor).get()
             del actor
+
+    async def test_wrong_address(self) -> None:
+        hosts = 1
+        gpus = 1
+        spec = AllocSpec(AllocConstraints(), host=hosts, gpu=gpus)
+
+        # create 2x process-allocators (on their own bind addresses) to simulate 2 hosts
+        with remote_process_allocator():
+            wrong_host = ChannelAddr.any(ChannelTransport.Unix)
+            allocator = RemoteAllocator(
+                world_id="test_remote_allocator",
+                initializer=StaticRemoteAllocInitializer(wrong_host),
+                heartbeat_interval=_100_MILLISECONDS,
+            )
+            alloc = await allocator.allocate(spec)
+
+            with self.assertRaisesRegex(
+                Exception, r"no process has ever been allocated.*"
+            ):
+                await ProcMesh.from_alloc(alloc)
+
+    async def test_init_failure(self) -> None:
+        class FailInitActor(Actor):
+            def __init__(self) -> None:
+                if current_rank().rank == 0:
+                    raise RuntimeError("fail on init")
+
+            @endpoint
+            def dummy(self) -> None:
+                pass
+
+        with remote_process_allocator() as host1, remote_process_allocator() as host2:
+            allocator = RemoteAllocator(
+                world_id="helloworld",
+                initializer=StaticRemoteAllocInitializer(host1, host2),
+                heartbeat_interval=_100_MILLISECONDS,
+            )
+            spec = AllocSpec(AllocConstraints(), host=2, gpu=2)
+            proc_mesh = await ProcMesh.from_alloc(await allocator.allocate(spec))
+            actor_mesh = await proc_mesh.spawn("actor", FailInitActor)
+
+            with self.assertRaisesRegex(
+                Exception,
+                r"(?s)Remote actor <class 'monarch.python.tests.test_allocator.FailInitActor'>.__init__ call failed.*fail on init",
+            ):
+                await actor_mesh.dummy.call()
 
     async def test_stop_proc_mesh(self) -> None:
         spec = AllocSpec(AllocConstraints(), host=2, gpu=4)
@@ -304,6 +367,23 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             # immediately, trying to access the wrapped actor mesh, but right
             # now we doing casting without accessing the wrapped type.
             del actor
+
+    async def test_remote_allocator_with_no_connection(self) -> None:
+        spec = AllocSpec(AllocConstraints(), host=1, gpu=4)
+
+        with remote_process_allocator(timeout=1) as host1:
+            # Wait 3 seconds without making any processes, make sure it dies.
+            await asyncio.sleep(3)
+            allocator = RemoteAllocator(
+                world_id="test_remote_allocator",
+                initializer=StaticRemoteAllocInitializer(host1),
+                heartbeat_interval=_100_MILLISECONDS,
+            )
+            with self.assertRaisesRegex(
+                Exception, "no process has ever been allocated on"
+            ):
+                alloc = await allocator.allocate(spec)
+                await ProcMesh.from_alloc(alloc)
 
     async def test_stacked_1d_meshes(self) -> None:
         # create two stacked actor meshes on the same host

@@ -138,6 +138,7 @@ where
 }
 
 /// A mesh of actors, all of which reside on the same [`ProcMesh`].
+#[async_trait]
 pub trait ActorMesh: Mesh<Id = ActorMeshId> {
     /// The type of actor in the mesh.
     type Actor: RemoteActor;
@@ -176,6 +177,10 @@ pub trait ActorMesh: Mesh<Id = ActorMeshId> {
         let gang: GangRef<Self::Actor> =
             GangId(self.proc_mesh().world_id().clone(), self.name().to_string()).into();
         self.shape().slice().iter().map(move |rank| gang.rank(rank))
+    }
+
+    async fn stop(&self) -> Result<(), anyhow::Error> {
+        self.proc_mesh().stop_actor_by_name(self.name()).await
     }
 
     /// Get a serializeable reference to this mesh similar to ActorHandle::bind
@@ -1022,6 +1027,69 @@ mod tests {
                 ProcEvent::Stopped(0, ProcStopReason::Stopped),
             );
             assert!(events.next().await.is_none());
+        }
+
+        #[tracing_test::traced_test]
+        #[tokio::test]
+        async fn test_stop_actor_mesh() {
+            use hyperactor::test_utils::pingpong::PingPongActor;
+            use hyperactor::test_utils::pingpong::PingPongActorParams;
+            use hyperactor::test_utils::pingpong::PingPongMessage;
+
+            let config = hyperactor::config::global::lock();
+            let _guard = config.override_key(
+                hyperactor::config::MESSAGE_DELIVERY_TIMEOUT,
+                tokio::time::Duration::from_secs(1),
+            );
+
+            let alloc = LocalAllocator
+                .allocate(AllocSpec {
+                    shape: shape! { replica = 2  },
+                    constraints: Default::default(),
+                })
+                .await
+                .unwrap();
+            let mesh = ProcMesh::allocate(alloc).await.unwrap();
+
+            let ping_pong_actor_params = PingPongActorParams::new(
+                PortRef::attest_message_port(mesh.client().actor_id()),
+                None,
+            );
+            let mesh_one: RootActorMesh<PingPongActor> = mesh
+                .spawn::<PingPongActor>("mesh_one", &ping_pong_actor_params)
+                .await
+                .unwrap();
+
+            let mesh_two: RootActorMesh<PingPongActor> = mesh
+                .spawn::<PingPongActor>("mesh_two", &ping_pong_actor_params)
+                .await
+                .unwrap();
+
+            mesh_two.stop().await.unwrap();
+
+            let ping_two: ActorRef<PingPongActor> = mesh_two.get(0).unwrap();
+            let pong_two: ActorRef<PingPongActor> = mesh_two.get(1).unwrap();
+
+            assert!(logs_contain(&format!(
+                "stopped actor {}",
+                ping_two.actor_id()
+            )));
+            assert!(logs_contain(&format!(
+                "stopped actor {}",
+                pong_two.actor_id()
+            )));
+
+            // Other actor meshes on this proc mesh should still be up and running
+            let ping_one: ActorRef<PingPongActor> = mesh_one.get(0).unwrap();
+            let pong_one: ActorRef<PingPongActor> = mesh_one.get(1).unwrap();
+            let (done_tx, done_rx) = mesh.client().open_once_port();
+            pong_one
+                .send(
+                    mesh.client(),
+                    PingPongMessage(1, ping_one.clone(), done_tx.bind()),
+                )
+                .unwrap();
+            assert!(done_rx.recv().await.is_ok());
         }
     } // mod local
 

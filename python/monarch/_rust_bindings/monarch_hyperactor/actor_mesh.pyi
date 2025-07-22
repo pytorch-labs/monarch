@@ -13,6 +13,7 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     Mailbox,
     OncePortReceiver,
     PortReceiver,
+    PortReceiverBase,
 )
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.selection import Selection
@@ -113,6 +114,20 @@ class PythonActorMesh:
         """
         ...
 
+    async def stop(self) -> None:
+        """
+        Stop all actors that are part of this mesh.
+        Using this mesh after stop() is called will raise an Exception.
+        """
+        ...
+
+    @property
+    def stopped(self) -> bool:
+        """
+        If the mesh has been stopped.
+        """
+        ...
+
 @final
 class ActorMeshMonitor:
     def __aiter__(self) -> AsyncIterator["ActorSupervisionEvent"]:
@@ -128,7 +143,7 @@ class ActorMeshMonitor:
         ...
 
 @final
-class MonitoredPortReceiver:
+class MonitoredPortReceiver(PortReceiverBase):
     """
     A monitored receiver to which PythonMessages are sent.
     """
@@ -139,15 +154,8 @@ class MonitoredPortReceiver:
         """
         ...
 
-    async def recv(self) -> PythonMessage:
-        """Receive a PythonMessage from the port's sender."""
-        ...
-    def blocking_recv(self) -> PythonMessage:
-        """Receive a single PythonMessage from the port's sender."""
-        ...
-
 @final
-class MonitoredOncePortReceiver:
+class MonitoredOncePortReceiver(PortReceiverBase):
     """
     A variant of monitored PortReceiver that can only receive a single message.
     """
@@ -156,13 +164,6 @@ class MonitoredOncePortReceiver:
         """
         Create a new monitored receiver from a PortReceiver.
         """
-        ...
-
-    async def recv(self) -> PythonMessage:
-        """Receive a single PythonMessage from the port's sender."""
-        ...
-    def blocking_recv(self) -> PythonMessage:
-        """Receive a single PythonMessage from the port's sender."""
         ...
 
 @final

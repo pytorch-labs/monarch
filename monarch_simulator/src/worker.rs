@@ -313,7 +313,7 @@ impl WorkerMessageHandler for WorkerActor {
 
     async fn send_result_of_actor_call(
         &mut self,
-        cx: &hyperactor::Context<Self>,
+        _cx: &hyperactor::Context<Self>,
         _params: ActorCallParams,
     ) -> Result<()> {
         bail!("unimplemented: send_result_of_actor_call");

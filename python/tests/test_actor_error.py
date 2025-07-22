@@ -6,6 +6,7 @@
 
 
 import importlib.resources
+import os
 import subprocess
 import sys
 
@@ -331,10 +332,21 @@ def test_python_actor_process_cleanup():
     )
 
 
+class ActorFailureError(BaseException):
+    """Exception to simulate actor failure for supervision testing.
+
+    Inherits from BaseException in order that supervision be
+    triggered.
+
+    """
+
+    pass
+
+
 class ErrorActor(Actor):
     @endpoint
-    async def fail_with_supervision_error(self) -> None:
-        sys.exit(1)
+    def fail_with_supervision_error(self) -> None:
+        raise ActorFailureError("Simulated actor failure for supervision testing")
 
     @endpoint
     async def check(self) -> str:
@@ -396,8 +408,10 @@ async def test_proc_mesh_monitoring():
     event = await anext(monitor)
     assert isinstance(event, ProcEvent.Crashed)
     assert event[0] == 0  # check rank
-    assert "sys.exit(1)" in event[1]  # check error message
-    assert "fail_with_supervision_error" in event[1]  # check error message
+    assert "ActorFailureError" in event[1]  # check error message
+    assert (
+        "Simulated actor failure for supervision testing" in event[1]
+    )  # check error message
 
     # should not be able to spawn actors anymore as proc mesh is unhealthy
     with pytest.raises(SupervisionError, match="proc mesh is stopped with reason"):
@@ -436,6 +450,10 @@ class HealthyActor(Actor):
     @endpoint
     async def check(self):
         return "this is a healthy check"
+
+    @endpoint
+    async def check_with_payload(self, payload: str):
+        pass
 
 
 class Intermediate(Actor):
@@ -497,3 +515,28 @@ async def test_supervision_with_proc_mesh_stopped():
     # proc mesh cannot spawn new actors anymore
     with pytest.raises(RuntimeError, match="`ProcMesh` has already been stopped"):
         await proc.spawn("immediate", Intermediate)
+
+
+async def test_supervision_with_sending_error():
+    os.environ["HYPERACTOR_CODEC_MAX_FRAME_LENGTH"] = "9999999999"
+    os.environ["HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT_SECS"] = "1"
+
+    proc = await proc_mesh(gpus=1)
+    actor_mesh = await proc.spawn("healthy", HealthyActor)
+
+    await actor_mesh.check.call()
+
+    # send a small payload to trigger success
+    await actor_mesh.check_with_payload.call(payload="a")
+
+    # send a large payload to trigger send timeout error
+    with pytest.raises(
+        SupervisionError, match="supervision error:.*message not delivered:"
+    ):
+        await actor_mesh.check_with_payload.call(payload="a" * 2000000000)
+
+    # new call should fail with check of health state of actor mesh
+    with pytest.raises(SupervisionError, match="actor mesh is not in a healthy state"):
+        await actor_mesh.check.call()
+    with pytest.raises(SupervisionError, match="actor mesh is not in a healthy state"):
+        await actor_mesh.check_with_payload.call(payload="a")

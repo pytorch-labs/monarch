@@ -678,7 +678,6 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
                             "message_type" => stringify!(#enum_name),
                             "variant" => stringify!(#variant_name_snake),
                         ));
-                        // tracing::event!(target: "message", #log_level, rpc = "call",  payload=?message, "send");
                 };
 
                 handler_trait_methods.push(quote! {
@@ -811,7 +810,6 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
                             "message_type" => stringify!(#enum_name),
                             "variant" => stringify!(#variant_name_snake),
                         ));
-                        tracing::event!(target: "message", #log_level, rpc = "call",  payload=?message, "send");
 
                 };
                 if *reply_port_is_handle {
@@ -878,7 +876,6 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
                         "message_type" => stringify!(#enum_name),
                         "variant" => stringify!(#variant_name_snake),
                     ));
-                    tracing::event!(target: "message", #log_level,  handle = stringify!(#variant_name_snake), rpc = "oneway",  payload=?message, "send");
                 };
                 impl_methods.push(quote! {
                     async fn #variant_name_snake(

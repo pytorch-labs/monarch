@@ -16,7 +16,7 @@ import monarch
 
 from monarch._rust_bindings.monarch_hyperactor.actor import PanicFlag, PythonMessage
 
-from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monarch/monarch_extension:monarch_extension
+from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monarch/monarch_extension:monarch_extension_no_torch
     AllocConstraints,
     AllocSpec,
 )

@@ -13,6 +13,12 @@ use std::path::PathBuf;
 use glob::glob;
 use which::which;
 
+const PYTHON_PRINT_DIRS: &str = r"
+import sysconfig
+print('PYTHON_INCLUDE_DIR:', sysconfig.get_config_var('INCLUDEDIR'))
+print('PYTHON_LIB_DIR:', sysconfig.get_config_var('LIBDIR'))
+";
+
 // Translated from torch/utils/cpp_extension.py
 fn find_cuda_home() -> Option<String> {
     // Guess #1
@@ -52,34 +58,50 @@ fn find_cuda_home() -> Option<String> {
     cuda_home
 }
 
-fn main() {
-    let cuda_home = find_cuda_home().expect("Could not find CUDA installation");
+fn emit_cuda_link_directives(cuda_home: &str) {
+    let stubs_path = format!("{}/lib64/stubs", cuda_home);
+    if Path::new(&stubs_path).exists() {
+        println!("cargo:rustc-link-search=native={}", stubs_path);
+    } else {
+        let lib64_path = format!("{}/lib64", cuda_home);
+        if Path::new(&lib64_path).exists() {
+            println!("cargo:rustc-link-search=native={}", lib64_path);
+        }
+    }
 
-    // Tell cargo to look for shared libraries in the CUDA directory
-    println!("cargo:rustc-link-search={}/lib64", cuda_home);
-    println!("cargo:rustc-link-search={}/lib", cuda_home);
-
-    // Link against the CUDA libraries
     println!("cargo:rustc-link-lib=cuda");
     println!("cargo:rustc-link-lib=cudart");
+}
 
-    // Tell cargo to invalidate the built crate whenever the wrapper changes
-    println!("cargo:rerun-if-changed=src/wrapper.h");
+fn python_env_dirs() -> (Option<String>, Option<String>) {
+    let output = std::process::Command::new(PathBuf::from("python"))
+        .arg("-c")
+        .arg(PYTHON_PRINT_DIRS)
+        .output()
+        .unwrap_or_else(|_| panic!("error running python"));
 
-    // Add cargo metadata
-    println!("cargo:rustc-cfg=cargo");
-    println!("cargo:rustc-check-cfg=cfg(cargo)");
+    let mut include_dir = None;
+    let mut lib_dir = None;
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        if let Some(path) = line.strip_prefix("PYTHON_INCLUDE_DIR: ") {
+            include_dir = Some(path.to_string());
+        }
+        if let Some(path) = line.strip_prefix("PYTHON_LIB_DIR: ") {
+            lib_dir = Some(path.to_string());
+        }
+    }
+    (include_dir, lib_dir)
+}
 
-    // The bindgen::Builder is the main entry point to bindgen
-    let bindings = bindgen::Builder::default()
+fn main() {
+    let mut builder = bindgen::Builder::default()
         // The input header we would like to generate bindings for
         .header("src/wrapper.h")
-        // Add the CUDA include directory
-        .clang_arg(format!("-I{}/include", cuda_home))
-        // Parse as C++
         .clang_arg("-x")
         .clang_arg("c++")
         .clang_arg("-std=gnu++20")
+        .clang_arg(format!("-I{}/include", find_cuda_home().unwrap()))
+        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         // Allow the specified functions and types
         .allowlist_function("cu.*")
         .allowlist_function("CU.*")
@@ -89,16 +111,33 @@ fn main() {
         .default_enum_style(bindgen::EnumVariation::NewType {
             is_bitfield: false,
             is_global: false,
-        })
-        // Finish the builder and generate the bindings
-        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
-        .generate()
-        // Unwrap the Result and panic on failure
-        .expect("Unable to generate bindings");
+        });
+
+    // Include headers and libs from the active environment.
+    let (include_dir, lib_dir) = python_env_dirs();
+    if let Some(include_dir) = include_dir {
+        builder = builder.clang_arg(format!("-I{}", include_dir));
+    }
+    if let Some(lib_dir) = lib_dir {
+        println!("cargo::rustc-link-search=native={}", lib_dir);
+        // Set cargo metadata to inform dependent binaries about how to set their
+        // RPATH (see controller/build.rs for an example).
+        println!("cargo::metadata=LIB_PATH={}", lib_dir);
+    }
+    if let Some(cuda_home) = find_cuda_home() {
+        emit_cuda_link_directives(&cuda_home);
+    }
 
     // Write the bindings to the $OUT_DIR/bindings.rs file
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
-    bindings
+    builder
+        .generate()
+        .expect("Unable to generate bindings")
         .write_to_file(out_path.join("bindings.rs"))
         .expect("Couldn't write bindings!");
+
+    println!("cargo:rustc-link-lib=cuda");
+    println!("cargo:rustc-link-lib=cudart");
+    println!("cargo::rustc-cfg=cargo");
+    println!("cargo::rustc-check-cfg=cfg(cargo)");
 }

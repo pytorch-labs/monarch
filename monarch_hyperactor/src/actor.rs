@@ -9,6 +9,7 @@
 use std::fmt;
 use std::future::Future;
 use std::future::pending;
+use std::ops::Deref;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -18,20 +19,19 @@ use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::ActorId;
 use hyperactor::Context;
-use hyperactor::HandleClient;
 use hyperactor::Handler;
+use hyperactor::Instance;
 use hyperactor::Named;
-use hyperactor::cap::CanSend;
-use hyperactor::forward;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::Unbind;
 use hyperactor_mesh::comm::multicast::CastInfo;
 use monarch_types::PickledPyObject;
 use monarch_types::SerializablePyErr;
-use pyo3::conversion::IntoPyObjectExt;
+use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyBaseException;
 use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::PyStopIteration;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use pyo3::types::PyDict;
@@ -41,7 +41,10 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_bytes::ByteBuf;
 use tokio::sync::Mutex;
+use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot;
+use tracing::Instrument;
 
 use crate::config::SHARED_ASYNCIO_RUNTIME;
 use crate::local_state_broker::BrokerId;
@@ -363,6 +366,13 @@ impl PythonActorHandle {
     }
 }
 
+#[derive(Debug)]
+enum UnhandledErrorObserver {
+    ForwardTo(UnboundedReceiver<anyhow::Result<(), SerializablePyErr>>),
+    HandlerActor(ActorHandle<PythonActorPanicWatcher>),
+    None,
+}
+
 /// An actor for which message handlers are implemented in Python.
 #[derive(Debug)]
 #[hyperactor::export(
@@ -379,6 +389,8 @@ pub struct PythonActor {
     /// Stores a reference to the Python event loop to run Python coroutines on.
     /// This is None when using single runtime mode, Some when using per-actor mode.
     task_locals: Option<pyo3_async_runtimes::TaskLocals>,
+    panic_watcher: UnhandledErrorObserver,
+    panic_sender: UnboundedSender<anyhow::Result<(), SerializablePyErr>>,
 }
 
 impl PythonActor {
@@ -406,9 +418,31 @@ impl Actor for PythonActor {
             // Only create per-actor TaskLocals if not using shared runtime
             let task_locals = (!hyperactor::config::global::get(SHARED_ASYNCIO_RUNTIME))
                 .then(|| Python::allow_threads(py, create_task_locals));
-
-            Ok(Self { actor, task_locals })
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            Ok(Self {
+                actor,
+                task_locals,
+                panic_watcher: UnhandledErrorObserver::ForwardTo(rx),
+                panic_sender: tx,
+            })
         })?)
+    }
+
+    async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
+        self.panic_watcher = UnhandledErrorObserver::HandlerActor(
+            match std::mem::replace(&mut self.panic_watcher, UnhandledErrorObserver::None) {
+                UnhandledErrorObserver::ForwardTo(chan) => {
+                    PythonActorPanicWatcher::spawn(this, chan).await?
+                }
+                UnhandledErrorObserver::HandlerActor(_actor) => {
+                    panic!("init called twice");
+                }
+                UnhandledErrorObserver::None => {
+                    unreachable!("init called while in an invalid state")
+                }
+            },
+        );
+        Ok(())
     }
 }
 
@@ -427,7 +461,10 @@ fn create_task_locals() -> pyo3_async_runtimes::TaskLocals {
                 .copy_context(py)
                 .unwrap();
             tx.send(task_locals).unwrap();
-            event_loop.call_method0("run_forever").unwrap();
+            if let Err(e) = event_loop.call_method0("run_forever") {
+                eprintln!("Event loop stopped with error: {:?}", e);
+            }
+            let _ = event_loop.call_method0("close");
         });
     });
     rx.recv().unwrap()
@@ -480,6 +517,52 @@ impl PanicFlag {
     }
 }
 
+#[derive(Debug)]
+struct PythonActorPanicWatcher {
+    panic_rx: UnboundedReceiver<anyhow::Result<(), SerializablePyErr>>,
+}
+
+#[async_trait]
+impl Actor for PythonActorPanicWatcher {
+    type Params = UnboundedReceiver<anyhow::Result<(), SerializablePyErr>>;
+
+    async fn new(
+        panic_rx: UnboundedReceiver<anyhow::Result<(), SerializablePyErr>>,
+    ) -> Result<Self, anyhow::Error> {
+        Ok(Self { panic_rx })
+    }
+
+    async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        this.handle().send(HandlePanic {})?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Named, Serialize, Deserialize)]
+struct HandlePanic {}
+
+#[async_trait]
+impl Handler<HandlePanic> for PythonActorPanicWatcher {
+    async fn handle(&mut self, cx: &Context<Self>, _message: HandlePanic) -> anyhow::Result<()> {
+        match self.panic_rx.recv().await {
+            Some(Ok(_)) => {
+                // async endpoint executed successfully.
+                // run again
+                let h = cx.deref().handle();
+                h.send(HandlePanic {})?;
+            }
+            Some(Err(err)) => {
+                tracing::error!("caught error in async endpoint {}", err);
+                return Err(err.into());
+            }
+            None => {
+                tracing::warn!("panic forwarding channel was closed unexpectidly")
+            }
+        }
+        Ok(())
+    }
+}
+
 #[async_trait]
 impl Handler<PythonMessage> for PythonActor {
     async fn handle(&mut self, cx: &Context<Self>, message: PythonMessage) -> anyhow::Result<()> {
@@ -516,8 +599,18 @@ impl Handler<PythonMessage> for PythonActor {
         })?;
 
         // Spawn a child actor to await the Python handler method.
-        let handler = AsyncEndpointTask::spawn(cx, ()).await?;
-        handler.run(cx, PythonTask::new(future), receiver).await?;
+        tokio::spawn(
+            handle_async_endpoint_panic(
+                self.panic_sender.clone(),
+                PythonTask::new(future),
+                receiver,
+            )
+            .instrument(
+                tracing::info_span!("py_panic_handler")
+                    .follows_from(tracing::Span::current().id())
+                    .clone(),
+            ),
+        );
         Ok(())
     }
 }
@@ -525,18 +618,18 @@ impl Handler<PythonMessage> for PythonActor {
 /// Helper struct to make a Python future passable in an actor message.
 ///
 /// Also so that we don't have to write this massive type signature everywhere
-struct PythonTask {
+pub(crate) struct PythonTask {
     future: Mutex<Pin<Box<dyn Future<Output = PyResult<PyObject>> + Send + 'static>>>,
 }
 
 impl PythonTask {
-    fn new(fut: impl Future<Output = PyResult<PyObject>> + Send + 'static) -> Self {
+    pub(crate) fn new(fut: impl Future<Output = PyResult<PyObject>> + Send + 'static) -> Self {
         Self {
             future: Mutex::new(Box::pin(fut)),
         }
     }
 
-    async fn take(self) -> Pin<Box<dyn Future<Output = PyResult<PyObject>> + Send + 'static>> {
+    fn take(self) -> Pin<Box<dyn Future<Output = PyResult<PyObject>> + Send + 'static>> {
         self.future.into_inner()
     }
 }
@@ -549,77 +642,127 @@ impl fmt::Debug for PythonTask {
     }
 }
 
-/// An ['Actor'] used to monitor the result of an async endpoint. We use an
-/// actor so that:
-/// - Actually waiting on the async endpoint can happen concurrently with other endpoints.
-/// - Any uncaught errors in the async endpoint will get propagated as a supervision event.
-#[derive(Debug)]
-struct AsyncEndpointTask {}
-
-/// An invocation of an async endpoint on a [`PythonActor`].
-#[derive(Handler, HandleClient, Debug)]
-enum AsyncEndpointInvocation {
-    Run(PythonTask, oneshot::Receiver<PyObject>),
+#[pyclass(
+    name = "PythonTask",
+    module = "monarch._rust_bindings.monarch_hyperactor.actor"
+)]
+pub struct PyPythonTask {
+    inner: Option<PythonTask>,
 }
 
-#[async_trait]
-impl Actor for AsyncEndpointTask {
-    type Params = ();
-
-    async fn new(_params: Self::Params) -> anyhow::Result<Self> {
-        Ok(Self {})
+impl From<PythonTask> for PyPythonTask {
+    fn from(task: PythonTask) -> Self {
+        Self { inner: Some(task) }
     }
 }
 
-#[async_trait]
-#[forward(AsyncEndpointInvocation)]
-impl AsyncEndpointInvocationHandler for AsyncEndpointTask {
-    async fn run(
-        &mut self,
-        cx: &Context<Self>,
-        task: PythonTask,
-        side_channel: oneshot::Receiver<PyObject>,
-    ) -> anyhow::Result<()> {
-        // Drive our PythonTask to completion, but listen on the side channel
-        // and raise an error if we hear anything there.
+#[pyclass(
+    name = "JustStopWithValueIterator",
+    module = "monarch._rust_bindings.monarch_hyperactor.actor"
+)]
+struct JustStopWithValueIterator {
+    value: Option<PyObject>,
+}
 
-        let err_or_never = async {
-            // The side channel will resolve with a value if a panic occured during
-            // processing of the async endpoint, see [Panics in async endpoints].
-            match side_channel.await {
-                Ok(value) => Python::with_gil(|py| -> Result<(), SerializablePyErr> {
-                    let err: PyErr = value
-                        .downcast_bound::<PyBaseException>(py)
-                        .unwrap()
-                        .clone()
-                        .into();
-                    Err(SerializablePyErr::from(py, &err))
-                }),
-                // An Err means that the sender has been dropped without sending.
-                // That's okay, it just means that the Python task has completed.
-                // In that case, just never resolve this future. We expect the other
-                // branch of the select to finish eventually.
-                Err(_) => pending().await,
-            }
-        };
-        let future = task.take().await;
-        let result: Result<(), SerializablePyErr> = tokio::select! {
-            result = future => {
-                match result {
-                    Ok(_) => Ok(()),
-                    Err(e) => Err(e.into()),
-                }
-            },
-            result = err_or_never => {
-                result
-            }
-        };
-        result?;
-
-        // Stop this actor now that its job is done.
-        cx.stop()?;
-        Ok(())
+#[pymethods]
+impl JustStopWithValueIterator {
+    fn __next__(&mut self) -> PyResult<PyObject> {
+        Err(PyStopIteration::new_err(self.value.take().unwrap()))
     }
+}
+
+impl PyPythonTask {
+    pub fn new<F, T>(fut: F) -> PyResult<Self>
+    where
+        F: Future<Output = PyResult<T>> + Send + 'static,
+        T: for<'py> IntoPyObject<'py>,
+    {
+        Ok(PythonTask::new(async {
+            fut.await
+                .and_then(|t| Python::with_gil(|py| t.into_py_any(py)))
+        })
+        .into())
+    }
+}
+
+#[pymethods]
+impl PyPythonTask {
+    fn into_future(&mut self, py: Python<'_>) -> PyResult<PyObject> {
+        let task = self
+            .inner
+            .take()
+            .map(|task| task.take())
+            .expect("PythonTask already consumed");
+        Ok(pyo3_async_runtimes::tokio::future_into_py(py, task)?.unbind())
+    }
+    fn block_on(&mut self, py: Python<'_>) -> PyResult<PyObject> {
+        let task = self
+            .inner
+            .take()
+            .map(|task| task.take())
+            .expect("PythonTask already consumed");
+        signal_safe_block_on(py, task)?
+    }
+
+    /// In an async context this turns the tokio::Future into
+    /// an asyncio Future and awaits it.
+    /// In a synchronous context, this just blocks on the future and
+    /// immediately returns the value without pausing caller coroutine.
+    /// See [avoiding async code duplication] for justitifcation.
+    fn __await__(&mut self, py: Python<'_>) -> PyResult<PyObject> {
+        let lp = py
+            .import("asyncio.events")
+            .unwrap()
+            .call_method0("_get_running_loop")
+            .unwrap();
+        if lp.is_none() {
+            let value = self.block_on(py)?;
+            Ok(JustStopWithValueIterator { value: Some(value) }.into_py_any(py)?)
+        } else {
+            self.into_future(py)?.call_method0(py, "__await__")
+        }
+    }
+}
+
+async fn handle_async_endpoint_panic(
+    panic_sender: UnboundedSender<anyhow::Result<(), SerializablePyErr>>,
+    task: PythonTask,
+    side_channel: oneshot::Receiver<PyObject>,
+) {
+    let err_or_never = async {
+        // The side channel will resolve with a value if a panic occured during
+        // processing of the async endpoint, see [Panics in async endpoints].
+        match side_channel.await {
+            Ok(value) => Python::with_gil(|py| -> anyhow::Result<(), SerializablePyErr> {
+                let err: PyErr = value
+                    .downcast_bound::<PyBaseException>(py)
+                    .unwrap()
+                    .clone()
+                    .into();
+                Err(err.into())
+            }),
+            // An Err means that the sender has been dropped without sending.
+            // That's okay, it just means that the Python task has completed.
+            // In that case, just never resolve this future. We expect the other
+            // branch of the select to finish eventually.
+            Err(_) => pending().await,
+        }
+    };
+    let future = task.take();
+    let result: anyhow::Result<(), SerializablePyErr> = tokio::select! {
+        result = future => {
+            match result {
+                Ok(_) => Ok(()),
+                Err(e) => Err(e.into()),
+            }
+        },
+        result = err_or_never => {
+            result
+        }
+    };
+    panic_sender
+        .send(result)
+        .expect("Unable to send panic message");
 }
 
 pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -630,6 +773,7 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
     hyperactor_mod.add_class::<PythonMessageKind>()?;
     hyperactor_mod.add_class::<UnflattenArg>()?;
     hyperactor_mod.add_class::<PanicFlag>()?;
+    hyperactor_mod.add_class::<PyPythonTask>()?;
     Ok(())
 }
 

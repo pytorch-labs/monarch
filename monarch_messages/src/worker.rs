@@ -513,7 +513,7 @@ pub enum StreamCreationMode {
 pub enum CallFunctionError {
     #[error("{0}")]
     Error(#[from] anyhow::Error),
-    #[error("Computation depended on an input that failed with errror: {0}")]
+    #[error("Computation depended on an input that failed with error: {0}")]
     DependentError(Arc<CallFunctionError>),
 }
 

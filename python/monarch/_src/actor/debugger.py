@@ -24,7 +24,7 @@ from monarch._src.actor.actor_mesh import (
     MonarchContext,
 )
 from monarch._src.actor.pdb_wrapper import DebuggerWrite, PdbWrapper
-from tabulate import tabulate
+from monarch._src.actor.sync_state import fake_sync_state
 
 
 logger = logging.getLogger(__name__)
@@ -353,6 +353,9 @@ class DebugClient(Actor):
                 )
             )
         table_info = sorted(session_info, key=lambda r: r[0])
+
+        from tabulate import tabulate
+
         print(
             tabulate(
                 table_info,
@@ -549,12 +552,14 @@ def remote_breakpointhook():
             "exists on both your client and worker processes."
         )
 
+    with fake_sync_state():
+        manager = DebugManager.ref().get_debug_client.call_one().get()
     ctx = MonarchContext.get()
     pdb_wrapper = PdbWrapper(
         ctx.point.rank,
         ctx.point.shape.coordinates(ctx.point.rank),
         ctx.mailbox.actor_id,
-        DebugManager.ref().get_debug_client.call_one().get(),
+        manager,
     )
     DebugContext.set(DebugContext(pdb_wrapper))
     pdb_wrapper.set_trace(frame)

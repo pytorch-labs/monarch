@@ -27,10 +27,19 @@ from pyre_extensions import override
 logger: logging.Logger = logging.getLogger(__name__)
 
 
-class SpanWrapper(PySpan, trace.Span):
+class SpanWrapper(trace.Span):
+    def __init__(self, name: str) -> None:
+        super().__init__()
+        self._span: PySpan | None = PySpan(name)
+
     @override
     def end(self, end_time: Optional[int] = None) -> None:
-        self.exit()
+        # since PySpan is not sendable, we need to make sure it is deallocated on this thread so it doesn't log warnings.
+        s = self._span
+        assert s is not None
+        s.exit()
+        self._span = None
+        del s
 
     def record_exception(
         self,
@@ -105,6 +114,7 @@ class RustTracer(trace.Tracer):
         with SpanWrapper(name) as s:
             with trace.use_span(s):
                 yield s
+            del s
 
 
 class RustTracerProvider(trace.TracerProvider):
@@ -132,6 +142,18 @@ def get_monarch_tracer() -> Tracer:
         with tracer.start_as_current_span("span_name") as span:
             # code here
     """
+    install()
+    return trace.get_tracer("monarch.python.tracer")
+
+
+_INSTALLED = False
+
+
+def install() -> None:
+    global _INSTALLED
+    if _INSTALLED:
+        return
+
     provider = RustTracerProvider()
     trace.set_tracer_provider(provider)
-    return trace.get_tracer("monarch.python.tracer")
+    _INSTALLED = True

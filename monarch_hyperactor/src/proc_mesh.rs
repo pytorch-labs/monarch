@@ -29,7 +29,6 @@ use hyperactor_mesh::shared_cell::SharedCellPool;
 use hyperactor_mesh::shared_cell::SharedCellRef;
 use monarch_types::PickledPyObject;
 use ndslice::Shape;
-use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyException;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -38,12 +37,14 @@ use pyo3::types::PyType;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 
+use crate::actor::PyPythonTask;
+use crate::actor::PythonTask;
 use crate::actor_mesh::PythonActorMesh;
 use crate::alloc::PyAlloc;
 use crate::mailbox::PyMailbox;
-use crate::runtime::signal_safe_block_on;
 use crate::shape::PyShape;
 use crate::supervision::SupervisionError;
+use crate::supervision::Unhealthy;
 
 // A wrapper around `ProcMesh` which keeps track of all `RootActorMesh`s that it spawns.
 pub struct TrackedProcMesh {
@@ -117,10 +118,10 @@ pub struct PyProcMesh {
     proc_events: SharedCell<Mutex<ProcEvents>>,
     user_monitor_receiver: SharedCell<Mutex<mpsc::UnboundedReceiver<ProcEvent>>>,
     user_monitor_registered: Arc<AtomicBool>,
-    unhealthy_event: Arc<Mutex<Option<Option<ProcEvent>>>>,
+    unhealthy_event: Arc<Mutex<Unhealthy<ProcEvent>>>,
 }
 
-fn allocate_proc_mesh<'py>(py: Python<'py>, alloc: &PyAlloc) -> PyResult<Bound<'py, PyAny>> {
+fn allocate_proc_mesh(alloc: &PyAlloc) -> PyResult<PyPythonTask> {
     let alloc = match alloc.take() {
         Some(alloc) => alloc,
         None => {
@@ -129,7 +130,7 @@ fn allocate_proc_mesh<'py>(py: Python<'py>, alloc: &PyAlloc) -> PyResult<Bound<'
             ));
         }
     };
-    pyo3_async_runtimes::tokio::future_into_py(py, async move {
+    PyPythonTask::new(async move {
         let world_id = alloc.world_id().clone();
         let mesh = ProcMesh::allocate(alloc)
             .await
@@ -138,39 +139,21 @@ fn allocate_proc_mesh<'py>(py: Python<'py>, alloc: &PyAlloc) -> PyResult<Bound<'
     })
 }
 
-fn allocate_proc_mesh_blocking<'py>(py: Python<'py>, alloc: &PyAlloc) -> PyResult<PyProcMesh> {
-    let alloc = match alloc.take() {
-        Some(alloc) => alloc,
-        None => {
-            return Err(PyException::new_err(
-                "Alloc object already been used".to_string(),
-            ));
-        }
-    };
-    signal_safe_block_on(py, async move {
-        let world_id = alloc.world_id().clone();
-        let mesh = ProcMesh::allocate(alloc)
-            .await
-            .map_err(|err| PyException::new_err(err.to_string()))?;
-        Ok(PyProcMesh::monitored(mesh, world_id))
-    })?
-}
-
 impl PyProcMesh {
     /// Create a new [`PyProcMesh`] with self health status monitoring.
     fn monitored(mut proc_mesh: ProcMesh, world_id: WorldId) -> Self {
         let proc_events = SharedCell::from(Mutex::new(proc_mesh.events().unwrap()));
         let (user_sender, user_receiver) = mpsc::unbounded_channel::<ProcEvent>();
         let user_monitor_registered = Arc::new(AtomicBool::new(false));
-        let unhealthy_event = Arc::new(Mutex::new(None));
+        let unhealthy_event = Arc::new(Mutex::new(Unhealthy::SoFarSoGood));
         let monitor = tokio::spawn(Self::default_proc_mesh_monitor(
             proc_events
                 .borrow()
                 .expect("borrowing immediately after creation"),
             world_id,
             user_sender,
-            user_monitor_registered.clone(),
-            unhealthy_event.clone(),
+            Arc::clone(&user_monitor_registered),
+            Arc::clone(&unhealthy_event),
         ));
         Self {
             inner: SharedCell::from(TrackedProcMesh::from(proc_mesh)),
@@ -188,7 +171,7 @@ impl PyProcMesh {
         world_id: WorldId,
         user_sender: mpsc::UnboundedSender<ProcEvent>,
         user_monitor_registered: Arc<AtomicBool>,
-        unhealthy_event: Arc<Mutex<Option<Option<ProcEvent>>>>,
+        unhealthy_event: Arc<Mutex<Unhealthy<ProcEvent>>>,
     ) {
         loop {
             let mut proc_events = events.lock().await;
@@ -197,7 +180,7 @@ impl PyProcMesh {
                     let mut inner_unhealthy_event = unhealthy_event.lock().await;
                     match event {
                         None => {
-                            *inner_unhealthy_event = Some(None);
+                            *inner_unhealthy_event = Unhealthy::StreamClosed;
                             tracing::info!("ProcMesh {}: alloc has stopped", world_id);
                             break;
                         }
@@ -205,7 +188,7 @@ impl PyProcMesh {
                             // Graceful stops can be ignored.
                             ProcEvent::Stopped(_, ProcStopReason::Stopped) => continue,
                             event => {
-                                *inner_unhealthy_event = Some(Some(event.clone()));
+                                *inner_unhealthy_event = Unhealthy::Crashed(event.clone());
                                 tracing::info!("ProcMesh {}: {}", world_id, event);
                                 if user_monitor_registered.load(std::sync::atomic::Ordering::SeqCst) {
                                     if user_sender.send(event).is_err() {
@@ -218,7 +201,7 @@ impl PyProcMesh {
                 }
                 _ = events.preempted() => {
                     let mut inner_unhealthy_event = unhealthy_event.lock().await;
-                    *inner_unhealthy_event = Some(None);
+                    *inner_unhealthy_event = Unhealthy::StreamClosed;
                     tracing::info!("ProcMesh {}: is stopped", world_id);
                     break;
                 }
@@ -259,19 +242,18 @@ impl PyProcMesh {
     }
 }
 
-// Return with error if the mesh is unhealthy.
-async fn ensure_mesh_healthy(
-    unhealthy_event: &Mutex<Option<Option<ProcEvent>>>,
-) -> Result<(), PyErr> {
+async fn ensure_mesh_healthy(unhealthy_event: &Mutex<Unhealthy<ProcEvent>>) -> Result<(), PyErr> {
     let locked = unhealthy_event.lock().await;
-    if let Some(event) = &*locked {
-        let msg = match event {
-            Some(e) => format!("proc mesh is stopped with reason: {:?}", e),
-            None => "proc mesh is stopped with reason: alloc is stopped".to_string(),
-        };
-        return Err(SupervisionError::new_err(msg));
+    match &*locked {
+        Unhealthy::SoFarSoGood => Ok(()),
+        Unhealthy::StreamClosed => Err(SupervisionError::new_err(
+            "proc mesh is stopped with reason: alloc is stopped".to_string(),
+        )),
+        Unhealthy::Crashed(event) => Err(SupervisionError::new_err(format!(
+            "proc mesh is stopped with reason: {:?}",
+            event
+        ))),
     }
-    Ok(())
 }
 
 #[pymethods]
@@ -279,71 +261,34 @@ impl PyProcMesh {
     #[classmethod]
     fn allocate_nonblocking<'py>(
         _cls: &Bound<'_, PyType>,
-        py: Python<'py>,
+        _py: Python<'py>,
         alloc: &PyAlloc,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        allocate_proc_mesh(py, alloc)
-    }
-
-    #[classmethod]
-    fn allocate_blocking<'py>(
-        _cls: &Bound<'_, PyType>,
-        py: Python<'py>,
-        alloc: &PyAlloc,
-    ) -> PyResult<PyProcMesh> {
-        allocate_proc_mesh_blocking(py, alloc)
+    ) -> PyResult<PyPythonTask> {
+        allocate_proc_mesh(alloc)
     }
 
     fn spawn_nonblocking<'py>(
         &self,
-        py: Python<'py>,
         name: String,
         actor: &Bound<'py, PyType>,
-    ) -> PyResult<Bound<'py, PyAny>> {
+    ) -> PyResult<PyPythonTask> {
         let unhealthy_event = Arc::clone(&self.unhealthy_event);
         let pickled_type = PickledPyObject::pickle(actor.as_any())?;
         let proc_mesh = self.try_inner()?;
         let keepalive = self.keepalive.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        PyPythonTask::new(async move {
             ensure_mesh_healthy(&unhealthy_event).await?;
 
             let mailbox = proc_mesh.client().clone();
             let actor_mesh = proc_mesh.spawn(&name, &pickled_type).await?;
             let actor_events = actor_mesh.with_mut(|a| a.events()).await.unwrap().unwrap();
-            let python_actor_mesh = PythonActorMesh::monitored(
+            Ok(PythonActorMesh::monitored(
                 actor_mesh,
                 PyMailbox { inner: mailbox },
                 keepalive,
                 actor_events,
-            );
-            Python::with_gil(|py| python_actor_mesh.into_py_any(py))
+            ))
         })
-    }
-
-    fn spawn_blocking<'py>(
-        &self,
-        py: Python<'py>,
-        name: String,
-        actor: &Bound<'py, PyType>,
-    ) -> PyResult<PyObject> {
-        let unhealthy_event = Arc::clone(&self.unhealthy_event);
-        let pickled_type = PickledPyObject::pickle(actor.as_any())?;
-        let proc_mesh = self.try_inner()?;
-        let keepalive = self.keepalive.clone();
-        signal_safe_block_on(py, async move {
-            ensure_mesh_healthy(&unhealthy_event).await?;
-
-            let mailbox = proc_mesh.client().clone();
-            let actor_mesh = proc_mesh.spawn(&name, &pickled_type).await?;
-            let actor_events = actor_mesh.with_mut(|a| a.events()).await.unwrap().unwrap();
-            let python_actor_mesh = PythonActorMesh::monitored(
-                actor_mesh,
-                PyMailbox { inner: mailbox },
-                keepalive,
-                actor_events,
-            );
-            Python::with_gil(|py| python_actor_mesh.into_py_any(py))
-        })?
     }
 
     // User can call this to monitor the proc mesh events. This will override
@@ -383,27 +328,16 @@ impl PyProcMesh {
         Ok(self.try_inner()?.shape().clone().into())
     }
 
-    fn stop_nonblocking<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    fn stop_nonblocking(&self) -> PyResult<PyPythonTask> {
         // Clone the necessary fields from self to avoid capturing self in the async block
         let inner = self.inner.clone();
         let proc_events = self.proc_events.clone();
 
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        Ok(PythonTask::new(async move {
             Self::stop_mesh(inner, proc_events).await?;
-            PyResult::Ok(())
+            Python::with_gil(|py| Ok(py.None()))
         })
-    }
-
-    fn stop_blocking<'py>(&self, py: Python<'py>) -> PyResult<()> {
-        // Clone the necessary fields from self to avoid capturing self in the async block
-        let inner = self.inner.clone();
-        let proc_events = self.proc_events.clone();
-
-        signal_safe_block_on(py, async move {
-            Self::stop_mesh(inner, proc_events)
-                .await
-                .map_err(|e| PyRuntimeError::new_err(format!("{}", e)))
-        })?
+        .into())
     }
 }
 

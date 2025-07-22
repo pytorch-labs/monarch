@@ -14,7 +14,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use dashmap::DashMap;
+use futures::future::join_all;
 use hyperactor::Actor;
+use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Mailbox;
 use hyperactor::Named;
@@ -56,6 +58,7 @@ use crate::comm::CommActorMode;
 use crate::proc_mesh::mesh_agent::GspawnResult;
 use crate::proc_mesh::mesh_agent::MeshAgent;
 use crate::proc_mesh::mesh_agent::MeshAgentMessageClient;
+use crate::proc_mesh::mesh_agent::StopActorResult;
 use crate::reference::ProcMeshId;
 
 pub mod mesh_agent;
@@ -231,7 +234,6 @@ impl ProcMesh {
         // corresponding actor supervision events via the supervision
         // port.
         hyperactor::mailbox::supervise_undeliverable_messages(
-            client.actor_id().clone(),
             supervision_port.clone(),
             client_undeliverable_receiver,
         );
@@ -449,6 +451,40 @@ impl ProcMesh {
     pub fn shape(&self) -> &Shape {
         &self.shape
     }
+
+    /// Send stop actors message to all mesh agents for a specific mesh name
+    pub async fn stop_actor_by_name(&self, mesh_name: &str) -> Result<(), anyhow::Error> {
+        let timeout = hyperactor::config::global::get(hyperactor::config::STOP_ACTOR_TIMEOUT);
+        let results = join_all(self.agents().map(|agent| async move {
+            let actor_id = ActorId(agent.actor_id().proc_id().clone(), mesh_name.to_string(), 0);
+            (
+                actor_id.clone(),
+                agent
+                    .clone()
+                    .stop_actor(&self.client, actor_id, timeout.as_millis() as u64)
+                    .await,
+            )
+        }))
+        .await;
+
+        for (actor_id, result) in results {
+            match result {
+                Ok(StopActorResult::Timeout) => {
+                    tracing::error!("timed out while stopping actor {}", actor_id);
+                }
+                Ok(StopActorResult::NotFound) => {
+                    tracing::error!("no actor {} on proc {}", actor_id, actor_id.proc_id());
+                }
+                Ok(StopActorResult::Success) => {
+                    tracing::info!("stopped actor {}", actor_id);
+                }
+                Err(e) => {
+                    tracing::error!("error stopping actor {}: {}", actor_id, e);
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Proc lifecycle events.
@@ -510,15 +546,14 @@ impl ProcEvents {
                     // Need to send this event to actor meshes to notify them of the proc's death.
                     // TODO(albertli): only send this event to all root actor meshes if any of them use this proc.
                     for entry in self.actor_event_router.iter() {
-                        // Make a dummy actor supervision event.
-                        let client_proc = ProcId(WorldId(format!("{}_manager", self.event_state.alloc.world_id().name())), 0);
-                        let client = client_proc.actor_id("client", 0);
+                        // Make a dummy actor supervision event, all actors on the proc are affected if a proc stops.
+                        // TODO(T231868026): find a better way to represent all actors in a proc for supervision event
                         let event = ActorSupervisionEvent::new(
-                            client.clone(),
+                            proc_id.actor_id("any", 0),
                             ActorStatus::Failed(format!("proc {} is stopped", proc_id))
                         );
                         if entry.value().send(event).is_err() {
-                            tracing::warn!("unable to transmit supervision event to actor {}", client);
+                            tracing::warn!("unable to transmit supervision event to actor {}", entry.key());
                         }
                     }
 
@@ -527,11 +562,6 @@ impl ProcEvents {
                 Ok(event) = self.event_state.supervision_events.recv() => {
                     let (actor_id, actor_status) = event.clone().into_inner();
                     let Some(rank) = self.ranks.get(actor_id.proc_id()) else {
-                        let client_proc = ProcId(WorldId(format!("{}_manager", self.event_state.alloc.world_id().name())), 0);
-                        let client = client_proc.actor_id("client", 0);
-                        if client == actor_id {
-                            break Some(ProcEvent::Crashed(0, actor_status.to_string()));
-                        }
                         tracing::warn!("received supervision event for unmapped actor {}", actor_id);
                         continue;
                     };

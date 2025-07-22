@@ -31,6 +31,12 @@ use hyperactor::PortRef;
 use hyperactor::Unbind;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
+use hyperactor_mesh::actor_mesh::ActorMesh;
+use hyperactor_mesh::connect::Connect;
+use hyperactor_mesh::connect::accept;
+use hyperactor_mesh::sel;
+#[cfg(feature = "packaged_rsync")]
+use lazy_static::lazy_static;
 use ndslice::Selection;
 use nix::sys::signal;
 use nix::sys::signal::Signal;
@@ -38,17 +44,47 @@ use nix::unistd::Pid;
 use serde::Deserialize;
 use serde::Serialize;
 use tempfile::TempDir;
+#[cfg(feature = "packaged_rsync")]
+use tempfile::TempPath;
 use tokio::fs;
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
 use tokio::process::Child;
 use tokio::process::Command;
+#[cfg(feature = "packaged_rsync")]
+use tokio::sync::OnceCell;
 
-use crate::actor_mesh::ActorMesh;
 use crate::code_sync::WorkspaceLocation;
-use crate::connect::Connect;
-use crate::connect::accept;
-use crate::sel;
+
+#[cfg(feature = "packaged_rsync")]
+lazy_static! {
+    static ref RSYNC_BIN_PATH: OnceCell<TempPath> = OnceCell::new();
+}
+
+async fn get_rsync_bin_path() -> Result<&'static Path> {
+    #[cfg(feature = "packaged_rsync")]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        Ok(RSYNC_BIN_PATH
+            .get_or_try_init(|| async {
+                tokio::task::spawn_blocking(|| {
+                    let mut tmp = tempfile::NamedTempFile::new()?;
+                    let rsync_bin = include_bytes!("rsync.bin");
+                    tmp.write_all(rsync_bin)?;
+                    let bin_path = tmp.into_temp_path();
+                    std::fs::set_permissions(&bin_path, std::fs::Permissions::from_mode(0o755))?;
+                    anyhow::Ok(bin_path)
+                })
+                .await?
+            })
+            .await?)
+    }
+    #[cfg(not(feature = "packaged_rsync"))]
+    {
+        Ok(Path::new("rsync"))
+    }
+}
 
 /// Represents a single file change from rsync
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -162,7 +198,7 @@ pub async fn do_rsync(addr: &SocketAddr, workspace: &Path) -> Result<RsyncResult
     // line in rsync output.
     fs::create_dir_all(workspace).await?;
 
-    let output = Command::new("rsync")
+    let output = Command::new(get_rsync_bin_path().await?)
         .arg("--archive")
         .arg("--delete")
         // Show detailed changes for each file
@@ -179,7 +215,8 @@ pub async fn do_rsync(addr: &SocketAddr, workspace: &Path) -> Result<RsyncResult
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
-        .await?;
+        .await
+        .context("spawning `rsync` binary")?;
 
     output
         .status
@@ -231,7 +268,7 @@ impl RsyncDaemon {
         std::mem::drop(listener);
 
         // Spawn the rsync daemon.
-        let mut child = Command::new("rsync")
+        let mut child = Command::new(get_rsync_bin_path().await?)
             .arg("--daemon")
             .arg("--no-detach")
             .arg(format!("--address={}", addr.ip()))
@@ -279,31 +316,33 @@ impl RsyncDaemon {
     }
 }
 
-#[derive(Debug, Named, Serialize, Deserialize, Bind, Unbind)]
+#[derive(Debug, Clone, Named, Serialize, Deserialize, Bind, Unbind)]
 pub struct RsyncMessage {
     /// The connect message to create a duplex bytestream with the client.
     pub connect: PortRef<Connect>,
     /// A port to send back the rsync result or any errors.
     pub result: PortRef<Result<RsyncResult, String>>,
+    /// The location of the workspace to sync.
+    pub workspace: WorkspaceLocation,
 }
 
 #[derive(Debug, Named, Serialize, Deserialize)]
 pub struct RsyncParams {
-    pub workspace: WorkspaceLocation,
+    //pub workspace: WorkspaceLocation,
 }
 
 #[derive(Debug)]
 #[hyperactor::export(spawn = true, handlers = [RsyncMessage { cast = true }])]
 pub struct RsyncActor {
-    workspace: WorkspaceLocation,
+    //workspace: WorkspaceLocation,
 }
 
 #[async_trait]
 impl Actor for RsyncActor {
     type Params = RsyncParams;
 
-    async fn new(RsyncParams { workspace }: Self::Params) -> Result<Self> {
-        Ok(Self { workspace })
+    async fn new(RsyncParams {}: Self::Params) -> Result<Self> {
+        Ok(Self {})
     }
 }
 
@@ -312,10 +351,14 @@ impl Handler<RsyncMessage> for RsyncActor {
     async fn handle(
         &mut self,
         cx: &hyperactor::Context<Self>,
-        RsyncMessage { connect, result }: RsyncMessage,
+        RsyncMessage {
+            workspace,
+            connect,
+            result,
+        }: RsyncMessage,
     ) -> Result<(), anyhow::Error> {
         let res = async {
-            let workspace = self.workspace.resolve()?;
+            let workspace = workspace.resolve()?;
             let (connect_msg, completer) = Connect::allocate(cx.self_id().clone(), cx);
             connect.send(cx, connect_msg)?;
             let (listener, mut stream) = try_join!(
@@ -336,12 +379,16 @@ impl Handler<RsyncMessage> for RsyncActor {
     }
 }
 
-pub async fn rsync_mesh<M>(actor_mesh: &M, workspace: PathBuf) -> Result<Vec<RsyncResult>>
+pub async fn rsync_mesh<M>(
+    actor_mesh: &M,
+    local_workspace: PathBuf,
+    remote_workspace: WorkspaceLocation,
+) -> Result<Vec<RsyncResult>>
 where
     M: ActorMesh<Actor = RsyncActor>,
 {
     // Spawn a rsync daemon to accept incoming connections from actors.
-    let daemon = RsyncDaemon::spawn(TcpListener::bind(("::1", 0)).await?, &workspace).await?;
+    let daemon = RsyncDaemon::spawn(TcpListener::bind(("::1", 0)).await?, &local_workspace).await?;
     let daemon_addr = daemon.addr();
 
     let mailbox = actor_mesh.proc_mesh().client();
@@ -367,6 +414,7 @@ where
                 RsyncMessage {
                     connect: rsync_conns_tx.bind(),
                     result: result_tx.bind(),
+                    workspace: remote_workspace,
                 },
             )?;
             let res: Vec<RsyncResult> = result_rx
@@ -387,16 +435,16 @@ where
 mod tests {
     use anyhow::Result;
     use anyhow::anyhow;
+    use hyperactor_mesh::alloc::AllocSpec;
+    use hyperactor_mesh::alloc::Allocator;
+    use hyperactor_mesh::alloc::local::LocalAllocator;
+    use hyperactor_mesh::proc_mesh::ProcMesh;
     use ndslice::shape;
     use tempfile::TempDir;
     use tokio::fs;
     use tokio::net::TcpListener;
 
     use super::*;
-    use crate::alloc::AllocSpec;
-    use crate::alloc::Allocator;
-    use crate::alloc::local::LocalAllocator;
-    use crate::proc_mesh::ProcMesh;
 
     #[tokio::test]
     async fn test_simple() -> Result<()> {
@@ -440,15 +488,18 @@ mod tests {
         let proc_mesh = ProcMesh::allocate(alloc).await?;
 
         // Create RsyncParams - all actors will use the same target workspace for this test
-        let params = RsyncParams {
-            workspace: WorkspaceLocation::Constant(target_workspace.path().to_path_buf()),
-        };
+        let params = RsyncParams {};
 
         // Spawn actor mesh with RsyncActors
         let actor_mesh = proc_mesh.spawn::<RsyncActor>("rsync_test", &params).await?;
 
         // Test rsync_mesh function - this coordinates rsync operations across the mesh
-        let results = rsync_mesh(&actor_mesh, source_workspace.path().to_path_buf()).await?;
+        let results = rsync_mesh(
+            &actor_mesh,
+            source_workspace.path().to_path_buf(),
+            WorkspaceLocation::Constant(target_workspace.path().to_path_buf()),
+        )
+        .await?;
 
         // Verify we got results back
         assert_eq!(results.len(), 1); // We have 1 actor in the mesh

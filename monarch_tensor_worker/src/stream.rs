@@ -2736,7 +2736,7 @@ mod tests {
             let error = result.unwrap().unwrap_err();
 
             // Check that the error contains the expected strings
-            let error_str = format!("{:?}", error);
+            let error_str = error.to_string();
             assert!(
                 error_str.contains("recording failed"),
                 "Error should contain 'recording failed': {}",
@@ -3034,14 +3034,14 @@ mod tests {
                 .unwrap()
                 .unwrap_err();
             // Check that the error contains the expected strings
-            let error_str = format!("{:?}", result_error);
+            let error_str = result_error.to_string();
             assert!(
                 error_str.contains("recording failed"),
                 "Error should contain 'recording failed': {}",
                 error_str
             );
             assert!(
-                error_str.contains("torch operator failed"),
+                error_str.contains("torch operator error"),
                 "Error should contain 'torch operator failed': {}",
                 error_str
             );
@@ -3096,7 +3096,7 @@ mod tests {
                 .unwrap()
                 .unwrap_err();
             // Check that the error contains the expected strings
-            let error_str = format!("{:?}", result_error);
+            let error_str = result_error.to_string();
             assert!(
                 error_str.contains("Computation depended on an input that failed"),
                 "Error should contain dependency message: {}",
@@ -3118,7 +3118,7 @@ mod tests {
             3.into(),
             captured_ref,
             &mut test_setup.controller_rx,
-            "RecordingFailed",
+            "recording failed",
         )
         .await;
 
@@ -3477,7 +3477,7 @@ mod tests {
             .unwrap_err();
 
         // Check that the error contains the expected strings
-        let error_str = format!("{:?}", result_error);
+        let error_str = result_error.to_string();
         assert!(
             error_str.contains("Computation depended on an input that failed"),
             "Error should contain dependency message: {}",
@@ -3486,7 +3486,7 @@ mod tests {
 
         // Since we're checking for pointer equality in the original code, we need to ensure
         // the error is propagated correctly. We can check that the original error message is contained.
-        let input_error_str = format!("{:?}", input_error);
+        let input_error_str = input_error.to_string();
         assert!(
             error_str.contains(&input_error_str),
             "Error should contain the original error: {}",
@@ -4232,7 +4232,7 @@ mod tests {
             .unwrap()
             .unwrap_err();
         // Check that the error contains the expected string
-        let error_str = format!("{:?}", real_result_err);
+        let error_str = real_result_err.to_string();
         assert!(
             error_str.contains("recording failed"),
             "Error should contain 'recording failed': {}",
@@ -4309,7 +4309,7 @@ mod tests {
             .unwrap()
             .unwrap_err();
         // Check that the error contains the expected strings
-        let error_str = format!("{:?}", real_result_err);
+        let error_str = real_result_err.to_string();
         assert!(
             error_str.contains("Computation depended on an input that failed"),
             "Error should contain dependency message: {}",

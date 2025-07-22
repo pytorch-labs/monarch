@@ -129,11 +129,7 @@ impl UndeliverableMessageError {
 /// Spawns a task that listens for undeliverable messages and posts a
 /// corresponding `ActorSupervisionEvent` to the given supervision
 /// port.
-///
-/// The `mailbox_id` identifies the source mailbox for context in
-/// supervision events.
 pub fn supervise_undeliverable_messages(
-    mailbox_id: ActorId,
     supervision_port: PortHandle<ActorSupervisionEvent>,
     mut rx: PortReceiver<Undeliverable<MessageEnvelope>>,
 ) {
@@ -144,7 +140,7 @@ pub fn supervise_undeliverable_messages(
             ));
             if supervision_port
                 .send(ActorSupervisionEvent::new(
-                    mailbox_id.clone(),
+                    envelope.dest().actor_id().clone(),
                     ActorStatus::Failed(format!("message not delivered: {}", envelope)),
                 ))
                 .is_err()

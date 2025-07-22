@@ -16,7 +16,7 @@ class LoggingMeshClient:
     Python binding for the Rust LoggingMeshClient.
     """
     @staticmethod
-    def spawn_blocking(
+    async def spawn(
         proc_mesh: ProcMesh,
     ) -> LoggingMeshClient: ...
     def set_mode(self, stream_to_client: bool) -> None: ...

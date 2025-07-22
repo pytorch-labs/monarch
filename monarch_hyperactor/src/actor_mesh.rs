@@ -20,6 +20,7 @@ use hyperactor_mesh::actor_mesh::ActorSupervisionEvents;
 use hyperactor_mesh::reference::ActorMeshRef;
 use hyperactor_mesh::shared_cell::SharedCell;
 use hyperactor_mesh::shared_cell::SharedCellRef;
+use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyEOFError;
 use pyo3::exceptions::PyException;
 use pyo3::exceptions::PyNotImplementedError;
@@ -33,17 +34,19 @@ use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::Mutex;
 
+use crate::actor::PyPythonTask;
 use crate::actor::PythonActor;
 use crate::actor::PythonMessage;
+use crate::actor::PythonTask;
 use crate::mailbox::PyMailbox;
 use crate::mailbox::PythonOncePortReceiver;
 use crate::mailbox::PythonPortReceiver;
 use crate::proc::PyActorId;
 use crate::proc_mesh::Keepalive;
-use crate::runtime::signal_safe_block_on;
 use crate::selection::PySelection;
 use crate::shape::PyShape;
 use crate::supervision::SupervisionError;
+use crate::supervision::Unhealthy;
 
 #[pyclass(
     name = "PythonActorMesh",
@@ -53,7 +56,7 @@ pub struct PythonActorMesh {
     inner: SharedCell<RootActorMesh<'static, PythonActor>>,
     client: PyMailbox,
     _keepalive: Keepalive,
-    unhealthy_event: Arc<std::sync::Mutex<Option<Option<ActorSupervisionEvent>>>>,
+    unhealthy_event: Arc<std::sync::Mutex<Unhealthy<ActorSupervisionEvent>>>,
     user_monitor_sender: tokio::sync::broadcast::Sender<Option<ActorSupervisionEvent>>,
     monitor: tokio::task::JoinHandle<()>,
 }
@@ -69,11 +72,11 @@ impl PythonActorMesh {
     ) -> Self {
         let (user_monitor_sender, _) =
             tokio::sync::broadcast::channel::<Option<ActorSupervisionEvent>>(1);
-        let unhealthy_event = Arc::new(std::sync::Mutex::new(None));
+        let unhealthy_event = Arc::new(std::sync::Mutex::new(Unhealthy::SoFarSoGood));
         let monitor = tokio::spawn(Self::actor_mesh_monitor(
             events,
             user_monitor_sender.clone(),
-            unhealthy_event.clone(),
+            Arc::clone(&unhealthy_event),
         ));
         Self {
             inner,
@@ -90,15 +93,19 @@ impl PythonActorMesh {
     async fn actor_mesh_monitor(
         mut events: ActorSupervisionEvents,
         user_sender: tokio::sync::broadcast::Sender<Option<ActorSupervisionEvent>>,
-        unhealthy_event: Arc<std::sync::Mutex<Option<Option<ActorSupervisionEvent>>>>,
+        unhealthy_event: Arc<std::sync::Mutex<Unhealthy<ActorSupervisionEvent>>>,
     ) {
         loop {
             let event = events.next().await;
             let mut inner_unhealthy_event = unhealthy_event.lock().unwrap();
-            *inner_unhealthy_event = Some(event.clone());
+            match &event {
+                None => *inner_unhealthy_event = Unhealthy::StreamClosed,
+                Some(event) => *inner_unhealthy_event = Unhealthy::Crashed(event.clone()),
+            }
 
-            // Ignore the sender error when there is no receiver, which happens when there
-            // is no active requests to this mesh.
+            // Ignore the sender error when there is no receiver,
+            // which happens when there is no active requests to this
+            // mesh.
             let _ = user_sender.send(event.clone());
 
             if event.is_none() {
@@ -130,11 +137,20 @@ impl PythonActorMesh {
             .unhealthy_event
             .lock()
             .expect("failed to acquire unhealthy_event lock");
-        if let Some(ref event) = *unhealthy_event {
-            return Err(PyRuntimeError::new_err(format!(
-                "actor mesh is unhealthy with reason: {:?}",
-                event
-            )));
+
+        match &*unhealthy_event {
+            Unhealthy::SoFarSoGood => (),
+            Unhealthy::Crashed(event) => {
+                return Err(PyRuntimeError::new_err(format!(
+                    "actor mesh is unhealthy with reason: {:?}",
+                    event
+                )));
+            }
+            Unhealthy::StreamClosed => {
+                return Err(PyRuntimeError::new_err(
+                    "actor mesh is stopped due to proc mesh shutdown".to_string(),
+                ));
+            }
         }
 
         self.try_inner()?
@@ -154,15 +170,16 @@ impl PythonActorMesh {
             .lock()
             .expect("failed to acquire unhealthy_event lock");
 
-        Ok(unhealthy_event.as_ref().map(|event| match event {
-            None => PyActorSupervisionEvent {
+        match &*unhealthy_event {
+            Unhealthy::SoFarSoGood => Ok(None),
+            Unhealthy::StreamClosed => Ok(Some(PyActorSupervisionEvent {
                 // Dummy actor as place holder to indicate the whole mesh is stopped
                 // TODO(albertli): remove this when pushing all supervision logic to rust.
                 actor_id: id!(default[0].actor[0]).into(),
                 actor_status: "actor mesh is stopped due to proc mesh shutdown".to_string(),
-            },
-            Some(event) => PyActorSupervisionEvent::from(event.clone()),
-        }))
+            })),
+            Unhealthy::Crashed(event) => Ok(Some(PyActorSupervisionEvent::from(event.clone()))),
+        }
     }
 
     // Consider defining a "PythonActorRef", which carries specifically
@@ -182,7 +199,7 @@ impl PythonActorMesh {
         let monitor_instance = PyActorMeshMonitor {
             receiver: SharedCell::from(Mutex::new(receiver)),
         };
-        Ok(monitor_instance.into_py(py))
+        monitor_instance.into_py_any(py)
     }
 
     #[pyo3(signature = (**kwargs))]
@@ -207,6 +224,25 @@ impl PythonActorMesh {
 
     fn __reduce_ex__(&self, _proto: u8) -> PyResult<()> {
         Err(self.pickling_err())
+    }
+
+    fn stop<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let actor_mesh = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let actor_mesh = actor_mesh
+                .take()
+                .await
+                .map_err(|_| PyRuntimeError::new_err("`ActorMesh` has already been stopped"))?;
+            actor_mesh.stop().await.map_err(|err| {
+                PyException::new_err(format!("Failed to stop actor mesh: {}", err))
+            })?;
+            Ok(())
+        })
+    }
+
+    #[getter]
+    fn stopped(&self) -> PyResult<bool> {
+        Ok(self.inner.borrow().is_err())
     }
 }
 
@@ -330,6 +366,10 @@ impl PythonActorMeshRef {
 
 impl Drop for PythonActorMesh {
     fn drop(&mut self) {
+        tracing::info!(
+            "Dropping PythonActorMesh: {}",
+            self.inner.borrow().unwrap().name()
+        );
         self.monitor.abort();
     }
 }
@@ -388,8 +428,9 @@ async fn get_next(
         },
         Some(event) => PyActorSupervisionEvent::from(event.clone()),
     };
+    tracing::info!("recv supervision event: {supervision_event:?}");
 
-    Ok(Python::with_gil(|py| supervision_event.into_py(py)))
+    Python::with_gil(|py| supervision_event.into_py_any(py))
 }
 
 // TODO(albertli): this is temporary remove this when pushing all supervision logic to rust.
@@ -413,36 +454,25 @@ impl MonitoredPythonPortReceiver {
         }
     }
 
-    fn recv<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    fn recv_task(&mut self) -> PyPythonTask {
         let receiver = self.inner.clone();
         let monitor = self.monitor.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        PythonTask::new(async move {
             let mut receiver = receiver.lock().await;
-            tokio::select! {
+            let result = tokio::select! {
                 result = receiver.recv() => {
                     result.map_err(|err| PyErr::new::<PyEOFError, _>(format!("port closed: {}", err)))
                 }
                 event = monitor.next() => {
-                    Err(PyErr::new::<SupervisionError, _>(format!("supervision error: {:?}", event.unwrap())))
+                    let event = event.expect("supervision event should not be None");
+                    Python::with_gil(|py| {
+                        let e = event.downcast_bound::<PyActorSupervisionEvent>(py)?;
+                        Err(PyErr::new::<SupervisionError, _>(format!("supervision error: {:?}", e)))
+                    })
                 }
-            }
-        })
-    }
-
-    fn blocking_recv<'py>(&mut self, py: Python<'py>) -> PyResult<PythonMessage> {
-        let receiver = self.inner.clone();
-        let monitor = self.monitor.clone();
-        signal_safe_block_on(py, async move {
-            let mut receiver = receiver.lock().await;
-            tokio::select! {
-                result = receiver.recv() => {
-                   result.map_err(|err| PyErr::new::<PyEOFError, _>(format!("port closed: {}", err)))
-                }
-                event = monitor.next() => {
-                    Err(PyErr::new::<SupervisionError, _>(format!("supervision error: {:?}", event.unwrap())))
-                }
-            }
-        })?
+            };
+            result.and_then(|message: PythonMessage| Python::with_gil(|py| message.into_py_any(py)))
+        }).into()
     }
 }
 
@@ -466,38 +496,26 @@ impl MonitoredPythonOncePortReceiver {
         }
     }
 
-    fn recv<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    fn recv_task(&mut self) -> PyResult<PyPythonTask> {
         let Some(receiver) = self.inner.lock().unwrap().take() else {
             return Err(PyErr::new::<PyValueError, _>("OncePort is already used"));
         };
         let monitor = self.monitor.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            tokio::select! {
+        Ok(PythonTask::new(async move {
+            let result = tokio::select! {
                 result = receiver.recv() => {
                     result.map_err(|err| PyErr::new::<PyEOFError, _>(format!("port closed: {}", err)))
                 }
                 event = monitor.next() => {
-                    Err(PyErr::new::<SupervisionError, _>(format!("supervision error: {:?}", event.unwrap())))
+                    let event = event.expect("supervision event should not be None");
+                    Python::with_gil(|py| {
+                        let e = event.downcast_bound::<PyActorSupervisionEvent>(py)?;
+                        Err(PyErr::new::<SupervisionError, _>(format!("supervision error: {:?}", e)))
+                    })
                 }
-            }
-        })
-    }
-
-    fn blocking_recv<'py>(&mut self, py: Python<'py>) -> PyResult<PythonMessage> {
-        let Some(receiver) = self.inner.lock().unwrap().take() else {
-            return Err(PyErr::new::<PyValueError, _>("OncePort is already used"));
-        };
-        let monitor = self.monitor.clone();
-        signal_safe_block_on(py, async move {
-            tokio::select! {
-                result = receiver.recv() => {
-                   result.map_err(|err| PyErr::new::<PyEOFError, _>(format!("port closed: {}", err)))
-                }
-                event = monitor.next() => {
-                    Err(PyErr::new::<SupervisionError, _>(format!("supervision error: {:?}", event.unwrap())))
-                }
-            }
-        })?
+            };
+            result.and_then(|message: PythonMessage| Python::with_gil(|py| message.into_py_any(py)))
+        }).into())
     }
 }
 
@@ -505,6 +523,7 @@ impl MonitoredPythonOncePortReceiver {
     name = "ActorSupervisionEvent",
     module = "monarch._rust_bindings.monarch_hyperactor.actor_mesh"
 )]
+#[derive(Debug)]
 pub struct PyActorSupervisionEvent {
     /// Actor ID of the actor where supervision event originates from.
     #[pyo3(get)]

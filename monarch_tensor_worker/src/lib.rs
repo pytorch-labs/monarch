@@ -1441,7 +1441,7 @@ mod tests {
             .context("no such ref")?
             .err()
             .context("expected error")?;
-        assert!(mutated_ref.contains("InvalidRemoteFunction"));
+        assert!(mutated_ref.contains("failed to resolve function"));
 
         let responses = controller_rx.drain();
         assert_eq!(
@@ -2185,7 +2185,7 @@ mod tests {
                     value
                         .unwrap_err()
                         .backtrace
-                        .contains("InvalidRemoteFunction")
+                        .contains("failed to resolve function")
                 );
             }
             _ => panic!("unexpected response {:#?}", responses),
@@ -2198,7 +2198,7 @@ mod tests {
                     value
                         .unwrap_err()
                         .backtrace
-                        .contains("InvalidRemoteFunction")
+                        .contains("failed to resolve function")
                 );
             }
             _ => panic!("unexpected response {:#?}", responses),

@@ -9,11 +9,14 @@ import warnings
 from typing import Optional
 
 import torch
-from monarch._rust_bindings.rdma import _RdmaBuffer
 
+try:
+    from monarch._rust_bindings.rdma import _RdmaBuffer
+except ImportError as e:
+    logging.error("RDMA is not available: {}".format(e))
+    raise e
+from monarch._src.actor.actor_mesh import MonarchContext
 from monarch._src.actor.future import Future
-
-from monarch.actor import MonarchContext
 
 
 # RDMARead/WriteTransferWarnings are warnings that are only printed once per process.
@@ -30,7 +33,7 @@ warnings.simplefilter("once", RDMAReadTransferWarning)
 warnings.simplefilter("once", RDMAWriteTransferWarning)
 
 
-def rdma_supported():
+def is_available():
     return _RdmaBuffer.rdma_supported()
 
 
@@ -52,7 +55,9 @@ class RDMABuffer:
 
         TODO: Create TensorBuffer, which will be main user API supporting non-contiguous , multi-byte-per-elment tensors
         """
-        assert _RdmaBuffer.rdma_supported()
+        assert (
+            is_available()
+        ), "Tried to create an RDMABuffer, but RDMA is not available on this platform."
 
         if data.device.type != "cpu":
             # TODO - CUDA support for RDMABuffer exists at the Rust layer, but
@@ -72,21 +77,12 @@ class RDMABuffer:
             addr: int = storage.data_ptr()
             size = storage.element_size() * data.numel()
             ctx = MonarchContext.get()
-            f = Future(
-                lambda: _RdmaBuffer.create_rdma_buffer_nonblocking(
-                    addr=addr,
-                    size=size,
-                    proc_id=ctx.proc_id,
-                    client=ctx.mailbox,
-                ),
-                lambda: _RdmaBuffer.create_rdma_buffer_blocking(
-                    addr=addr,
-                    size=size,
-                    proc_id=ctx.proc_id,
-                    client=ctx.mailbox,
-                ),
+            self._buffer: _RdmaBuffer = _RdmaBuffer.create_rdma_buffer_blocking(
+                addr=addr,
+                size=size,
+                proc_id=ctx.proc_id,
+                client=ctx.mailbox,
             )
-            self._buffer: _RdmaBuffer = f.get()
         # TODO - specific exception
         except Exception as e:
             logging.error("Failed to create buffer %s", e)
@@ -137,20 +133,7 @@ class RDMABuffer:
                 dst_gpu.copy_(dst)
             return res
 
-        def read_into_blocking() -> Optional[int]:
-            res = self._buffer.read_into_blocking(
-                addr=addr,
-                size=size,
-                local_proc_id=MonarchContext.get().proc_id,
-                client=MonarchContext.get().mailbox,
-                timeout=timeout,
-            )
-            # TODO - remove this once GPU support is added.
-            if dst_gpu is not None:
-                dst_gpu.copy_(dst)
-            return res
-
-        return Future(read_into_nonblocking, read_into_blocking)
+        return Future(impl=read_into_nonblocking, requires_loop=False)
 
     def write_from(
         self, src: torch.Tensor, offset: int = 0, timeout: int = 3
@@ -194,17 +177,4 @@ class RDMABuffer:
                 src_gpu.copy_(src)
             return res
 
-        def write_from_blocking() -> None:
-            res = self._buffer.write_from_blocking(
-                addr=addr,
-                size=size,
-                local_proc_id=MonarchContext.get().proc_id,
-                client=MonarchContext.get().mailbox,
-                timeout=timeout,
-            )
-            # TODO - remove this once GPU support is added.
-            if src_gpu is not None:
-                src_gpu.copy_(src)
-            return res
-
-        return Future(write_from_nonblocking, write_from_blocking)
+        return Future(impl=write_from_nonblocking, requires_loop=False)

@@ -890,6 +890,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
     /// Handles a server side stream created during the `listen` loop.
     async fn process<M: RemoteMessage>(
         &mut self,
+        session_id: u64,
         tx: mpsc::Sender<M>,
         cancel_token: CancellationToken,
         mut next: Next,
@@ -900,7 +901,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
         let ack_time_interval = config::global::get(config::MESSAGE_ACK_TIME_INTERVAL);
         let ack_msg_interval = config::global::get(config::MESSAGE_ACK_EVERY_N_MESSAGES);
 
-        loop {
+        let (mut final_next, final_result) = loop {
             tokio::select! {
                 // tokio_stream::StreamExt::next is cancel safe.
                 rcv_result = tokio_stream::StreamExt::next(&mut self.stream) => {
@@ -978,7 +979,30 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                 _ = RealClock.sleep_until(last_ack_time + ack_time_interval), if next.ack < next.seq => {},
                 _ = cancel_token.cancelled() => break (next, Ok(()))
             }
+        };
+        // best effort: "flush" any remaining ack before closing this session
+        if final_next.ack < final_next.seq {
+            match Self::send_ack(&mut self.sink, final_next.seq).await {
+                Ok(()) => {
+                    final_next.ack = final_next.seq;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "session {}:{} failed to flush acks for connection from
+                        {} due to error : {:?}. Normally, this is okay because
+                        Tx will reconnect, and acks will be resent in the next
+                        connection. However, if either Tx or Rx is dropped, the
+                        reconnection will not happen, and subsequently the
+                        pending ack will never be sent out.",
+                        self.dest,
+                        session_id,
+                        self.source,
+                        e
+                    );
+                }
+            }
         }
+        (final_next, final_result)
     }
 
     async fn send_ack(
@@ -1113,7 +1137,7 @@ impl SessionManager {
         };
 
         let next = session_var.take().await;
-        let (next, res) = conn.process(tx, cancel_token, next).await;
+        let (next, res) = conn.process(session_id, tx, cancel_token, next).await;
         session_var.put(next).await;
 
         if let Err(ref err) = res {
@@ -1974,6 +1998,27 @@ mod tests {
         // because that is what tx knows.
         let (_, mut rx2) = tcp::serve::<u64>(local_socket).await.unwrap();
         assert_eq!(rx2.recv().await.unwrap(), 102);
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_ack_flush() {
+        let config = config::global::lock();
+        // Set a large value to effectively prevent acks from being sent except
+        // during shutdown flush.
+        let _guard_message_ack =
+            config.override_key(config::MESSAGE_ACK_EVERY_N_MESSAGES, 100000000);
+        let _guard_delivery_timeout =
+            config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(5));
+
+        let (addr, mut net_rx) = tcp::serve::<u64>("[::1]:0".parse().unwrap()).await.unwrap();
+        let net_tx = dial::<u64>(addr.clone()).unwrap();
+        let (tx, rx) = oneshot::channel();
+        net_tx.try_post(1, tx).unwrap();
+        assert_eq!(net_rx.recv().await.unwrap(), 1);
+        drop(net_rx);
+        // Using `is_err` to confirm the message is delivered/acked is confusing,
+        // but is correct. See how send is implemented: https://fburl.com/code/ywt8lip2
+        assert!(rx.await.is_err());
     }
 
     #[ignore = "fix problem in Sandcastle T208303369"]

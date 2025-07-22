@@ -23,3 +23,23 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("SupervisionError", py.get_type::<SupervisionError>())?;
     Ok(())
 }
+
+// Shared between mesh types.
+#[derive(Debug, Clone)]
+pub(crate) enum Unhealthy<Event> {
+    SoFarSoGood,    // Still healthy
+    StreamClosed,   // Event stream closed
+    Crashed(Event), // Bad health event received
+}
+
+impl<Event> Unhealthy<Event> {
+    #[allow(dead_code)] // No uses yet.
+    pub(crate) fn is_healthy(&self) -> bool {
+        matches!(self, Unhealthy::SoFarSoGood)
+    }
+
+    #[allow(dead_code)] // No uses yet.
+    pub(crate) fn is_crashed(&self) -> bool {
+        matches!(self, Unhealthy::Crashed(_))
+    }
+}

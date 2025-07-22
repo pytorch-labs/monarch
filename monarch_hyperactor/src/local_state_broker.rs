@@ -54,7 +54,7 @@ impl Actor for LocalStateBrokerActor {
 impl Handler<LocalStateBrokerMessage> for LocalStateBrokerActor {
     async fn handle(
         &mut self,
-        cx: &Context<Self>,
+        _cx: &Context<Self>,
         message: LocalStateBrokerMessage,
     ) -> anyhow::Result<()> {
         match message {

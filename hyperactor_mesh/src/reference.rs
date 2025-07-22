@@ -93,11 +93,7 @@ impl<A: RemoteActor> ActorMeshRef<A> {
     /// typed reference.  This is usually invoked to provide a guarantee
     /// that an externally-provided mesh ID (e.g., through a command
     /// line argument) is a valid reference.
-    pub(crate) fn attest(
-        mesh_id: ActorMeshId,
-        root: Shape,
-        comm_actor_ref: ActorRef<CommActor>,
-    ) -> Self {
+    pub fn attest(mesh_id: ActorMeshId, root: Shape, comm_actor_ref: ActorRef<CommActor>) -> Self {
         Self {
             mesh_id,
             root,

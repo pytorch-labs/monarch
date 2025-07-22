@@ -31,6 +31,7 @@ use hyperactor::channel::ChannelTransport;
 use hyperactor::channel::ChannelTx;
 use hyperactor::channel::Rx;
 use hyperactor::channel::Tx;
+use hyperactor::channel::TxStatus;
 use hyperactor::data::Serialized;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
@@ -38,6 +39,7 @@ use hyperactor::message::Unbind;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::io;
+use tokio::sync::watch::Receiver;
 
 use crate::bootstrap::BOOTSTRAP_LOG_CHANNEL;
 
@@ -88,11 +90,14 @@ pub struct LocalLogSender {
     hostname: String,
     pid: u32,
     tx: Arc<ChannelTx<LogMessage>>,
+    status: Receiver<TxStatus>,
 }
 
 impl LocalLogSender {
     fn new(log_channel: ChannelAddr, pid: u32) -> Result<Self, anyhow::Error> {
         let tx = channel::dial::<LogMessage>(log_channel)?;
+        let status = tx.status().clone();
+
         let hostname = hostname::get()
             .unwrap_or_else(|_| "unknown_host".into())
             .into_string()
@@ -101,19 +106,26 @@ impl LocalLogSender {
             hostname,
             pid,
             tx: Arc::new(tx),
+            status,
         })
     }
 }
 
 impl LogSender for LocalLogSender {
     fn send(&mut self, target: OutputTarget, payload: Vec<u8>) -> anyhow::Result<()> {
-        // post regardless; the log receiver should be spinned up shortly.
-        self.tx.post(LogMessage::Log {
-            hostname: self.hostname.clone(),
-            pid: self.pid,
-            output_target: target,
-            payload: Serialized::serialize_anon(&payload)?,
-        });
+        if TxStatus::Active == *self.status.borrow() {
+            self.tx.post(LogMessage::Log {
+                hostname: self.hostname.clone(),
+                pid: self.pid,
+                output_target: target,
+                payload: Serialized::serialize_anon(&payload)?,
+            });
+        } else {
+            tracing::trace!(
+                "log sender {} is not active, skip sending log",
+                self.tx.addr()
+            )
+        }
 
         Ok(())
     }

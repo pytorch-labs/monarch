@@ -10,15 +10,20 @@
 
 use std::path::PathBuf;
 
+use anyhow::Result;
+use futures::TryFutureExt;
+use futures::future::try_join_all;
+use hyperactor_mesh::Mesh;
 use hyperactor_mesh::RootActorMesh;
-use hyperactor_mesh::SlicedActorMesh;
-use hyperactor_mesh::code_sync::WorkspaceLocation;
-use hyperactor_mesh::code_sync::rsync;
-use hyperactor_mesh::shape::Shape;
 use hyperactor_mesh::shared_cell::SharedCell;
+use monarch_hyperactor::code_sync::WorkspaceLocation;
+use monarch_hyperactor::code_sync::manager::CodeSyncManager;
+use monarch_hyperactor::code_sync::manager::CodeSyncManagerParams;
+use monarch_hyperactor::code_sync::manager::WorkspaceConfig;
+use monarch_hyperactor::code_sync::manager::WorkspaceShape;
+use monarch_hyperactor::code_sync::manager::code_sync_mesh;
 use monarch_hyperactor::proc_mesh::PyProcMesh;
 use monarch_hyperactor::runtime::signal_safe_block_on;
-use monarch_hyperactor::shape::PyShape;
 use pyo3::Bound;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
@@ -74,59 +79,158 @@ impl PyWorkspaceLocation {
 
 #[pyclass(
     frozen,
-    name = "RsyncMeshClient",
+    name = "WorkspaceShape",
     module = "monarch._rust_bindings.monarch_extension.code_sync"
 )]
-pub struct RsyncMeshClient {
-    actor_mesh: SharedCell<RootActorMesh<'static, rsync::RsyncActor>>,
-    shape: Shape,
-    workspace: PathBuf,
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct PyWorkspaceShape {
+    dimension: Option<String>,
 }
 
 #[pymethods]
-impl RsyncMeshClient {
+impl PyWorkspaceShape {
     #[staticmethod]
-    #[pyo3(signature = (*, proc_mesh, shape, local_workspace, remote_workspace))]
-    fn spawn_blocking(
-        py: Python,
-        proc_mesh: &PyProcMesh,
-        shape: &PyShape,
-        local_workspace: PathBuf,
-        remote_workspace: PyWorkspaceLocation,
-    ) -> PyResult<Self> {
+    fn shared(dimension: String) -> Self {
+        Self {
+            dimension: Some(dimension),
+        }
+    }
+
+    #[staticmethod]
+    fn exclusive() -> Self {
+        Self { dimension: None }
+    }
+}
+
+#[pyclass(frozen, module = "monarch._rust_bindings.monarch_extension.code_sync")]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RemoteWorkspace {
+    location: PyWorkspaceLocation,
+    shape: PyWorkspaceShape,
+}
+
+#[pymethods]
+impl RemoteWorkspace {
+    #[new]
+    #[pyo3(signature = (*, location, shape = PyWorkspaceShape::exclusive()))]
+    fn new(location: PyWorkspaceLocation, shape: PyWorkspaceShape) -> Self {
+        Self { location, shape }
+    }
+}
+
+#[pyclass(
+    frozen,
+    name = "WorkspaceConfig",
+    module = "monarch._rust_bindings.monarch_extension.code_sync"
+)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct PyWorkspaceConfig {
+    local: PathBuf,
+    remote: RemoteWorkspace,
+}
+
+#[pymethods]
+impl PyWorkspaceConfig {
+    #[new]
+    #[pyo3(signature = (*, local, remote))]
+    fn new(local: PathBuf, remote: RemoteWorkspace) -> Self {
+        Self { local, remote }
+    }
+}
+
+#[pyclass(
+    frozen,
+    name = "CodeSyncMeshClient",
+    module = "monarch._rust_bindings.monarch_extension.code_sync"
+)]
+pub struct CodeSyncMeshClient {
+    actor_mesh: SharedCell<RootActorMesh<'static, CodeSyncManager>>,
+}
+
+impl CodeSyncMeshClient {
+    async fn sync_workspace_(
+        actor_mesh: SharedCell<RootActorMesh<'static, CodeSyncManager>>,
+        local: PathBuf,
+        remote: RemoteWorkspace,
+        auto_reload: bool,
+    ) -> Result<()> {
+        let actor_mesh = actor_mesh.borrow()?;
+        let shape = WorkspaceShape {
+            shape: actor_mesh.shape().clone(),
+            dimension: remote.shape.dimension.clone(),
+        };
+        eprintln!("Syncing workspace: {:?}", shape.owners()?);
+        let remote = WorkspaceConfig {
+            location: remote.location.into(),
+            shape,
+        };
+        code_sync_mesh(&actor_mesh, local, remote, auto_reload).await?;
+        Ok(())
+    }
+}
+
+#[pymethods]
+impl CodeSyncMeshClient {
+    #[staticmethod]
+    #[pyo3(signature = (*, proc_mesh))]
+    fn spawn_blocking(py: Python, proc_mesh: &PyProcMesh) -> PyResult<Self> {
         let proc_mesh = proc_mesh.try_inner()?;
-        let shape = shape.get_inner().clone();
         signal_safe_block_on(py, async move {
             let actor_mesh = proc_mesh
-                .spawn(
-                    "rsync",
-                    &rsync::RsyncParams {
-                        workspace: remote_workspace.into(),
-                    },
-                )
+                .spawn("code_sync_manager", &CodeSyncManagerParams {})
                 .await?;
-            Ok(Self {
-                actor_mesh,
-                shape,
-                workspace: local_workspace,
-            })
+            Ok(Self { actor_mesh })
         })?
     }
 
-    fn sync_workspace<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let workspace = self.workspace.clone();
-        let inner_mesh = self.actor_mesh.borrow().map_err(anyhow::Error::msg)?;
-        let shape = self.shape.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mesh = SlicedActorMesh::new(&inner_mesh, shape);
-            rsync::rsync_mesh(&mesh, workspace).await?;
-            Ok(())
-        })
+    #[pyo3(signature = (*, local, remote, auto_reload = false))]
+    fn sync_workspace<'py>(
+        &self,
+        py: Python<'py>,
+        local: PathBuf,
+        remote: RemoteWorkspace,
+        auto_reload: bool,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        pyo3_async_runtimes::tokio::future_into_py(
+            py,
+            CodeSyncMeshClient::sync_workspace_(
+                self.actor_mesh.clone(),
+                local,
+                remote,
+                auto_reload,
+            )
+            .err_into(),
+        )
+    }
+
+    #[pyo3(signature = (*, workspaces, auto_reload = false))]
+    fn sync_workspaces<'py>(
+        &self,
+        py: Python<'py>,
+        workspaces: Vec<PyWorkspaceConfig>,
+        auto_reload: bool,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let actor_mesh = self.actor_mesh.clone();
+        pyo3_async_runtimes::tokio::future_into_py(
+            py,
+            try_join_all(workspaces.into_iter().map(|workspace| {
+                CodeSyncMeshClient::sync_workspace_(
+                    actor_mesh.clone(),
+                    workspace.local,
+                    workspace.remote,
+                    auto_reload,
+                )
+            }))
+            .err_into(),
+        )
     }
 }
 
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_class::<CodeSyncMeshClient>()?;
+    module.add_class::<PyWorkspaceConfig>()?;
     module.add_class::<PyWorkspaceLocation>()?;
-    module.add_class::<RsyncMeshClient>()?;
+    module.add_class::<PyWorkspaceShape>()?;
+    module.add_class::<RemoteWorkspace>()?;
     Ok(())
 }

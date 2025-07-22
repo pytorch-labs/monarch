@@ -12,13 +12,13 @@ from monarch._rust_bindings.monarch_hyperactor.actor import Actor
 from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
 
 from monarch._rust_bindings.monarch_hyperactor.alloc import Alloc
-from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
+from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox, PythonTask
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape
 
 @final
 class ProcMesh:
     @classmethod
-    async def allocate_nonblocking(self, alloc: Alloc) -> ProcMesh:
+    def allocate_nonblocking(self, alloc: Alloc) -> PythonTask[ProcMesh]:
         """
         Allocate a process mesh according to the provided alloc.
         Returns when the mesh is fully allocated.
@@ -28,30 +28,11 @@ class ProcMesh:
         """
         ...
 
-    @classmethod
-    def allocate_blocking(self, alloc: Alloc) -> ProcMesh:
-        """
-        Allocate a process mesh according to the provided alloc.
-        Blocks until the mesh is fully allocated.
-
-        Arguments:
-        - `alloc`: The alloc to allocate according to.
-        """
-        ...
-
-    async def spawn_nonblocking(self, name: str, actor: Type[Actor]) -> PythonActorMesh:
+    def spawn_nonblocking(
+        self, name: str, actor: Type[Actor]
+    ) -> PythonTask[PythonActorMesh]:
         """
         Spawn a new actor on this mesh.
-
-        Arguments:
-        - `name`: Name of the actor.
-        - `actor`: The type of the actor that will be spawned.
-        """
-        ...
-
-    async def spawn_blocking(self, name: str, actor: Type[Actor]) -> PythonActorMesh:
-        """
-        Spawn a new actor on this mesh. Blocks until the actor is fully spawned.
 
         Arguments:
         - `name`: Name of the actor.
@@ -81,15 +62,9 @@ class ProcMesh:
         """
         ...
 
-    async def stop_nonblocking(self) -> None:
+    def stop_nonblocking(self) -> PythonTask[None]:
         """
         Stop the proc mesh.
-        """
-        ...
-
-    def stop_blocking(self) -> None:
-        """
-        Stop the proc mesh. Blocks until the mesh is fully stopped.
         """
         ...
 
