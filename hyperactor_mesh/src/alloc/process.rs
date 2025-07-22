@@ -466,6 +466,8 @@ impl Alloc for ProcessAlloc {
                         let (_stderr, _) = stderr.join().await;
                     }
 
+                    tracing::info!("child stopped with ProcStopReason::{:?}", reason);
+
                     break Some(ProcState::Stopped {
                         proc_id: ProcId(WorldId(self.name.to_string()), index),
                         reason
