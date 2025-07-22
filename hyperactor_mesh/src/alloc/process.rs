@@ -502,6 +502,16 @@ impl Alloc for ProcessAlloc {
     }
 }
 
+impl Drop for ProcessAlloc {
+    fn drop(&mut self) {
+        tracing::debug!(
+            "dropping ProcessAlloc of name: {}, world id: {}",
+            self.name,
+            self.world_id
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
