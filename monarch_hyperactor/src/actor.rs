@@ -461,7 +461,14 @@ fn create_task_locals() -> pyo3_async_runtimes::TaskLocals {
                 .copy_context(py)
                 .unwrap();
             tx.send(task_locals).unwrap();
-            event_loop.call_method0("run_forever").unwrap();
+
+            // After the event loop stops, exit the thread immediately
+            match event_loop.call_method0("run_forever") {
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("Event loop stopped with error: {:?}", e);
+                }
+            }
         });
     });
     rx.recv().unwrap()
@@ -602,11 +609,11 @@ impl Handler<PythonMessage> for PythonActor {
                 PythonTask::new(future),
                 receiver,
             )
-            .instrument(
-                tracing::info_span!("py_panic_handler")
-                    .follows_from(tracing::Span::current().id())
-                    .clone(),
-            ),
+            // .instrument(
+            //     tracing::info_span!("py_panic_handler")
+            //         .follows_from(tracing::Span::current().id())
+            //         .clone(),
+            // ),
         );
         Ok(())
     }

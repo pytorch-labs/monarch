@@ -366,10 +366,10 @@ impl PythonActorMeshRef {
 
 impl Drop for PythonActorMesh {
     fn drop(&mut self) {
-        tracing::info!(
-            "Dropping PythonActorMesh: {}",
-            self.inner.borrow().unwrap().name()
-        );
+        // tracing::info!(
+        //     "Dropping PythonActorMesh: {}",
+        //     self.inner.borrow().unwrap().name()
+        // );
         self.monitor.abort();
     }
 }
