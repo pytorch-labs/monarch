@@ -44,7 +44,6 @@ use tokio::sync::Mutex;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot;
-use tracing::Instrument;
 
 use crate::config::SHARED_ASYNCIO_RUNTIME;
 use crate::local_state_broker::BrokerId;
@@ -461,7 +460,15 @@ fn create_task_locals() -> pyo3_async_runtimes::TaskLocals {
                 .copy_context(py)
                 .unwrap();
             tx.send(task_locals).unwrap();
-            event_loop.call_method0("run_forever").unwrap();
+
+            // `run_forever` returning with error is a legitimate
+            // scenario (for example, if `sys.exit(1)` is evaluated).
+            match event_loop.call_method0("run_forever") {
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("Event loop stopped with error: {:?}", e);
+                }
+            }
         });
     });
     rx.recv().unwrap()
@@ -596,18 +603,11 @@ impl Handler<PythonMessage> for PythonActor {
         })?;
 
         // Spawn a child actor to await the Python handler method.
-        tokio::spawn(
-            handle_async_endpoint_panic(
-                self.panic_sender.clone(),
-                PythonTask::new(future),
-                receiver,
-            )
-            .instrument(
-                tracing::info_span!("py_panic_handler")
-                    .follows_from(tracing::Span::current().id())
-                    .clone(),
-            ),
-        );
+        tokio::spawn(handle_async_endpoint_panic(
+            self.panic_sender.clone(),
+            PythonTask::new(future),
+            receiver,
+        ));
         Ok(())
     }
 }
