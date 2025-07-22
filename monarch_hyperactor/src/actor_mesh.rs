@@ -464,7 +464,11 @@ impl MonitoredPythonPortReceiver {
                     result.map_err(|err| PyErr::new::<PyEOFError, _>(format!("port closed: {}", err)))
                 }
                 event = monitor.next() => {
-                    Err(PyErr::new::<SupervisionError, _>(format!("supervision error: {:?}", event.unwrap())))
+                    let event = event.expect("supervision event should not be None");
+                    Python::with_gil(|py| {
+                        let e = event.downcast_bound::<PyActorSupervisionEvent>(py)?;
+                        Err(PyErr::new::<SupervisionError, _>(format!("supervision error: {:?}", e)))
+                    })
                 }
             };
             result.and_then(|message: PythonMessage| Python::with_gil(|py| message.into_py_any(py)))
@@ -503,7 +507,11 @@ impl MonitoredPythonOncePortReceiver {
                     result.map_err(|err| PyErr::new::<PyEOFError, _>(format!("port closed: {}", err)))
                 }
                 event = monitor.next() => {
-                    Err(PyErr::new::<SupervisionError, _>(format!("supervision error: {:?}", event.unwrap())))
+                    let event = event.expect("supervision event should not be None");
+                    Python::with_gil(|py| {
+                        let e = event.downcast_bound::<PyActorSupervisionEvent>(py)?;
+                        Err(PyErr::new::<SupervisionError, _>(format!("supervision error: {:?}", e)))
+                    })
                 }
             };
             result.and_then(|message: PythonMessage| Python::with_gil(|py| message.into_py_any(py)))
