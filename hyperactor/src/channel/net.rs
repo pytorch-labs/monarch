@@ -210,19 +210,21 @@ impl<M: RemoteMessage> NetTx<M> {
         // `link` broken and return.
 
         #[derive(Debug)]
-        struct Outbox<M: RemoteMessage> {
+        struct Outbox<'a, M: RemoteMessage> {
             // The seq number of the next new message put into outbox. Requeued
             // unacked messages should still use their already assigned seq
             // numbers.
             next_seq: u64,
             deque: VecDeque<(u64, Bytes, Instant, oneshot::Sender<M>)>,
+            log_id: &'a str,
         }
 
-        impl<M: RemoteMessage> Outbox<M> {
-            fn new() -> Self {
+        impl<'a, M: RemoteMessage> Outbox<'a, M> {
+            fn new(log_id: &'a str) -> Self {
                 Self {
                     next_seq: 0,
                     deque: VecDeque::new(),
+                    log_id,
                 }
             }
 
@@ -249,7 +251,10 @@ impl<M: RemoteMessage> NetTx<M> {
                     .deque
                     .front()
                     .ok_or_else(|| {
-                        "unexpected: send_message cannot be used when outbox is empty".to_string()
+                        format!(
+                            "{}: unexpected: send_message cannot be used when outbox is empty",
+                            self.log_id,
+                        )
                     })?
                     .1
                     .clone();
@@ -271,7 +276,8 @@ impl<M: RemoteMessage> NetTx<M> {
             ) -> Result<(), String> {
                 assert!(
                     self.deque.back().is_none_or(|msg| msg.0 < self.next_seq),
-                    "unexpected: seq should be in ascending order, but got {:?} vs {}",
+                    "{}: unexpected: seq should be in ascending order, but got {:?} vs {}",
+                    self.log_id,
                     self.deque.back(),
                     self.next_seq
                 );
@@ -288,11 +294,12 @@ impl<M: RemoteMessage> NetTx<M> {
             }
 
             fn requeue_unacked(&mut self, unacked: Unacked<M>) {
-                match (unacked.0.back(), self.deque.front()) {
+                match (unacked.deque.back(), self.deque.front()) {
                     (Some(last), Some(first)) => {
                         assert!(
                             last.0 < first.0,
-                            "seq should be in ascending order, but got {} vs {:?}",
+                            "{}: seq should be in ascending order, but got {} vs {:?}",
+                            self.log_id,
                             last.0,
                             first.0,
                         );
@@ -300,33 +307,70 @@ impl<M: RemoteMessage> NetTx<M> {
                     _ => (),
                 }
 
-                let mut outbox = unacked.0;
+                let mut outbox = unacked.deque;
                 outbox.append(&mut self.deque);
                 self.deque = outbox;
             }
         }
 
         #[derive(Debug)]
-        struct Unacked<M: RemoteMessage>(VecDeque<(u64, Bytes, Instant, oneshot::Sender<M>)>);
+        struct Unacked<'a, M: RemoteMessage> {
+            deque: VecDeque<(u64, Bytes, Instant, oneshot::Sender<M>)>,
+            largest_acked: Option<u64>,
+            log_id: &'a str,
+        }
 
-        impl<M: RemoteMessage> Unacked<M> {
-            fn new() -> Self {
-                Self(VecDeque::new())
+        impl<'a, M: RemoteMessage> Unacked<'a, M> {
+            fn new(largest_acked: Option<u64>, log_id: &'a str) -> Self {
+                Self {
+                    deque: VecDeque::new(),
+                    largest_acked,
+                    log_id,
+                }
             }
 
             fn push_back(&mut self, message: (u64, Bytes, Instant, oneshot::Sender<M>)) {
                 assert!(
-                    self.0.back().is_none_or(|msg| msg.0 < message.0),
-                    "seq should be in ascending order, but got {:?} vs {}",
-                    self.0.back(),
+                    self.deque.back().is_none_or(|msg| msg.0 < message.0),
+                    "{}: seq should be in ascending order, but got {:?} vs {}",
+                    self.log_id,
+                    self.deque.back(),
                     message.0
                 );
-                self.0.push_back(message);
+
+                if let Some(largest) = self.largest_acked {
+                    // It is possible the message was delivered, but the send branch
+                    // did put it into unacked queue. This chould happen when:
+                    //   1. `outbox.send_message` future was canceled by tokio::select.
+                    //   2. `outbox.send_message` returns an error, which makes
+                    //      the deliver result unknown to Tx.
+                    // When this happens, Tx will resend the same message. However,
+                    // since Rx already received the message, it might ack before
+                    // Tx resends. As a result, this message's ack would be
+                    // recorded already by `largest_acked` before it is put into
+                    // unacked queue.
+                    if message.0 == largest {
+                        // since the message is already delivered and acked, it
+                        // does need to be put in the queue again.
+                        return;
+                    }
+                }
+
+                self.deque.push_back(message);
             }
 
             /// Remove acked messages from the deque.
             fn prune(&mut self, acked: u64) {
-                let deque = &mut self.0;
+                assert!(
+                    self.largest_acked.unwrap_or(0) <= acked,
+                    "{}: received out-of-order ack; received: {}; stored largest: {:?}",
+                    self.log_id,
+                    acked,
+                    self.largest_acked,
+                );
+
+                self.largest_acked = Some(acked);
+                let deque = &mut self.deque;
                 while let Some((seq, _, _, _)) = deque.front() {
                     if *seq <= acked {
                         deque.pop_front();
@@ -341,7 +385,7 @@ impl<M: RemoteMessage> NetTx<M> {
 
             fn is_expired(&self) -> bool {
                 matches!(
-                    self.0.front(),
+                    self.deque.front(),
                     Some((_, _, received_at, _)) if received_at.elapsed() > config::global::get(config::MESSAGE_DELIVERY_TIMEOUT)
                 )
             }
@@ -350,7 +394,7 @@ impl<M: RemoteMessage> NetTx<M> {
             /// timeout limit. This method is used in tokio::select with other
             /// branches.
             async fn wait_for_timeout(&self) {
-                match self.0.front() {
+                match self.deque.front() {
                     Some((_, _, received_at, _)) => {
                         RealClock
                             .sleep_until(
@@ -364,29 +408,29 @@ impl<M: RemoteMessage> NetTx<M> {
             }
 
             fn is_empty(&self) -> bool {
-                self.0.is_empty()
+                self.deque.is_empty()
             }
         }
 
         #[derive(Debug)]
-        struct Deliveries<M: RemoteMessage> {
-            outbox: Outbox<M>,
-            unacked: Unacked<M>,
+        struct Deliveries<'a, M: RemoteMessage> {
+            outbox: Outbox<'a, M>,
+            unacked: Unacked<'a, M>,
         }
 
         #[derive(Debug)]
-        enum State<M: RemoteMessage> {
+        enum State<'a, M: RemoteMessage> {
             /// Channel is running.
-            Running(Deliveries<M>),
+            Running(Deliveries<'a, M>),
             /// Message delivery not possible.
-            Closing(Deliveries<M>),
+            Closing(Deliveries<'a, M>),
         }
 
-        impl<M: RemoteMessage> State<M> {
-            fn init() -> Self {
+        impl<'a, M: RemoteMessage> State<'a, M> {
+            fn init(log_id: &'a str) -> Self {
                 Self::Running(Deliveries {
-                    outbox: Outbox::new(),
-                    unacked: Unacked(VecDeque::new()),
+                    outbox: Outbox::new(log_id),
+                    unacked: Unacked::new(None, log_id),
                 })
             }
         }
@@ -419,7 +463,8 @@ impl<M: RemoteMessage> NetTx<M> {
         }
 
         let session_id = rand::random();
-        let mut state = State::init();
+        let log_id = format!("session {}.{}", link.dest(), session_id);
+        let mut state = State::init(&log_id);
         let mut conn = Conn::reconnect_with_default();
 
         let (state, conn) = loop {
@@ -432,7 +477,7 @@ impl<M: RemoteMessage> NetTx<M> {
                         unacked,
                     }),
                     conn,
-                ) if outbox.is_empty() && unacked.0.is_empty() => match receiver.recv().await {
+                ) if outbox.is_empty() && unacked.is_empty() => match receiver.recv().await {
                     Some(msg) => match outbox.push_back(msg) {
                         Ok(()) => {
                             let running = State::Running(Deliveries { outbox, unacked });
@@ -604,13 +649,15 @@ impl<M: RemoteMessage> NetTx<M> {
                                     .expect("unexpected serialization error");
                                 let initialized = sink.send(data.into()).await.is_ok();
                                 // Need to resend unacked after reconnecting.
+                                let largest_acked = unacked.largest_acked;
                                 outbox.requeue_unacked(unacked);
                                 (
                                     State::Running(Deliveries {
                                         outbox,
                                         // unacked messages are put back to outbox. So they are not
-                                        // considered as "sent yet unacked" message anymore.
-                                        unacked: Unacked::new(),
+                                        // considered as "sent yet unacked" message anymore. But
+                                        // we still want to keep `largest_acked` to known Rx's watermark.
+                                        unacked: Unacked::new(largest_acked, &log_id),
                                     }),
                                     if initialized {
                                         backoff.reset();
@@ -657,7 +704,7 @@ impl<M: RemoteMessage> NetTx<M> {
                 // Return in order from oldest to newest, messages
                 // either not acknowledged or not sent.
                 unacked
-                    .0
+                    .deque
                     .drain(..)
                     .chain(outbox.deque.drain(..))
                     .filter_map(|(_, bytes, _, return_channel)| {
@@ -2812,9 +2859,6 @@ mod tests {
                 // In the last iteration, ack part of the messages from the 2nd send.
                 if i == n - 1 {
                     sink.send(serialize_ack(7)).await.unwrap();
-                    // Intentionally ack 5 after 7 to verify it is okay to ack
-                    // out of order.
-                    sink.send(serialize_ack(5)).await.unwrap();
                     // Wait for the acks to be processed by NetTx.
                     RealClock.sleep(Duration::from_secs(3)).await;
                 }
@@ -2839,6 +2883,45 @@ mod tests {
                 // client DuplexStream is dropped here. This breaks the connection.
             };
         }
+    }
+
+    #[async_timed_test(timeout_secs = 15)]
+    async fn test_ack_before_redelivery_in_net_tx() {
+        let link = MockLink::<u64>::new();
+        let receiver_storage = link.receiver_storage();
+        let net_tx = NetTx::<u64>::new(link);
+
+        // Verify sent-and-ack a message. This is necessary for the test to
+        // trigger a connection.
+        let (return_channel_tx, return_channel_rx) = oneshot::channel();
+        net_tx.try_post(100, return_channel_tx).unwrap();
+        let (mut sink, mut stream) = take_receiver(&receiver_storage).await;
+        verify_stream(&mut stream, &[(0, 100)], None, line!()).await;
+        // ack it
+        sink.send(serialize_ack(0)).await.unwrap();
+        // confirm Tx received ack
+        //
+        // Using `is_err` to confirm the message is delivered/acked is confusing,
+        // but is correct. See how send is implemented: https://fburl.com/code/ywt8lip2
+        assert!(return_channel_rx.await.is_err());
+
+        // Now fake an unknown delivery for Tx:
+        // Although Tx did not actually send seq=1, we still ack it from Rx to
+        // pretend Tx already sent it, just it did not know it was sent
+        // successfully.
+        sink.send(serialize_ack(1)).await.unwrap();
+
+        let (return_channel_tx, return_channel_rx) = oneshot::channel();
+        net_tx.try_post(101, return_channel_tx).unwrap();
+        // Verify the message is sent to Rx.
+        verify_message(&mut stream, (1, 101), line!()).await;
+        // although we did not ack the message after it is sent, since we already
+        // acked it previously, Tx will treat it as acked, and considered the
+        // message delivered successfully.
+        //
+        // Using `is_err` to confirm the message is delivered/acked is confusing,
+        // but is correct. See how send is implemented: https://fburl.com/code/ywt8lip2
+        assert!(return_channel_rx.await.is_err());
     }
 
     async fn verify_ack_exceeded_limit(disconnect_before_ack: bool) {
