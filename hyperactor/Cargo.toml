@@ -47,7 +47,7 @@ serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "unb
 serde_with = { version = "3", features = ["hex", "json"] }
 serde_yaml = "0.9.25"
 thiserror = "2.0.12"
-tokio = { version = "1.45.0", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.46.1", features = ["full", "test-util", "tracing"] }
 tokio-rustls = { version = "0.24.1", features = ["dangerous_configuration"] }
 tokio-stream = { version = "0.1.17", features = ["fs", "io-util", "net", "signal", "sync", "time"] }
 tokio-util = { version = "0.7.15", features = ["full"] }

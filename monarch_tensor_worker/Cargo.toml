@@ -29,7 +29,7 @@ pyo3 = { version = "0.24", features = ["anyhow", "multiple-pymethods"] }
 serde = { version = "1.0.185", features = ["derive", "rc"] }
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "unbounded_depth"] }
 sorted-vec = "0.8.3"
-tokio = { version = "1.45.0", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.46.1", features = ["full", "test-util", "tracing"] }
 torch-sys = { version = "0.0.0", path = "../torch-sys" }
 torch-sys-cuda = { version = "0.0.0", path = "../torch-sys-cuda" }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
