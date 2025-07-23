@@ -84,6 +84,7 @@ pub mod panic_handler;
 mod parse;
 pub mod proc;
 pub mod reference;
+mod signal_handler;
 pub mod simnet;
 pub mod supervision;
 pub mod sync;
@@ -167,6 +168,14 @@ pub use reference::WorldId;
 // Re-exported to support tracing in hyperactor_macros codegen.
 #[doc(hidden)]
 pub use serde_json;
+#[doc(inline)]
+pub use signal_handler::SignalCleanupGuard;
+#[doc(inline)]
+pub use signal_handler::register_signal_cleanup;
+#[doc(inline)]
+pub use signal_handler::register_signal_cleanup_scoped;
+#[doc(inline)]
+pub use signal_handler::unregister_signal_cleanup;
 // Re-exported to support tracing in hyperactor_macros codegen.
 #[doc(hidden)]
 pub use tracing;
