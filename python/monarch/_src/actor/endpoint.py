@@ -223,16 +223,23 @@ class EndpointProperty(Generic[P, R]):
         self,
         method: Callable[Concatenate[Any, P], Awaitable[R]],
         propagator: Propagator,
+        explicit_response_port: bool,
     ) -> None: ...
 
     @overload
     def __init__(
-        self, method: Callable[Concatenate[Any, P], R], propagator: Propagator
+        self,
+        method: Callable[Concatenate[Any, P], R],
+        propagator: Propagator,
+        explicit_response_port: bool,
     ) -> None: ...
 
-    def __init__(self, method: Any, propagator: Propagator) -> None:
+    def __init__(
+        self, method: Any, propagator: Propagator, explicit_response_port: bool
+    ) -> None:
         self._method = method
         self._propagator = propagator
+        self._explicit_response_port = explicit_response_port
 
     def __get__(self, instance, owner) -> Endpoint[P, R]:
         # this is a total lie, but we have to actually
@@ -274,11 +281,28 @@ class EndpointIfy:
         pass
 
 
+class PortedEndpointIfy:
+    @overload
+    def __call__(
+        self,
+        function: Callable[Concatenate[Any, "Port[R]", P], Awaitable[None]],
+    ) -> Endpoint[P, R]: ...
+
+    @overload
+    def __call__(
+        self, function: Callable[Concatenate[Any, "Port[R]", P], None]
+    ) -> Endpoint[P, R]: ...
+
+    def __call__(self, function: Any):
+        pass
+
+
 @overload
 def endpoint(
     method: Callable[Concatenate[Any, P], Awaitable[R]],
     *,
     propagate: Propagator = None,
+    explicit_response_port: Literal[False] = False,
 ) -> EndpointProperty[P, R]: ...
 
 
@@ -287,6 +311,7 @@ def endpoint(
     method: Callable[Concatenate[Any, P], R],
     *,
     propagate: Propagator = None,
+    explicit_response_port: Literal[False] = False,
 ) -> EndpointProperty[P, R]: ...
 
 
@@ -294,10 +319,43 @@ def endpoint(
 def endpoint(
     *,
     propagate: Propagator = None,
+    explicit_response_port: Literal[False] = False,
 ) -> EndpointIfy: ...
 
 
-def endpoint(method=None, *, propagate=None):
+@overload
+def endpoint(
+    method: Callable[Concatenate[Any, "Port[R]", P], Awaitable[None]],
+    *,
+    propagate: Propagator = None,
+    explicit_response_port: Literal[True],
+) -> EndpointProperty[P, R]: ...
+
+
+@overload
+def endpoint(
+    method: Callable[Concatenate[Any, "Port[R]", P], None],
+    *,
+    propagate: Propagator = None,
+    explicit_response_port: Literal[True],
+) -> EndpointProperty[P, R]: ...
+
+
+@overload
+def endpoint(
+    *,
+    propagate: Propagator = None,
+    explicit_response_port: Literal[True],
+) -> PortedEndpointIfy: ...
+
+
+def endpoint(method=None, *, propagate=None, explicit_response_port: bool = False):
     if method is None:
-        return functools.partial(endpoint, propagate=propagate)
-    return EndpointProperty(method, propagator=propagate)
+        return functools.partial(
+            endpoint,
+            propagate=propagate,
+            explicit_response_port=explicit_response_port,
+        )
+    return EndpointProperty(
+        method, propagator=propagate, explicit_response_port=explicit_response_port
+    )

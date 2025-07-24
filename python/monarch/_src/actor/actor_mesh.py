@@ -29,8 +29,10 @@ from typing import (
     Iterable,
     Iterator,
     List,
+    Literal,
     NamedTuple,
     Optional,
+    overload,
     ParamSpec,
     Tuple,
     Type,
@@ -39,6 +41,7 @@ from typing import (
 )
 
 from monarch._rust_bindings.monarch_hyperactor.actor import (
+    MethodSpecifier,
     PanicFlag,
     PythonMessage,
     PythonMessageKind,
@@ -282,16 +285,18 @@ class ActorEndpoint(Endpoint[P, R]):
     def __init__(
         self,
         actor_mesh_ref: _ActorMeshRefImpl,
-        name: str,
+        name: MethodSpecifier,
         impl: Callable[Concatenate[Any, P], Awaitable[R]],
         mailbox: Mailbox,
-        propagator: Propagator = None,
+        propagator: Propagator,
+        explicit_response_port: bool,
     ) -> None:
         super().__init__(propagator)
         self._actor_mesh = actor_mesh_ref
         self._name = name
         self._signature: inspect.Signature = inspect.signature(impl)
         self._mailbox = mailbox
+        self._explicit_response_port = explicit_response_port
 
     def _supervise(self, r: HyPortReceiver | OncePortReceiver) -> Any:
         mesh = self._actor_mesh._actor_mesh
@@ -299,6 +304,12 @@ class ActorEndpoint(Endpoint[P, R]):
 
     def _call_name(self) -> Any:
         return self._name
+
+    def _check_arguments(self, args, kwargs):
+        if self._explicit_response_port:
+            self._signature.bind(None, None, *args, **kwargs)
+        else:
+            self._signature.bind(None, *args, **kwargs)
 
     def _send(
         self,
@@ -312,7 +323,7 @@ class ActorEndpoint(Endpoint[P, R]):
 
         This sends the message to all actors but does not wait for any result.
         """
-        self._signature.bind(None, *args, **kwargs)
+        self._check_arguments(args, kwargs)
         objects, bytes = flatten((args, kwargs), _is_ref_or_mailbox)
         if all(not hasattr(obj, "__monarch_ref__") for obj in objects):
             message = PythonMessage(
@@ -336,23 +347,50 @@ class ActorEndpoint(Endpoint[P, R]):
         return PortTuple(p, PortReceiver(self._mailbox, self._supervise(r._receiver)))
 
     def _rref(self, args, kwargs):
-        self._signature.bind(None, *args, **kwargs)
+        self._check_arguments(args, kwargs)
         refs, bytes = flatten((args, kwargs), _is_ref_or_mailbox)
 
         return actor_rref(self, bytes, refs)
 
 
+@overload
 def as_endpoint(
-    not_an_endpoint: Callable[P, R], *, propagate: Propagator = None
-) -> Endpoint[P, R]:
+    not_an_endpoint: Callable[P, R],
+    *,
+    propagate: Propagator = None,
+    explicit_response_port: Literal[False] = False,
+) -> Endpoint[P, R]: ...
+
+
+@overload
+def as_endpoint(
+    not_an_endpoint: Callable[Concatenate["PortProtocol[R]", P], None],
+    *,
+    propagate: Propagator = None,
+    explicit_response_port: Literal[True],
+) -> Endpoint[P, R]: ...
+
+
+def as_endpoint(
+    not_an_endpoint: Any,
+    *,
+    propagate: Propagator = None,
+    explicit_response_port: bool = False,
+):
     if not isinstance(not_an_endpoint, NotAnEndpoint):
         raise ValueError("expected an method of a spawned actor")
+    kind = (
+        MethodSpecifier.ExplicitPort
+        if explicit_response_port
+        else MethodSpecifier.ReturnsResponse
+    )
     return ActorEndpoint(
         not_an_endpoint._ref._actor_mesh_ref,
-        not_an_endpoint._name,
+        kind(not_an_endpoint._name),
         getattr(not_an_endpoint._ref, not_an_endpoint._name),
         not_an_endpoint._ref._mailbox,
         propagate,
+        explicit_response_port,
     )
 
 
@@ -598,7 +636,7 @@ class _Actor:
         mailbox: Mailbox,
         rank: int,
         shape: Shape,
-        method: str,
+        method_spec: MethodSpecifier,
         message: bytes,
         panic_flag: PanicFlag,
         local_state: Iterable[Any],
@@ -616,17 +654,23 @@ class _Actor:
 
             args, kwargs = unflatten(message, local_state)
 
-            if method == "__init__":
-                Class, *args = args
-                try:
-                    self.instance = Class(*args, **kwargs)
-                except Exception as e:
-                    self._saved_error = ActorError(
-                        e, f"Remote actor {Class}.__init__ call failed."
-                    )
-                    raise e
-                port.send(None)
-                return None
+            match method_spec:
+                case MethodSpecifier.Init():
+                    Class, *args = args
+                    try:
+                        self.instance = Class(*args, **kwargs)
+                    except Exception as e:
+                        self._saved_error = ActorError(
+                            e, f"Remote actor {Class}.__init__ call failed."
+                        )
+                        raise e
+                    port.send(None)
+                    return None
+                case MethodSpecifier.ReturnsResponse(name=method):
+                    pass
+                case MethodSpecifier.ExplicitPort(name=method):
+                    args = (port, *args)
+                    port = DroppingPort()
 
             if self.instance is None:
                 # This could happen because of the following reasons. Both
@@ -775,15 +819,22 @@ class ActorMeshRef(MeshTrait):
         for attr_name in dir(self._class):
             attr_value = getattr(self._class, attr_name, None)
             if isinstance(attr_value, EndpointProperty):
+                # Convert string method name to appropriate MethodSpecifier
+                kind = (
+                    MethodSpecifier.ExplicitPort
+                    if attr_value._explicit_response_port
+                    else MethodSpecifier.ReturnsResponse
+                )
                 setattr(
                     self,
                     attr_name,
                     ActorEndpoint(
                         self._actor_mesh_ref,
-                        attr_name,
+                        kind(attr_name),
                         attr_value._method,
                         self._mailbox,
                         attr_value._propagator,
+                        attr_value._explicit_response_port,
                     ),
                 )
 
@@ -802,9 +853,11 @@ class ActorMeshRef(MeshTrait):
 
         ep = ActorEndpoint(
             self._actor_mesh_ref,
-            "__init__",
+            MethodSpecifier.Init(),
             null_func,
             self._mailbox,
+            None,
+            False,
         )
         send(ep, (self._class, *args), kwargs)
 

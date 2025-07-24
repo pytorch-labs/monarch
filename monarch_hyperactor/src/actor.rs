@@ -188,10 +188,21 @@ pub enum UnflattenArg {
 }
 
 #[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.actor")]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum MethodSpecifier {
+    /// Call method 'name', send its return value to the response port.
+    ReturnsResponse { name: String },
+    /// Call method 'name', send the response port as the first argument.
+    ExplicitPort { name: String },
+    /// Construct the object
+    Init {},
+}
+
+#[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.actor")]
 #[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq)]
 pub enum PythonMessageKind {
     CallMethod {
-        name: String,
+        name: MethodSpecifier,
         response_port: Option<EitherPortRef>,
     },
     Result {
@@ -202,7 +213,7 @@ pub enum PythonMessageKind {
     },
     Uninit {},
     CallMethodIndirect {
-        name: String,
+        name: MethodSpecifier,
         local_state_broker: (String, usize),
         id: usize,
         // specify whether the argument to unflatten the local mailbox,
@@ -230,7 +241,7 @@ pub struct PythonMessage {
 }
 
 struct ResolvedCallMethod {
-    method: String,
+    method: MethodSpecifier,
     bytes: Vec<u8>,
     local_state: PyObject,
     /// Implements PortProtocol
@@ -843,6 +854,7 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
     hyperactor_mod.add_class::<PythonActorHandle>()?;
     hyperactor_mod.add_class::<PythonMessage>()?;
     hyperactor_mod.add_class::<PythonMessageKind>()?;
+    hyperactor_mod.add_class::<MethodSpecifier>()?;
     hyperactor_mod.add_class::<UnflattenArg>()?;
     hyperactor_mod.add_class::<PanicFlag>()?;
     hyperactor_mod.add_class::<PyPythonTask>()?;
@@ -873,7 +885,9 @@ mod tests {
         );
         let message = PythonMessage {
             kind: PythonMessageKind::CallMethod {
-                name: "test".to_string(),
+                name: MethodSpecifier::ReturnsResponse {
+                    name: "test".to_string(),
+                },
                 response_port: Some(EitherPortRef::Unbounded(port_ref.clone().into())),
             },
             message: vec![1, 2, 3],
@@ -894,7 +908,9 @@ mod tests {
 
         let no_port_message = PythonMessage {
             kind: PythonMessageKind::CallMethod {
-                name: "test".to_string(),
+                name: MethodSpecifier::ReturnsResponse {
+                    name: "test".to_string(),
+                },
                 response_port: None,
             },
             ..message

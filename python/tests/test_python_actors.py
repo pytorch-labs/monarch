@@ -586,3 +586,15 @@ class TestActorMeshStop(unittest.IsolatedAsyncioTestCase):
 
         await am_2.print.call("hello 3")
         await am_2.log.call("hello 4")
+
+
+class PortedActor(Actor):
+    @endpoint(explicit_response_port=True)
+    def add(self, port: "Port[int]", b: int) -> None:
+        port.send(3 + b)
+
+
+def test_ported_actor():
+    proc_mesh = local_proc_mesh(gpus=1).get()
+    a = proc_mesh.spawn("port_actor", PortedActor).get()
+    assert 5 == a.add.call_one(2).get()
