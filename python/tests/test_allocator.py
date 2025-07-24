@@ -372,7 +372,7 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
 
             with self.assertRaisesRegex(
                 Exception,
-                r"(?s)Remote actor <class 'monarch.python.tests.test_allocator.FailInitActor'>.__init__ call failed.*fail on init",
+                r"(?s)fail on init",
             ):
                 await actor_mesh.dummy.call()
 

@@ -231,76 +231,76 @@ impl PyRdmaManager {
     fn device(&self) -> &str {
         &self.device
     }
-}
 
-/// Creates an RDMA manager actor on the given ProcMesh.
-/// Returns the actor mesh if RDMA is supported, None otherwise.
-#[pyfunction]
-fn create_rdma_manager_blocking<'py>(
-    py: Python<'py>,
-    proc_mesh: &PyProcMesh,
-) -> PyResult<Option<PyRdmaManager>> {
-    if !ibverbs_supported() {
-        tracing::info!("rdma is not enabled on this hardware");
-        return Ok(None);
-    }
+    /// Creates an RDMA manager actor on the given ProcMesh.
+    /// Returns the actor mesh if RDMA is supported, None otherwise.
+    #[classmethod]
+    fn create_rdma_manager_blocking<'py>(
+        _cls: &Bound<'_, PyType>,
+        py: Python<'py>,
+        proc_mesh: &PyProcMesh,
+    ) -> PyResult<Option<PyRdmaManager>> {
+        if !ibverbs_supported() {
+            tracing::info!("rdma is not enabled on this hardware");
+            return Ok(None);
+        }
 
-    // TODO - make this configurable
-    let config = IbverbsConfig::default();
-    tracing::debug!("rdma is enabled, using device {}", config.device);
+        // TODO - make this configurable
+        let config = IbverbsConfig::default();
+        tracing::debug!("rdma is enabled, using device {}", config.device);
 
-    let tracked_proc_mesh = proc_mesh.try_inner()?;
-    let device = config.device.to_string();
+        let tracked_proc_mesh = proc_mesh.try_inner()?;
+        let device = config.device.to_string();
 
-    let actor_mesh = signal_safe_block_on(py, async move {
-        tracked_proc_mesh
-            .spawn("rdma_manager", &config)
-            .await
-            .map_err(|err| PyException::new_err(err.to_string()))
-    })??;
-
-    Ok(Some(PyRdmaManager {
-        inner: actor_mesh,
-        device,
-    }))
-}
-
-/// Creates an RDMA manager actor on the given ProcMesh (async version).
-/// Returns the actor mesh if RDMA is supported, None otherwise.
-#[pyfunction]
-fn create_rdma_manager_nonblocking<'py>(
-    py: Python<'py>,
-    proc_mesh: &PyProcMesh,
-) -> PyResult<Bound<'py, PyAny>> {
-    if !ibverbs_supported() {
-        tracing::info!("rdma is not enabled on this hardware");
-        return Ok(py.None().into_bound(py));
-    }
-
-    // TODO - make this configurable
-    let config = IbverbsConfig::default();
-    tracing::debug!("rdma is enabled, using device {}", config.device);
-
-    let tracked_proc_mesh = proc_mesh.try_inner()?;
-    let device = config.device.to_string();
-
-    pyo3_async_runtimes::tokio::future_into_py(py, async move {
-        let actor_mesh = tracked_proc_mesh
-            .spawn::<RdmaManagerActor>("rdma_manager", &config)
-            .await
-            .map_err(|err| PyException::new_err(err.to_string()))?;
+        let actor_mesh = signal_safe_block_on(py, async move {
+            tracked_proc_mesh
+                .spawn("rdma_manager", &config)
+                .await
+                .map_err(|err| PyException::new_err(err.to_string()))
+        })??;
 
         Ok(Some(PyRdmaManager {
             inner: actor_mesh,
             device,
         }))
-    })
+    }
+
+    /// Creates an RDMA manager actor on the given ProcMesh (async version).
+    /// Returns the actor mesh if RDMA is supported, None otherwise.
+    #[classmethod]
+    fn create_rdma_manager_nonblocking<'py>(
+        _cls: &Bound<'_, PyType>,
+        py: Python<'py>,
+        proc_mesh: &PyProcMesh,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        if !ibverbs_supported() {
+            tracing::info!("rdma is not enabled on this hardware");
+            return Ok(py.None().into_bound(py));
+        }
+
+        // TODO - make this configurable
+        let config = IbverbsConfig::default();
+        tracing::debug!("rdma is enabled, using device {}", config.device);
+
+        let tracked_proc_mesh = proc_mesh.try_inner()?;
+        let device = config.device.to_string();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let actor_mesh = tracked_proc_mesh
+                .spawn::<RdmaManagerActor>("rdma_manager", &config)
+                .await
+                .map_err(|err| PyException::new_err(err.to_string()))?;
+
+            Ok(Some(PyRdmaManager {
+                inner: actor_mesh,
+                device,
+            }))
+        })
+    }
 }
 
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyRdmaBuffer>()?;
     module.add_class::<PyRdmaManager>()?;
-    module.add_function(wrap_pyfunction!(create_rdma_manager_blocking, module)?)?;
-    module.add_function(wrap_pyfunction!(create_rdma_manager_nonblocking, module)?)?;
     Ok(())
 }

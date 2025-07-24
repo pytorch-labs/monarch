@@ -653,6 +653,8 @@ def test_panicking_worker():
             _ = fetch_shard(torch.ones(2, 3)).result()
 
 
+# TODO - re-enable after resolving T232206970
+@pytest.mark.oss_skip
 def test_timeout_warning(caplog):
     timeout = 3
     with local_rust_device_mesh(

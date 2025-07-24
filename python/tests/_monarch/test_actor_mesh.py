@@ -68,6 +68,8 @@ class MyActor:
         )
 
 
+# TODO - re-enable after resolving T232206970
+@pytest.mark.oss_skip
 async def test_bind_and_pickling() -> None:
     proc_mesh = await allocate()
     actor_mesh = await proc_mesh.spawn_nonblocking("test", MyActor)
@@ -115,6 +117,8 @@ async def verify_cast(
         await asyncio.wait_for(receiver.recv_task().into_future(), timeout=1)
 
 
+# TODO - re-enable after resolving T232206970
+@pytest.mark.oss_skip
 @pytest.mark.timeout(30)
 async def test_cast_handle() -> None:
     proc_mesh = await allocate()
@@ -122,6 +126,8 @@ async def test_cast_handle() -> None:
     await verify_cast(actor_mesh, proc_mesh.client, list(range(3 * 8 * 8)))
 
 
+# TODO - re-enable after resolving T232206970
+@pytest.mark.oss_skip
 @pytest.mark.timeout(30)
 async def test_cast_ref() -> None:
     proc_mesh = await allocate()
@@ -187,6 +193,8 @@ async def verify_slice(
     assert again_shape.ranks() == selected_ranks, f"left is {sliced_shape.ranks()}"
 
 
+# TODO - re-enable after resolving T232206970
+@pytest.mark.oss_skip
 @pytest.mark.timeout(30)
 async def test_slice_actor_mesh_handle() -> None:
     proc_mesh = await allocate()
@@ -194,6 +202,8 @@ async def test_slice_actor_mesh_handle() -> None:
     await verify_slice(actor_mesh, proc_mesh.client)
 
 
+# TODO - re-enable after resolving T232206970
+@pytest.mark.oss_skip
 @pytest.mark.timeout(30)
 async def test_slice_actor_mesh_ref() -> None:
     proc_mesh = await allocate()

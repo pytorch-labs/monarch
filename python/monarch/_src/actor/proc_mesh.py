@@ -66,14 +66,14 @@ from monarch._src.actor.shape import MeshTrait
 HAS_TENSOR_ENGINE = False
 try:
     from monarch._rust_bindings.rdma import (  # type: ignore[import]
+        _RdmaBuffer,
         _RdmaManager,
-        create_rdma_manager_blocking,
     )
 
-    HAS_TENSOR_ENGINE = True
+    # type: ignore[16]
+    HAS_TENSOR_ENGINE = _RdmaBuffer.rdma_supported()
 except ImportError:
     logging.warning("RDMA is not available on this platform")
-    pass
 
 
 if TYPE_CHECKING:
@@ -153,7 +153,9 @@ class ProcMesh(MeshTrait):
         with fake_sync_state():
             if _mock_shape is None and HAS_TENSOR_ENGINE:
                 # type: ignore[21]
-                self._rdma_manager = create_rdma_manager_blocking(self._proc_mesh)
+                self._rdma_manager = _RdmaManager.create_rdma_manager_blocking(
+                    self._proc_mesh
+                )
             if not _is_initializing_debugger and _mock_shape is None:
                 self._debug_manager = self.spawn(
                     _DEBUG_MANAGER_ACTOR_NAME, DebugManager, debug_client()
