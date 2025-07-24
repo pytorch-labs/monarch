@@ -65,6 +65,7 @@ from monarch._src.actor.endpoint import (
     Endpoint,
     EndpointProperty,
     Extent,
+    NotAnEndpoint,
     Propagator,
     Selection,
 )
@@ -76,7 +77,7 @@ from monarch._src.actor.pickle import flatten, unflatten
 from monarch._src.actor.shape import MeshTrait, NDSlice
 from monarch._src.actor.sync_state import fake_sync_state
 
-from monarch._src.actor.tensor_engine_shim import actor_send
+from monarch._src.actor.tensor_engine_shim import actor_rref, actor_send
 
 if TYPE_CHECKING:
     from monarch._src.actor.proc_mesh import ProcMesh
@@ -313,8 +314,7 @@ class ActorEndpoint(Endpoint[P, R]):
         """
         self._signature.bind(None, *args, **kwargs)
         objects, bytes = flatten((args, kwargs), _is_ref_or_mailbox)
-        refs = [obj for obj in objects if hasattr(obj, "__monarch_ref__")]
-        if not refs:
+        if all(not hasattr(obj, "__monarch_ref__") for obj in objects):
             message = PythonMessage(
                 PythonMessageKind.CallMethod(
                     self._name, None if port is None else port._port_ref
@@ -323,7 +323,7 @@ class ActorEndpoint(Endpoint[P, R]):
             )
             self._actor_mesh.cast(message, selection)
         else:
-            actor_send(self, bytes, refs, port, selection)
+            actor_send(self, bytes, objects, port, selection)
         shape = self._actor_mesh._shape
         return Extent(shape.labels, shape.ndslice.sizes)
 
@@ -334,6 +334,26 @@ class ActorEndpoint(Endpoint[P, R]):
                 r._receiver, (HyPortReceiver | OncePortReceiver)
             ), "unexpected receiver type"
         return PortTuple(p, PortReceiver(self._mailbox, self._supervise(r._receiver)))
+
+    def _rref(self, args, kwargs):
+        self._signature.bind(None, *args, **kwargs)
+        refs, bytes = flatten((args, kwargs), _is_ref_or_mailbox)
+
+        return actor_rref(self, bytes, refs)
+
+
+def as_endpoint(
+    not_an_endpoint: Callable[P, R], *, propagate: Propagator = None
+) -> Endpoint[P, R]:
+    if not isinstance(not_an_endpoint, NotAnEndpoint):
+        raise ValueError("expected an method of a spawned actor")
+    return ActorEndpoint(
+        not_an_endpoint._ref._actor_mesh_ref,
+        not_an_endpoint._name,
+        getattr(not_an_endpoint._ref, not_an_endpoint._name),
+        not_an_endpoint._ref._mailbox,
+        propagate,
+    )
 
 
 class Accumulator(Generic[P, R, A]):
@@ -625,18 +645,23 @@ class _Actor:
                         f" This is likely due to an earlier error: {self._saved_error}"
                     )
                 raise AssertionError(error_message)
-            the_method = getattr(self.instance, method)._method
+            the_method = getattr(self.instance, method)
+            if isinstance(the_method, EndpointProperty):
+                module = the_method._method.__module__
+                the_method = functools.partial(the_method._method, self.instance)
+            else:
+                module = the_method.__module__
 
             if inspect.iscoroutinefunction(the_method):
 
                 async def instrumented():
                     enter_span(
-                        the_method.__module__,
+                        module,
                         method,
                         str(ctx.mailbox.actor_id),
                     )
                     try:
-                        result = await the_method(self.instance, *args, **kwargs)
+                        result = await the_method(*args, **kwargs)
                         self._maybe_exit_debugger()
                     except Exception as e:
                         logging.critical(
@@ -649,9 +674,9 @@ class _Actor:
 
                 result = await instrumented()
             else:
-                enter_span(the_method.__module__, method, str(ctx.mailbox.actor_id))
+                enter_span(module, method, str(ctx.mailbox.actor_id))
                 with fake_sync_state():
-                    result = the_method(self.instance, *args, **kwargs)
+                    result = the_method(*args, **kwargs)
                 self._maybe_exit_debugger()
                 exit_span()
 
@@ -758,35 +783,14 @@ class ActorMeshRef(MeshTrait):
                         attr_name,
                         attr_value._method,
                         self._mailbox,
+                        attr_value._propagator,
                     ),
                 )
 
-    def __getattr__(self, name: str) -> Any:
-        # This method is called when an attribute is not found
-        # For linting purposes, we need to tell the type checker that any attribute
-        # could be an endpoint that's dynamically added at runtime
-        # At runtime, we still want to raise AttributeError for truly missing attributes
-
-        # Check if this is a method on the underlying class
-        if hasattr(self._class, name):
-            attr = getattr(self._class, name)
-            if isinstance(attr, EndpointProperty):
-                # Dynamically create the endpoint
-                endpoint = ActorEndpoint(
-                    self._actor_mesh_ref,
-                    name,
-                    attr._method,
-                    self._mailbox,
-                    propagator=attr._propagator,
-                )
-                # Cache it for future use
-                setattr(self, name, endpoint)
-                return endpoint
-
-        # If we get here, it's truly not found
-        raise AttributeError(
-            f"'{self.__class__.__name__}' object has no attribute '{name}'"
-        )
+    def __getattr__(self, attr: str) -> NotAnEndpoint:
+        if attr in dir(self._class):
+            return NotAnEndpoint(self, attr)
+        raise AttributeError(attr)
 
     def _create(
         self,

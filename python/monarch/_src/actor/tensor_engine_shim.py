@@ -19,7 +19,6 @@ time it is used.
 
 if TYPE_CHECKING:
     from monarch._src.actor.actor_mesh import ActorEndpoint, Port, Selection
-    from monarch._src.actor.endpoint import Endpoint
 
 
 def shim(fn=None, *, module=None):
@@ -48,8 +47,12 @@ def actor_send(
 ) -> None: ...
 
 
+@shim(module="monarch.mesh_controller")
+def actor_rref(endpoint, args_kwargs_tuple: bytes, refs: Sequence[Any]): ...
+
+
 @shim(module="monarch.common.remote")
-def _cached_propagation(_cache, rfunction: "Endpoint", args, kwargs) -> Any: ...
+def _cached_propagation(_cache, rfunction, args, kwargs) -> Any: ...
 
 
 @shim(module="monarch.common.fake")

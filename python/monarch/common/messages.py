@@ -435,6 +435,15 @@ class SendResultOfActorCall(NamedTuple):
     stream: tensor_worker.StreamRef
 
 
+class CallActorMethod(NamedTuple):
+    seq: int
+    result: object
+    broker_id: Tuple[str, int]
+    local_state: Sequence[Tensor | tensor_worker.Ref]
+    mutates: List[tensor_worker.Ref]
+    stream: tensor_worker.StreamRef
+
+
 class SplitComm(NamedTuple):
     dims: Dims
     device_mesh: DeviceMesh

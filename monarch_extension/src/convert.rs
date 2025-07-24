@@ -443,6 +443,18 @@ fn create_map(py: Python) -> HashMap<u64, FnType> {
             },
         ))
     });
+    m.insert(key("CallActorMethod"), |p| {
+        Ok(WorkerMessage::CallActorMethod(worker::ActorMethodParams {
+            call: worker::ActorCallParams {
+                seq: p.parseSeq("seq")?,
+                broker_id: p.parse("broker_id")?,
+                local_state: p.parseRefList("local_state")?,
+                mutates: p.parseRefList("mutates")?,
+                stream: p.parseStreamRef("stream")?,
+            },
+            results: p.parseFlatReferences("result")?,
+        }))
+    });
     m
 }
 

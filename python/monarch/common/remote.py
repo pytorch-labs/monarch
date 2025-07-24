@@ -157,7 +157,7 @@ class Remote(Generic[P, R], Endpoint[P, R]):
     def _maybe_resolvable(self):
         return None if self._remote_impl is None else self._resolvable
 
-    def rref(self, *args: P.args, **kwargs: P.kwargs) -> R:
+    def _rref(self, args, kwargs):
         return dtensor_dispatch(
             self._resolvable,
             self._propagate,
@@ -352,7 +352,7 @@ _miss = 0
 _hit = 0
 
 
-def _cached_propagation(_cache, rfunction: Endpoint, args, kwargs):
+def _cached_propagation(_cache, rfunction: ResolvableFunction, args, kwargs):
     tensors, shape_key = hashable_tensor_flatten(args, kwargs)
     # pyre-ignore
     inputs_group = TensorGroup([t._fake for t in tensors])

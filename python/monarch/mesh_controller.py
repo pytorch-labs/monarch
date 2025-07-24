@@ -30,6 +30,7 @@ from monarch._rust_bindings.monarch_extension.client import (  # @manual=//monar
     WorldState,
 )
 from monarch._rust_bindings.monarch_extension.mesh_controller import _Controller
+from monarch._rust_bindings.monarch_extension.tensor_worker import Ref
 from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessage,
     PythonMessageKind,
@@ -44,10 +45,12 @@ from monarch._src.actor.endpoint import Selection
 from monarch._src.actor.shape import NDSlice
 from monarch.common import device_mesh, messages, stream
 from monarch.common.controller_api import TController
+from monarch.common.function import ResolvableFunction
 from monarch.common.invocation import Seq
 from monarch.common.messages import Referenceable, SendResultOfActorCall
 from monarch.common.stream import StreamRef
-from monarch.common.tensor import InputChecker, Tensor
+from monarch.common.tensor import dtensor_check, InputChecker, Tensor
+from monarch.common.tree import flatten
 from monarch.tensor_worker_main import _set_trace
 
 if TYPE_CHECKING:
@@ -265,6 +268,29 @@ class RemoteException(Exception):
             return "<exception formatting RemoteException>"
 
 
+def _cast_call_method_indirect(
+    endpoint: ActorEndpoint,
+    selection: Selection,
+    client: MeshClient,
+    seq: Seq,
+    args_kwargs_tuple: bytes,
+    refs: Sequence[Any],
+) -> Tuple[str, int]:
+    unflatten_args = [
+        UnflattenArg.PyObject if isinstance(ref, Tensor) else UnflattenArg.Mailbox
+        for ref in refs
+    ]
+    broker_id: Tuple[str, int] = client._mesh_controller.broker_id
+    actor_msg = PythonMessage(
+        PythonMessageKind.CallMethodIndirect(
+            endpoint._name, broker_id, seq, unflatten_args
+        ),
+        args_kwargs_tuple,
+    )
+    endpoint._actor_mesh.cast(actor_msg, selection)
+    return broker_id
+
+
 def actor_send(
     endpoint: ActorEndpoint,
     args_kwargs_tuple: bytes,
@@ -272,10 +298,6 @@ def actor_send(
     port: Optional[Port[Any]],
     selection: Selection,
 ):
-    unflatten_args = [
-        UnflattenArg.PyObject if isinstance(ref, Tensor) else UnflattenArg.Mailbox
-        for ref in refs
-    ]
     tensors = [ref for ref in refs if isinstance(ref, Tensor)]
     # we have some monarch references, we need to ensure their
     # proc_mesh matches that of the tensors we sent to it
@@ -284,7 +306,7 @@ def actor_send(
         if hasattr(t, "stream"):
             chosen_stream = t.stream
             break
-    with InputChecker(refs, lambda x: f"actor_call({x})") as checker:
+    with InputChecker(tensors, lambda x: f"actor_call({x})") as checker:
         checker.check_mesh_stream_local(device_mesh._active, chosen_stream)
         # TODO: move propagators into Endpoint abstraction and run the propagator to get the
         # mutates
@@ -300,8 +322,6 @@ def actor_send(
 
     client = cast(MeshClient, checker.mesh.client)
 
-    broker_id: Tuple[str, int] = client._mesh_controller.broker_id
-
     stream_ref = chosen_stream._to_ref(client)
 
     fut = (port, checker.mesh._ndslice) if port is not None else None
@@ -316,13 +336,9 @@ def actor_send(
     # The message to the generic actor tells it to first wait on the broker to get the local arguments
     # from the stream, then it will run the actor method, and send the result to response port.
 
-    actor_msg = PythonMessage(
-        PythonMessageKind.CallMethodIndirect(
-            endpoint._name, broker_id, ident, unflatten_args
-        ),
-        args_kwargs_tuple,
+    broker_id = _cast_call_method_indirect(
+        endpoint, selection, client, ident, args_kwargs_tuple, refs
     )
-    endpoint._actor_mesh.cast(actor_msg, selection)
     worker_msg = SendResultOfActorCall(ident, broker_id, tensors, [], stream_ref)
     client.send(checker.mesh._ndslice, worker_msg)
     # we have to ask for status updates
@@ -330,3 +346,49 @@ def actor_send(
     # enough work to count this future as finished,
     # and all potential errors have been reported
     client._request_status()
+
+
+def actor_rref(endpoint, args_kwargs_tuple: bytes, refs: Sequence[Any]):
+    chosen_stream = stream._active
+    fake_result, dtensors, mutates, mesh = dtensor_check(
+        endpoint._propagate,
+        cast(ResolvableFunction, endpoint._name),
+        refs,
+        {},
+        device_mesh._active,
+        chosen_stream,
+    )
+    assert mesh is not None
+
+    fake_result_dtensors, unflatten_result = flatten(
+        fake_result, lambda x: isinstance(x, torch.Tensor)
+    )
+    result_dtensors = tuple(
+        Tensor(fake, mesh, chosen_stream) for fake in fake_result_dtensors
+    )
+    seq = mesh.client.new_node(result_dtensors + mutates, dtensors)
+    assert all(t.ref is not None for t in result_dtensors)
+    assert all(t.ref is not None for t in mutates)
+    result = result_msg = unflatten_result(result_dtensors)
+    if len(result_dtensors) == 0:
+        result_msg = None
+
+    broker_id = _cast_call_method_indirect(
+        endpoint, "all", mesh.client, seq, args_kwargs_tuple, refs
+    )
+    # note the device mesh has to be defined regardles so the remote functions
+    # can invoke mesh.rank("...")
+
+    mesh.define_remotely()
+
+    mesh._send(
+        messages.CallActorMethod(
+            seq,
+            result_msg,
+            broker_id,
+            refs,
+            cast("List[Ref]", mutates),
+            stream._active._to_ref(mesh.client),
+        )
+    )
+    return result
