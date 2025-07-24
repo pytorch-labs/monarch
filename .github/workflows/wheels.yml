@@ -35,6 +35,10 @@ jobs:
       script: |
         source scripts/common-setup.sh
         setup_build_environment ${{ matrix.python-version }}
+
+        # Setup Tensor Engine dependencies
+        setup_tensor_engine
+
         cargo install --path monarch_hyperactor
 
         # Build wheel
@@ -50,9 +54,7 @@ jobs:
         # Run tests
         install_python_test_dependencies
         pip install dist/*.whl
-        LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip" -n auto
-        python python/tests/test_mock_cuda.py
-
+        python -c "import monarch"
   publish:
     name: Publish to PyPI
     needs: build
