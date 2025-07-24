@@ -3174,4 +3174,52 @@ mod tests {
             handle.await.unwrap();
         }
     }
+
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_meta_tls_throughput() {
+        let subscriber = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::new("debug"))
+            .finish();
+        tracing::subscriber::set_global_default(subscriber).expect("Failed to set subscriber");
+
+        async fn send_message(addr: ChannelAddr) -> Duration {
+            let (local_addr, mut rx) = crate::channel::serve::<String>(addr).await.unwrap();
+            tracing::info!("local_addr: {:?}", local_addr);
+            {
+
+                let size  = 200 * 1000 * 1000;
+                let msg = "x".repeat(size);
+                let tx = dial::<String>(local_addr).unwrap();
+                let now: Instant = Instant::now();
+                tx.try_post(msg.clone(), unused_return_channel()).unwrap();
+                assert_eq!(rx.recv().await.unwrap(), msg);
+
+                let elapsed = now.elapsed();
+                tracing::info!("elapsed: {:?}", elapsed);
+                elapsed
+            }
+        }
+
+        {
+            tracing::info!("testing with metatls");
+            let addr = ChannelAddr::any(ChannelTransport::MetaTls);
+            let elapsed = send_message(addr).await;
+            // e.g. elapsed: 26.743396697s
+            assert!(elapsed.as_secs() > 20);
+        }
+
+        {
+            tracing::info!("testing with tcp");
+            let addr = ChannelAddr::any(ChannelTransport::Tcp);
+            match addr {
+                ChannelAddr::Tcp(addr) => {
+                    assert!(!addr.ip().is_loopback());
+                }
+                _ => panic!("unexpected addr: {:?}", addr),
+            }
+            let elapsed = send_message(addr).await;
+            // e.g elapsed: 653.70663ms
+            assert!(elapsed.as_secs() < 2);
+        }
+    }
 }
