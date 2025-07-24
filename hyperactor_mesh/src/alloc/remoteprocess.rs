@@ -80,8 +80,6 @@ pub enum RemoteProcessAllocatorMessage {
     /// Heartbeat message to check if remote process allocator and its
     /// host are alive.
     HeartBeat,
-    /// Stop allocation and terminate
-    Terminate,
 }
 
 /// Control message sent from local allocator to remote allocator
@@ -224,9 +222,6 @@ impl RemoteProcessAllocator {
                                     continue;
                                 }
                             }
-                        }
-                        Ok(RemoteProcessAllocatorMessage::Terminate) => {
-                            self.terminate();
                         }
                         Ok(RemoteProcessAllocatorMessage::Stop) => {
                             tracing::info!("received stop request");
@@ -599,9 +594,8 @@ impl RemoteProcessAlloc {
                     let addr = entry.value().clone();
                     match channel::dial(addr.clone()) {
                         Ok(tx) => {
-                            if let Err(e) = tx.send(RemoteProcessAllocatorMessage::Terminate).await
-                            {
-                                tracing::error!("Failed to send terminate to {}: {}", addr, e);
+                            if let Err(e) = tx.send(RemoteProcessAllocatorMessage::Stop).await {
+                                tracing::error!("Failed to send Stop to {}: {}", addr, e);
                             }
                         }
                         Err(e) => {
@@ -2117,6 +2111,9 @@ mod test_alloc {
         let num_proc_meshes = 5;
         let hosts_per_proc_mesh = 5;
 
+        let pid_addr = ChannelAddr::any(ChannelTransport::Unix);
+        let (pid_addr, mut pid_rx) = channel::serve::<u32>(pid_addr).await.unwrap();
+
         let addresses = (0..(num_proc_meshes * hosts_per_proc_mesh))
             .map(|_| ChannelAddr::any(ChannelTransport::Unix).to_string())
             .collect::<Vec<_>>();
@@ -2146,10 +2143,18 @@ mod test_alloc {
         .arg(format!("--addresses={}", addresses.join(",")))
         .arg(format!("--num-proc-meshes={}", num_proc_meshes))
         .arg(format!("--hosts-per-proc-mesh={}", hosts_per_proc_mesh))
+        .arg(format!("--pid-addr={}", pid_addr))
         .spawn()
         .unwrap();
 
         done_allocating_rx.recv().await.unwrap();
+        let mut received_pids = Vec::new();
+        while let Ok(pid) = pid_rx.recv().await {
+            received_pids.push(pid);
+            if received_pids.len() == remote_process_allocators.len() {
+                break;
+            }
+        }
 
         signal::kill(
             Pid::from_raw(remote_process_alloc.id().unwrap() as i32),
@@ -2164,17 +2169,26 @@ mod test_alloc {
 
         RealClock.sleep(tokio::time::Duration::from_secs(5)).await;
 
-        for remote_process_allocator in remote_process_allocators {
-            let output = remote_process_allocator.wait_with_output().await.unwrap();
-            assert!(output.status.success());
+        // Assert that the processes spawned by ProcessAllocator have been killed
+        for child_pid in received_pids {
+            let pid_check = Command::new("kill")
+                .arg("-0")
+                .arg(child_pid.to_string())
+                .output()
+                .await
+                .expect("Failed to check if PID is alive");
+
             assert!(
-                String::from_utf8_lossy(&output.stdout)
-                    .contains("child stopped with ProcStopReason::Stopped")
+                !pid_check.status.success(),
+                "PID {} should no longer be alive",
+                child_pid
             );
-            assert!(
-                !String::from_utf8_lossy(&output.stdout)
-                    .contains("child stopped with ProcStopReason::Watchdog")
-            );
+        }
+
+        // Cleanup remote process allocator processes as SIGINT causes the current
+        // allocs to stop but not the RemoteProcessAllocator loops
+        for mut remote_process_allocator in remote_process_allocators {
+            remote_process_allocator.kill().await.unwrap();
         }
     }
 }

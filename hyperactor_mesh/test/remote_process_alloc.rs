@@ -49,6 +49,9 @@ pub struct Args {
 
     #[arg(long)]
     pub hosts_per_proc_mesh: usize,
+
+    #[arg(long)]
+    pub pid_addr: String,
 }
 #[tokio::main]
 async fn main() {
@@ -69,6 +72,7 @@ async fn main() {
     );
     let mut allocs = Vec::new();
 
+    let pid_tx = channel::dial(args.pid_addr.parse().unwrap()).unwrap();
     for proc_num in 0..num_proc_meshes {
         let mut initializer = MockRemoteProcessAllocInitializer::new();
 
@@ -102,6 +106,9 @@ async fn main() {
             match alloc.next().await {
                 Some(ProcState::Running { .. }) => {
                     running += 1;
+                }
+                Some(ProcState::Created { pid, .. }) => {
+                    pid_tx.post(pid);
                 }
                 _ => {}
             }
