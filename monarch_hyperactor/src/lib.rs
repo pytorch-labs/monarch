@@ -26,6 +26,7 @@ pub mod selection;
 pub mod shape;
 pub mod supervision;
 pub mod telemetry;
+pub mod tokio;
 
 #[cfg(fbcode_build)]
 pub mod meta;

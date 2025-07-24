@@ -6,7 +6,7 @@
 
 from typing import Any, final, Optional
 
-from monarch._rust_bindings.monarch_hyperactor.mailbox import PythonTask
+from monarch._rust_bindings.monarch_hyperactor.tokio import PythonTask
 
 @final
 class _RdmaMemoryRegionView:

@@ -35,10 +35,8 @@ use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::Mutex;
 
-use crate::actor::PyPythonTask;
 use crate::actor::PythonActor;
 use crate::actor::PythonMessage;
-use crate::actor::PythonTask;
 use crate::mailbox::PyMailbox;
 use crate::mailbox::PythonOncePortReceiver;
 use crate::mailbox::PythonPortReceiver;
@@ -48,6 +46,8 @@ use crate::selection::PySelection;
 use crate::shape::PyShape;
 use crate::supervision::SupervisionError;
 use crate::supervision::Unhealthy;
+use crate::tokio::PyPythonTask;
+use crate::tokio::PythonTask;
 
 #[pyclass(
     name = "PythonActorMesh",
