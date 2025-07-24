@@ -445,7 +445,9 @@ impl PythonActor {
         self.task_locals.as_ref().unwrap_or_else(|| {
             // Use shared TaskLocals
             static SHARED_TASK_LOCALS: OnceLock<pyo3_async_runtimes::TaskLocals> = OnceLock::new();
-            Python::allow_threads(py, || SHARED_TASK_LOCALS.get_or_init(create_task_locals))
+            Python::allow_threads(py, || {
+                SHARED_TASK_LOCALS.get_or_init(create_shared_task_locals)
+            })
         })
     }
 }
@@ -491,7 +493,24 @@ impl Actor for PythonActor {
     }
 }
 
+/// Get TaskLocals that use the worker event loop created in bootstrap_main.py.
+/// This is used for the shared runtime.
+fn create_shared_task_locals() -> pyo3_async_runtimes::TaskLocals {
+    Python::with_gil(|py| {
+        let bootstrap_module = py.import("monarch._src.actor.event_loop").unwrap();
+
+        let event_loop = bootstrap_module
+            .call_method0("get_event_loop")
+            .expect("Could not find get_event_loop in event_loop.py");
+
+        pyo3_async_runtimes::TaskLocals::new(event_loop)
+            .copy_context(py)
+            .unwrap()
+    })
+}
+
 /// Create a new TaskLocals with its own asyncio event loop in a dedicated thread.
+/// This is used for per-actor runtimes.
 fn create_task_locals() -> pyo3_async_runtimes::TaskLocals {
     let (tx, rx) = std::sync::mpsc::channel();
     let _ = std::thread::spawn(move || {
