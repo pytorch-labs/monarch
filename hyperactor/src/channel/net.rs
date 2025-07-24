@@ -3186,8 +3186,7 @@ mod tests {
             let (local_addr, mut rx) = crate::channel::serve::<String>(addr).await.unwrap();
             tracing::info!("local_addr: {:?}", local_addr);
             {
-
-                let size  = 200 * 1000 * 1000;
+                let size = 200 * 1000 * 1000;
                 let msg = "x".repeat(size);
                 let tx = dial::<String>(local_addr).unwrap();
                 let now: Instant = Instant::now();
@@ -3204,8 +3203,8 @@ mod tests {
             tracing::info!("testing with metatls");
             let addr = ChannelAddr::any(ChannelTransport::MetaTls);
             let elapsed = send_message(addr).await;
-            // e.g. elapsed: 26.743396697s
-            assert!(elapsed.as_secs() > 20);
+            // e.g. elapsed: 650ms
+            assert!(elapsed.as_secs() < 2);
         }
 
         {
@@ -3218,7 +3217,7 @@ mod tests {
                 _ => panic!("unexpected addr: {:?}", addr),
             }
             let elapsed = send_message(addr).await;
-            // e.g elapsed: 653.70663ms
+            // e.g elapsed: 350ms
             assert!(elapsed.as_secs() < 2);
         }
     }
