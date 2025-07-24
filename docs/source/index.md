@@ -29,7 +29,7 @@ Here are some suggested steps to get started with Monarch:
 
 1. **Installation**: Install Monarch using pip: `pip install torchmonarch-nightly`
 2. **Learn the Basics**: Check out the [Getting Started](get_started) guide to learn the basics of Monarch
-3. **Explore Examples**: Review the [Examples](examples) to see Monarch in action
+3. **Explore Examples**: Review the [Examples](./examples/index) to see Monarch in action
 4. **Dive Deeper**: Explore the [API Documentation](api) for more detailed information
 
 ## Documentation Contents
@@ -37,9 +37,10 @@ Here are some suggested steps to get started with Monarch:
 ```{toctree}
 :maxdepth: 2
 :caption: Contents
+:hidden:
 
 get_started
-examples
+./examples/index
 api
 howtos
 glossary

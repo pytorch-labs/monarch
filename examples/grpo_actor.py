@@ -4,6 +4,25 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+"""
+Distributed PPO-like Reinforcement Learning with Monarch Actors
+=======================================================>>>>>>> REPLACE
+
+This example demonstrates implementing a distributed PPO-like reinforcement learning
+algorithm using the Monarch actor framework. The implementation features:
+
+- Distributed actor architecture with Generator, Scorer, and Learner components
+- Asynchronous communication via queues
+- RDMA-based weight synchronization
+- Event-driven architecture for efficient processing
+
+The example shows how to:
+- Set up distributed actors on separate GPU meshes
+- Implement policy gradient methods in a distributed setting
+- Use RDMA buffers for efficient parameter sharing
+- Create an asynchronous training loop with multiple components
+"""
+
 import asyncio
 import copy
 import random

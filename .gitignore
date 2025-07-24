@@ -21,4 +21,13 @@ Cargo.lock
 # mdbook output
 books/hyperactor-book/book/**
 
+# macOS files
+.DS_Store
+
+# Sphinx build files
+_build/
+build/
+docs/_build/
+docs/build/
+
 CLAUDE.md
