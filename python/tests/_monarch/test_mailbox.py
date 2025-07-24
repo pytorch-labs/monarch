@@ -19,7 +19,7 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
 )
 
 if TYPE_CHECKING:
-    from monarch._rust_bindings.monarch_hyperactor.actor import CallMethod
+    from monarch._rust_bindings.monarch_hyperactor.actor import CallMethod, PortProtocol
 
 
 from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints, AllocSpec
@@ -135,24 +135,15 @@ class MyActor:
         mailbox: Mailbox,
         rank: int,
         shape: Shape,
-        message: PythonMessage,
+        method: str,
+        message: bytes,
         panic_flag: PanicFlag,
         local_state: Iterable[Any],
+        response_port: "PortProtocol",
     ) -> None:
-        call_method = cast("CallMethod", message.kind)
-        assert call_method.response_port is not None
-        reply_port = call_method.response_port
-        reply_port.send(
-            mailbox,
-            PythonMessage(PythonMessageKind.CallMethod("echo", None), message.message),
-        )
+        response_port.send(pickle.loads(message))
         for i in range(100):
-            reply_port.send(
-                mailbox,
-                PythonMessage(
-                    PythonMessageKind.CallMethod("echo", None), pickle.dumps(f"msg{i}")
-                ),
-            )
+            response_port.send(f"msg{i}")
 
 
 async def test_reducer() -> None:

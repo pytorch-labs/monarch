@@ -176,7 +176,7 @@ pub struct WorkerActor {
     comm: Option<ActorHandle<NcclCommActor>>,
     controller_actor: ActorRef<ControllerActor>,
     /// Pipes created for the worker.
-    pipes: HashMap<Ref, Result<ActorHandle<PipeActor>, Arc<CallFunctionError>>>,
+    pipes: HashMap<Ref, ActorHandle<PipeActor>>,
     /// Remember the process groups "created" via `CreateRemoteProcessGroup` for
     /// subsequent `CallFunction` calls, as this is where the actual allocation
     /// will happen.
@@ -663,41 +663,35 @@ impl WorkerMessageHandler for WorkerActor {
         args: Vec<WireValue>,
         kwargs: HashMap<String, WireValue>,
     ) -> Result<()> {
-        self.pipes.insert(
-            result,
-            // We never explicitly fail.  In the event we see an error creating
-            // the pipe, store the error instead.
-            async {
-                let args: Vec<PyTree<RValue>> = args
-                    .into_iter()
-                    .map(|object| RValue::PyObject(object.into_py_object().unwrap()).into())
-                    .collect();
-                let kwargs: HashMap<_, PyTree<RValue>> = kwargs
-                    .into_iter()
-                    .map(|(k, object)| {
-                        (k, RValue::PyObject(object.into_py_object().unwrap()).into())
-                    })
-                    .collect();
-                let device_mesh = self.device_meshes.get(&device_mesh).ok_or_else(|| {
-                    CallFunctionError::Error(anyhow::anyhow!("ref not found: {}", device_mesh))
-                })?;
-                let pipe = PipeActor::spawn(
-                    cx,
-                    PipeParams {
-                        function,
-                        max_messages,
-                        ranks: device_mesh.0.ranks(),
-                        sizes: device_mesh.0.sizes(),
-                        args,
-                        kwargs,
-                    },
-                )
-                .await?;
-                Ok(pipe)
-            }
-            .await
-            .map_err(Arc::new),
-        );
+        println!("CREATE PIPE1 {}", result);
+        let args: Vec<PyTree<RValue>> = args
+            .into_iter()
+            .map(|object| RValue::PyObject(object.into_py_object().unwrap()).into())
+            .collect();
+        let kwargs: HashMap<_, PyTree<RValue>> = kwargs
+            .into_iter()
+            .map(|(k, object)| (k, RValue::PyObject(object.into_py_object().unwrap()).into()))
+            .collect();
+        let device_mesh = self.device_meshes.get(&device_mesh).ok_or_else(|| {
+            CallFunctionError::Error(anyhow::anyhow!("ref not found: {}", device_mesh))
+        })?;
+        println!("CREATE PIPE2 {}", result);
+        // TODO(agallagher): Fix error prop. (When pipe is read from the pipes dict if it had an error it should cause a dependent error in send_value not an actor error as it does now)
+        let pipe = PipeActor::spawn(
+            cx,
+            PipeParams {
+                function,
+                max_messages,
+                ranks: device_mesh.0.ranks(),
+                sizes: device_mesh.0.sizes(),
+                args,
+                kwargs,
+            },
+        )
+        .await?;
+        println!("AFTER CREATE PIPE {}", result);
+
+        self.pipes.insert(result, pipe);
         Ok(())
     }
 
@@ -828,19 +822,16 @@ impl WorkerMessageHandler for WorkerActor {
                 .collect()
         };
 
-        // Resolve the pipe, if a ref to it is provided.
-        let pipe = destination
-            .map(|pipe| {
-                self.pipes
-                    .get(&pipe)
-                    .ok_or_else(|| anyhow::anyhow!("invalid pipe id: {:#?}", pipe))
-            })
-            // TODO(agallagher): Fix error prop.
-            .transpose()?
-            .map(|r| r.as_ref().map_err(|e| e.clone()))
-            .transpose()?
-            .map(|pipe| pipe.port());
-
+        let pipe = if let Some(destination) = destination {
+            let pipe = self
+                .pipes
+                .get(&destination)
+                .ok_or_else(|| anyhow::anyhow!("invalid pipe id: {:#?}", destination))?
+                .port();
+            Some(pipe)
+        } else {
+            None
+        };
         // Resolve the value on the stream, then send the value to the pipe if provided,
         // or back to the controller if not.
         stream
@@ -978,7 +969,7 @@ impl WorkerMessageHandler for WorkerActor {
     async fn pipe_recv(
         &mut self,
         cx: &hyperactor::Context<Self>,
-        _seq: Seq,
+        seq: Seq,
         results: Vec<Option<Ref>>,
         pipe: Ref,
         stream: StreamRef,
@@ -986,24 +977,15 @@ impl WorkerMessageHandler for WorkerActor {
         self.maybe_add_stream_to_recording(cx, stream).await?;
 
         // Get a port for the pipe
-        let pipe = match self.pipes.get(&pipe) {
-            None => Err(Arc::new(CallFunctionError::Error(anyhow::anyhow!(
-                "ref not found: {}",
-                pipe
-            )))),
-            Some(pipe) => match pipe.as_ref() {
-                Ok(pipe) => Ok(pipe.port()),
-                Err(e) => Err(Arc::new(CallFunctionError::DependentError(
-                    e.unwrap_dependent_error().unwrap_or(e.clone()),
-                ))),
-            },
-        };
-
+        let pipe = self
+            .pipes
+            .get(&pipe)
+            .ok_or_else(|| anyhow::anyhow!("ref not found: {}", pipe))?;
+        let pipe = pipe.port();
         // Resolve the stream.
         let stream = self.try_get_stream(stream)?;
-
         // Push result into the stream.
-        stream.set_value(cx, results, pipe).await
+        stream.set_value(cx, seq, results, pipe).await
     }
 
     async fn set_ref_unit_tests_only(
@@ -2084,7 +2066,7 @@ mod tests {
         let mut responses = controller_rx.drain();
         assert_eq!(
             responses.len(),
-            2,
+            3,
             "Expected one response, got: {:#?}",
             responses
         );
@@ -2172,11 +2154,10 @@ mod tests {
         let mut responses = controller_rx.drain();
         assert_eq!(
             responses.len(),
-            2,
+            3,
             "Expected one response, got: {:#?}",
             responses
         );
-
         match responses.pop() {
             Some(ControllerMessage::FetchResult { seq, value }) => {
                 assert_eq!(seq, 2.into());
@@ -2496,71 +2477,6 @@ mod tests {
             error_responses.is_empty(),
             "Expected no error responses, got: {:#?}",
             error_responses
-        );
-
-        Ok(())
-    }
-
-    #[async_timed_test(timeout_secs = 60)]
-    async fn propagate_pipe_create_failure() -> Result<()> {
-        test_setup()?;
-
-        let proc = Proc::local();
-        let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
-
-        let handle = proc
-            .spawn::<WorkerActor>(
-                "worker",
-                WorkerParams {
-                    world_size: 1,
-                    rank: 0,
-                    device_index: None,
-                    controller_actor: controller_ref,
-                },
-            )
-            .await
-            .unwrap();
-        handle
-            .send(WorkerMessage::CommandGroup(vec![
-                WorkerMessage::CreateStream {
-                    id: 0.into(),
-                    stream_creation: StreamCreationMode::UseDefaultStream,
-                },
-                WorkerMessage::CreatePipe {
-                    result: 2.into(),
-                    key: "unused".into(),
-                    mesh: 1.into(),
-                    function: "monarch.monarch_tensor_worker.pipe_test_utils.handler".into(),
-                    max_messages: 1,
-                    args: vec![],
-                    kwargs: HashMap::new(),
-                },
-                WorkerMessage::PipeRecv {
-                    seq: 1.into(),
-                    results: vec![Some(3.into())],
-                    pipe: 2.into(),
-                    stream: 0.into(),
-                },
-            ]))
-            .unwrap();
-
-        let value: Result<_, String> = handle
-            .get_ref_unit_tests_only(&client, 3.into(), 0.into())
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(value.is_err());
-
-        handle.drain_and_stop()?;
-        //handle.await;
-        assert_matches!(handle.await, ActorStatus::Stopped);
-
-        let responses = controller_rx.drain();
-        assert_eq!(
-            responses.len(),
-            0,
-            "Expected zero responses, got: {:#?}",
-            responses
         );
 
         Ok(())

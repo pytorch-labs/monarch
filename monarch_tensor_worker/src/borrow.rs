@@ -424,7 +424,7 @@ mod tests {
             .err()
             .context("expected error")?;
         assert!(
-            error.contains("Computation depended on an input that failed"),
+            error.contains("torch operator error"),
             "If a borrowed value contains an error, downstream calls should propagate that error (unexpected error string: {})",
             error,
         );

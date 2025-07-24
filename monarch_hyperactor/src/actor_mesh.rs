@@ -25,6 +25,7 @@ use pyo3::exceptions::PyEOFError;
 use pyo3::exceptions::PyException;
 use pyo3::exceptions::PyNotImplementedError;
 use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::PyTypeError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -192,14 +193,28 @@ impl PythonActorMesh {
             .map(PyActorId::from))
     }
 
-    // Start monitoring the actor mesh by subscribing to its supervision events. For each supervision
-    // event, it is consumed by PythonActorMesh first, then gets sent to the monitor for user to consume.
-    fn monitor<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
-        let receiver = self.user_monitor_sender.subscribe();
-        let monitor_instance = PyActorMeshMonitor {
-            receiver: SharedCell::from(Mutex::new(receiver)),
-        };
-        monitor_instance.into_py_any(py)
+    fn supervise(&self, py: Python<'_>, receiver: Bound<'_, PyAny>) -> PyResult<PyObject> {
+        if let Ok(r) = receiver.extract::<PyRef<PythonPortReceiver>>() {
+            let rx = SupervisedPythonPortReceiver {
+                inner: r.inner(),
+                monitor: ActorMeshMonitor {
+                    receiver: SharedCell::from(Mutex::new(self.user_monitor_sender.subscribe())),
+                },
+            };
+            rx.into_py_any(py)
+        } else if let Ok(r) = receiver.extract::<PyRef<PythonOncePortReceiver>>() {
+            let rx = SupervisedPythonOncePortReceiver {
+                inner: r.inner(),
+                monitor: ActorMeshMonitor {
+                    receiver: SharedCell::from(Mutex::new(self.user_monitor_sender.subscribe())),
+                },
+            };
+            rx.into_py_any(py)
+        } else {
+            Err(PyTypeError::new_err(
+                "Expected a PortReceiver or OncePortReceiver",
+            ))
+        }
     }
 
     #[pyo3(signature = (**kwargs))]
@@ -374,84 +389,46 @@ impl Drop for PythonActorMesh {
     }
 }
 
-#[pyclass(
-    name = "ActorMeshMonitor",
-    module = "monarch._rust_bindings.monarch_hyperactor.actor_mesh"
-)]
-pub struct PyActorMeshMonitor {
+#[derive(Debug, Clone)]
+struct ActorMeshMonitor {
     receiver: SharedCell<Mutex<tokio::sync::broadcast::Receiver<Option<ActorSupervisionEvent>>>>,
 }
 
-#[pymethods]
-impl PyActorMeshMonitor {
-    fn __aiter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
-        slf
-    }
-
-    pub fn __anext__(&self, py: Python<'_>) -> PyResult<PyObject> {
+impl ActorMeshMonitor {
+    pub async fn next(&self) -> PyActorSupervisionEvent {
         let receiver = self.receiver.clone();
-        Ok(pyo3_async_runtimes::tokio::future_into_py(py, get_next(receiver))?.into())
-    }
-}
-
-impl PyActorMeshMonitor {
-    pub async fn next(&self) -> PyResult<PyObject> {
-        get_next(self.receiver.clone()).await
-    }
-}
-
-impl Clone for PyActorMeshMonitor {
-    fn clone(&self) -> Self {
-        Self {
-            receiver: self.receiver.clone(),
+        let receiver = receiver
+            .borrow()
+            .expect("`Actor mesh receiver` is shutdown");
+        let mut receiver = receiver.lock().await;
+        let event = receiver.recv().await.unwrap();
+        match event {
+            None => PyActorSupervisionEvent {
+                // Dummy actor as place holder to indicate the whole mesh is stopped
+                // TODO(albertli): remove this when pushing all supervision logic to rust.
+                actor_id: id!(default[0].actor[0]).into(),
+                actor_status: "actor mesh is stopped due to proc mesh shutdown".to_string(),
+            },
+            Some(event) => PyActorSupervisionEvent::from(event.clone()),
         }
     }
 }
 
-async fn get_next(
-    receiver: SharedCell<Mutex<tokio::sync::broadcast::Receiver<Option<ActorSupervisionEvent>>>>,
-) -> PyResult<PyObject> {
-    let receiver = receiver.clone();
-
-    let receiver = receiver
-        .borrow()
-        .expect("`Actor mesh receiver` is shutdown");
-    let mut receiver = receiver.lock().await;
-    let event = receiver.recv().await.unwrap();
-
-    let supervision_event = match event {
-        None => PyActorSupervisionEvent {
-            // Dummy actor as place holder to indicate the whole mesh is stopped
-            // TODO(albertli): remove this when pushing all supervision logic to rust.
-            actor_id: id!(default[0].actor[0]).into(),
-            actor_status: "actor mesh is stopped due to proc mesh shutdown".to_string(),
-        },
-        Some(event) => PyActorSupervisionEvent::from(event.clone()),
-    };
-    tracing::info!("recv supervision event: {supervision_event:?}");
-
-    Python::with_gil(|py| supervision_event.into_py_any(py))
-}
-
-// TODO(albertli): this is temporary remove this when pushing all supervision logic to rust.
+// Values of this type can only be created by calling
+// `PythonActorMesh::supervise()`.
 #[pyclass(
-    name = "MonitoredPortReceiver",
+    name = "SupervisedPortReceiver",
     module = "monarch._rust_bindings.monarch_hyperactor.actor_mesh"
 )]
-pub(super) struct MonitoredPythonPortReceiver {
+struct SupervisedPythonPortReceiver {
     inner: Arc<tokio::sync::Mutex<PortReceiver<PythonMessage>>>,
-    monitor: PyActorMeshMonitor,
+    monitor: ActorMeshMonitor,
 }
 
 #[pymethods]
-impl MonitoredPythonPortReceiver {
-    #[new]
-    fn new(receiver: &PythonPortReceiver, monitor: &PyActorMeshMonitor) -> Self {
-        let inner = receiver.inner();
-        MonitoredPythonPortReceiver {
-            inner,
-            monitor: monitor.clone(),
-        }
+impl SupervisedPythonPortReceiver {
+    fn __repr__(&self) -> &'static str {
+        "<SupervisedPortReceiver>"
     }
 
     fn recv_task(&mut self) -> PyPythonTask {
@@ -464,10 +441,8 @@ impl MonitoredPythonPortReceiver {
                     result.map_err(|err| PyErr::new::<PyEOFError, _>(format!("port closed: {}", err)))
                 }
                 event = monitor.next() => {
-                    let event = event.expect("supervision event should not be None");
                     Python::with_gil(|py| {
-                        let e = event.downcast_bound::<PyActorSupervisionEvent>(py)?;
-                        Err(PyErr::new::<SupervisionError, _>(format!("supervision error: {:?}", e)))
+                        Err(PyErr::new::<SupervisionError, _>(format!("supervision error: {:?}", event)))
                     })
                 }
             };
@@ -476,24 +451,21 @@ impl MonitoredPythonPortReceiver {
     }
 }
 
+// Values of this type can only be created by calling
+// `PythonActorMesh::supervise()`.
 #[pyclass(
-    name = "MonitoredOncePortReceiver",
+    name = "SupervisedOncePortReceiver",
     module = "monarch._rust_bindings.monarch_hyperactor.actor_mesh"
 )]
-pub(super) struct MonitoredPythonOncePortReceiver {
+struct SupervisedPythonOncePortReceiver {
     inner: Arc<std::sync::Mutex<Option<OncePortReceiver<PythonMessage>>>>,
-    monitor: PyActorMeshMonitor,
+    monitor: ActorMeshMonitor,
 }
 
 #[pymethods]
-impl MonitoredPythonOncePortReceiver {
-    #[new]
-    fn new(receiver: &PythonOncePortReceiver, monitor: &PyActorMeshMonitor) -> Self {
-        let inner = receiver.inner();
-        MonitoredPythonOncePortReceiver {
-            inner,
-            monitor: monitor.clone(),
-        }
+impl SupervisedPythonOncePortReceiver {
+    fn __repr__(&self) -> &'static str {
+        "<SupervisedOncePortReceiver>"
     }
 
     fn recv_task(&mut self) -> PyResult<PyPythonTask> {
@@ -507,10 +479,8 @@ impl MonitoredPythonOncePortReceiver {
                     result.map_err(|err| PyErr::new::<PyEOFError, _>(format!("port closed: {}", err)))
                 }
                 event = monitor.next() => {
-                    let event = event.expect("supervision event should not be None");
                     Python::with_gil(|py| {
-                        let e = event.downcast_bound::<PyActorSupervisionEvent>(py)?;
-                        Err(PyErr::new::<SupervisionError, _>(format!("supervision error: {:?}", e)))
+                        Err(PyErr::new::<SupervisionError, _>(format!("supervision error: {:?}", event)))
                     })
                 }
             };
@@ -556,9 +526,8 @@ impl From<ActorSupervisionEvent> for PyActorSupervisionEvent {
 pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResult<()> {
     hyperactor_mod.add_class::<PythonActorMesh>()?;
     hyperactor_mod.add_class::<PythonActorMeshRef>()?;
-    hyperactor_mod.add_class::<PyActorMeshMonitor>()?;
-    hyperactor_mod.add_class::<MonitoredPythonPortReceiver>()?;
-    hyperactor_mod.add_class::<MonitoredPythonOncePortReceiver>()?;
+    hyperactor_mod.add_class::<SupervisedPythonPortReceiver>()?;
+    hyperactor_mod.add_class::<SupervisedPythonOncePortReceiver>()?;
     hyperactor_mod.add_class::<PyActorSupervisionEvent>()?;
     Ok(())
 }

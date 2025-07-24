@@ -89,10 +89,17 @@ class PythonActorMesh:
         """
         ...
 
-    # TODO(albertli): remove this when pushing all supervision logic to Rust
-    def monitor(self) -> ActorMeshMonitor:
-        """
-        Returns a supervision monitor for this mesh.
+    def supervise(
+        self, r: PortReceiver | OncePortReceiver
+    ) -> SupervisedPortReceiver | SupervisedOncePortReceiver:
+        """Return a monitored port receiver.
+
+        A monitored port receiver behaves like a regular port receiver
+        but also observes the health of the actor mesh associated with
+        the sender. If the actor mesh becomes unhealthy, the receiver
+        will yield a supervision error instead of waiting indefinitely
+        for a message.
+
         """
         ...
 
@@ -129,42 +136,16 @@ class PythonActorMesh:
         ...
 
 @final
-class ActorMeshMonitor:
-    def __aiter__(self) -> AsyncIterator["ActorSupervisionEvent"]:
-        """
-        Returns an async iterator for this monitor.
-        """
-        ...
-
-    async def __anext__(self) -> "ActorSupervisionEvent":
-        """
-        Returns the next proc event in the proc mesh.
-        """
-        ...
+class SupervisedPortReceiver(PortReceiverBase):
+    """A monitored receiver to which PythonMessages are sent. Values
+    of this type cannot be constructed directly in Python.
+    """
 
 @final
-class MonitoredPortReceiver(PortReceiverBase):
+class SupervisedOncePortReceiver(PortReceiverBase):
+    """A monitored once receiver to which PythonMessages are sent.
+    Values of this type cannot be constructed directly in Python.
     """
-    A monitored receiver to which PythonMessages are sent.
-    """
-
-    def __init__(self, receiver: PortReceiver, monitor: ActorMeshMonitor) -> None:
-        """
-        Create a new monitored receiver from a PortReceiver.
-        """
-        ...
-
-@final
-class MonitoredOncePortReceiver(PortReceiverBase):
-    """
-    A variant of monitored PortReceiver that can only receive a single message.
-    """
-
-    def __init__(self, receiver: OncePortReceiver, monitor: ActorMeshMonitor) -> None:
-        """
-        Create a new monitored receiver from a PortReceiver.
-        """
-        ...
 
 @final
 class ActorSupervisionEvent:

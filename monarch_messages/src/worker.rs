@@ -506,6 +506,24 @@ pub enum StreamCreationMode {
     CreateNewStream,
 }
 
+/// An error associated with a seq number that failed to execute.
+/// Any defined value that has an error value will have an assocated
+/// SeqError that is the root cause of why that value has an error.
+/// A value may have this error because it was directly defined by the
+/// action associated with the sequence number, or if it was defined by
+/// another action that dependend on the failing one.
+#[derive(Debug, Named)]
+pub struct SeqError {
+    pub seq: Seq,
+    pub error: anyhow::Error,
+}
+
+impl Display for SeqError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.error.fmt(f)
+    }
+}
+
 /// When a worker runs any function, it may not succeed either because the function itself
 /// failed (Error) or because an input to the function already had an error value
 /// DependentError.
@@ -514,21 +532,11 @@ pub enum CallFunctionError {
     #[error("{0}")]
     Error(#[from] anyhow::Error),
     #[error("Computation depended on an input that failed with error: {0}")]
-    DependentError(Arc<CallFunctionError>),
+    DependentError(Arc<SeqError>),
 }
 
 impl CallFunctionError {
-    /// Checks if the error is a `DependentError` and returns the underlying
-    /// error if so. Otherwise, returns `None`.
-    pub fn unwrap_dependent_error(&self) -> Option<Arc<CallFunctionError>> {
-        match self {
-            CallFunctionError::DependentError(e) => Some(e.clone()),
-            _ => None,
-        }
-    }
-
     // Static functions for backward compatibility with existing enum cases
-
     #[allow(non_snake_case)]
     pub fn RefNotFound(r: Ref) -> Self {
         Self::Error(anyhow::anyhow!("ref not found: {}", r))
@@ -584,16 +592,6 @@ impl CallFunctionError {
     #[allow(non_snake_case)]
     pub fn Anyhow(err: anyhow::Error) -> Self {
         Self::Error(err)
-    }
-
-    #[allow(non_snake_case)]
-    pub fn RecordingFailed(index: usize, message: String, error: Arc<CallFunctionError>) -> Self {
-        Self::Error(anyhow::anyhow!(
-            "recording failed at message {}: ({}). Error: {}",
-            index,
-            message,
-            error
-        ))
     }
 }
 

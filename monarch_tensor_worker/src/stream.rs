@@ -41,13 +41,13 @@ use monarch_hyperactor::actor::PythonMessageKind;
 use monarch_hyperactor::local_state_broker::BrokerId;
 use monarch_hyperactor::local_state_broker::LocalState;
 use monarch_hyperactor::local_state_broker::LocalStateBrokerMessage;
-use monarch_hyperactor::mailbox::EitherPortRef;
 use monarch_messages::controller::ControllerMessageClient;
 use monarch_messages::controller::Seq;
 use monarch_messages::controller::WorkerError;
 use monarch_messages::worker::ActorCallParams;
 use monarch_messages::worker::CallFunctionError;
 use monarch_messages::worker::CallFunctionParams;
+use monarch_messages::worker::SeqError;
 use monarch_messages::worker::StreamRef;
 use monarch_types::PyTree;
 use monarch_types::SerializablePyErr;
@@ -83,13 +83,36 @@ use crate::comm::CommMessageClient;
 use crate::comm::NcclCommActor;
 use crate::pipe::PipeMessage;
 
-pub type TensorCellResult = Result<TensorCell, Arc<CallFunctionError>>;
+pub type TensorCellResult = Result<TensorCell, Arc<SeqError>>;
 
 // These thread locals are accessed by the python runtime for debugging sessions.
 thread_local! {
     pub static CONTROLLER_ACTOR_REF: OnceCell<ActorRef<ControllerActor>> = const { OnceCell::new() };
     pub static PROC: OnceCell<Proc> = const { OnceCell::new() };
     pub static ROOT_ACTOR_ID: OnceCell<ActorId> = const { OnceCell::new() };
+}
+
+fn pickle_python_result(
+    py: Python<'_>,
+    result: Bound<'_, PyAny>,
+    worker_actor_id: ActorId,
+) -> Result<PythonMessage, anyhow::Error> {
+    let pickle = py
+        .import("monarch._src.actor.actor_mesh")
+        .unwrap()
+        .getattr("_pickle")
+        .unwrap();
+    let data: Vec<u8> = pickle
+        .call1((result,))
+        .map_err(|pyerr| anyhow::Error::from(SerializablePyErr::from(py, &pyerr)))?
+        .extract()
+        .unwrap();
+    Ok(PythonMessage::new_from_buf(
+        PythonMessageKind::Result {
+            rank: Some(worker_actor_id.rank()),
+        },
+        data,
+    ))
 }
 
 #[derive(Debug)]
@@ -200,8 +223,9 @@ pub enum StreamMessage {
     },
 
     SetValue {
+        seq: Seq,
         results: Vec<Option<Ref>>,
-        pipe: Result<PortHandle<PipeMessage>, Arc<CallFunctionError>>,
+        pipe: PortHandle<PipeMessage>,
     },
 
     DefineRecording {
@@ -338,7 +362,8 @@ impl StreamMessage {
                 factory: factory.clone(),
                 comm: comm.clone(),
             },
-            StreamMessage::SetValue { results, pipe } => StreamMessage::SetValue {
+            StreamMessage::SetValue { seq, results, pipe } => StreamMessage::SetValue {
+                seq: seq.clone(),
                 results: results.clone(),
                 pipe: pipe.clone(),
             },
@@ -414,7 +439,7 @@ pub struct StreamActor {
     /// Mapping of refs in the controller environment to TensorIndex in this
     /// stream's local environment.
     // TODO(agallagher): Use `ValueError` as the error type.
-    env: HashMap<Ref, Result<RValue, Arc<CallFunctionError>>>,
+    env: HashMap<Ref, Result<RValue, Arc<SeqError>>>,
     /// How to create the stream.
     creation_mode: StreamCreationMode,
     /// CUDA stream that this actor will enqueue operations on. None if "device"
@@ -433,6 +458,7 @@ pub struct StreamActor {
     recordings: HashMap<Ref, Recording>,
     active_recording: Option<RecordingState>,
     respond_with_python_message: bool,
+    last_seq_error: Option<Arc<SeqError>>,
 }
 
 /// Parameters for creating a [`Stream`].
@@ -479,6 +505,7 @@ impl Actor for StreamActor {
             recordings: HashMap::new(),
             active_recording: None,
             respond_with_python_message,
+            last_seq_error: None,
         })
     }
 
@@ -601,10 +628,7 @@ impl StreamActor {
             .ok_or_else(|| CallFunctionError::RefNotFound(*ref_))?;
         match rvalue {
             Ok(val) => Ok(val.clone()),
-            Err(err) => {
-                let err = err.unwrap_dependent_error().unwrap_or_else(|| err.clone());
-                Err(CallFunctionError::DependentError(err))
-            }
+            Err(err) => Err(CallFunctionError::DependentError(err.clone())),
         }
     }
 
@@ -646,11 +670,44 @@ impl StreamActor {
         Ok(ret)
     }
 
-    fn handle_results(
+    async fn report_seq_error(
         &mut self,
-        result_refs: &Vec<Option<Ref>>,
-        actual_results: Result<Vec<RValue>, CallFunctionError>,
-    ) -> Result<(), Arc<CallFunctionError>> {
+        cx: &Context<'_, Self>,
+        seq: Seq,
+        error: CallFunctionError,
+    ) -> Result<Arc<SeqError>, anyhow::Error> {
+        match error {
+            CallFunctionError::DependentError(root) => Ok(root),
+            CallFunctionError::Error(e) => {
+                if self.active_recording.is_none() {
+                    let worker_error = WorkerError {
+                        backtrace: format!("{e}"),
+                        worker_actor_id: cx.self_id().clone(),
+                    };
+                    tracing::info!("Propagating remote function error to client: {worker_error}");
+                    self.controller_actor
+                        .remote_function_failed(cx, seq, worker_error)
+                        .await?
+                }
+                let err = Arc::new(SeqError { seq, error: e });
+                self.last_seq_error = Some(err.clone());
+                Ok(err)
+            }
+        }
+    }
+
+    async fn try_define<F>(
+        &mut self,
+        cx: &Context<'_, Self>,
+        seq: Seq,
+        result_refs: Vec<Option<Ref>>,
+        mutates: &Vec<Ref>,
+        f: F,
+    ) -> Result<()>
+    where
+        F: AsyncFnOnce(&mut Self) -> Result<Vec<RValue>, CallFunctionError>,
+    {
+        let actual_results = f(self).await;
         // Check if the expected number of returns is correct, otherwise convert
         // into an error.
         let op_results = actual_results.and_then(|actual_results| {
@@ -676,22 +733,24 @@ impl StreamActor {
                     let prev = self.env.insert(ref_, Ok(rvalue));
                     assert!(prev.is_none(), "Duplicate write to reference: {:?}", ref_);
                 }
-                Ok(())
             }
             Err(err) => {
-                let err = Arc::new(err);
+                let err = self.report_seq_error(cx, seq, err).await?;
                 for ref_ in result_refs {
                     match ref_ {
                         Some(ref_) => {
-                            let prev = self.env.insert(*ref_, Err(err.clone()));
+                            let prev = self.env.insert(ref_, Err(err.clone()));
                             assert!(prev.is_none(), "Duplicate write to reference: {:?}", ref_);
                         }
                         None => {}
                     }
                 }
-                Err(err)
+                for ref_ in mutates {
+                    self.env.insert(*ref_, Err(err.clone()));
+                }
             }
         }
+        Ok(())
     }
 
     fn call_torch_op(
@@ -945,16 +1004,14 @@ impl StreamActor {
             })
     }
 
-    fn get_dependent_error(&self, refs: &[Ref]) -> Result<Option<Arc<CallFunctionError>>> {
+    fn get_first_error(&self, refs: &[Ref]) -> Result<Option<Arc<SeqError>>> {
         for ref_ in refs {
             let rvalue_or_err = self
                 .env
                 .get(ref_)
                 .ok_or_else(|| anyhow!("tensor not found in stream: {ref_:#?}"))?;
             if let Err(err) = rvalue_or_err {
-                return Ok(Some(Arc::new(CallFunctionError::DependentError(
-                    err.unwrap_dependent_error().unwrap_or(err.clone()),
-                ))));
+                return Ok(Some(err.clone()));
             }
         }
         Ok(None)
@@ -970,64 +1027,39 @@ impl StreamActor {
         kwargs: HashMap<String, WireValue>,
         device_meshes: HashMap<Ref, DeviceMesh>,
     ) -> Result<()> {
-        let result = Python::with_gil(|py| {
-            let result = tokio::task::block_in_place(|| {
-                self.call_python_fn(
-                    py,
-                    cx,
-                    function,
-                    args,
-                    kwargs,
-                    &mutates,
-                    device_meshes,
-                    HashMap::new(),
-                )
-            });
-            result
-                .map_err(|err| {
-                    let err = Arc::new(err);
-                    for ref_ in mutates {
-                        self.env.insert(ref_, Err(err.clone()));
-                    }
-                    let err = err.unwrap_dependent_error().unwrap_or(err);
-                    WorkerError {
-                        backtrace: err.to_string(),
-                        worker_actor_id: worker_actor_id.clone(),
-                    }
-                })
-                .and_then(|result| -> Result<PythonMessage, WorkerError> {
-                    let pickle = py
-                        .import("monarch._src.actor.actor_mesh")
-                        .unwrap()
-                        .getattr("_pickle")
-                        .unwrap();
-                    let data: Vec<u8> = pickle
-                        .call1((result,))
-                        .map_err(|pyerr| WorkerError {
-                            backtrace: SerializablePyErr::from(py, &pyerr).to_string(),
-                            worker_actor_id: worker_actor_id.clone(),
-                        })?
-                        .extract()
-                        .unwrap();
-                    Ok(PythonMessage::new_from_buf(
-                        PythonMessageKind::Result {
-                            rank: Some(worker_actor_id.rank()),
-                        },
-                        data,
-                    ))
-                })
-        });
-        match result {
-            Ok(value) => {
-                let ser = Serialized::serialize(&value).unwrap();
-                self.controller_actor.fetch_result(cx, seq, Ok(ser)).await?;
-            }
-            Err(e) => {
-                self.controller_actor
-                    .remote_function_failed(cx, seq, e)
-                    .await?;
-            }
-        }
+        self.try_define(cx, seq, vec![], &vec![], async |self_| {
+            let python_message =
+                Python::with_gil(|py| -> Result<PythonMessage, CallFunctionError> {
+                    let python_result = tokio::task::block_in_place(|| {
+                        self_.call_python_fn(
+                            py,
+                            cx,
+                            function,
+                            args,
+                            kwargs,
+                            &mutates,
+                            device_meshes,
+                            HashMap::new(),
+                        )
+                    })?;
+                    pickle_python_result(py, python_result, worker_actor_id)
+                        .map_err(CallFunctionError::Error)
+                })?;
+            let ser = Serialized::serialize(&python_message).unwrap();
+            self_
+                .controller_actor
+                .fetch_result(cx, seq, Ok(ser))
+                .await?;
+            Ok(vec![])
+        })
+        .await
+    }
+    fn define_ref(&mut self, dest: Ref, src: Ref) -> Result<(), anyhow::Error> {
+        let rvalue = self
+            .env
+            .get(&src)
+            .ok_or_else(|| CallFunctionError::RefNotFound(src))?;
+        self.env.insert(dest, rvalue.clone());
         Ok(())
     }
 }
@@ -1055,64 +1087,32 @@ impl StreamMessageHandler for StreamActor {
         }
 
         params.function.panic_if_requested();
-
-        let actual_results = match params.function.as_torch_op() {
-            // Use block-in-place to allow nested callbacks to re-enter the runtime
-            // to run async code.
-            Some((op, overload)) => tokio::task::block_in_place(|| {
-                self.call_torch_op(op, overload, params.args, params.kwargs)
-            }),
-            _ => {
-                // Use block-in-place to allow nested callbacks to re-enter the
-                // runtime to run async code.
-                tokio::task::block_in_place(|| {
-                    self.call_python_fn_pytree(
-                        cx,
-                        params.function,
-                        params.args,
-                        params.kwargs,
-                        &params.mutates,
-                        device_meshes,
-                        remote_process_groups,
-                    )
-                    // TODO: Currently, we throw away the actual result and just take
-                    // the rvalues, but we probably want to fix this at some point.
-                    .map(|results| results.into_leaves())
-                })
-            }
-        };
-
-        match self.handle_results(&params.results, actual_results) {
-            Ok(()) => Ok(()),
-            Err(err) => {
-                match &*err {
-                    // Do not send a response message for dependent errors, as the
-                    // original error should have already sent a message.
-                    CallFunctionError::DependentError(_) => (),
-                    // If a recording is active, the error will be reported to the controller
-                    // elsewhere.
-                    _ if self.active_recording.is_some() => (),
-                    // When no recording is active, any non-dependent error should send a
-                    // response message.
-                    _ => {
-                        let worker_error = WorkerError {
-                            backtrace: format!("{err}"),
-                            worker_actor_id: cx.self_id().clone(),
-                        };
-                        tracing::info!(
-                            "Propagating remote function error to client: {worker_error}"
-                        );
-                        self.controller_actor
-                            .remote_function_failed(cx, params.seq, worker_error)
-                            .await?;
+        self.try_define(
+            cx,
+            params.seq,
+            params.results,
+            &params.mutates,
+            async |self| {
+                tokio::task::block_in_place(|| match params.function.as_torch_op() {
+                    Some((op, overload)) => {
+                        self.call_torch_op(op, overload, params.args, params.kwargs)
                     }
-                };
-                for ref_ in params.mutates {
-                    self.env.insert(ref_, Err(err.clone()));
-                }
-                Ok(())
-            }
-        }
+                    _ => self
+                        .call_python_fn_pytree(
+                            cx,
+                            params.function,
+                            params.args,
+                            params.kwargs,
+                            &params.mutates,
+                            device_meshes,
+                            remote_process_groups,
+                        )
+                        .map(|results| results.into_leaves()),
+                })
+            },
+        )
+        .await?;
+        Ok(())
     }
 
     async fn borrow_create(
@@ -1195,12 +1195,7 @@ impl StreamMessageHandler for StreamActor {
                 self.env.insert(result, Ok(cell.into()));
             }
             Err(err) => {
-                self.env.insert(
-                    result,
-                    Err(Arc::new(CallFunctionError::DependentError(
-                        err.unwrap_dependent_error().unwrap_or(err),
-                    ))),
-                );
+                self.env.insert(result, Err(err.clone()));
             }
         }
         Ok(())
@@ -1460,7 +1455,7 @@ impl StreamMessageHandler for StreamActor {
 
         // Value is local, so we do not have to actually send it.
         if from_rank == to_rank {
-            let input_cell = self
+            let input_cell: &std::result::Result<RValue, Arc<SeqError>> = self
                 .env
                 .get(&tensor)
                 .ok_or_else(|| anyhow!("tensor not found in stream: {tensor:#?}"))?;
@@ -1475,9 +1470,7 @@ impl StreamMessageHandler for StreamActor {
                     Ok(RValue::Tensor(TensorCell::new(cloned)))
                 }
                 Ok(rval) => bail!("tensor ref is not a tensor: {:?}", rval),
-                Err(err) => Err(Arc::new(CallFunctionError::DependentError(
-                    err.unwrap_dependent_error().unwrap_or(err.clone()),
-                ))),
+                Err(err) => Err(err.clone()),
             };
             self.env.insert(result, output_cell);
             return Ok(());
@@ -1645,20 +1638,16 @@ impl StreamMessageHandler for StreamActor {
                 }))
             }
             Err(err) => {
-                let err = Arc::new(err);
+                let err = self.report_seq_error(cx, seq, err).await?;
                 for ref_ in mutates {
                     self.env.insert(ref_, Err(err.clone()));
                 }
-                Err(err)
+                Err(WorkerError {
+                    backtrace: format!("{:?}", err),
+                    worker_actor_id,
+                })
             }
-        }
-        .map_err(|err| {
-            let err = err.unwrap_dependent_error().unwrap_or(err);
-            WorkerError {
-                backtrace: format!("{:?}", err),
-                worker_actor_id,
-            }
-        });
+        };
 
         // Actually send the value.
         if let Some(pipe) = pipe {
@@ -1696,8 +1685,6 @@ impl StreamMessageHandler for StreamActor {
         });
 
         let (send, recv) = cx.open_once_port();
-        let send = send.bind();
-        let send = EitherPortRef::Once(send.into());
 
         let state = LocalState {
             response_port: send,
@@ -1709,43 +1696,33 @@ impl StreamMessageHandler for StreamActor {
         let broker = BrokerId::new(params.broker_id).resolve(cx).unwrap();
         broker.send(message)?;
         let result = recv.recv().await?;
-        match result.kind {
-            PythonMessageKind::Exception { .. } => {
+
+        match result {
+            Err(pyerr) => {
                 // If result has "exception" as its kind, then
                 // we need to unpickle and turn it into a WorkerError
                 // and call remote_function_failed otherwise the
                 // controller assumes the object is correct and doesn't handle
                 // dependency tracking correctly.
                 let err = Python::with_gil(|py| -> Result<WorkerError, SerializablePyErr> {
-                    let err = py
-                        .import("pickle")
-                        .unwrap()
-                        .call_method1("loads", (result.message,))?;
                     Ok(WorkerError {
                         worker_actor_id,
-                        backtrace: err.to_string(),
+                        backtrace: pyerr.to_string(),
                     })
                 })?;
                 self.controller_actor
                     .remote_function_failed(cx, params.seq, err)
                     .await?;
             }
-            PythonMessageKind::Result { .. } => {
-                let result = PythonMessage::new_from_buf(
-                    PythonMessageKind::Result {
-                        rank: Some(worker_actor_id.rank()),
-                    },
-                    result.message,
-                );
+            Ok(value) => {
+                let result = Python::with_gil(|py| {
+                    pickle_python_result(py, value.into_bound(py), worker_actor_id)
+                })?;
                 let result = Serialized::serialize(&result).unwrap();
                 self.controller_actor
                     .fetch_result(cx, params.seq, Ok(result))
                     .await?;
             }
-            _ => panic!(
-                "Unexpected response kind from PythonActor: {:?}",
-                result.kind
-            ),
         }
         Ok(())
     }
@@ -1753,44 +1730,26 @@ impl StreamMessageHandler for StreamActor {
     async fn set_value(
         &mut self,
         cx: &Context<Self>,
+        seq: Seq,
         results: Vec<Option<Ref>>,
-        pipe: Result<PortHandle<PipeMessage>, Arc<CallFunctionError>>,
+        pipe: PortHandle<PipeMessage>,
     ) -> Result<()> {
         if let Some((recording, _)) = self.get_defining_recording() {
             recording
                 .messages
-                .push(StreamMessage::SetValue { results, pipe });
+                .push(StreamMessage::SetValue { seq, results, pipe });
             return Ok(());
         }
 
-        let pipe = match pipe {
-            Ok(pipe) => Ok(pipe),
-            Err(err) => match err.as_ref() {
-                CallFunctionError::DependentError(dep_err) => {
-                    Err(CallFunctionError::DependentError(dep_err.clone()))
-                }
-                _ => bail!("unexpected error for pipe in set_value: {:?}", err),
-            },
-        };
-
-        let (tx, rx) = cx.open_once_port();
-        let value = async {
-            pipe?
-                .send(PipeMessage::RecvValue(tx))
+        self.try_define(cx, seq, results, &vec![], async |self| {
+            let (tx, rx) = cx.open_once_port();
+            pipe.send(PipeMessage::RecvValue(tx))
                 .map_err(anyhow::Error::from)
                 .map_err(CallFunctionError::from)?;
-            rx.recv()
-                .await
-                .map_err(anyhow::Error::from)
-                .map_err(CallFunctionError::from)
-        }
-        .await;
-
-        // Apply results to env.
-        // `handle_results` will return the error passed in, which we treat as
-        // as a value and not an actual error.
-        let _ = self.handle_results(&results, value.map(|v| v.into_leaves()));
-        Ok(())
+            let value = rx.recv().await.map_err(anyhow::Error::from)?;
+            Ok(value.into_leaves())
+        })
+        .await
     }
 
     async fn define_recording(&mut self, _cx: &Context<Self>, recording: Ref) -> Result<()> {
@@ -1888,7 +1847,7 @@ impl StreamMessageHandler for StreamActor {
         // fails in the recording, we set the error. We then need to propagate this
         // error to all of the refs mutated by the entire recording, as well as the
         // result refs.
-        let mut error: Option<Arc<CallFunctionError>> = None;
+        let mut error: Option<Arc<SeqError>> = None;
         // The set of all refs defined by this recording (excluding "results"),
         // which we need to ensure are deleted when the recording is done executing.
         let mut all_defined_refs = HashSet::new();
@@ -1901,6 +1860,8 @@ impl StreamMessageHandler for StreamActor {
         // message in the recording that interacts with the recording inputs will
         // interact with the formal ref rather than the actual ref.
         let mut formal_to_actual_refs = HashMap::new();
+        // clear any pre-existing error messages before recording started
+        self.last_seq_error = None;
         for (index, message) in messages.into_iter().enumerate() {
             let defined_refs = message.get_defined_refs();
             all_defined_refs.extend(defined_refs.clone());
@@ -1927,8 +1888,7 @@ impl StreamMessageHandler for StreamActor {
                     None => bail!("recording_formal called with too few arguments"),
                     Some(actual_ref) => {
                         formal_to_actual_refs.insert(formal_ref, *actual_ref);
-                        self.env
-                            .insert(formal_ref, self.ref_to_rvalue(actual_ref).map_err(Arc::new));
+                        self.define_ref(formal_ref, *actual_ref)?;
                     }
                 },
                 StreamMessage::RecordingResult {
@@ -1937,10 +1897,7 @@ impl StreamMessageHandler for StreamActor {
                 } => match results.get(output_index) {
                     None => bail!("recording_result called with too few results"),
                     Some(actual_result_ref) => {
-                        self.env.insert(
-                            *actual_result_ref,
-                            self.ref_to_rvalue(&result_ref).map_err(Arc::new),
-                        );
+                        self.define_ref(*actual_result_ref, result_ref)?;
                     }
                 },
                 StreamMessage::DeleteRefs(ref refs) => {
@@ -1957,12 +1914,7 @@ impl StreamMessageHandler for StreamActor {
                     // pipe send/recv, send_tensor, reduce, etc.).
                     let error = error.clone().unwrap();
                     for ref_ in defined_refs.iter().chain(mutated_refs_with_formals.iter()) {
-                        self.env.insert(
-                            *ref_,
-                            Err(Arc::new(CallFunctionError::DependentError(
-                                error.unwrap_dependent_error().unwrap_or(error.clone()),
-                            ))),
-                        );
+                        self.env.insert(*ref_, Err(error.clone()));
                     }
                 }
                 StreamMessage::BorrowLastUse { ref result, .. } => {
@@ -1982,7 +1934,7 @@ impl StreamMessageHandler for StreamActor {
                             .iter()
                             .filter_map(|r| *r)
                             .collect::<Vec<_>>();
-                        error = self.get_dependent_error(inputs_to_check.as_slice())?;
+                        error = self.get_first_error(inputs_to_check.as_slice())?;
                     }
                     StreamMessageHandler::handle(self, cx, message).await?;
                 }
@@ -1996,7 +1948,7 @@ impl StreamMessageHandler for StreamActor {
                     // the error is only propagated to the result ref when this rank
                     // is also receiving a tensor.
                     if to_rank.is_some() && error.is_none() {
-                        error = self.get_dependent_error(&[*tensor])?;
+                        error = self.get_first_error(&[*tensor])?;
                     }
                     StreamMessageHandler::handle(self, cx, message).await?;
                 }
@@ -2009,57 +1961,30 @@ impl StreamMessageHandler for StreamActor {
             // For example, the CallFunction message can return Ok(..) if there is an error
             // in the underlying function call. But in that case, we would still want to
             // consider the recording call as "failed". Unlike in python, where we can just
-            // wrap everything in try-except, in rust, we need to track the defined/mutated refs
-            // for each individual message. After processing the message, if any of the associated
-            // defined/mutated refs contain an error, then we know the recording has failed.
-            if error.is_none() {
-                // The stream message would have operated on the formal ref rather than the actual
-                // ref, so we check mutated_refs_with_formals. Later, if there is an error,
-                // the error will be propagated to the actuals.
-                for ref_ in defined_refs.iter().chain(mutated_refs_with_formals.iter()) {
-                    if let Some(Err(err)) = self.env.get(ref_) {
-                        match err.as_ref() {
-                            // A DependentError should already have been reported to the controller.
-                            CallFunctionError::DependentError(_) => {
-                                error = Some(err.clone());
-                            }
-                            _ => {
-                                // Need to retrieve the message from the recording again, since
-                                // the original message object was already moved.
-                                let message = self
-                                    .recordings
-                                    .get(&recording)
-                                    .unwrap()
-                                    .messages
-                                    .get(index)
-                                    .unwrap();
-                                error = Some(Arc::new(CallFunctionError::RecordingFailed(
-                                    index,
-                                    format!("{message:?}"),
-                                    err.clone(),
-                                )));
-                                // Report failure to the controller.
-                                self.controller_actor
-                                    .remote_function_failed(
-                                        cx,
-                                        seq,
-                                        WorkerError {
-                                            backtrace: format!("{}", error.clone().unwrap()),
-                                            worker_actor_id: cx.self_id().clone(),
-                                        },
-                                    )
-                                    .await?
-                            }
-                        };
-                        break;
-                    }
+            // wrap everything in try-except, in rust, we keep track of the last report SeqError, which
+            // we clear before handling each recording message. If we see it is set, the
+            // we know the recording has faild.
+            match (&error, self.last_seq_error.take()) {
+                (None, Some(seq_err)) => {
+                    // Report failure to the controller.
+                    self.controller_actor
+                        .remote_function_failed(
+                            cx,
+                            seq,
+                            WorkerError {
+                                backtrace: format!("recording failed: {}", &seq_err),
+                                worker_actor_id: cx.self_id().clone(),
+                            },
+                        )
+                        .await?;
+                    error = Some(seq_err)
                 }
-
-                // Continue processing the remaining stream messages regardless of error.
-                // We need to do this partially for error propagation, but also because
-                // certain messages (like borrows and reductions) need to run regardless
-                // in order to prevent deadlocks.
+                _ => {}
             }
+            // Continue processing the remaining stream messages regardless of error.
+            // We need to do this partially for error propagation, but also because
+            // certain messages (like borrows and reductions) need to run regardless
+            // in order to prevent deadlocks.
         }
 
         // Delete the formal refs and some subset of the RecordingResult refs. The
@@ -2119,8 +2044,8 @@ impl StreamMessageHandler for StreamActor {
     ) -> Result<Option<Result<WireValue, String>>> {
         /// For testing only, doesn't support Tensor or TensorList.
         fn rvalue_to_wire(
-            value: Result<RValue, Arc<CallFunctionError>>,
-        ) -> Result<WireValue, Arc<CallFunctionError>> {
+            value: Result<RValue, Arc<SeqError>>,
+        ) -> Result<WireValue, Arc<SeqError>> {
             Ok(match value? {
                 RValue::Int(val) => WireValue::Int(val),
                 RValue::IntList(val) => WireValue::IntList(val),
@@ -2161,7 +2086,6 @@ impl StreamMessageHandler for StreamActor {
 mod tests {
     use hyperactor::actor::ActorStatus;
     use hyperactor::cap;
-    use hyperactor::id;
     use hyperactor::supervision::ActorSupervisionEvent;
     use monarch_messages::controller::ControllerMessage;
     use monarch_messages::worker::StreamCreationMode;
@@ -2175,6 +2099,13 @@ mod tests {
     use super::*;
     use crate::comm::CommParams;
     use crate::test_util;
+
+    fn fake_seq_error(err: anyhow::Error) -> Arc<SeqError> {
+        Arc::new(SeqError {
+            seq: 0.into(),
+            error: err,
+        })
+    }
 
     struct TestSetup {
         proc: Proc,
@@ -2260,11 +2191,7 @@ mod tests {
             x
         }
 
-        async fn validate_dependent_error(
-            &mut self,
-            reference: Ref,
-            error: Arc<CallFunctionError>,
-        ) {
+        async fn validate_dependent_error(&mut self, reference: Ref, error: Arc<SeqError>) {
             let result_error = self
                 .stream_actor
                 .get_tensor_ref_unit_tests_only(&self.client, reference)
@@ -2272,15 +2199,8 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .unwrap_err();
-            match result_error.as_ref() {
-                CallFunctionError::DependentError(dep_err) => {
-                    assert!(Arc::ptr_eq(dep_err, &error));
-                }
-                _ => panic!(
-                    "Unexpected error for ref {:?}: {:?}",
-                    reference, result_error
-                ),
-            }
+
+            assert!(Arc::ptr_eq(&result_error, &error));
         }
     }
 
@@ -2386,54 +2306,6 @@ mod tests {
             } => assert_eq!(seq, actual_seq),
             _ => panic!("Unexpected controller message: {:?}", controller_msg),
         };
-    }
-
-    #[async_timed_test(timeout_secs = 60)]
-    async fn test_handle_results() {
-        let controller_ref = ActorRef::attest(id!(test[0].actor[0]));
-
-        let param = StreamParams {
-            world_size: 1,
-            rank: 0,
-            creation_mode: StreamCreationMode::UseDefaultStream,
-            id: 0.into(),
-            device: None,
-            controller_actor: controller_ref,
-            respond_with_python_message: false,
-        };
-        let mut actor = StreamActor::new(param).await.unwrap();
-
-        actor
-            .handle_results(
-                &vec![Some(0.into()), Some(Ref { id: 1 })],
-                Ok(vec![RValue::Int(1), RValue::Int(2)]),
-            )
-            .unwrap();
-
-        actor
-            .handle_results(
-                &vec![Some(Ref { id: 4 }), None],
-                Ok(vec![RValue::Int(1), RValue::Int(2)]),
-            )
-            .unwrap();
-
-        assert!(
-            actor
-                .handle_results(
-                    &vec![Some(Ref { id: 2 }), Some(Ref { id: 3 })],
-                    Ok(vec![RValue::Int(1), RValue::Int(2), RValue::Int(3)]),
-                )
-                .is_err()
-        );
-
-        assert!(
-            actor
-                .handle_results(
-                    &vec![Some(Ref { id: 6 }), Some(Ref { id: 7 }), None],
-                    Ok(vec![RValue::Int(1), RValue::Int(2)]),
-                )
-                .is_err()
-        );
     }
 
     #[async_timed_test(timeout_secs = 60)]
@@ -2711,94 +2583,6 @@ mod tests {
         // Ensure the temporary refs associated with the formals/results have
         // been deleted.
         assert_refs_do_not_exist(&test_setup, &[formal0_ref, formal1_ref]).await;
-
-        // Pass an invalid ref as an input to the recording. Both result refs should contain
-        // a RefNotFound error after running the recording, and the error should be reported to
-        // the controller because it's not a dependent error.
-        let nonexistent_ref = 105.into();
-        test_setup
-            .stream_actor
-            .call_recording(
-                &test_setup.client,
-                1.into(),
-                0.into(),
-                vec![actual_result0_ref, actual_result1_ref],
-                vec![nonexistent_ref, actual1_ref],
-            )
-            .await?;
-
-        for ref_ in [actual_result0_ref, actual_result1_ref] {
-            let result = test_setup
-                .stream_actor
-                .get_tensor_ref_unit_tests_only(&test_setup.client, ref_)
-                .await
-                .unwrap();
-            let error = result.unwrap().unwrap_err();
-
-            // Check that the error contains the expected strings
-            let error_str = error.to_string();
-            assert!(
-                error_str.contains("recording failed"),
-                "Error should contain 'recording failed': {}",
-                error_str
-            );
-            assert!(
-                error_str.contains("ref not found"),
-                "Error should contain 'ref not found': {}",
-                error_str
-            );
-        }
-
-        assert_refs_do_not_exist(&test_setup, &[formal0_ref, formal1_ref]).await;
-
-        let controller_msg = test_setup.controller_rx.recv().await?;
-        assert!(matches!(
-            controller_msg,
-            ControllerMessage::RemoteFunctionFailed {
-                seq,
-                error
-            } if seq == 1.into() && error.backtrace.contains("ref not found")
-        ));
-
-        // Call the recording where one of the input tensors "failed" on a previous
-        // invocation. Both result refs should have a DependentError that wraps this error,
-        // and the error should not be reported to the controller.
-        let error = Arc::new(CallFunctionError::Anyhow(anyhow!("bad tensor")));
-        test_setup
-            .stream_actor
-            .set_tensor_ref_unit_tests_only(&test_setup.client, actual1_ref, Err(error.clone()))
-            .await?;
-
-        test_setup
-            .stream_actor
-            .call_recording(
-                &test_setup.client,
-                2.into(),
-                0.into(),
-                vec![actual_result0_ref, actual_result1_ref],
-                vec![actual0_ref, actual1_ref],
-            )
-            .await?;
-
-        for ref_ in [actual_result0_ref, actual_result1_ref] {
-            test_setup
-                .validate_dependent_error(ref_, error.clone())
-                .await;
-        }
-
-        // This tests that the DependentError was never reported to the controller.
-        // If it were reported to the controller, the next message would match
-        // RemoteFunctionFailed instead of FetchResult.
-        check_fetch_result_error(
-            &test_setup.client,
-            test_setup.stream_actor.clone(),
-            3.into(),
-            actual_result0_ref,
-            &mut test_setup.controller_rx,
-            "bad tensor",
-        )
-        .await;
-
         Ok(())
     }
 
@@ -3036,11 +2820,6 @@ mod tests {
             // Check that the error contains the expected strings
             let error_str = result_error.to_string();
             assert!(
-                error_str.contains("recording failed"),
-                "Error should contain 'recording failed': {}",
-                error_str
-            );
-            assert!(
                 error_str.contains("torch operator error"),
                 "Error should contain 'torch operator failed': {}",
                 error_str
@@ -3052,7 +2831,7 @@ mod tests {
             ControllerMessage::RemoteFunctionFailed { seq, error } => {
                 assert_eq!(seq, 1.into());
                 assert!(
-                    error.backtrace.contains("recording failed"),
+                    error.backtrace.contains("torch operator error"),
                     "Unexpected WorkerError: {:?}",
                     error
                 );
@@ -3098,13 +2877,8 @@ mod tests {
             // Check that the error contains the expected strings
             let error_str = result_error.to_string();
             assert!(
-                error_str.contains("Computation depended on an input that failed"),
-                "Error should contain dependency message: {}",
-                error_str
-            );
-            assert!(
-                error_str.contains("recording failed"),
-                "Error should contain 'recording failed': {}",
+                error_str.contains("torch operator error"),
+                "Error should contain input error: {}",
                 error_str
             );
         }
@@ -3118,7 +2892,7 @@ mod tests {
             3.into(),
             captured_ref,
             &mut test_setup.controller_rx,
-            "recording failed",
+            "torch operator error",
         )
         .await;
 
@@ -3442,7 +3216,7 @@ mod tests {
         .await;
 
         // Set the recording's input tensor to an error.
-        let input_error = Arc::new(CallFunctionError::Anyhow(anyhow!("input error")));
+        let input_error = fake_seq_error(anyhow!("input error"));
         lender_stream
             .set_tensor_ref_unit_tests_only(
                 &test_setup.client,
@@ -3479,8 +3253,8 @@ mod tests {
         // Check that the error contains the expected strings
         let error_str = result_error.to_string();
         assert!(
-            error_str.contains("Computation depended on an input that failed"),
-            "Error should contain dependency message: {}",
+            error_str.contains("input error"),
+            "Error should contain input error: {}",
             error_str
         );
 
@@ -3676,7 +3450,7 @@ mod tests {
         }
 
         // Set an error on input 0
-        let input_error = Arc::new(CallFunctionError::Anyhow(anyhow!("input error")));
+        let input_error = fake_seq_error(anyhow!("input error"));
         test_setup
             .stream_actor
             .set_tensor_ref_unit_tests_only(
@@ -4021,7 +3795,7 @@ mod tests {
         )
         .await;
 
-        let input_error = Arc::new(CallFunctionError::Anyhow(anyhow!("input error")));
+        let input_error = fake_seq_error(anyhow!("input error"));
         send_stream
             .set_tensor_ref_unit_tests_only(
                 &test_setup.client,
@@ -4170,7 +3944,12 @@ mod tests {
 
         test_setup
             .stream_actor
-            .set_value(&test_setup.client, vec![Some(result_ref_0)], Ok(pipe_tx))
+            .set_value(
+                &test_setup.client,
+                0.into(),
+                vec![Some(result_ref_0)],
+                pipe_tx,
+            )
             .await?;
 
         test_setup
@@ -4234,8 +4013,8 @@ mod tests {
         // Check that the error contains the expected string
         let error_str = real_result_err.to_string();
         assert!(
-            error_str.contains("recording failed"),
-            "Error should contain 'recording failed': {}",
+            error_str.contains("send error"),
+            "Error should contain 'send error': {}",
             error_str
         );
 
@@ -4244,92 +4023,13 @@ mod tests {
             ControllerMessage::RemoteFunctionFailed { seq, error } => {
                 assert_eq!(seq, 1.into());
                 assert!(
-                    error.backtrace.contains("recording failed"),
+                    error.backtrace.contains("send error"),
                     "Unexpected WorkerError: {:?}",
                     error
                 );
             }
             _ => panic!("Unexpected controller message: {:?}", controller_msg),
         };
-
-        Ok(())
-    }
-
-    #[async_timed_test(timeout_secs = 60)]
-    async fn test_set_value_in_recording_bad_pipe() -> Result<()> {
-        let mut test_setup = TestSetup::new().await?;
-
-        let pipe = Arc::new(CallFunctionError::DependentError(Arc::new(
-            CallFunctionError::Anyhow(anyhow!("bad pipe")),
-        )));
-
-        let recording_ref = test_setup.next_ref();
-        test_setup
-            .stream_actor
-            .define_recording(&test_setup.client, recording_ref)
-            .await?;
-
-        let result_ref_0 = test_setup.next_ref();
-
-        test_setup
-            .stream_actor
-            .set_value(
-                &test_setup.client,
-                vec![Some(result_ref_0)],
-                Err(pipe.clone()),
-            )
-            .await?;
-
-        test_setup
-            .stream_actor
-            .recording_result(&test_setup.client, result_ref_0, 0)
-            .await?;
-
-        test_setup
-            .stream_actor
-            .finalize_recording(&test_setup.client, recording_ref)
-            .await?;
-
-        let real_result_ref = test_setup.next_ref();
-        test_setup
-            .stream_actor
-            .call_recording(
-                &test_setup.client,
-                0.into(),
-                recording_ref,
-                vec![real_result_ref],
-                vec![],
-            )
-            .await?;
-
-        let real_result_err = test_setup
-            .stream_actor
-            .get_tensor_ref_unit_tests_only(&test_setup.client, real_result_ref)
-            .await?
-            .unwrap()
-            .unwrap_err();
-        // Check that the error contains the expected strings
-        let error_str = real_result_err.to_string();
-        assert!(
-            error_str.contains("Computation depended on an input that failed"),
-            "Error should contain dependency message: {}",
-            error_str
-        );
-        assert!(
-            error_str.contains("bad pipe"),
-            "Error should contain 'bad pipe': {}",
-            error_str
-        );
-
-        check_fetch_result_error(
-            &test_setup.client,
-            test_setup.stream_actor.clone(),
-            1.into(),
-            real_result_ref,
-            &mut test_setup.controller_rx,
-            "bad pipe",
-        )
-        .await;
 
         Ok(())
     }

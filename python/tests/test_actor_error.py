@@ -69,15 +69,20 @@ class BrokenPickleClass:
 
 
 @pytest.mark.parametrize(
+    "mesh",
+    [local_proc_mesh, proc_mesh],
+    ids=["local_proc_mesh", "distributed_proc_mesh"],
+)
+@pytest.mark.parametrize(
     "actor_class",
     [ExceptionActor, ExceptionActorSync],
 )
 @pytest.mark.parametrize("num_procs", [1, 2])
-async def test_actor_exception(actor_class, num_procs):
+async def test_actor_exception(mesh, actor_class, num_procs):
     """
     Test that exceptions raised in actor endpoints are propagated to the client.
     """
-    proc = await proc_mesh(gpus=num_procs)
+    proc = await mesh(gpus=num_procs)
     exception_actor = await proc.spawn("exception_actor", actor_class)
 
     with pytest.raises(ActorError, match="This is a test exception"):
@@ -88,15 +93,20 @@ async def test_actor_exception(actor_class, num_procs):
 
 
 @pytest.mark.parametrize(
+    "mesh",
+    [local_proc_mesh, proc_mesh],
+    ids=["local_proc_mesh", "distributed_proc_mesh"],
+)
+@pytest.mark.parametrize(
     "actor_class",
     [ExceptionActor, ExceptionActorSync],
 )
 @pytest.mark.parametrize("num_procs", [1, 2])
-def test_actor_exception_sync(actor_class, num_procs):
+def test_actor_exception_sync(mesh, actor_class, num_procs):
     """
     Test that exceptions raised in actor endpoints are propagated to the client.
     """
-    proc = proc_mesh(gpus=num_procs).get()
+    proc = mesh(gpus=num_procs).get()
     exception_actor = proc.spawn("exception_actor", actor_class).get()
 
     with pytest.raises(ActorError, match="This is a test exception"):
@@ -349,6 +359,10 @@ class ErrorActor(Actor):
         raise ActorFailureError("Simulated actor failure for supervision testing")
 
     @endpoint
+    async def fail_with_supervision_error_async(self) -> None:
+        raise ActorFailureError("Simulated actor failure for supervision testing")
+
+    @endpoint
     async def check(self) -> str:
         return "this is a healthy check"
 
@@ -357,8 +371,13 @@ class ErrorActor(Actor):
         raise RuntimeError("failed the check with app error")
 
 
-async def test_proc_mesh_redundant_monitoring():
-    proc = await local_proc_mesh(hosts=1, gpus=1)
+@pytest.mark.parametrize(
+    "mesh",
+    [local_proc_mesh, proc_mesh],
+    ids=["local_proc_mesh", "distributed_proc_mesh"],
+)
+async def test_proc_mesh_redundant_monitoring(mesh):
+    proc = await mesh(hosts=1, gpus=1)
     await proc.monitor()
 
     with pytest.raises(
@@ -384,9 +403,13 @@ class Manager(Actor):
         return await self.workers.work.call_one()
 
 
-@pytest.mark.asyncio
-async def test_errors_propagated():
-    p_mesh = await proc_mesh(gpus=1)
+@pytest.mark.parametrize(
+    "mesh",
+    [local_proc_mesh, proc_mesh],
+    ids=["local_proc_mesh", "distributed_proc_mesh"],
+)
+async def test_errors_propagated(mesh):
+    p_mesh = await mesh(gpus=1)
     mesh = await p_mesh.spawn("manager", Manager)
 
     await mesh.init.call_one()
@@ -396,8 +419,13 @@ async def test_errors_propagated():
     assert "value error" in str(err_info.value)
 
 
-async def test_proc_mesh_monitoring():
-    proc = await local_proc_mesh(hosts=1, gpus=1)
+@pytest.mark.parametrize(
+    "mesh",
+    [local_proc_mesh, proc_mesh],
+    ids=["local_proc_mesh", "distributed_proc_mesh"],
+)
+async def test_proc_mesh_monitoring(mesh):
+    proc = await mesh(hosts=1, gpus=1)
     monitor = await proc.monitor()
 
     e = await proc.spawn("error", ErrorActor)
@@ -418,8 +446,13 @@ async def test_proc_mesh_monitoring():
         await proc.spawn("ex", ExceptionActorSync)
 
 
-async def test_actor_mesh_supervision_handling():
-    proc = await local_proc_mesh(hosts=1, gpus=1)
+@pytest.mark.parametrize(
+    "mesh",
+    [local_proc_mesh, proc_mesh],
+    ids=["local_proc_mesh", "distributed_proc_mesh"],
+)
+async def test_actor_mesh_supervision_handling(mesh):
+    proc = await mesh(hosts=1, gpus=1)
 
     e = await proc.spawn("error", ErrorActor)
 
@@ -458,7 +491,13 @@ class HealthyActor(Actor):
 
 class Intermediate(Actor):
     @endpoint
-    async def init(self):
+    async def init_local_mesh(self):
+        mesh = await local_proc_mesh(gpus=1)
+        self._error_actor = await mesh.spawn("error", ErrorActor)
+        self._healthy_actor = await mesh.spawn("healthy", HealthyActor)
+
+    @endpoint
+    async def init_proc_mesh(self):
         mesh = await proc_mesh(gpus=1)
         self._error_actor = await mesh.spawn("error", ErrorActor)
         self._healthy_actor = await mesh.spawn("healthy", HealthyActor)
@@ -476,11 +515,17 @@ class Intermediate(Actor):
         return await self._healthy_actor.check.call()
 
 
-async def test_actor_mesh_supervision_handling_chained_error():
-    proc = await local_proc_mesh(hosts=1, gpus=1)
+@pytest.mark.parametrize(
+    "mesh", [local_proc_mesh, proc_mesh], ids=["local_proc_mesh", "proc_mesh"]
+)
+async def test_actor_mesh_supervision_handling_chained_error(mesh):
+    proc = await mesh(hosts=1, gpus=1)
 
     intermediate_actor = await proc.spawn("intermediate", Intermediate)
-    await intermediate_actor.init.call()
+    if mesh is proc_mesh:
+        await intermediate_actor.init_proc_mesh.call()
+    elif mesh is local_proc_mesh:
+        await intermediate_actor.init_local_mesh.call()
 
     # first forward() call should succeed
     await intermediate_actor.forward_success.call()
@@ -500,8 +545,41 @@ async def test_actor_mesh_supervision_handling_chained_error():
     await intermediate_actor.forward_healthy_check.call()
 
 
-async def test_supervision_with_proc_mesh_stopped():
-    proc = await local_proc_mesh(hosts=1, gpus=1)
+@pytest.mark.parametrize(
+    "mesh", [local_proc_mesh, proc_mesh], ids=["local_proc_mesh", "proc_mesh"]
+)
+@pytest.mark.parametrize(
+    "method_name",
+    ["fail_with_supervision_error", "fail_with_supervision_error_async"],
+)
+async def test_base_exception_handling(mesh, method_name):
+    """Test that BaseException subclasses trigger supervision errors.
+
+    This test verifies that both synchronous and asynchronous methods
+    that raise ActorFailureError (a BaseException subclass) trigger
+    supervision errors properly.
+
+    """
+    proc = await mesh(hosts=1, gpus=1)
+    error_actor = await proc.spawn("error", ErrorActor)
+
+    # Get the method to call based on the parameter
+    method = getattr(error_actor, method_name)
+
+    # The call should raise a SupervisionError
+    with pytest.raises(SupervisionError, match="supervision error:"):
+        await method.call_one()
+
+    # Subsequent calls should fail with a health state error
+    with pytest.raises(SupervisionError, match="actor mesh is not in a healthy state"):
+        await error_actor.check.call()
+
+
+@pytest.mark.parametrize(
+    "mesh", [local_proc_mesh, proc_mesh], ids=["local_proc_mesh", "proc_mesh"]
+)
+async def test_supervision_with_proc_mesh_stopped(mesh):
+    proc = await mesh(hosts=1, gpus=1)
     actor_mesh = await proc.spawn("healthy", HealthyActor)
 
     await actor_mesh.check.call()
@@ -533,7 +611,7 @@ async def test_supervision_with_sending_error():
     with pytest.raises(
         SupervisionError, match="supervision error:.*message not delivered:"
     ):
-        await actor_mesh.check_with_payload.call(payload="a" * 2000000000)
+        await actor_mesh.check_with_payload.call(payload="a" * 5000000000)
 
     # new call should fail with check of health state of actor mesh
     with pytest.raises(SupervisionError, match="actor mesh is not in a healthy state"):

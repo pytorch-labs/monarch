@@ -39,6 +39,7 @@ from typing import (
     Optional,
     overload,
     ParamSpec,
+    Protocol,
     Sequence,
     Tuple,
     Type,
@@ -51,20 +52,17 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessage,
     PythonMessageKind,
 )
-from monarch._rust_bindings.monarch_hyperactor.actor_mesh import (
-    ActorMeshMonitor,
-    MonitoredOncePortReceiver,
-    MonitoredPortReceiver,
-    PythonActorMesh,
-)
+from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     Mailbox,
     OncePortReceiver,
     OncePortRef,
+    PortReceiver as HyPortReceiver,
     PortRef,
 )
 
 if TYPE_CHECKING:
+    from monarch._rust_bindings.monarch_hyperactor.actor import PortProtocol
     from monarch._rust_bindings.monarch_hyperactor.mailbox import PortReceiverBase
 
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
@@ -319,6 +317,9 @@ class Endpoint(ABC, Generic[P, R]):
     def _port(self, once: bool = False) -> "PortTuple[R]":
         pass
 
+    def _supervise(self, r: HyPortReceiver | OncePortReceiver) -> Any:
+        return r
+
     # the following are all 'adverbs' or different ways to handle the
     # return values of this endpoint. Adverbs should only ever take *args, **kwargs
     # of the original call. If we want to add syntax sugar for something that needs additional
@@ -401,6 +402,10 @@ class ActorEndpoint(Endpoint[P, R]):
         self._signature: inspect.Signature = inspect.signature(impl)
         self._mailbox = mailbox
 
+    def _supervise(self, r: HyPortReceiver | OncePortReceiver) -> Any:
+        mesh = self._actor_mesh._actor_mesh
+        return r if mesh is None else mesh.supervise(r)
+
     def _send(
         self,
         args: Tuple[Any, ...],
@@ -432,12 +437,12 @@ class ActorEndpoint(Endpoint[P, R]):
         return Extent(shape.labels, shape.ndslice.sizes)
 
     def _port(self, once: bool = False) -> "PortTuple[R]":
-        monitor = (
-            None
-            if self._actor_mesh._actor_mesh is None
-            else self._actor_mesh._actor_mesh.monitor()
-        )
-        return PortTuple.create(self._mailbox, monitor, once)
+        p, r = PortTuple.create(self._mailbox, once)
+        if TYPE_CHECKING:
+            assert isinstance(
+                r._receiver, (HyPortReceiver | OncePortReceiver)
+            ), "unexpected receiver type"
+        return PortTuple(p, PortReceiver(self._mailbox, self._supervise(r._receiver)))
 
 
 class Accumulator(Generic[P, R, A]):
@@ -552,7 +557,7 @@ def endpoint(method):
 class Port(Generic[R]):
     def __init__(
         self,
-        port_ref: PortRef | OncePortRef | None,
+        port_ref: PortRef | OncePortRef,
         mailbox: Mailbox,
         rank: Optional[int],
     ) -> None:
@@ -561,8 +566,6 @@ class Port(Generic[R]):
         self._rank = rank
 
     def send(self, obj: R) -> None:
-        if self._port_ref is None:
-            return
         self._port_ref.send(
             self._mailbox,
             PythonMessage(PythonMessageKind.Result(self._rank), _pickle(obj)),
@@ -571,12 +574,28 @@ class Port(Generic[R]):
     def exception(self, obj: Exception) -> None:
         # we deliver each error exactly once, so if there is no port to respond to,
         # the error is sent to the current actor as an exception.
-        if self._port_ref is None:
-            raise obj from None
         self._port_ref.send(
             self._mailbox,
             PythonMessage(PythonMessageKind.Exception(self._rank), _pickle(obj)),
         )
+
+
+class DroppingPort:
+    """
+    Used in place of a real port when the message has no response port.
+    Makes sure any exception sent to it causes the actor to report an exception.
+    """
+
+    def __init__(self):
+        pass
+
+    def send(self, obj: Any) -> None:
+        pass
+
+    def exception(self, obj: Exception) -> None:
+        # we deliver each error exactly once, so if there is no port to respond to,
+        # the error is sent to the current actor as an exception.
+        raise obj from None
 
 
 R = TypeVar("R")
@@ -591,18 +610,9 @@ if TYPE_CHECKING:
         receiver: "PortReceiver[R]"
 
         @staticmethod
-        def create(
-            mailbox: Mailbox, monitor: Optional[ActorMeshMonitor], once: bool = False
-        ) -> "PortTuple[Any]":
+        def create(mailbox: Mailbox, once: bool = False) -> "PortTuple[Any]":
             handle, receiver = mailbox.open_once_port() if once else mailbox.open_port()
             port_ref = handle.bind()
-            if monitor is not None:
-                receiver = (
-                    MonitoredOncePortReceiver(receiver, monitor)
-                    if isinstance(receiver, OncePortReceiver)
-                    else MonitoredPortReceiver(receiver, monitor)
-                )
-
             return PortTuple(
                 Port(port_ref, mailbox, rank=None),
                 PortReceiver(mailbox, receiver),
@@ -614,18 +624,9 @@ else:
         receiver: "PortReceiver[Any]"
 
         @staticmethod
-        def create(
-            mailbox: Mailbox, monitor: Optional[ActorMeshMonitor], once: bool = False
-        ) -> "PortTuple[Any]":
+        def create(mailbox: Mailbox, once: bool = False) -> "PortTuple[Any]":
             handle, receiver = mailbox.open_once_port() if once else mailbox.open_port()
             port_ref = handle.bind()
-            if monitor is not None:
-                receiver = (
-                    MonitoredOncePortReceiver(receiver, monitor)
-                    if isinstance(receiver, OncePortReceiver)
-                    else MonitoredPortReceiver(receiver, monitor)
-                )
-
             return PortTuple(
                 Port(port_ref, mailbox, rank=None),
                 PortReceiver(mailbox, receiver),
@@ -719,18 +720,14 @@ class _Actor:
         mailbox: Mailbox,
         rank: int,
         shape: Shape,
-        message: PythonMessage,
+        method: str,
+        message: bytes,
         panic_flag: PanicFlag,
         local_state: Iterable[Any],
+        port: "PortProtocol",
     ) -> None:
-        match message.kind:
-            case PythonMessageKind.CallMethod(response_port=response_port):
-                pass
-            case _:
-                response_port = None
         # response_port can be None. If so, then sending to port will drop the response,
         # and raise any exceptions to the caller.
-        port = Port(response_port, mailbox, rank)
         try:
             ctx: MonarchContext = MonarchContext(
                 mailbox, mailbox.actor_id.proc_id, Point(rank, shape)
@@ -739,24 +736,19 @@ class _Actor:
 
             DebugContext.set(DebugContext())
 
-            args, kwargs = unflatten(message.message, local_state)
+            args, kwargs = unflatten(message, local_state)
 
-            match message.kind:
-                case PythonMessageKind.CallMethod(name=name):
-                    method = name
-                    if method == "__init__":
-                        Class, *args = args
-                        try:
-                            self.instance = Class(*args, **kwargs)
-                        except Exception as e:
-                            self._saved_error = ActorError(
-                                e, f"Remote actor {Class}.__init__ call failed."
-                            )
-                            raise e
-                        port.send(None)
-                        return None
-                case _:
-                    raise ValueError(f"Unexpected message kind: {message.kind}")
+            if method == "__init__":
+                Class, *args = args
+                try:
+                    self.instance = Class(*args, **kwargs)
+                except Exception as e:
+                    self._saved_error = ActorError(
+                        e, f"Remote actor {Class}.__init__ call failed."
+                    )
+                    raise e
+                port.send(None)
+                return None
 
             if self.instance is None:
                 # This could happen because of the following reasons. Both

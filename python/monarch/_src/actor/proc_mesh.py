@@ -14,6 +14,7 @@ from contextlib import AbstractContextManager
 
 from typing import (
     Any,
+    Callable,
     cast,
     Dict,
     List,
@@ -41,7 +42,9 @@ from monarch._src.actor.actor_mesh import (
     _ActorMeshRefImpl,
     Actor,
     ActorMeshRef,
+    endpoint,
     fake_sync_state,
+    MonarchContext,
 )
 from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator, SimAllocator
 from monarch._src.actor.code_sync import (
@@ -50,7 +53,6 @@ from monarch._src.actor.code_sync import (
     WorkspaceLocation,
     WorkspaceShape,
 )
-from monarch._src.actor.code_sync.auto_reload import AutoReloadActor
 from monarch._src.actor.debugger import (
     _DEBUG_MANAGER_ACTOR_NAME,
     DebugClient,
@@ -79,6 +81,27 @@ if TYPE_CHECKING:
     DeviceMesh = Any
 
 
+class SetupActor(Actor):
+    """
+    A helper actor to setup the proc mesh with user defined setup method.
+    Typically used to setup the environment variables.
+    """
+
+    def __init__(self, env: Callable[[MonarchContext], None]) -> None:
+        """
+        Initialize the setup actor with the user defined setup method.
+        """
+        self._setup_method = env
+
+    @endpoint
+    async def setup(self) -> None:
+        """
+        Call the user defined setup method with the monarch context.
+        """
+        ctx = MonarchContext.get()
+        self._setup_method(ctx)
+
+
 T = TypeVar("T")
 try:
     from __manifest__ import fbmake  # noqa
@@ -88,8 +111,20 @@ except ImportError:
     IN_PAR = False
 
 
-async def _allocate_nonblocking(alloc: Alloc) -> "ProcMesh":
-    return ProcMesh(await HyProcMesh.allocate_nonblocking(alloc))
+async def _allocate_nonblocking(
+    alloc: Alloc, setup: Callable[[MonarchContext], None] | None = None
+) -> "ProcMesh":
+    _proc_mesh = await HyProcMesh.allocate_nonblocking(alloc)
+    if setup is None:
+        return ProcMesh(_proc_mesh)
+    # If the user has passed the setup lambda, we need to call
+    # it here before any of the other actors are spawned so that
+    # the environment variables are set up before cuda init.
+    proc_mesh = ProcMesh(_proc_mesh)
+    setup_actor = await proc_mesh.spawn("setup", SetupActor, setup)
+    await setup_actor.setup.call()
+    del setup_actor
+    return proc_mesh
 
 
 class ProcMesh(MeshTrait):
@@ -171,9 +206,19 @@ class ProcMesh(MeshTrait):
         return await self._proc_mesh.monitor()
 
     @classmethod
-    def from_alloc(self, alloc: Alloc) -> Future["ProcMesh"]:
+    def from_alloc(
+        self, alloc: Alloc, setup: Callable[[MonarchContext], None] | None = None
+    ) -> Future["ProcMesh"]:
+        """
+        Allocate a process mesh according to the provided alloc.
+        Returns when the mesh is fully allocated.
+
+        Arguments:
+        - `alloc`: The alloc to allocate according to.
+        - `setup`: A lambda taking MonarchContext as param, can be used to setup env vars on the allocated mesh
+        """
         return Future(
-            impl=lambda: _allocate_nonblocking(alloc),
+            impl=lambda: _allocate_nonblocking(alloc, setup),
             requires_loop=False,
         )
 
@@ -252,22 +297,31 @@ class ProcMesh(MeshTrait):
             auto_reload=auto_reload,
         )
 
-    async def logging_option(self, stream_to_client: bool = False) -> None:
+    async def logging_option(
+        self,
+        stream_to_client: bool = False,
+        aggregate_window_sec: int | None = None,
+    ) -> None:
         """
         Set the logging options for the remote processes
 
         Args:
             stream_to_client (bool): If True, logs from the remote processes will be streamed to the client.
             Defaults to False.
+            aggregate_window_sec (Optional[int]): If not None, logs from the remote processes will be aggregated
+            and sent to the client every aggregate_window_sec seconds. Defaults to None, meaning no aggregation.
+            aggregate_window_sec will be ignored if stream_to_client is False.
 
         Returns:
             None
         """
         if self._logging_mesh_client is None:
             self._logging_mesh_client = await LoggingMeshClient.spawn(
-                proc_mesh=self._proc_mesh,
+                proc_mesh=self._proc_mesh
             )
-        self._logging_mesh_client.set_mode(stream_to_client)
+        self._logging_mesh_client.set_mode(
+            stream_to_client, aggregate_window_sec=aggregate_window_sec
+        )
 
     async def __aenter__(self) -> "ProcMesh":
         if self._stopped:
@@ -366,7 +420,11 @@ def _get_bootstrap_args() -> tuple[str, Optional[list[str]], dict[str, str]]:
 
 
 async def proc_mesh_nonblocking(
-    *, gpus: Optional[int] = None, hosts: int = 1, env: Optional[dict[str, str]] = None
+    *,
+    gpus: Optional[int] = None,
+    hosts: int = 1,
+    env: dict[str, str] | None = None,
+    setup: Callable[[MonarchContext], None] | None = None,
 ) -> ProcMesh:
     if gpus is None:
         gpus = _local_device_count()
@@ -375,18 +433,32 @@ async def proc_mesh_nonblocking(
     # in the order of the dimensions.
     spec = AllocSpec(AllocConstraints(), hosts=hosts, gpus=gpus)
     env = env or {}
-    cmd, args, base_env = _get_bootstrap_args()
-    env.update(base_env)
+    # Todo: Deprecate the env field from the ProcessAllocator
+    # The PAR_MAIN_OVERRIDE needs to be passed as an env
+    # to the proc mesh construction in rust, so can not be moved to the
+    # SetupActor yet
+    cmd, args, bootstrap_env = _get_bootstrap_args()
+    env.update(bootstrap_env)
     allocator = ProcessAllocator(cmd, args, env)
     alloc = await allocator.allocate(spec)
-    return await ProcMesh.from_alloc(alloc)
+
+    return await ProcMesh.from_alloc(
+        alloc,
+        setup=setup,
+    )
 
 
 def proc_mesh(
-    *, gpus: Optional[int] = None, hosts: int = 1, env: Optional[dict[str, str]] = None
+    *,
+    gpus: Optional[int] = None,
+    hosts: int = 1,
+    env: dict[str, str] | None = None,
+    setup: Callable[[MonarchContext], None] | None = None,
 ) -> Future[ProcMesh]:
     return Future(
-        impl=lambda: proc_mesh_nonblocking(gpus=gpus, hosts=hosts, env=env),
+        impl=lambda: proc_mesh_nonblocking(
+            gpus=gpus, hosts=hosts, env=env, setup=setup
+        ),
         requires_loop=False,
     )
 

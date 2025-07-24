@@ -219,13 +219,19 @@ class PanicFlag:
         """
         ...
 
+class PortProtocol(Protocol):
+    def send(self, obj: Any) -> None: ...
+    def exception(self, obj: Any) -> None: ...
+
 class Actor(Protocol):
     async def handle(
         self,
         mailbox: Mailbox,
         rank: int,
         shape: Shape,
-        message: PythonMessage,
+        method: str,
+        message: bytes,
         panic_flag: PanicFlag,
         local_state: Iterable[Any],
+        response_port: PortProtocol,
     ) -> None: ...

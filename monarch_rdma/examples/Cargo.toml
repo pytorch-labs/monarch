@@ -29,7 +29,7 @@ hyperactor_mesh = { version = "0.0.0", path = "../../hyperactor_mesh" }
 monarch_rdma = { version = "0.0.0", path = ".." }
 ndslice = { version = "0.0.0", path = "../../ndslice" }
 serde = { version = "1.0.185", features = ["derive", "rc"] }
-tokio = { version = "1.45.0", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.46.1", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 tracing-subscriber = { version = "0.3.19", features = ["chrono", "env-filter", "json", "local-time", "parking_lot", "registry"] }
 

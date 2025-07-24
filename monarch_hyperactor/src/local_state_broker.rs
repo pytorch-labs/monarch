@@ -18,11 +18,9 @@ use hyperactor::Handler;
 use hyperactor::OncePortHandle;
 use pyo3::prelude::*;
 
-use crate::mailbox::EitherPortRef;
-
 #[derive(Debug)]
 pub struct LocalState {
-    pub response_port: EitherPortRef,
+    pub response_port: OncePortHandle<Result<PyObject, PyObject>>,
     pub state: Vec<PyObject>,
 }
 

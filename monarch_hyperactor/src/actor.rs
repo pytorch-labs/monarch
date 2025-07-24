@@ -6,6 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::error::Error;
 use std::fmt;
 use std::future::Future;
 use std::future::pending;
@@ -22,6 +23,7 @@ use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Named;
+use hyperactor::OncePortHandle;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::Unbind;
@@ -32,6 +34,7 @@ use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyBaseException;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyStopIteration;
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use pyo3::types::PyDict;
@@ -226,6 +229,15 @@ pub struct PythonMessage {
     pub message: Vec<u8>,
 }
 
+struct ResolvedCallMethod {
+    method: String,
+    bytes: Vec<u8>,
+    local_state: PyObject,
+    /// Implements PortProtocol
+    /// Concretely either a Port, DroppingPort, or LocalPort
+    response_port: PyObject,
+}
+
 impl PythonMessage {
     pub fn new_from_buf(kind: PythonMessageKind, message: Vec<u8>) -> Self {
         Self { kind, message }
@@ -246,11 +258,10 @@ impl PythonMessage {
         }
     }
 
-    pub async fn resolve_indirect_call<T: Actor>(
-        mut self,
+    async fn resolve_indirect_call<T: Actor>(
+        self,
         cx: &Context<'_, T>,
-    ) -> anyhow::Result<(Self, PyObject)> {
-        let local_state: PyObject;
+    ) -> anyhow::Result<ResolvedCallMethod> {
         match self.kind {
             PythonMessageKind::CallMethodIndirect {
                 name,
@@ -263,9 +274,9 @@ impl PythonMessage {
                 broker.send(LocalStateBrokerMessage::Get(id, send))?;
                 let state = recv.recv().await?;
                 let mut state_it = state.state.into_iter();
-                local_state = Python::with_gil(|py| {
+                Python::with_gil(|py| {
                     let mailbox = mailbox(py, cx);
-                    PyList::new(
+                    let local_state = PyList::new(
                         py,
                         unflatten_args.into_iter().map(|x| -> Bound<'_, PyAny> {
                             match x {
@@ -275,25 +286,59 @@ impl PythonMessage {
                         }),
                     )
                     .unwrap()
-                    .into()
-                });
-                self.kind = PythonMessageKind::CallMethod {
-                    name,
-                    response_port: Some(state.response_port),
-                }
+                    .into();
+                    let response_port = LocalPort {
+                        inner: Some(state.response_port),
+                    }
+                    .into_py_any(py)
+                    .unwrap();
+                    Ok(ResolvedCallMethod {
+                        method: name,
+                        bytes: self.message,
+                        local_state,
+                        response_port,
+                    })
+                })
             }
+            PythonMessageKind::CallMethod {
+                name,
+                response_port,
+            } => Python::with_gil(|py| {
+                let mailbox = mailbox(py, cx);
+                let local_state = py
+                    .import("itertools")
+                    .unwrap()
+                    .call_method1("repeat", (mailbox.clone(),))
+                    .unwrap()
+                    .unbind();
+                let response_port = response_port
+                    .map_or_else(
+                        || {
+                            py.import("monarch._src.actor.actor_mesh")
+                                .unwrap()
+                                .call_method0("DroppingPort")
+                                .unwrap()
+                        },
+                        |x| {
+                            let (rank, _) = cx.cast_info();
+                            py.import("monarch._src.actor.actor_mesh")
+                                .unwrap()
+                                .call_method1("Port", (x, mailbox, rank))
+                                .unwrap()
+                        },
+                    )
+                    .unbind();
+                Ok(ResolvedCallMethod {
+                    method: name,
+                    bytes: self.message,
+                    local_state,
+                    response_port,
+                })
+            }),
             _ => {
-                local_state = Python::with_gil(|py| {
-                    let mailbox = mailbox(py, cx);
-                    py.import("itertools")
-                        .unwrap()
-                        .call_method1("repeat", (mailbox.clone(),))
-                        .unwrap()
-                        .unbind()
-                });
+                panic!("unexpected message kind {:?}", self.kind)
             }
-        };
-        Ok((self, local_state))
+        }
     }
 }
 
@@ -566,7 +611,7 @@ impl Handler<HandlePanic> for PythonActorPanicWatcher {
 #[async_trait]
 impl Handler<PythonMessage> for PythonActor {
     async fn handle(&mut self, cx: &Context<Self>, message: PythonMessage) -> anyhow::Result<()> {
-        let (message, local_state) = message.resolve_indirect_call(cx).await?;
+        let resolved = message.resolve_indirect_call(cx).await?;
 
         // Create a channel for signaling panics in async endpoints.
         // See [Panics in async endpoints].
@@ -582,11 +627,13 @@ impl Handler<PythonMessage> for PythonActor {
                     mailbox,
                     rank,
                     PyShape::from(shape),
-                    message,
+                    resolved.method,
+                    resolved.bytes,
                     PanicFlag {
                         sender: Some(sender),
                     },
-                    local_state,
+                    resolved.local_state,
+                    resolved.response_port,
                 ),
                 None,
             )?;
@@ -763,6 +810,31 @@ async fn handle_async_endpoint_panic(
     panic_sender
         .send(result)
         .expect("Unable to send panic message");
+}
+
+#[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.actor")]
+#[derive(Debug)]
+struct LocalPort {
+    inner: Option<OncePortHandle<Result<PyObject, PyObject>>>,
+}
+
+fn to_py_error<T>(e: T) -> PyErr
+where
+    T: Error,
+{
+    PyErr::new::<PyValueError, _>(e.to_string())
+}
+
+#[pymethods]
+impl LocalPort {
+    fn send(&mut self, obj: PyObject) -> PyResult<()> {
+        let port = self.inner.take().expect("use local port once");
+        port.send(Ok(obj)).map_err(to_py_error)
+    }
+    fn exception(&mut self, e: PyObject) -> PyResult<()> {
+        let port = self.inner.take().expect("use local port once");
+        port.send(Err(e)).map_err(to_py_error)
+    }
 }
 
 pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResult<()> {
