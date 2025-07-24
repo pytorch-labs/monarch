@@ -98,7 +98,8 @@ class TestActor(Actor):
 
     @endpoint
     async def log(self, message: str) -> None:
-        print(f"LogMessage from print: {message}")
+        print(f"Stdout LogMessage from print: {message}")
+        sys.stderr.write(f"Stderr LogMessage from print: {message}\n")
         self.logger.info(f"LogMessage from logger: {message}")
 
 
@@ -701,10 +702,20 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
 
             proc_mesh = await ProcMesh.from_alloc(await allocator.allocate(spec))
 
+            # Generate aggregated log every 1 second.
+            await proc_mesh.logging_option(True, 1)
             actor = await proc_mesh.spawn("actor", TestActor)
-
-            for _ in range(3):
-                await actor.log.call("Hey there, from a test!!")
-                sleep(1)
+            # Run for 4 seconds, every second generates 5 logs, so we expect to see
+            # 2 actors x 5 logs/actor/sec * 1 sec = 10 logs per aggregation.
+            for _ in range(20):
+                await actor.log.call("Expect to see [10 processes]")
+                sleep(0.2)
+            # Generate aggregated log every 2 seconds.
+            await proc_mesh.logging_option(True, 2)
+            # Run for 8 seconds, every second generates 5 logs, so we expect to see
+            # 2 actors x 5 logs/actor/sec * 2 sec = 20 logs per aggregation.
+            for _ in range(40):
+                await actor.log.call("Expect to see [20 processes]")
+                sleep(0.2)
 
             print("======== All Done ========")

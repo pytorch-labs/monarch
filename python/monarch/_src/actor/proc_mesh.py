@@ -297,22 +297,31 @@ class ProcMesh(MeshTrait):
             auto_reload=auto_reload,
         )
 
-    async def logging_option(self, stream_to_client: bool = False) -> None:
+    async def logging_option(
+        self,
+        stream_to_client: bool = False,
+        aggregate_window_sec: int | None = None,
+    ) -> None:
         """
         Set the logging options for the remote processes
 
         Args:
             stream_to_client (bool): If True, logs from the remote processes will be streamed to the client.
             Defaults to False.
+            aggregate_window_sec (Optional[int]): If not None, logs from the remote processes will be aggregated
+            and sent to the client every aggregate_window_sec seconds. Defaults to None, meaning no aggregation.
+            aggregate_window_sec will be ignored if stream_to_client is False.
 
         Returns:
             None
         """
         if self._logging_mesh_client is None:
             self._logging_mesh_client = await LoggingMeshClient.spawn(
-                proc_mesh=self._proc_mesh,
+                proc_mesh=self._proc_mesh
             )
-        self._logging_mesh_client.set_mode(stream_to_client)
+        self._logging_mesh_client.set_mode(
+            stream_to_client, aggregate_window_sec=aggregate_window_sec
+        )
 
     async def __aenter__(self) -> "ProcMesh":
         if self._stopped:
