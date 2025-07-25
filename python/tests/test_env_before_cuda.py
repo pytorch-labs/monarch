@@ -15,7 +15,6 @@ import cloudpickle
 
 import torch
 from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints, AllocSpec
-from monarch._src.actor.actor_mesh import MonarchContext
 from monarch._src.actor.allocator import LocalAllocator
 from monarch._src.actor.proc_mesh import proc_mesh
 from monarch.actor import Actor, endpoint, ProcMesh
@@ -70,7 +69,7 @@ class TestEnvBeforeCuda(unittest.IsolatedAsyncioTestCase):
             "CUDA_LAUNCH_BLOCKING": "1",
         }
 
-        def setup_cuda_env(_: MonarchContext) -> None:
+        def setup_cuda_env() -> None:
             for name, value in cuda_env_vars.items():
                 os.environ[name] = value
 
@@ -107,7 +106,7 @@ class TestEnvBeforeCuda(unittest.IsolatedAsyncioTestCase):
             "CUDA_DEVICE_MAX_CONNECTIONS": "1",
         }
 
-        def setup_cuda_env(_: MonarchContext) -> None:
+        def setup_cuda_env() -> None:
             for name, value in cuda_env_vars.items():
                 os.environ[name] = value
 

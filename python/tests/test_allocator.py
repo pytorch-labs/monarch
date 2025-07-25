@@ -33,7 +33,6 @@ from monarch._rust_bindings.monarch_hyperactor.channel import (
     ChannelTransport,
 )
 
-from monarch._src.actor.actor_mesh import MonarchContext
 from monarch._src.actor.allocator import (
     ALLOC_LABEL_PROC_MESH_NAME,
     LocalAllocator,
@@ -160,7 +159,7 @@ class TestSetupActorInAllocator(unittest.IsolatedAsyncioTestCase):
             "TEST_ENV_VAR_3": "value_3",
         }
 
-        def setup_multiple_env_vars(ctx: MonarchContext) -> None:
+        def setup_multiple_env_vars() -> None:
             for name, value in env_vars.items():
                 os.environ[name] = value
 
@@ -184,36 +183,33 @@ class TestSetupActorInAllocator(unittest.IsolatedAsyncioTestCase):
             await proc_mesh.stop()
 
     async def test_setup_lambda_with_context_info(self) -> None:
-        """Test that the setup lambda can access context information"""
-        context_var_name: str = "PROC_MESH_CONTEXT_INFO"
+        """Test that the setup lambda can access rank information"""
+        context_var_name: str = "PROC_MESH_RANK_INFO"
 
-        def setup_with_context(ctx: MonarchContext) -> None:
-            context_info = f"proc_id:{ctx.proc_id},point_rank:{ctx.point.rank}"
+        def setup_with_rank() -> None:
+            context_info = f"point_rank:{current_rank().rank}"
             os.environ[context_var_name] = context_info
 
         spec = AllocSpec(AllocConstraints(), gpus=1, hosts=1)
         allocator = LocalAllocator()
         alloc = await allocator.allocate(spec)
 
-        proc_mesh = await ProcMesh.from_alloc(alloc, setup=setup_with_context)
+        proc_mesh = await ProcMesh.from_alloc(alloc, setup=setup_with_rank)
 
         try:
             actor = await proc_mesh.spawn("env_check", EnvCheckActor)
 
-            context_info = await actor.get_env_var.call_one(context_var_name)
+            rank_info = await actor.get_env_var.call_one(context_var_name)
 
             self.assertNotEqual(
-                context_info,
+                rank_info,
                 "NOT_SET",
                 "Context information was not stored in the environment variable",
             )
             self.assertIn(
-                "proc_id:", context_info, "Context information does not contain proc_id"
-            )
-            self.assertIn(
                 "point_rank:0",
-                context_info,
-                f"Context information {context_info} does not contain point_rank",
+                rank_info,
+                f"Context information {rank_info} does not contain point_rank",
             )
         finally:
             await proc_mesh.stop()
@@ -435,7 +431,7 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
         test_var_name: str = "TEST_ENV_VAR_FOR_PROC_MESH"
         test_var_value: str = "test_value_123"
 
-        def setup_env_vars(ctx: MonarchContext) -> None:
+        def setup_env_vars() -> None:
             os.environ[test_var_name] = test_var_value
 
         hosts = 2
