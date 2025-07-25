@@ -42,7 +42,7 @@ clap = { version = "4.5.41", features = ["derive", "env", "string", "unicode", "
 dashmap = { version = "5.5.3", features = ["rayon", "serde"] }
 enum-as-inner = "0.6.0"
 erased-serde = "0.3.27"
-futures = { version = "0.3.30", features = ["async-await", "compat"] }
+futures = { version = "0.3.31", features = ["async-await", "compat"] }
 hostname = "0.3"
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_mesh_macros = { version = "0.0.0", path = "../hyperactor_mesh_macros" }
