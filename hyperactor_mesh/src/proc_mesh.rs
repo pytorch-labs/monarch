@@ -527,6 +527,7 @@ impl ProcEvents {
         loop {
             tokio::select! {
                 result = self.event_state.alloc.next() => {
+                    tracing::debug!("ProcEvent recived alloc update: {result:?}");
                     // Don't disable the outer branch on None: this is always terminal.
                     let Some(alloc_event) = result else {
                         self.actor_event_router.clear();
@@ -560,6 +561,7 @@ impl ProcEvents {
                     break Some(ProcEvent::Stopped(*rank, reason));
                 }
                 Ok(event) = self.event_state.supervision_events.recv() => {
+                    tracing::debug!("ProcEvent recived supervision event: {event:?}");
                     let (actor_id, actor_status) = event.clone().into_inner();
                     let Some(rank) = self.ranks.get(actor_id.proc_id()) else {
                         tracing::warn!("received supervision event for unmapped actor {}", actor_id);

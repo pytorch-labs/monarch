@@ -262,6 +262,7 @@ impl Child {
 
     fn spawn_watchdog(&mut self) {
         let Some(exit_flag) = self.exit_flag.take() else {
+            tracing::info!("exit flag set, not spawning watchdog");
             return;
         };
         let group = self.group.clone();

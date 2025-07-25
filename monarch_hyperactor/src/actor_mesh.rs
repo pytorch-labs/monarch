@@ -98,6 +98,7 @@ impl PythonActorMesh {
     ) {
         loop {
             let event = events.next().await;
+            tracing::debug!("actor_mesh_monitor received supervision event: {event:?}");
             let mut inner_unhealthy_event = unhealthy_event.lock().unwrap();
             match &event {
                 None => *inner_unhealthy_event = Unhealthy::StreamClosed,
@@ -107,7 +108,8 @@ impl PythonActorMesh {
             // Ignore the sender error when there is no receiver,
             // which happens when there is no active requests to this
             // mesh.
-            let _ = user_sender.send(event.clone());
+            let ret = user_sender.send(event.clone());
+            tracing::debug!("actor_mesh_monitor user_sender send: {ret:?}");
 
             if event.is_none() {
                 // The mesh is stopped, so we can stop the monitor.

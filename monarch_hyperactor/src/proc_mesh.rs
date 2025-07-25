@@ -177,6 +177,7 @@ impl PyProcMesh {
             let mut proc_events = events.lock().await;
             tokio::select! {
                 event = proc_events.next() => {
+                    tracing::debug!("monitor on ProcMesh {} received event: {:?}", world_id, event);
                     let mut inner_unhealthy_event = unhealthy_event.lock().await;
                     match event {
                         None => {
@@ -191,6 +192,7 @@ impl PyProcMesh {
                                 *inner_unhealthy_event = Unhealthy::Crashed(event.clone());
                                 tracing::info!("ProcMesh {}: {}", world_id, event);
                                 if user_monitor_registered.load(std::sync::atomic::Ordering::SeqCst) {
+                                    tracing::debug!("sending event to user monitor");
                                     if user_sender.send(event).is_err() {
                                         tracing::error!("failed to deliver the supervision event to user");
                                     }
@@ -393,6 +395,7 @@ impl PyProcMeshMonitor {
                     Err(PyRuntimeError::new_err("shutting down `ProcEvents` receiver"))
                 },
                 event = proc_event_receiver.recv() => {
+                    tracing::debug!("user monitor on ProcMesh received event: {:?}", event);
                     match event {
                         Some(event) => Ok(PyProcEvent::from(event)),
                         None => Err(::pyo3::exceptions::PyStopAsyncIteration::new_err(

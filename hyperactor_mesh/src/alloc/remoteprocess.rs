@@ -923,7 +923,7 @@ impl Alloc for RemoteProcessAlloc {
             let update = loop {
                 tokio::select! {
                     msg = self.rx.recv() => {
-                        tracing::trace!("received message: {:?}", msg);
+                        tracing::debug!("Got ProcState message from allocator {:?}", msg);
                         match msg {
                             Ok(RemoteProcessProcStateMessage::Allocated{world_id, shape}) => {
                                 tracing::info!("received allocated world id: {}", world_id);
