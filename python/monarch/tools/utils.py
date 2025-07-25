@@ -9,6 +9,21 @@ import os
 from typing import Optional
 
 
+def IN_PAR() -> bool:
+    """
+    Returns True if the current process is running in a PAR file. False otherwise.
+    When this function returns False we typically assume that we are in a Conda env.
+    """
+    try:
+        from __manifest__ import fbmake  # noqa
+
+        # since we drop a dummy __manifest__ for monarch_*.whl, __manifest__ exists in both conda and PAR
+        # so we need to further check the par_style which will be `None` for conda.
+        return bool(fbmake.get("par_style"))
+    except ImportError:
+        return False
+
+
 class conda:
     """Conda related util functions."""
 
