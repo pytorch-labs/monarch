@@ -40,9 +40,9 @@ class TestCommands(unittest.TestCase):
         scheduler = "slurm"
         config = defaults.config(scheduler)
         config.dryrun = True
-        appdef = defaults.component_fn(scheduler)()
+        config.appdef = defaults.component_fn(scheduler)()
 
-        dryrun_info = commands.create(config, appdef)
+        dryrun_info = commands.create(config)
         # need only assert that the return type of dryrun is a dryrun info object
         # since we delegate to torchx for job submission
         self.assertIsInstance(dryrun_info, AppDryRunInfo)
@@ -54,8 +54,8 @@ class TestCommands(unittest.TestCase):
     def test_create(self, mock_schedule: mock.MagicMock) -> None:
         scheduler = "slurm"
         config = defaults.config(scheduler)
-        appdef = defaults.component_fn(scheduler)()
-        server_handle = commands.create(config, appdef)
+        config.appdef = defaults.component_fn(scheduler)()
+        server_handle = commands.create(config)
 
         mock_schedule.assert_called_once()
         self.assertEqual(server_handle, "slurm:///test_job_id")
@@ -190,12 +190,13 @@ class TestCommandsAsync(unittest.IsolatedAsyncioTestCase):
 
     @mock.patch(CMD_INFO, side_effect=[server(AppState.RUNNING, name="123")])
     async def test_get_or_create_existing(self, mock_info: MagicMock) -> None:
+        scheduler = "slurm"
         config = Config(
-            scheduler="slurm",
+            scheduler=scheduler,
             scheduler_args={},
+            appdef=defaults.component_fn(scheduler)(),
         )
-        appdef = defaults.component_fn(config.scheduler)()
-        server_info = await commands.get_or_create("123", config, appdef)
+        server_info = await commands.get_or_create(name="123", config=config)
         self.assertEqual(server_info.server_handle, "slurm:///123")
         mock_info.assert_called_once_with("slurm:///123")
 
@@ -221,16 +222,15 @@ class TestCommandsAsync(unittest.IsolatedAsyncioTestCase):
                     config = Config(
                         scheduler="slurm",
                         scheduler_args={},
+                        appdef=defaults.component_fn("slurm")(),
                     )
-                    appdef = defaults.component_fn(config.scheduler)()
                     server_info = await commands.get_or_create(
-                        "123",
-                        config,
-                        appdef,
+                        name="123",
+                        config=config,
                         check_interval=_5_MS,
                     )
 
-                    mock_create.called_once_with(config, appdef)
+                    mock_create.called_once_with(config, "123")
                     self.assertEqual(server_info.server_handle, "slurm:///456")
                     self.assertListEqual(
                         mock_info.call_args_list,
@@ -260,13 +260,12 @@ class TestCommandsAsync(unittest.IsolatedAsyncioTestCase):
         config = Config(
             scheduler="slurm",
             scheduler_args={},
+            appdef=defaults.component_fn("slurm")(),
         )
-        appdef = defaults.component_fn(config.scheduler)()
         with self.assertRaises(RuntimeError):
             _ = await commands.get_or_create(
-                "123",
-                config,
-                appdef,
+                name="123",
+                config=config,
                 check_interval=_5_MS,
             )
 
@@ -288,12 +287,11 @@ class TestCommandsAsync(unittest.IsolatedAsyncioTestCase):
         config = Config(
             scheduler="slurm",
             scheduler_args={},
+            appdef=defaults.component_fn("slurm")(),
         )
-        appdef = defaults.component_fn(config.scheduler)()
         with self.assertRaises(RuntimeError):
             _ = await commands.get_or_create(
-                "123",
-                config,
-                appdef,
+                name="123",
+                config=config,
                 check_interval=_5_MS,
             )

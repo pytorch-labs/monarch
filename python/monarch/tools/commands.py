@@ -14,11 +14,12 @@ import time
 from datetime import timedelta
 from typing import Any, Callable, Mapping, Optional, Union
 
+from monarch.tools.components.hyperactor import DEFAULT_NAME
+
 from monarch.tools.config import (  # @manual=//monarch/python/monarch/tools/config/meta:defaults
     Config,
     defaults,
 )
-
 from monarch.tools.mesh_spec import mesh_spec_from_metadata, ServerSpec
 from torchx.runner import Runner  # @manual=//torchx/runner:lib_core
 from torchx.specs import AppDef, AppDryRunInfo, AppState, CfgVal, parse_app_handle
@@ -83,7 +84,7 @@ def component_args_from_cli(
 
 def create(
     config: Config,
-    appdef: AppDef,
+    name: str = DEFAULT_NAME,
 ) -> Union[str, AppDryRunInfo]:
     """Creates a monarch server by submitting it as a job to the target scheduler.
 
@@ -94,7 +95,7 @@ def create(
         from monarch.tools.config import defaults
 
         config = defaults.config(scheduler="slurm")
-        appdef = defaults.component_fn(scheduler=config.scheduler)()
+        config.appdef = defaults.component_fn(scheduler=config.scheduler)()
 
         config.scheduler_args.update(
             {
@@ -105,7 +106,7 @@ def create(
         )
         config.dryrun = True
 
-        create(config, appdef)
+        create(config)
 
 
     Args:
@@ -114,6 +115,7 @@ def create(
         component_fn: a function that returns the AppDef (job def).
             If not provided, defaults to the configured default for the scheduler
             (in most cases ``monarch.tools.components.hyperactor.proc_mesh``)
+        name: the name of the job. If none, a default job name will be created.
     """
     scheduler: str = config.scheduler
     cfg: Mapping[str, CfgVal] = config.scheduler_args
@@ -122,6 +124,8 @@ def create(
     os.environ["TORCHX_CONTEXT_NAME"] = os.getenv("TORCHX_CONTEXT_NAME", "monarch")
 
     with torchx_runner() as runner:
+        appdef: AppDef = AppDef(name, config.appdef.roles, config.appdef.metadata)
+
         info = runner.dryrun(appdef, scheduler, cfg, config.workspace)
 
         info_json_fmt = AppDryRunInfo(
@@ -234,28 +238,26 @@ async def server_ready(
             return server_spec
 
 
+# TODO: this API is overloaded. Ideally, we do not need config to get or an handle to create.
 async def get_or_create(
     name: str,
     config: Config,
-    appdef: AppDef,
     check_interval: timedelta = _5_SECONDS,
 ) -> ServerSpec:
-    """Waits for the server called `name` in the scheduler specified in the `config`
+    """Waits for the server based on identity `name` in the scheduler specified in the `config`
     to be ready (e.g. RUNNING). If the server is not found then this function creates one
-    per the `appdef` spec, and waits for the server to be ready before returning.
+    per the `config` spec, and waits for the server to be ready before returning.
 
     Usage:
 
     .. code-block:: python
 
-        import getpass
         from monarch.tools.config import defaults
 
-        USER = getpass.getuser()
         config = defaults.config(scheduler)
-        appdef = defaults.component_fn(config.scheduler)()
+        config.appdef = defaults.component_fn(config.scheduler)()
 
-        server_handle = get_or_create(f"{USER}_monarch", config, appdef)
+        server_handle = get_or_create(name="my_job_name", config)
         server_info = info(server_handle)
 
     Returns: A `ServerSpec` containing information about either the existing or the newly
@@ -273,7 +275,7 @@ async def get_or_create(
         )
 
         # no dryrun (see assertion above) support so will always be a handle (str)
-        new_server_handle = str(create(config, appdef))
+        new_server_handle = str(create(config, name))
 
         logger.info(f"created new `{new_server_handle}` waiting for it to be ready...")
 

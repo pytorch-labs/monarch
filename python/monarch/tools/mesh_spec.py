@@ -9,6 +9,8 @@ import string
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from monarch.tools.config import UnnamedAppDef
+
 from monarch.tools.network import get_sockaddr
 from torchx import specs
 from torchx.specs.api import is_terminal
@@ -69,7 +71,7 @@ def _tag(mesh_name: str, tag_template: str) -> str:
     return string.Template(tag_template).substitute(mesh_name=mesh_name)
 
 
-def tag_as_metadata(mesh_spec: MeshSpec, appdef: specs.AppDef) -> None:
+def tag_as_metadata(mesh_spec: MeshSpec, appdef: UnnamedAppDef) -> None:
     appdef.metadata[_tag(mesh_spec.name, _TAG_HOST_TYPE)] = mesh_spec.host_type
     appdef.metadata[_tag(mesh_spec.name, _TAG_GPUS)] = str(mesh_spec.gpus)
     appdef.metadata[_tag(mesh_spec.name, _TAG_TRANSPORT)] = mesh_spec.transport
