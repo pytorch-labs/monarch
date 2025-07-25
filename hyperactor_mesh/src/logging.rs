@@ -42,6 +42,7 @@ use hyperactor::data::Serialized;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::Unbind;
+use hyperactor_telemetry::env;
 use regex::Regex;
 use serde::Deserialize;
 use serde::Serialize;
@@ -374,6 +375,37 @@ pub struct LogWriter<T: LogSender + Unpin + 'static, S: io::AsyncWrite + Send + 
     log_sender: T,
 }
 
+fn create_file_writer(
+    local_rank: usize,
+    output_target: OutputTarget,
+) -> io::Result<Box<dyn io::AsyncWrite + Send + Unpin + 'static>> {
+    let suffix = match output_target {
+        OutputTarget::Stderr => "stderr",
+        OutputTarget::Stdout => "stdout",
+    };
+    let path = format!("/logs/dedicated_log_monarch_{local_rank}.{suffix}");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    let tokio_file = tokio::fs::File::from_std(file);
+    // TODO: should we buffer this?
+    Ok(Box::new(tokio_file))
+}
+
+pub fn get_tee_destination(
+    local_rank: usize,
+    output_target: OutputTarget,
+) -> Result<Box<dyn io::AsyncWrite + Send + Unpin>> {
+    match env::Env::current() {
+        env::Env::Local | env::Env::MastEmulator | env::Env::Test => match output_target {
+            OutputTarget::Stdout => Ok(Box::new(io::stdout())),
+            OutputTarget::Stderr => Ok(Box::new(io::stderr())),
+        },
+        env::Env::Mast => Ok(create_file_writer(local_rank, output_target)?),
+    }
+}
+
 /// Helper function to create stdout and stderr LogWriter instances
 ///
 /// # Arguments
@@ -385,6 +417,7 @@ pub struct LogWriter<T: LogSender + Unpin + 'static, S: io::AsyncWrite + Send + 
 ///
 /// A tuple of boxed writers for stdout and stderr
 pub fn create_log_writers(
+    local_rank: usize,
     log_channel: ChannelAddr,
     pid: u32,
 ) -> Result<
@@ -397,8 +430,10 @@ pub fn create_log_writers(
     let log_sender = LocalLogSender::new(log_channel, pid)?;
 
     // Create LogWriter instances for stdout and stderr using the shared log sender
-    let stdout_writer = LogWriter::with_default_writer(OutputTarget::Stdout, log_sender.clone())?;
-    let stderr_writer = LogWriter::with_default_writer(OutputTarget::Stderr, log_sender)?;
+    let stdout_writer =
+        LogWriter::with_default_writer(local_rank, OutputTarget::Stdout, log_sender.clone())?;
+    let stderr_writer =
+        LogWriter::with_default_writer(local_rank, OutputTarget::Stderr, log_sender)?;
 
     Ok((Box::new(stdout_writer), Box::new(stderr_writer)))
 }
@@ -428,13 +463,12 @@ impl<T: LogSender + Unpin + 'static> LogWriter<T, Box<dyn io::AsyncWrite + Send 
     /// * `output_target` - The target output stream (stdout or stderr)
     /// * `log_sender` - The log sender to use for sending logs
     pub fn with_default_writer(
+        local_rank: usize,
         output_target: OutputTarget,
         log_sender: T,
-    ) -> Result<Self, anyhow::Error> {
-        let std_writer: Box<dyn io::AsyncWrite + Send + Unpin> = match output_target {
-            OutputTarget::Stdout => Box::new(io::stdout()),
-            OutputTarget::Stderr => Box::new(io::stderr()),
-        };
+    ) -> Result<Self> {
+        // Use a default writer based on the output target
+        let std_writer = get_tee_destination(local_rank, output_target)?;
 
         Ok(Self {
             output_target,
