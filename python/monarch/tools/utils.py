@@ -6,7 +6,21 @@
 
 # pyre-strict
 import os
+import pathlib
 from typing import Optional
+
+
+def MONARCH_HOME() -> pathlib.Path:
+    """
+    Path to the "dot-directory" for monarch.
+    Defaults to `~/.monarch` and is overridable via the `MONARCH_HOME` environment variable.
+    """
+
+    default_dir = str(pathlib.Path.home() / ".monarch")
+    monarch_home = pathlib.Path(os.getenv("MONARCH_HOME", default_dir))
+    monarch_home.mkdir(parents=True, exist_ok=True)
+
+    return monarch_home
 
 
 class conda:
