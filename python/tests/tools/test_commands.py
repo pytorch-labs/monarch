@@ -230,7 +230,7 @@ class TestCommandsAsync(unittest.IsolatedAsyncioTestCase):
                         check_interval=_5_MS,
                     )
 
-                    mock_create.called_once_with(config, appdef)
+                    mock_create.assert_called_once_with(config, appdef)
                     self.assertEqual(server_info.server_handle, "slurm:///456")
                     self.assertListEqual(
                         mock_info.call_args_list,
