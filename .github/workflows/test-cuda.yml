@@ -55,5 +55,5 @@ jobs:
         pyright python/tests/test_python_actors.py
 
         # Run CUDA tests
-        LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip"
-        python python/tests/test_mock_cuda.py
+        LC_ALL=C pytest python/tests/tensor_engine -s -v -m "not oss_skip" -n 4
+        python python/tests/tensor_engine/test_mock_cuda.py

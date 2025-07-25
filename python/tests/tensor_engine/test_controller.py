@@ -96,7 +96,9 @@ remote_sleep = remote("time.sleep", propagate="inspect")
     torch.cuda.device_count() < 2,
     reason="Not enough GPUs, this test requires at least 2 GPUs",
 )
-@pytest.mark.parametrize("backend_type", [BackendType.PY, BackendType.RS, "mesh"])
+@pytest.mark.parametrize(
+    "backend_type", [BackendType.PY, BackendType.RS, BackendType.MESH]
+)
 # Set global timeout--sandcastle's timeout is 600s. A test that sandcastle times
 # out is not counted as a failure, so we set a more restrictive timeout to
 # ensure we see a hard failure in CI.
@@ -114,7 +116,7 @@ class TestController:
             N,
             gpu_per_host,
             activate,
-            backend=str(backend_type),
+            backend=backend_type.value,
         )
 
     def test_errors(self, backend_type):
@@ -176,7 +178,7 @@ class TestController:
             local_x = local_x.result(timeout=20)
             assert torch.equal(local_x, torch.ones(3, 4))
 
-    def test_sub_mesh_process_grop(self, backend_type):
+    def test_sub_mesh_process_group(self, backend_type):
         with self.local_device_mesh(2, 2, backend_type, activate=False) as device_mesh:
             h0 = device_mesh.slice(host=0)
             pg0 = h0.process_group(("gpu",))
@@ -603,7 +605,7 @@ class TestController:
         assert torch.equal(moved_tensor_b, torch.tensor([2.0]))
 
     def test_hanging_error(self, backend_type):
-        if backend_type != "mesh":
+        if backend_type != BackendType.MESH:
             pytest.skip("only relevant for mesh backend")
         with self.local_device_mesh(2, 2, backend_type) as device_mesh:
             remote(lambda: torch.rand(3) + torch.rand(4), propagate=lambda: None)()

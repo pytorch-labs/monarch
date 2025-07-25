@@ -10,6 +10,7 @@ import logging
 import tempfile
 import time
 from contextlib import contextmanager, ExitStack
+from enum import Enum
 from typing import Any, Callable, Dict, Generator, Literal, Optional
 
 import monarch_supervisor
@@ -225,7 +226,7 @@ def mock_mesh(hosts: int, gpus: int):
     return dm
 
 
-class BackendType:
+class BackendType(Enum):
     PY = "py"
     RS = "rs"
     MESH = "mesh"

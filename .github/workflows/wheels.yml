@@ -35,11 +35,10 @@ jobs:
       script: |
         source scripts/common-setup.sh
         setup_build_environment ${{ matrix.python-version }}
+        cargo install --path monarch_hyperactor
 
         # Setup Tensor Engine dependencies
         setup_tensor_engine
-
-        cargo install --path monarch_hyperactor
 
         # Build wheel
         export MONARCH_PACKAGE_NAME="torchmonarch-nightly"
@@ -54,7 +53,8 @@ jobs:
         # Run tests
         install_python_test_dependencies
         pip install dist/*.whl
-        python -c "import monarch"
+        LC_ALL=C pytest python/tests/test_python_actors.py -s -v -m "not oss_skip"
+
   publish:
     name: Publish to PyPI
     needs: build

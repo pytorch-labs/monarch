@@ -78,7 +78,7 @@ class TestCoalescing:
             num_hosts,
             gpu_per_host,
             activate,
-            backend=str(backend_type),
+            backend=backend_type.value,
         )
 
     @property
