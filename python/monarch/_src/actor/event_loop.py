@@ -14,7 +14,7 @@ import logging
 import threading
 from typing import Optional
 
-from libfb.py.pyre import none_throws
+from pyre_extensions import none_throws
 
 logger = logging.getLogger(__name__)
 
