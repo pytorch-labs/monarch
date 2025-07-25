@@ -107,7 +107,8 @@ class TestMeshSpec(unittest.TestCase):
     "n1",
     "n2",
     "n3"
-  ]
+  ],
+  "state": 0
 }
 """
         self.assertEqual(expected.strip("\n"), json.dumps(asdict(mesh_spec), indent=2))
