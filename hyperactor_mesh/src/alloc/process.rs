@@ -132,6 +132,7 @@ enum ChannelState {
 }
 
 struct Child {
+    local_rank: usize,
     channel: ChannelState,
     group: monitor::Group,
     exit_flag: Option<flag::Flag>,
@@ -142,6 +143,7 @@ struct Child {
 
 impl Child {
     fn monitored(
+        local_rank: usize,
         mut process: tokio::process::Child,
         log_channel: ChannelAddr,
     ) -> (Self, impl Future<Output = ProcStopReason>) {
@@ -156,7 +158,7 @@ impl Child {
             Box::new(io::stderr());
 
         // Use the helper function to create both writers at once
-        match create_log_writers(log_channel, process.id().unwrap_or(0)) {
+        match create_log_writers(local_rank, log_channel, process.id().unwrap_or(0)) {
             Ok((stdout_writer, stderr_writer)) => {
                 stdout_tee = stdout_writer;
                 stderr_tee = stderr_writer;
@@ -179,6 +181,7 @@ impl Child {
         );
 
         let child = Self {
+            local_rank,
             channel: ChannelState::NotConnected,
             group,
             exit_flag: Some(exit_flag),
@@ -384,7 +387,7 @@ impl ProcessAlloc {
                         None
                     }
                     Ok(rank) => {
-                        let (handle, monitor) = Child::monitored(process, log_channel);
+                        let (handle, monitor) = Child::monitored(rank, process, log_channel);
                         self.children.spawn(async move { (index, monitor.await) });
                         self.active.insert(index, handle);
                         // Adjust for shape slice offset for non-zero shapes (sub-shapes).
