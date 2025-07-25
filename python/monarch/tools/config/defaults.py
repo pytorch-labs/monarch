@@ -11,7 +11,7 @@
 from typing import Callable, Optional
 
 from monarch.tools.components import hyperactor
-from monarch.tools.config import Config
+from monarch.tools.config import Config, UnnamedAppDef
 
 from torchx import specs
 from torchx.schedulers import (
@@ -23,7 +23,7 @@ from torchx.schedulers import (
 )
 
 
-def component_fn(scheduler: str) -> Callable[..., specs.AppDef]:
+def component_fn(scheduler: str) -> Callable[..., UnnamedAppDef]:
     """The default TorchX component function for the scheduler"""
     return hyperactor.proc_mesh
 
