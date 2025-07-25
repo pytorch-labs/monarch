@@ -41,6 +41,7 @@ class MeshSpec:
     transport: str = "tcp"
     port: int = DEFAULT_REMOTE_ALLOCATOR_PORT
     hostnames: list[str] = field(default_factory=list)
+    state: specs.AppState = specs.AppState.UNSUBMITTED
 
     def server_addrs(
         self, transport: Optional[str] = None, port: Optional[int] = None

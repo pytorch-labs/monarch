@@ -7,10 +7,10 @@
 # pyre-strict
 
 import argparse
+import asyncio
 import inspect
 import logging
 import os
-import time
 from datetime import timedelta
 from typing import Any, Callable, Mapping, Optional, Union
 
@@ -174,6 +174,8 @@ def info(server_handle: str) -> Optional[ServerSpec]:
         # null-guard since some schedulers do not fill replica_status
         if host_status := replica_status.get(role.name):
             spec.hostnames = [h.hostname for h in host_status]
+            # the mesh status is based on the "least progressive" replica status
+            spec.state = min(h.state for h in host_status)
 
         mesh_specs.append(spec)
 
@@ -215,6 +217,7 @@ async def server_ready(
 
     """
 
+    check_interval_seconds = check_interval.total_seconds()
     while True:
         server_spec = info(server_handle)
 
@@ -224,7 +227,6 @@ async def server_ready(
         if server_spec.state <= AppState.PENDING:  # UNSUBMITTED or SUBMITTED or PENDING
             # NOTE: TorchX currently does not have async APIs so need to loop-on-interval
             # TODO maybe inverse exponential backoff instead of constant interval?
-            check_interval_seconds = check_interval.total_seconds()
             logger.info(
                 "waiting for %s to be %s (current: %s), will check again in %g seconds...",
                 server_handle,
@@ -232,10 +234,29 @@ async def server_ready(
                 server_spec.state,
                 check_interval_seconds,
             )
-            time.sleep(check_interval_seconds)
+            await asyncio.sleep(check_interval_seconds)
             continue
-        else:
-            return server_spec
+
+        # check if hosts are allocated for all the meshes
+        if server_spec.state == AppState.RUNNING:
+            running = True
+            for mesh_spec in server_spec.meshes:
+                if mesh_spec.state <= AppState.PENDING:
+                    logger.info(
+                        "job %s is running but waiting for mesh %s to be %s (current: %s), will check again in %g seconds...",
+                        server_handle,
+                        mesh_spec.name,
+                        AppState.RUNNING,
+                        mesh_spec.state,
+                        check_interval_seconds,
+                    )
+                    running = False
+                    break
+            if not running:
+                await asyncio.sleep(check_interval_seconds)
+                continue
+
+        return server_spec
 
 
 # TODO: this API is overloaded. Ideally, we do not need config to get or an handle to create.
