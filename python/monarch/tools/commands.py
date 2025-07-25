@@ -11,7 +11,7 @@ import asyncio
 import inspect
 import logging
 import os
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any, Callable, Mapping, Optional, Union
 
 from monarch.tools.components.hyperactor import DEFAULT_NAME
@@ -218,6 +218,7 @@ async def server_ready(
     """
 
     check_interval_seconds = check_interval.total_seconds()
+    start = datetime.now()
     while True:
         server_spec = info(server_handle)
 
@@ -227,12 +228,11 @@ async def server_ready(
         if server_spec.state <= AppState.PENDING:  # UNSUBMITTED or SUBMITTED or PENDING
             # NOTE: TorchX currently does not have async APIs so need to loop-on-interval
             # TODO maybe inverse exponential backoff instead of constant interval?
-            logger.info(
-                "waiting for %s to be %s (current: %s), will check again in %g seconds...",
-                server_handle,
-                AppState.RUNNING,
-                server_spec.state,
-                check_interval_seconds,
+            print(
+                f"Waiting for {server_handle} to be {AppState.RUNNING} (current: {server_spec.state}); "
+                f"will check again in {check_interval_seconds} seconds. "
+                f"Total wait time: {datetime.now() - start}",
+                end="\r",
             )
             await asyncio.sleep(check_interval_seconds)
             continue
@@ -242,13 +242,12 @@ async def server_ready(
             running = True
             for mesh_spec in server_spec.meshes:
                 if mesh_spec.state <= AppState.PENDING:
-                    logger.info(
-                        "job %s is running but waiting for mesh %s to be %s (current: %s), will check again in %g seconds...",
-                        server_handle,
-                        mesh_spec.name,
-                        AppState.RUNNING,
-                        mesh_spec.state,
-                        check_interval_seconds,
+                    print(
+                        f"Job {server_handle} is running but waiting for mesh {mesh_spec.name} "
+                        f"to be {AppState.RUNNING} (current: {mesh_spec.state}); "
+                        f"will check again in {check_interval_seconds} seconds. "
+                        f"Total wait time: {datetime.now() - start}",
+                        end="\r",
                     )
                     running = False
                     break
@@ -312,10 +311,10 @@ async def get_or_create(
                 f"the new server `{new_server_handle}` has {server_info.state}"
             )
 
-        logger.info(f"server `{new_server_handle}` is: {server_info.state}")
+        print(f"\x1b[36mNew job `{new_server_handle}` is ready to serve. \x1b[0m")
         return server_info
     else:
-        logger.info("found existing RUNNING server `%s`", server_handle)
+        print(f"\x1b[36mFound existing job `{server_handle}` ready to serve. \x1b[0m")
         return server_info
 
 
