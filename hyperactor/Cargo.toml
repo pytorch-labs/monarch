@@ -45,7 +45,7 @@ rand = { version = "0.8", features = ["small_rng"] }
 regex = "1.11.1"
 rustls = "0.21.6"
 rustls-pemfile = "1.0.0"
-rustls-webpki = { version = "0.101.4", features = ["alloc", "std"], default-features = false }
+rustls-webpki = { version = "0.103.3", features = ["alloc", "std"], default-features = false }
 serde = { version = "1.0.185", features = ["derive", "rc"] }
 serde_bytes = "0.11"
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "unbounded_depth"] }
