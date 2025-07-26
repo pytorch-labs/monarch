@@ -43,7 +43,6 @@ opentelemetry = "0.29"
 paste = "1.0.14"
 rand = { version = "0.8", features = ["small_rng"] }
 regex = "1.11.1"
-rustls = "0.21.6"
 rustls-pemfile = "1.0.0"
 rustls-webpki = { version = "0.101.4", features = ["alloc", "std"], default-features = false }
 serde = { version = "1.0.185", features = ["derive", "rc"] }
@@ -54,7 +53,7 @@ serde_yaml = "0.9.25"
 signal-hook-tokio = { version = "0.3", features = ["futures-v0_3"] }
 thiserror = "2.0.12"
 tokio = { version = "1.46.1", features = ["full", "test-util", "tracing"] }
-tokio-rustls = { git = "https://github.com/shayne-fletcher/tokio-rustls", rev = "62b6a48e4c14a05c193508b9d98a0be6b0cb4baa", features = ["dangerous_configuration"] }
+tokio-rustls = "0.26.2"
 tokio-stream = { version = "0.1.17", features = ["fs", "io-util", "net", "signal", "sync", "time"] }
 tokio-util = { version = "0.7.15", features = ["full"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
