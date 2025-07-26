@@ -1630,14 +1630,13 @@ pub(crate) mod meta {
 
     use anyhow::Context;
     use anyhow::Result;
-    use rustls::RootCertStore;
+    use tokio_rustls::rustls::RootCertStore;
     use tokio::net::TcpListener;
     use tokio::net::TcpStream;
     use tokio_rustls::TlsAcceptor;
     use tokio_rustls::TlsConnector;
     use tokio_rustls::client::TlsStream;
-    use tokio_rustls::rustls::Certificate;
-    use tokio_rustls::rustls::PrivateKey;
+    use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 
     use super::*;
     use crate::RemoteMessage;
@@ -1674,7 +1673,7 @@ pub(crate) mod meta {
         let trust_anchors = ca_certs.iter().filter_map(|cert| {
             webpki::TrustAnchor::try_from_cert_der(&cert[..])
                 .map(|ta| {
-                    rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(
+                    tokio_rustls::rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(
                         ta.subject,
                         ta.spki,
                         ta.name_constraints,
@@ -1693,7 +1692,7 @@ pub(crate) mod meta {
             File::open(server_cert_path).context("failed to open {server_cert_path}")?,
         ))?
         .into_iter()
-        .map(Certificate)
+        .map(CertificateDer::from)
         .collect();
         // certs are good here
         let server_key_path = DEFAULT_SERVER_PEM_PATH;
@@ -1712,22 +1711,22 @@ pub(crate) mod meta {
             };
         };
 
-        let config = rustls::ServerConfig::builder().with_safe_defaults();
+        let config = tokio_rustls::rustls::ServerConfig::builder().with_safe_defaults();
 
         let config = if enforce_client_tls {
-            let client_cert_verifier = Arc::new(rustls::server::AllowAnyAuthenticatedClient::new(
+            let client_cert_verifier = Arc::new(tokio_rustls::rustls::server::AllowAnyAuthenticatedClient::new(
                 root_cert_store()?,
             ));
             config.with_client_cert_verifier(client_cert_verifier)
         } else {
             config.with_no_client_auth()
         }
-        .with_single_cert(certs, PrivateKey(key))?;
+        .with_single_cert(certs, PrivateKeyDer::from(key))?;
 
         Ok(TlsAcceptor::from(Arc::new(config)))
     }
 
-    fn load_client_pem() -> Result<Option<(Vec<rustls::Certificate>, rustls::PrivateKey)>> {
+    fn load_client_pem() -> Result<Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>> {
         let Some(cert_path) = std::env::var_os(THRIFT_TLS_CL_CERT_PATH_ENV) else {
             return Ok(None);
         };
@@ -1738,7 +1737,7 @@ pub(crate) mod meta {
             File::open(cert_path).context("failed to open {cert_path}")?,
         ))?
         .into_iter()
-        .map(rustls::Certificate)
+        .map(CertificateDer::from)
         .collect();
         let mut key_reader =
             BufReader::new(File::open(key_path).context("failed to open {key_path}")?);
@@ -1752,13 +1751,13 @@ pub(crate) mod meta {
             };
         };
         // Certs are verified to be good here.
-        Ok(Some((certs, rustls::PrivateKey(key))))
+        Ok(Some((certs, PrivateKeyDer::from(key))))
     }
 
     /// Creates a TLS connector by looking for necessary certs and keys in a Meta server environment.
     fn tls_connector() -> Result<TlsConnector> {
         // TODO (T208180540): try to simplify the logic here.
-        let config = rustls::ClientConfig::builder()
+        let config = tokio_rustls::rustls::ClientConfig::builder()
             .with_safe_defaults()
             .with_root_certificates(root_cert_store()?);
         let result = load_client_pem()?;
@@ -1772,9 +1771,9 @@ pub(crate) mod meta {
         Ok(TlsConnector::from(Arc::new(config)))
     }
 
-    fn tls_connector_config(peer_host_name: &str) -> Result<(TlsConnector, rustls::ServerName)> {
+    fn tls_connector_config(peer_host_name: &str) -> Result<(TlsConnector, ServerName<'static>)> {
         let connector = tls_connector()?;
-        let server_name = rustls::ServerName::try_from(peer_host_name)?;
+        let server_name = ServerName::try_from(peer_host_name.to_string())?;
         Ok((connector, server_name))
     }
 
