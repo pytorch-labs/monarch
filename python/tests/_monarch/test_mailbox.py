@@ -11,6 +11,7 @@ import pickle
 from typing import Any, Callable, cast, final, Generic, Iterable, TYPE_CHECKING, TypeVar
 
 import monarch
+import pytest
 
 from monarch._rust_bindings.monarch_hyperactor.actor import (
     MethodSpecifier,
@@ -95,6 +96,7 @@ async def allocate() -> ProcMesh:
     return proc_mesh
 
 
+@pytest.mark.oss_skip  # pyre-ignore[56]
 async def test_accumulator() -> None:
     proc_mesh = await allocate()
     mailbox: Mailbox = proc_mesh.client
@@ -151,6 +153,7 @@ class MyActor:
             response_port.send(f"msg{i}")
 
 
+@pytest.mark.oss_skip  # pyre-ignore[56]
 async def test_reducer() -> None:
     proc_mesh = await allocate()
     actor_mesh = await proc_mesh.spawn_nonblocking("test", MyActor)
