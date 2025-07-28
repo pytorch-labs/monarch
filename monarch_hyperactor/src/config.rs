@@ -16,6 +16,5 @@ use hyperactor::attrs::declare_attrs;
 // Declare monarch-specific configuration keys
 declare_attrs! {
     /// Use a single asyncio runtime for all Python actors, rather than one per actor
-    /// Note: use shared runtime if you have a lot of Python actors, otherwise too many threads can be spawned
-    pub attr SHARED_ASYNCIO_RUNTIME: bool = true;
+    pub attr SHARED_ASYNCIO_RUNTIME: bool = false;
 }
