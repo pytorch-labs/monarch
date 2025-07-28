@@ -34,4 +34,4 @@ class Config:
     scheduler_args: dict[str, Any] = field(default_factory=dict)
     workspace: Optional[str] = None
     dryrun: bool = False
-    appdef: UnnamedAppDef = UnnamedAppDef()
+    appdef: UnnamedAppDef = field(default_factory=UnnamedAppDef)
