@@ -235,6 +235,7 @@ fn mailbox<'py, T: Actor>(py: Python<'py>, cx: &Context<'_, T>) -> Bound<'py, Py
 #[derive(Clone, Serialize, Deserialize, Named, PartialEq, Default)]
 pub struct PythonMessage {
     pub kind: PythonMessageKind,
+    #[serde(with = "serde_bytes")]
     pub message: Vec<u8>,
 }
 
