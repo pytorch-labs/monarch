@@ -12,7 +12,7 @@ import logging
 import os
 import sys
 from dataclasses import dataclass
-from typing import cast, Dict, Generator, List, Tuple, Union
+from typing import cast, Dict, Generator, List, Optional, Tuple, Union
 
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._src.actor.actor_mesh import (
@@ -25,6 +25,7 @@ from monarch._src.actor.actor_mesh import (
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.pdb_wrapper import DebuggerWrite, PdbWrapper
 from monarch._src.actor.sync_state import fake_sync_state
+from tabulate import tabulate
 
 
 logger = logging.getLogger(__name__)
@@ -43,24 +44,32 @@ def _debugger_output(msg):
 
 @dataclass
 class DebugSessionInfo:
+    actor_name: str
     rank: int
     coords: Dict[str, int]
     hostname: str
-    actor_id: ActorId
     function: str | None
     lineno: int | None
+
+    def __lt__(self, other):
+        if self.actor_name < other.actor_name:
+            return True
+        elif self.actor_name == other.actor_name:
+            return self.rank < other.rank
+        else:
+            return False
 
 
 class DebugSession:
     """Represents a single session with a remote debugger."""
 
     def __init__(
-        self, rank: int, coords: Dict[str, int], hostname: str, actor_id: ActorId
+        self, rank: int, coords: Dict[str, int], hostname: str, actor_name: str
     ):
         self.rank = rank
         self.coords = coords
         self.hostname = hostname
-        self.actor_id = actor_id
+        self.actor_name = actor_name
         self._active = False
         self._message_queue = asyncio.Queue()
         self._task = None
@@ -127,7 +136,7 @@ class DebugSession:
         if self._function_lineno is not None:
             function, lineno = self._function_lineno
         return DebugSessionInfo(
-            self.rank, self.coords, self.hostname, self.actor_id, function, lineno
+            self.actor_name, self.rank, self.coords, self.hostname, function, lineno
         )
 
     async def attach(self, line=None, suppress_output=False):
@@ -160,6 +169,97 @@ class DebugSession:
 RanksType = Union[int, List[int], range, Dict[str, Union[range, List[int], int]]]
 
 
+class DebugSessions:
+    def __init__(self):
+        self._sessions: Dict[str, Dict[int, DebugSession]] = {}
+
+    def insert(self, session: DebugSession) -> None:
+        if session.actor_name not in self._sessions:
+            self._sessions[session.actor_name] = {session.rank: session}
+        elif session.rank not in self._sessions[session.actor_name]:
+            self._sessions[session.actor_name][session.rank] = session
+        else:
+            raise ValueError(
+                f"Debug session for rank {session.rank} already exists for actor {session.actor_name}"
+            )
+
+    def remove(self, actor_name: str, rank: int) -> DebugSession:
+        if actor_name not in self._sessions:
+            raise ValueError(f"No debug sessions for actor {actor_name}")
+        elif rank not in self._sessions[actor_name]:
+            raise ValueError(f"No debug session for rank {rank} for actor {actor_name}")
+        session = self._sessions[actor_name].pop(rank)
+        if len(self._sessions[actor_name]) == 0:
+            del self._sessions[actor_name]
+        return session
+
+    def get(self, actor_name: str, rank: int) -> DebugSession:
+        if actor_name not in self._sessions:
+            raise ValueError(f"No debug sessions for actor {actor_name}")
+        elif rank not in self._sessions[actor_name]:
+            raise ValueError(f"No debug session for rank {rank} for actor {actor_name}")
+        return self._sessions[actor_name][rank]
+
+    def iter(
+        self, selection: Optional[Tuple[str, Optional[RanksType]]]
+    ) -> Generator[DebugSession, None, None]:
+        if selection is None:
+            for sessions in self._sessions.values():
+                for session in sessions.values():
+                    yield session
+            return
+        actor_name, ranks = selection
+        if actor_name not in self._sessions:
+            return
+        sessions = self._sessions[actor_name]
+        if ranks is None:
+            for session in sessions.values():
+                yield session
+        elif isinstance(ranks, int):
+            if ranks in sessions:
+                yield sessions[ranks]
+        elif isinstance(ranks, list):
+            for rank in ranks:
+                if rank in sessions:
+                    yield sessions[rank]
+        elif isinstance(ranks, dict):
+            dims = ranks
+            for session in sessions.values():
+                include_rank = True
+                for dim, ranks in dims.items():
+                    if dim not in session.coords:
+                        include_rank = False
+                        break
+                    elif (
+                        isinstance(ranks, range) or isinstance(ranks, list)
+                    ) and session.coords[dim] not in ranks:
+                        include_rank = False
+                        break
+                    elif isinstance(ranks, int) and session.coords[dim] != ranks:
+                        include_rank = False
+                        break
+                if include_rank:
+                    yield session
+        elif isinstance(ranks, range):
+            for rank, session in sessions.items():
+                if rank in ranks:
+                    yield session
+
+    def info(self) -> List[DebugSessionInfo]:
+        session_info = []
+        for sessions in self._sessions.values():
+            for session in sessions.values():
+                session_info.append(session.get_info())
+        return session_info
+
+    def __len__(self) -> int:
+        return sum(len(sessions) for sessions in self._sessions.values())
+
+    def __contains__(self, item: Tuple[str, int]) -> bool:
+        actor_name, rank = item
+        return actor_name in self._sessions and rank in self._sessions[actor_name]
+
+
 _debug_input_parser = None
 
 
@@ -181,13 +281,16 @@ def _get_debug_input_parser():
             dims: dim ("," dim)*
             ranks: "ranks(" (dims | rank_range | rank_list | INT) ")"
             pdb_command: /\\w+.*/
-            cast: "cast" ranks pdb_command
+            actor_name: /\\w+/
+            cast: "cast" _WS actor_name ranks pdb_command
             help: "h" | "help"
-            attach: ("a" | "attach") INT
+            attach: ("a" | "attach") _WS actor_name INT
             cont: "c" | "continue"
             quit: "q" | "quit"
             list: "l" | "list"
             command: attach | list | cast | help | cont | quit
+
+            _WS: WS+
 
             %import common.INT
             %import common.CNAME
@@ -255,11 +358,14 @@ def _get_debug_input_transformer():
             def pdb_command(self, items: List[Token]) -> str:
                 return items[0].value
 
+            def actor_name(self, items: List[Token]) -> str:
+                return items[0].value
+
             def help(self, _items: List[Token]) -> "Help":
                 return Help()
 
-            def attach(self, items: List[Token]) -> "Attach":
-                return Attach(int(items[0].value))
+            def attach(self, items: Tuple[str, Token]) -> "Attach":
+                return Attach(items[0], int(items[1].value))
 
             def cont(self, _items: List[Token]) -> "Continue":
                 return Continue()
@@ -267,8 +373,8 @@ def _get_debug_input_transformer():
             def quit(self, _items: List[Token]) -> "Quit":
                 return Quit()
 
-            def cast(self, items: Tuple[RanksType, str]) -> "Cast":
-                return Cast(items[0], items[1])
+            def cast(self, items: Tuple[str, RanksType, str]) -> "Cast":
+                return Cast(*items)
 
             def list(self, items: List[Token]) -> "ListCommand":
                 return ListCommand()
@@ -293,6 +399,7 @@ class DebugCommand:
 
 @dataclass
 class Attach(DebugCommand):
+    actor_name: str
     rank: int
 
 
@@ -318,6 +425,7 @@ class Continue(DebugCommand):
 
 @dataclass
 class Cast(DebugCommand):
+    actor_name: str
     ranks: RanksType
     command: str
 
@@ -330,7 +438,7 @@ class DebugClient(Actor):
     """
 
     def __init__(self) -> None:
-        self.sessions = {}  # rank -> DebugSession
+        self.sessions = DebugSessions()
 
     @endpoint
     async def wait_pending_session(self):
@@ -338,39 +446,33 @@ class DebugClient(Actor):
             await asyncio.sleep(1)
 
     @endpoint
-    async def list(self) -> List[Tuple[int, Dict[str, int], str, ActorId, str, int]]:
-        session_info = []
-        for _, session in self.sessions.items():
-            info = session.get_info()
-            session_info.append(
-                (
-                    info.rank,
-                    info.coords,
-                    info.hostname,
-                    info.actor_id,
-                    info.function,
-                    info.lineno,
-                )
-            )
-        table_info = sorted(session_info, key=lambda r: r[0])
-
-        from tabulate import tabulate
-
+    async def list(self) -> List[DebugSessionInfo]:
+        session_info = sorted(self.sessions.info())
         print(
             tabulate(
-                table_info,
+                (
+                    (
+                        info.actor_name,
+                        info.rank,
+                        info.coords,
+                        info.hostname,
+                        info.function,
+                        info.lineno,
+                    )
+                    for info in session_info
+                ),
                 headers=[
+                    "Actor Name",
                     "Rank",
                     "Coords",
                     "Hostname",
-                    "Actor ID",
                     "Function",
                     "Line No.",
                 ],
                 tablefmt="grid",
             )
         )
-        return table_info
+        return session_info
 
     @endpoint
     async def enter(self) -> None:
@@ -383,14 +485,16 @@ class DebugClient(Actor):
         while True:
             try:
                 user_input = await _debugger_input("monarch_dbg> ")
+                if not user_input.strip():
+                    continue
                 command = DebugCommand.parse(user_input)
                 if isinstance(command, Help):
                     print("monarch_dbg commands:")
-                    print("\tattach <rank> - attach to a debug session")
+                    print("\tattach <actor_name> <rank> - attach to a debug session")
                     print("\tlist - list all debug sessions")
                     print("\tquit - exit the debugger, leaving all sessions in place")
                     print(
-                        "\tcast ranks(...) <command> - send a command to a set of ranks.\n"
+                        "\tcast <actor_name> ranks(...) <command> - send a command to a set of ranks on the specified actor mesh.\n"
                         "\t\tThe value inside ranks(...) can be a single rank (ranks(1)),\n"
                         "\t\ta list of ranks (ranks(1,4,6)), a range of ranks (ranks(start?:stop?:step?)),\n"
                         "\t\tor a dict of dimensions (ranks(dim1=1:5:2,dim2=3, dim4=(3,6)))."
@@ -400,10 +504,7 @@ class DebugClient(Actor):
                     )
                     print("\thelp - print this help message")
                 elif isinstance(command, Attach):
-                    if command.rank not in self.sessions:
-                        print(f"No debug session for rank {command.rank}")
-                    else:
-                        await self.sessions[command.rank].attach()
+                    await self.sessions.get(command.actor_name, command.rank).attach()
                 elif isinstance(command, ListCommand):
                     # pyre-ignore
                     await self.list._method(self)
@@ -419,60 +520,21 @@ class DebugClient(Actor):
                 elif isinstance(command, Quit):
                     return
                 elif isinstance(command, Cast):
-                    await self._cast_input_and_wait(command.command, command.ranks)
+                    await self._cast_input_and_wait(
+                        command.command, (command.actor_name, command.ranks)
+                    )
             except Exception as e:
                 print(f"Error processing command: {e}")
 
     async def _cast_input_and_wait(
         self,
         command: str,
-        ranks: RanksType | None = None,
+        selection: Optional[Tuple[str, Optional[RanksType]]] = None,
     ) -> None:
-        if ranks is None:
-            ranks = self.sessions.keys()
-        elif isinstance(ranks, dict):
-            ranks = self._iter_ranks_dict(ranks)
-        elif isinstance(ranks, range):
-            ranks = self._iter_ranks_range(ranks)
-        elif isinstance(ranks, int):
-            ranks = [ranks]
         tasks = []
-        for rank in ranks:
-            if rank in self.sessions:
-                tasks.append(
-                    self.sessions[rank].attach(
-                        command,
-                        suppress_output=True,
-                    )
-                )
-            else:
-                print(f"No debug session for rank {rank}")
+        for session in self.sessions.iter(selection):
+            tasks.append(session.attach(command, suppress_output=True))
         await asyncio.gather(*tasks)
-
-    def _iter_ranks_dict(
-        self, dims: Dict[str, Union[range, List[int], int]]
-    ) -> Generator[int, None, None]:
-        for rank, session in self.sessions.items():
-            include_rank = True
-            for dim, ranks in dims.items():
-                if dim not in session.coords:
-                    include_rank = False
-                    break
-                elif (
-                    isinstance(ranks, range) or isinstance(ranks, list)
-                ) and session.coords[dim] not in ranks:
-                    include_rank = False
-                    break
-                elif isinstance(ranks, int) and session.coords[dim] != ranks:
-                    include_rank = False
-                    break
-            if include_rank:
-                yield rank
-
-    def _iter_ranks_range(self, rng: range) -> Generator[int, None, None]:
-        for rank in self.sessions.keys():
-            if rank in rng:
-                yield rank
 
     ##########################################################################
     # Debugger APIs
@@ -481,30 +543,30 @@ class DebugClient(Actor):
     # and communicate with them.
     @endpoint
     async def debugger_session_start(
-        self, rank: int, coords: Dict[str, int], hostname: str, actor_id: ActorId
+        self, rank: int, coords: Dict[str, int], hostname: str, actor_name: str
     ) -> None:
         # Create a session if it doesn't exist
-        if rank not in self.sessions:
-            self.sessions[rank] = DebugSession(rank, coords, hostname, actor_id)
+        if (actor_name, rank) not in self.sessions:
+            self.sessions.insert(DebugSession(rank, coords, hostname, actor_name))
 
     @endpoint
-    async def debugger_session_end(self, rank: int) -> None:
+    async def debugger_session_end(self, actor_name: str, rank: int) -> None:
         """Detach from the current debug session."""
-        session = self.sessions.pop(rank)
-        await session.detach()
+        await self.sessions.remove(actor_name, rank).detach()
 
     @endpoint
-    async def debugger_read(self, rank: int, size: int) -> DebuggerWrite | str:
+    async def debugger_read(
+        self, actor_name: str, rank: int, size: int
+    ) -> DebuggerWrite | str:
         """Read from the debug session for the given rank."""
-        session = self.sessions[rank]
-
-        return await session.debugger_read(size)
+        return await self.sessions.get(actor_name, rank).debugger_read(size)
 
     @endpoint
-    async def debugger_write(self, rank: int, write: DebuggerWrite) -> None:
+    async def debugger_write(
+        self, actor_name: str, rank: int, write: DebuggerWrite
+    ) -> None:
         """Write to the debug session for the given rank."""
-        session = self.sessions[rank]
-        await session.debugger_write(write)
+        await self.sessions.get(actor_name, rank).debugger_write(write)
 
 
 class DebugManager(Actor):
@@ -529,7 +591,6 @@ class DebugManager(Actor):
     def __init__(self, debug_client: DebugClient) -> None:
         self._debug_client = debug_client
 
-    # pyre-ignore
     @endpoint
     def get_debug_client(self) -> DebugClient:
         return self._debug_client
