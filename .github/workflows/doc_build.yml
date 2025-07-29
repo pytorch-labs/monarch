@@ -21,9 +21,14 @@ jobs:
           fetch-depth: 0
       - name: Install Dependencies
         run: |
+
           set -eux
+          pip install --upgrade pip
+          pip install -r build-requirements.txt
+          pip install --no-build-isolation .
 
           pip install -r docs/requirements.txt
+
       - name: Build Sphinx Docs
         working-directory: docs
         run: |

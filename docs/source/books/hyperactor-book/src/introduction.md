@@ -1,4 +1,4 @@
-# Introduction
+# Hyperactor
 
 This book describes the design and implementation of the hyperactor runtime.
 
@@ -8,11 +8,12 @@ We hope this becomes the book we wish we had when we started working with Monarc
 
 ```{toctree}
 :maxdepth: 2
-:caption: Contents
+:caption: Chapters
 
-refrences
-mailbox
-macros
-actors
-summary
+./actors/index
+./macros/index
+./mailboxes/index
+./references/index
+./SUMMARY.md
+
 ```

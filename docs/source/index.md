@@ -39,7 +39,8 @@ Here are some suggested steps to get started with Monarch:
 :hidden:
 
 get_started
-./examples/index
+./generated/examples/index
+books/books
 api
 howtos
 glossary

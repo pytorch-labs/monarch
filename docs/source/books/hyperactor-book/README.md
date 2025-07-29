@@ -7,6 +7,11 @@ This is the development documentation for the hyperactor system, built using [`m
 :caption: Contents
 
 ./src/introduction
+./src/refrences
+mailbox
+macros
+actors
+summary
 ```
 
 ## Running the Book

@@ -25,13 +25,15 @@ extensions = [
     # "nbsphinx",
     "sphinx_gallery.gen_gallery",
     # "myst_nb",
+    #"sphinx_rust",
+    
 ]
 
 sphinx_gallery_conf = {
     "examples_dirs": [
-        "../../examples",
+        "./examples",
     ],  # path to your example scripts
-    "gallery_dirs": "examples",  # path to where to save gallery generated output
+    "gallery_dirs": "./generated/examples",  # path to where to save gallery generated output
     "filename_pattern": ".*\.py$",  # Include all Python files
     "ignore_pattern": "__init__\.py",  # Exclude __init__.py files
     "plot_gallery": "False",  # Don't run the examples
@@ -42,6 +44,8 @@ sphinx_gallery_conf = {
     # "show_memory": False,  # Don't show memory usage
     # "show_signature": True,  # Show function signatures
 }
+
+
 
 templates_path = ["_templates"]
 exclude_patterns = []
@@ -116,12 +120,31 @@ html_context = {
     "language_bindings_links": html_theme_options.get("language_bindings_links", []),
 }
 
-# not sure if this is needed
+# Enable MyST extensions for markdown files including those in books
 myst_enable_extensions = [
     "colon_fence",
     "deflist",
     "html_image",
 ]
+
+# Add the books directory to the Sphinx path
+books_path = os.path.abspath("../../books")
+
+# Configure Sphinx to include the books directory
+exclude_patterns = []  # Reset exclude_patterns to ensure books are included
+
+# Add the books directory to the Sphinx path
+import sphinx.util.matching
+html_extra_path = []
+html_static_path = ["_static"]
+
+# Configure MyST-Parser to find markdown files in the books directory
+myst_update_mathjax = False
+myst_heading_anchors = 3
+
+# Add the books directory to the Sphinx search path
+import os
+books_path = os.path.abspath("../../books")
 
 
 # The suffix(es) of source filenames.
@@ -129,6 +152,14 @@ source_suffix = {
     ".rst": "restructuredtext",
     ".md": "markdown",
 }
+
+# Configure MyST-Parser to properly handle relative links in the books directory
+myst_url_schemes = ["http", "https", "mailto"]
+
+# Add the books directory to the Sphinx extensions path
+import os
+import sys
+sys.path.insert(0, os.path.abspath("../../books"))
 
 # Allow errors in notebook execution
 nbsphinx_allow_errors = True

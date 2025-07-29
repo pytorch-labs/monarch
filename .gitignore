@@ -23,11 +23,12 @@ books/hyperactor-book/book/**
 
 # macOS files
 .DS_Store
+docs/source/.DS_Store
 
 # Sphinx build files
-_build/
-build/
-docs/_build/
-docs/build/
+build/**
+docs/_build/**
+docs/build/**
+docs/generated/**
 
 CLAUDE.md

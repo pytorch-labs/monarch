@@ -17,8 +17,9 @@ generate-examples:
 	@echo "Generating example documentation..."
 	@cd "$(SOURCEDIR)" && python GenerateExamples.py
 
-# Override html target to run generate-examples first
+# Override html target to run generate-examples first and include books
 html:
+	@echo "Building HTML documentation with books directory..."
 	@$(SPHINXBUILD) -M $@ "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS) $(O)
 
 .PHONY: help Makefile html
@@ -27,3 +28,8 @@ html:
 # "make mode" option.  $(O) is meant as a shortcut for $(SPHINXOPTS).
 %: Makefile
 	@$(SPHINXBUILD) -M $@ "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS) $(O)
+
+clean:
+	@echo "Cleaning up build directory..."
+	@rm -rf "$(BUILDDIR)"
+	@rm -rf "$(SOURCEDIR)/generated"
