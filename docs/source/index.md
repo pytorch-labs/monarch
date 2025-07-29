@@ -43,7 +43,6 @@ get_started
 api
 howtos
 glossary
-api/crates/monarch/index
 ```
 
 ## License
