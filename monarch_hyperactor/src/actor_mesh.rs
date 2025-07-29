@@ -383,10 +383,11 @@ impl PythonActorMeshRef {
 
 impl Drop for PythonActorMesh {
     fn drop(&mut self) {
-        tracing::info!(
-            "Dropping PythonActorMesh: {}",
-            self.inner.borrow().unwrap().name()
-        );
+        if let Ok(mesh) = self.inner.borrow() {
+            tracing::info!("Dropping PythonActorMesh: {}", mesh.name());
+        } else {
+            tracing::info!("Dropping stopped PythonActorMesh");
+        }
         self.monitor.abort();
     }
 }
