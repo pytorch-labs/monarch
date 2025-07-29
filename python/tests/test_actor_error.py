@@ -598,8 +598,7 @@ async def test_supervision_with_proc_mesh_stopped(mesh):
 # TODO - re-enable after resolving T232206970
 @pytest.mark.oss_skip
 async def test_supervision_with_sending_error():
-    os.environ["HYPERACTOR_CODEC_MAX_FRAME_LENGTH"] = "9999999999"
-    os.environ["HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT_SECS"] = "1"
+    os.environ["HYPERACTOR_CODEC_MAX_FRAME_LENGTH"] = "50000000"
 
     proc = await proc_mesh(gpus=1)
     actor_mesh = await proc.spawn("healthy", HealthyActor)
@@ -611,9 +610,9 @@ async def test_supervision_with_sending_error():
 
     # send a large payload to trigger send timeout error
     with pytest.raises(
-        SupervisionError, match="supervision error:.*message not delivered:"
+        SupervisionError, match="supervision error:.*actor mesh is stopped"
     ):
-        await actor_mesh.check_with_payload.call(payload="a" * 5000000000)
+        await actor_mesh.check_with_payload.call(payload="a" * 55000000)
 
     # new call should fail with check of health state of actor mesh
     with pytest.raises(SupervisionError, match="actor mesh is not in a healthy state"):

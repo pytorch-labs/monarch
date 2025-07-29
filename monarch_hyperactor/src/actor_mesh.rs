@@ -403,18 +403,15 @@ impl ActorMeshMonitor {
             .borrow()
             .expect("`Actor mesh receiver` is shutdown");
         let mut receiver = receiver.lock().await;
-        let event = receiver.recv().await.map_err(|e| {
-            PyErr::new::<PyEOFError, _>(format!("Actor mesh monitor channel closed: {}", e))
-        })?;
-
+        let event = receiver.recv().await;
         Ok(match event {
-            None => PyActorSupervisionEvent {
-                // Dummy actor as place holder to indicate the whole mesh is stopped
+            Ok(Some(event)) => PyActorSupervisionEvent::from(event.clone()),
+            Ok(None) | Err(_) => PyActorSupervisionEvent {
+                // Dummy actor as placeholder to indicate the whole mesh is stopped
                 // TODO(albertli): remove this when pushing all supervision logic to rust.
                 actor_id: id!(default[0].actor[0]).into(),
                 actor_status: "actor mesh is stopped due to proc mesh shutdown".to_string(),
             },
-            Some(event) => PyActorSupervisionEvent::from(event.clone()),
         })
     }
 }
