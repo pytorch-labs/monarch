@@ -29,5 +29,8 @@ jobs:
         # Setup build environment (conda + system deps + rust + build deps)
         setup_build_environment
 
+        # Build the process allocator binary
+        build_process_allocator
+
         # Build monarch (No tensor engine, CPU version)
         USE_TENSOR_ENGINE=0 python setup.py bdist_wheel
