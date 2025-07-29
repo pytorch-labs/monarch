@@ -27,10 +27,9 @@ Key features:
 
 Here are some suggested steps to get started with Monarch:
 
-1. **Installation**: Install Monarch using pip: `pip install torchmonarch-nightly`
-2. **Learn the Basics**: Check out the [Getting Started](get_started) guide to learn the basics of Monarch
-3. **Explore Examples**: Review the [Examples](./examples/index) to see Monarch in action
-4. **Dive Deeper**: Explore the [API Documentation](api) for more detailed information
+1. **Learn the Basics**: Check out the [Getting Started](get_started) guide to learn the basics of Monarch
+2. **Explore Examples**: Review the [Examples](./examples/index) to see Monarch in action
+3. **Dive Deeper**: Explore the [API Documentation](api) for more detailed information
 
 ## Documentation Contents
 
@@ -44,6 +43,7 @@ get_started
 api
 howtos
 glossary
+api/crates/monarch/index
 ```
 
 ## License
