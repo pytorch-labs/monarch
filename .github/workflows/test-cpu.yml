@@ -26,7 +26,12 @@ jobs:
         source scripts/common-setup.sh
 
         # Setup test environment
-        setup_conda_environment
+        setup_test_environment
+
+        # Install cargo binaries
+        mkdir cargo_bin && mv ${RUNNER_ARTIFACT_DIR}/cargo_bin/* cargo_bin
+        chmod +x cargo_bin/process_allocator
+        export PATH=$(pwd)/cargo_bin:$PATH
 
         # Disable tensor engine
         export USE_TENSOR_ENGINE=0
@@ -34,7 +39,4 @@ jobs:
         # Install the built wheel from artifact
         install_wheel_from_artifact
 
-        # Currently a no-op.
-        # Tests requiring tensor engine / GPU need to be identified and flagged to skip.
-        # We will just ensure monarch can be imported successfully.
-        python -c "import monarch; print('Monarch imported successfully')"
+        LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip" --ignore=python/tests/tensor_engine -n 4

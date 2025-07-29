@@ -172,7 +172,7 @@ class RemoteFunctionsTestBase:
             num_hosts,
             gpu_per_host,
             activate,
-            backend=str(backend_type),
+            backend=backend_type.value,
         )
 
 
@@ -1289,7 +1289,7 @@ def return_them(x: torch.Tensor, y: torch.Tensor) -> Tuple[torch.Tensor, torch.T
 )
 class TestMeshSpecific(RemoteFunctionsTestBase):
     def test_value_mesh(self):
-        with self.local_device_mesh(2, 2, "mesh") as device_mesh:
+        with self.local_device_mesh(2, 2, BackendType.MESH) as device_mesh:
             x = device_mesh.rank("host")
             y = device_mesh.rank("gpu")
             r = return_them.call(x, y).get()
