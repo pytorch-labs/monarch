@@ -614,7 +614,7 @@ mod tests {
                 let mesh = ProcMesh::allocate(alloc).await.unwrap();
 
                 let (undeliverable_msg_tx, _) = mesh.client().open_port();
-                let ping_pong_actor_params = PingPongActorParams::new(undeliverable_msg_tx.bind(), None);
+                let ping_pong_actor_params = PingPongActorParams::new(Some(undeliverable_msg_tx.bind()), None);
                 let actor_mesh: RootActorMesh<PingPongActor> = mesh
                     .spawn::<PingPongActor>("ping-pong", &ping_pong_actor_params)
                     .await
@@ -649,7 +649,7 @@ mod tests {
 
                 let proc_mesh = ProcMesh::allocate(alloc).await.unwrap();
                 let (undeliverable_tx, _undeliverable_rx) = proc_mesh.client().open_port();
-                let params = PingPongActorParams::new(undeliverable_tx.bind(), None);
+                let params = PingPongActorParams::new(Some(undeliverable_tx.bind()), None);
                 let actor_mesh = proc_mesh.spawn::<PingPongActor>("pingpong", &params).await.unwrap();
                 let slice = actor_mesh.shape().slice();
 
@@ -921,7 +921,7 @@ mod tests {
             let mut events = mesh.events().unwrap();
 
             let ping_pong_actor_params = PingPongActorParams::new(
-                PortRef::attest_message_port(mesh.client().actor_id()),
+                Some(PortRef::attest_message_port(mesh.client().actor_id())),
                 None,
             );
             let actor_mesh: RootActorMesh<PingPongActor> = mesh
@@ -1052,7 +1052,7 @@ mod tests {
             let mesh = ProcMesh::allocate(alloc).await.unwrap();
 
             let ping_pong_actor_params = PingPongActorParams::new(
-                PortRef::attest_message_port(mesh.client().actor_id()),
+                Some(PortRef::attest_message_port(mesh.client().actor_id())),
                 None,
             );
             let mesh_one: RootActorMesh<PingPongActor> = mesh

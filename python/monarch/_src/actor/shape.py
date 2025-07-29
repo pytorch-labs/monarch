@@ -67,7 +67,12 @@ class MeshTrait(ABC):
                     start, stop, slice_stride = e.indices(size)
                     offset += start * stride
                     names.append(name)
-                    sizes.append((stop - start) // slice_stride)
+                    # The number of elems in `start..stop` with step
+                    # `slice_stride`. This is:
+                    #    ⌈(stop - start) /slice_stride⌉
+                    # — the number of stride steps that fit in the
+                    # half-open interval.
+                    sizes.append((stop - start + slice_stride - 1) // slice_stride)
                     strides.append(slice_stride * stride)
                 else:
                     if e >= size or e < 0:

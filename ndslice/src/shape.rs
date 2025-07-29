@@ -83,65 +83,26 @@ impl Shape {
     /// Restrict this shape along a named dimension using a [`Range`].
     /// The provided range must be nonempty.
     ///
-    /// A shape defines a **strided view**; a triple (`offset,
-    /// `sizes`, `strides`). Each coordinate maps to a flat memory
-    /// index using the formula:
-    /// ```text
-    /// index = offset + ∑ iₖ × strides[k]
-    /// ```
-    /// where `iₖ` is the coordinate in dimension `k`.
-    ///
-    /// The `select(dim, range)` operation restricts the view to a
-    /// subrange along a single dimension. It refines the shape by
-    /// updating the `offset`, `sizes[dim]`, and `strides[dim]` to
-    /// describe a logically reindexed subregion:
-    /// ```text
-    /// offset       += begin × strides[dim]
-    /// sizes[dim]    = ⎡(end - begin) / step⎤
-    /// strides[dim] ×= step
-    /// ```
-    ///
-    /// This transformation preserves the strided layout and avoids
-    /// copying data. After `select`, the view behaves as if indexing
-    /// starts at zero in the selected dimension, with a new length
-    /// and stride. From the user's perspective, nothing changes;
-    /// indexing remains zero-based, and the resulting shape can be
-    /// used like any other. The transformation is internal: the
-    /// view's offset and stride absorb the selection logic.
-    ///
     /// `select` is composable, it can be applied repeatedly, even on
     /// the same dimension, to refine the view incrementally.
     pub fn select<R: Into<Range>>(&self, label: &str, range: R) -> Result<Self, ShapeError> {
         let dim = self.dim(label)?;
-        let range: Range = range.into();
-        if range.is_empty() {
-            return Err(ShapeError::EmptyRange { range });
-        }
-
-        let mut offset = self.slice.offset();
-        let mut sizes = self.slice.sizes().to_vec();
-        let mut strides = self.slice.strides().to_vec();
-
-        let (begin, end, stride) = range.resolve(sizes[dim]);
-        if begin >= sizes[dim] {
-            return Err(ShapeError::OutOfRange {
-                range,
-                dim: label.to_string(),
-                size: sizes[dim],
-            });
-        }
-
-        offset += begin * strides[dim];
-        // The # of elems in `begin..end` with step `stride`. This is
-        // ⌈(end - begin) / stride⌉ — the number of stride steps that
-        // fit in the half-open interval.
-        sizes[dim] = (end - begin).div_ceil(stride);
-        strides[dim] *= stride;
-
-        Ok(Self {
-            labels: self.labels.clone(),
-            slice: Slice::new(offset, sizes, strides).expect("cannot create invalid slice"),
-        })
+        let range = range.into();
+        let (begin, end, step) = range.resolve(self.slice().sizes()[dim]);
+        let slice = self
+            .slice
+            .select(dim, begin, end, step)
+            .map_err(|err| match err {
+                SliceError::EmptyRange { .. } => ShapeError::EmptyRange { range },
+                SliceError::IndexOutOfRange { total, .. } => ShapeError::OutOfRange {
+                    range,
+                    dim: label.to_string(),
+                    size: total,
+                },
+                other => other.into(),
+            })?;
+        let labels = self.labels.clone();
+        Ok(Self { labels, slice })
     }
 
     /// Produces an iterator over subshapes by fixing the first `dims`

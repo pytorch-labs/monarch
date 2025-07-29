@@ -86,9 +86,9 @@ class CreateCmd:
             else defaults.component_fn(config.scheduler)
         )
         component_args = component_args_from_cli(component_fn, args.component_args)
-        appdef = component_fn(**component_args)
+        config.appdef = component_fn(**component_args)
 
-        handle = create(config, appdef)
+        handle = create(config)
         print(handle)
 
 

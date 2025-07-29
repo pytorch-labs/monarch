@@ -9,6 +9,7 @@ import getpass
 from typing import Optional
 
 from monarch.tools import mesh_spec
+from monarch.tools.config import UnnamedAppDef
 from monarch.tools.mesh_spec import mesh_spec_from_str
 from torchx import specs
 
@@ -16,17 +17,18 @@ _DEFAULT_MESHES = ["mesh_0:1:gpu.small"]
 
 _USER: str = getpass.getuser()
 
+DEFAULT_NAME: str = f"monarch-{_USER}"
+
 __version__ = "latest"  # TODO get version from monarch.__version_
 
 
-def proc_mesh(
-    name: str = f"monarch-{_USER}",
+def host_mesh(
     image: str = f"ghcr.io/pytorch-labs/monarch:{__version__}",  # TODO docker needs to be built and pushed to ghcr
     meshes: list[str] = _DEFAULT_MESHES,
     env: Optional[dict[str, str]] = None,
     port: int = mesh_spec.DEFAULT_REMOTE_ALLOCATOR_PORT,
     program: str = "monarch_bootstrap",  # installed with monarch wheel (as console script)
-) -> specs.AppDef:
+) -> UnnamedAppDef:
     """
     Args:
         name: the name of the monarch server job
@@ -37,7 +39,7 @@ def proc_mesh(
         program: path to the binary that the remote process allocator spawns on an allocation request
     """
 
-    appdef = specs.AppDef(name)
+    appdef = UnnamedAppDef()
 
     for mesh in [mesh_spec_from_str(mesh) for mesh in meshes]:
         mesh_role = specs.Role(

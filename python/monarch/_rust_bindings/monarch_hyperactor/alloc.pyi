@@ -10,7 +10,8 @@ from datetime import timedelta
 from typing import final, Optional
 
 from monarch._rust_bindings.monarch_hyperactor.alloc import Alloc, AllocSpec
-from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox, PythonTask
+from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
+from monarch._rust_bindings.monarch_hyperactor.tokio import PythonTask
 
 from typing_extensions import Self
 
@@ -45,7 +46,17 @@ class AllocSpec:
         """
         ...
 
-class ProcessAllocatorBase:
+class AllocatorBase:
+    def allocate_nonblocking(self, spec: AllocSpec) -> PythonTask[Alloc]:
+        """
+        Allocate a process according to the provided spec.
+
+        Arguments:
+        - `spec`: The spec to allocate according to.
+        """
+        ...
+
+class ProcessAllocatorBase(AllocatorBase):
     def __init__(
         self,
         program: str,
@@ -63,36 +74,13 @@ class ProcessAllocatorBase:
         """
         ...
 
-    def allocate_nonblocking(self, spec: AllocSpec) -> PythonTask[Alloc]:
-        """
-        Allocate a process according to the provided spec.
+class LocalAllocatorBase(AllocatorBase):
+    pass
 
-        Arguments:
-        - `spec`: The spec to allocate according to.
-        """
-        ...
+class SimAllocatorBase(AllocatorBase):
+    pass
 
-class LocalAllocatorBase:
-    def allocate_nonblocking(self, spec: AllocSpec) -> PythonTask[Alloc]:
-        """
-        Allocate a process according to the provided spec.
-
-        Arguments:
-        - `spec`: The spec to allocate according to.
-        """
-        ...
-
-class SimAllocatorBase:
-    def allocate_nonblocking(self, spec: AllocSpec) -> PythonTask[Alloc]:
-        """
-        Allocate a process according to the provided spec.
-
-        Arguments:
-        - `spec`: The spec to allocate according to.
-        """
-        ...
-
-class RemoteAllocatorBase:
+class RemoteAllocatorBase(AllocatorBase):
     def __new__(
         cls,
         world_id: str,
@@ -107,14 +95,5 @@ class RemoteAllocatorBase:
         - `world_id`: The world id to use for the remote allocator.
         - `initializer`: Returns the server addresses to send allocation requests to.
         - `heartbeat_interval`: Heartbeat interval used to maintain health status of remote hosts.
-        """
-        ...
-
-    def allocate_nonblocking(self, spec: AllocSpec) -> PythonTask[Alloc]:
-        """
-        Allocate a process according to the provided spec.
-
-        Arguments:
-        - `spec`: The spec to allocate according to.
         """
         ...

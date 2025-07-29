@@ -25,6 +25,7 @@ use crate::clock::Clock;
 use crate::clock::RealClock;
 use crate::mailbox::MessageEnvelope;
 use crate::mailbox::Undeliverable;
+use crate::mailbox::UndeliverableMessageError;
 
 /// A message that can be passed around. It contains
 /// 0. the TTL of this PingPong game
@@ -37,7 +38,7 @@ pub struct PingPongMessage(pub u64, pub ActorRef<PingPongActor>, pub OncePortRef
 #[derive(Debug, Named, Serialize, Deserialize, Clone)]
 pub struct PingPongActorParams {
     /// A port to send undeliverable messages to.
-    undeliverable_port_ref: PortRef<Undeliverable<MessageEnvelope>>,
+    undeliverable_port_ref: Option<PortRef<Undeliverable<MessageEnvelope>>>,
     /// The TTL at which the actor will exit with error.
     error_ttl: Option<u64>,
     /// Manual delay before sending handling the message.
@@ -47,7 +48,7 @@ pub struct PingPongActorParams {
 impl PingPongActorParams {
     /// Create a new set of initialization parameters.
     pub fn new(
-        undeliverable_port_ref: PortRef<Undeliverable<MessageEnvelope>>,
+        undeliverable_port_ref: Option<PortRef<Undeliverable<MessageEnvelope>>>,
         error_ttl: Option<u64>,
     ) -> Self {
         Self {
@@ -86,17 +87,14 @@ impl Actor for PingPongActor {
         cx: &Instance<Self>,
         undelivered: crate::mailbox::Undeliverable<crate::mailbox::MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
-        // Forward this undelivered message to the port ref given on
-        // construction.
-        self.params
-            .undeliverable_port_ref
-            .send(cx, undelivered)
-            .unwrap();
+        match &self.params.undeliverable_port_ref {
+            Some(port) => port.send(cx, undelivered).unwrap(),
+            None => {
+                let Undeliverable(envelope) = &undelivered;
+                anyhow::bail!(UndeliverableMessageError::delivery_failure(envelope));
+            }
+        }
 
-        // For the purposes of testing we don't return `Err` here as
-        // we normally would for an arbitrary actor. If we did the
-        // actor would stop running, transition to the `Failed` state
-        // and thereafter no longer receive any undelivered messages.
         Ok(())
     }
 }

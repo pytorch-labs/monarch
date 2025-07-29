@@ -135,9 +135,7 @@ edges:
         .await
         .unwrap();
 
-        let (undeliverable_msg_tx, _) = sys_mailbox.open_port();
-
-        let params = PingPongActorParams::new(undeliverable_msg_tx.bind(), None);
+        let params = PingPongActorParams::new(None, None);
         spawn::<PingPongActor>(
             &sys_mailbox,
             &bootstrap.proc_actor.bind(),

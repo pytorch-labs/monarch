@@ -6,6 +6,7 @@
 
 # pyre-strict
 
+import asyncio
 import unittest
 from datetime import timedelta
 from unittest import mock
@@ -40,9 +41,9 @@ class TestCommands(unittest.TestCase):
         scheduler = "slurm"
         config = defaults.config(scheduler)
         config.dryrun = True
-        appdef = defaults.component_fn(scheduler)()
+        config.appdef = defaults.component_fn(scheduler)()
 
-        dryrun_info = commands.create(config, appdef)
+        dryrun_info = commands.create(config)
         # need only assert that the return type of dryrun is a dryrun info object
         # since we delegate to torchx for job submission
         self.assertIsInstance(dryrun_info, AppDryRunInfo)
@@ -54,8 +55,8 @@ class TestCommands(unittest.TestCase):
     def test_create(self, mock_schedule: mock.MagicMock) -> None:
         scheduler = "slurm"
         config = defaults.config(scheduler)
-        appdef = defaults.component_fn(scheduler)()
-        server_handle = commands.create(config, appdef)
+        config.appdef = defaults.component_fn(scheduler)()
+        server_handle = commands.create(config)
 
         mock_schedule.assert_called_once()
         self.assertEqual(server_handle, "slurm:///test_job_id")
@@ -126,6 +127,7 @@ def server(state: AppState, name: str = UNUSED) -> ServerSpec:
     if state == AppState.RUNNING:
         for mesh in meshes:
             mesh.hostnames = [f"node{i}" for i in range(mesh.num_hosts)]
+            mesh.state = AppState.RUNNING
 
     return ServerSpec(name=name, scheduler="slurm", state=state, meshes=meshes)
 
@@ -188,14 +190,54 @@ class TestCommandsAsync(unittest.IsolatedAsyncioTestCase):
                     mock_info.assert_called()
                     self.assertEqual(mock_info.call_count, 4)
 
+    async def test_server_ready_running_but_mesh_not_running(self) -> None:
+        def no_host_server(state: AppState, name: str = UNUSED) -> ServerSpec:
+            mesh_x = MeshSpec(name="x", num_hosts=2, host_type=UNUSED, gpus=-1)
+            mesh_y = MeshSpec(name="y", num_hosts=4, host_type=UNUSED, gpus=-1)
+            meshes = [mesh_x, mesh_y]
+            return ServerSpec(name=name, scheduler="slurm", state=state, meshes=meshes)
+
+        # not ready even it's running
+        with mock.patch(
+            CMD_INFO,
+            return_value=no_host_server(AppState.RUNNING),
+        ):
+            try:
+                await asyncio.wait_for(
+                    server_ready(
+                        "slurm:///123",
+                        check_interval=_5_MS,
+                    ),
+                    timeout=2,
+                )
+                raise RuntimeError("we should have timed out")
+            except asyncio.TimeoutError:
+                pass
+
+        # ready only if we have hosts
+        with mock.patch(
+            CMD_INFO,
+            side_effect=[
+                server(AppState.RUNNING),
+            ],
+        ) as mock_info:
+            server_info = await server_ready(
+                "slurm:///123",
+                check_interval=_5_MS,
+            )
+
+            self.assertIsNotNone(server_info)
+            mock_info.assert_called()
+
     @mock.patch(CMD_INFO, side_effect=[server(AppState.RUNNING, name="123")])
     async def test_get_or_create_existing(self, mock_info: MagicMock) -> None:
+        scheduler = "slurm"
         config = Config(
-            scheduler="slurm",
+            scheduler=scheduler,
             scheduler_args={},
+            appdef=defaults.component_fn(scheduler)(),
         )
-        appdef = defaults.component_fn(config.scheduler)()
-        server_info = await commands.get_or_create("123", config, appdef)
+        server_info = await commands.get_or_create(name="123", config=config)
         self.assertEqual(server_info.server_handle, "slurm:///123")
         mock_info.assert_called_once_with("slurm:///123")
 
@@ -221,16 +263,15 @@ class TestCommandsAsync(unittest.IsolatedAsyncioTestCase):
                     config = Config(
                         scheduler="slurm",
                         scheduler_args={},
+                        appdef=defaults.component_fn("slurm")(),
                     )
-                    appdef = defaults.component_fn(config.scheduler)()
                     server_info = await commands.get_or_create(
-                        "123",
-                        config,
-                        appdef,
+                        name="123",
+                        config=config,
                         check_interval=_5_MS,
                     )
 
-                    mock_create.called_once_with(config, appdef)
+                    mock_create.called_once_with(config, "123")
                     self.assertEqual(server_info.server_handle, "slurm:///456")
                     self.assertListEqual(
                         mock_info.call_args_list,
@@ -260,13 +301,12 @@ class TestCommandsAsync(unittest.IsolatedAsyncioTestCase):
         config = Config(
             scheduler="slurm",
             scheduler_args={},
+            appdef=defaults.component_fn("slurm")(),
         )
-        appdef = defaults.component_fn(config.scheduler)()
         with self.assertRaises(RuntimeError):
             _ = await commands.get_or_create(
-                "123",
-                config,
-                appdef,
+                name="123",
+                config=config,
                 check_interval=_5_MS,
             )
 
@@ -288,12 +328,11 @@ class TestCommandsAsync(unittest.IsolatedAsyncioTestCase):
         config = Config(
             scheduler="slurm",
             scheduler_args={},
+            appdef=defaults.component_fn("slurm")(),
         )
-        appdef = defaults.component_fn(config.scheduler)()
         with self.assertRaises(RuntimeError):
             _ = await commands.get_or_create(
-                "123",
-                config,
-                appdef,
+                name="123",
+                config=config,
                 check_interval=_5_MS,
             )

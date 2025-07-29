@@ -16,7 +16,7 @@ needs_cuda = pytest.mark.skipif(
     reason="CUDA not available",
 )
 needs_rdma = pytest.mark.skipif(
-    not rdma_available,
+    not rdma_available(),
     reason="RDMA not available",
 )
 

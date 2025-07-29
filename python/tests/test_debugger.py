@@ -17,7 +17,7 @@ import pytest
 
 import torch
 
-from monarch._src.actor.actor_mesh import Actor, endpoint, MonarchContext
+from monarch._src.actor.actor_mesh import Actor, current_rank
 from monarch._src.actor.debugger import (
     Attach,
     Cast,
@@ -29,6 +29,7 @@ from monarch._src.actor.debugger import (
     ListCommand,
     Quit,
 )
+from monarch._src.actor.endpoint import endpoint
 
 from monarch._src.actor.proc_mesh import proc_mesh
 
@@ -68,7 +69,7 @@ def _debugee_actor_internal(rank):
 class DebugeeActor(Actor):
     @endpoint
     async def to_debug(self):
-        rank = MonarchContext.get().point.rank
+        rank = current_rank().rank
         return _debugee_actor_internal(rank)
 
 

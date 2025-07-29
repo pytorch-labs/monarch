@@ -15,6 +15,8 @@ Note: Monarch is currently only supported on Linux systems
 
 ## Installation
 
+### On Fedora distributions
+
 `pip install torchmonarch-nightly`
 
 or manually
@@ -58,6 +60,37 @@ pip install --no-build-isolation -e .
 # Run unit tests. consider -s for more verbose output
 pytest python/tests/ -v -m "not oss_skip"
 ```
+
+### On MacOS
+
+You can also build Monarch to run locally on a MacOS system.
+
+Note that this does not support tensor engine, which is tied to CUDA and RDMA (via ibverbs).
+
+
+```sh
+
+# Create and activate the conda environment
+conda create -n monarchenv python=3.10 -y
+conda activate monarchenv
+
+# Install nightly rust toolchain
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+rustup toolchain install nightly
+rustup default nightly
+
+# Install build dependencies
+pip install -r build-requirements.txt
+# Install test dependencies
+pip install -r python/tests/requirements.txt
+
+# Build and install Monarch
+USE_TENSOR_ENGINE=0 pip install --no-build-isolation .
+# or setup for development
+USE_TENSOR_ENGINE=0 pip install --no-build-isolation -e .
+
+```
+
 
 ## Running examples
 

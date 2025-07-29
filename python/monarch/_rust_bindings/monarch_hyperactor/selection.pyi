@@ -28,3 +28,25 @@ class Selection:
             ValueError: if the input string is not a valid selection expression.
         """
         ...
+
+    @classmethod
+    def any(cls) -> Selection:
+        """Selects one element nondeterministically — use this to
+        mean "route to a single random node".
+
+        The '?' expression is automatically expanded to match the
+        dimensionality of the slice. For example, in a 3D slice, the
+        selection becomes `?, ?, ?`.
+        """
+        ...
+
+    @classmethod
+    def all(cls) -> Selection:
+        """Selects all elements in the mesh — use this to mean "route
+        to all nodes".
+
+        The '*' expression is automatically expanded to match the
+        dimensionality of the slice. For example, in a 3D slice, the
+        selection becomes `*, *, *`.
+        """
+        ...

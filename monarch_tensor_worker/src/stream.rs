@@ -45,6 +45,7 @@ use monarch_messages::controller::ControllerMessageClient;
 use monarch_messages::controller::Seq;
 use monarch_messages::controller::WorkerError;
 use monarch_messages::worker::ActorCallParams;
+use monarch_messages::worker::ActorMethodParams;
 use monarch_messages::worker::CallFunctionError;
 use monarch_messages::worker::CallFunctionParams;
 use monarch_messages::worker::SeqError;
@@ -265,6 +266,7 @@ pub enum StreamMessage {
     GetTensorRefUnitTestsOnly(Ref, #[reply] OncePortHandle<Option<TensorCellResult>>),
 
     SendResultOfActorCall(ActorId, ActorCallParams),
+    CallActorMethod(ActorMethodParams),
 }
 
 impl StreamMessage {
@@ -1062,6 +1064,44 @@ impl StreamActor {
         self.env.insert(dest, rvalue.clone());
         Ok(())
     }
+    async fn call_actor(
+        &mut self,
+        cx: &Context<'_, Self>,
+        params: ActorCallParams,
+    ) -> Result<PyObject, CallFunctionError> {
+        let local_state: Result<Vec<PyObject>> = Python::with_gil(|py| {
+            params
+                .local_state
+                .into_iter()
+                .map(|elem| {
+                    // SAFETY: python is gonna make unsafe copies of this stuff anyway
+                    unsafe {
+                        let x = self.ref_to_rvalue(&elem)?.try_to_object_unsafe(py)?.into();
+                        Ok(x)
+                    }
+                })
+                .collect()
+        });
+
+        let (send, recv) = cx.open_once_port();
+        let state = LocalState {
+            response_port: send,
+            state: local_state?,
+        };
+        let x: u64 = params.seq.into();
+        let message = LocalStateBrokerMessage::Set(x as usize, state);
+
+        let broker = BrokerId::new(params.broker_id).resolve(cx).unwrap();
+        broker
+            .send(message)
+            .map_err(|e| CallFunctionError::Error(e.into()))?;
+        let result = recv
+            .recv()
+            .await
+            .map_err(|e| CallFunctionError::Error(e.into()))?;
+
+        result.map_err(|pyerr| anyhow::Error::msg(pyerr.to_string()).into())
+    }
 }
 
 #[async_trait]
@@ -1669,62 +1709,38 @@ impl StreamMessageHandler for StreamActor {
         worker_actor_id: ActorId,
         params: ActorCallParams,
     ) -> anyhow::Result<()> {
-        // TODO: handle mutates
-        let local_state: Result<Vec<PyObject>> = Python::with_gil(|py| {
-            params
-                .local_state
-                .into_iter()
-                .map(|elem| {
-                    // SAFETY: python is gonna make unsafe copies of this stuff anyway
-                    unsafe {
-                        let x = self.ref_to_rvalue(&elem)?.try_to_object_unsafe(py)?.into();
-                        Ok(x)
-                    }
-                })
-                .collect()
-        });
+        let seq = params.seq;
+        let mutates = params.mutates.clone();
+        self.try_define(cx, seq, vec![], &mutates, async |self| {
+            let value = self.call_actor(cx, params).await?;
+            let result = Python::with_gil(|py| {
+                pickle_python_result(py, value.into_bound(py), worker_actor_id)
+            })?;
+            let result = Serialized::serialize(&result).unwrap();
+            self.controller_actor
+                .fetch_result(cx, seq, Ok(result))
+                .await?;
+            Ok(vec![])
+        })
+        .await
+    }
 
-        let (send, recv) = cx.open_once_port();
-
-        let state = LocalState {
-            response_port: send,
-            state: local_state?,
-        };
-        let x: u64 = params.seq.into();
-        let message = LocalStateBrokerMessage::Set(x as usize, state);
-
-        let broker = BrokerId::new(params.broker_id).resolve(cx).unwrap();
-        broker.send(message)?;
-        let result = recv.recv().await?;
-
-        match result {
-            Err(pyerr) => {
-                // If result has "exception" as its kind, then
-                // we need to unpickle and turn it into a WorkerError
-                // and call remote_function_failed otherwise the
-                // controller assumes the object is correct and doesn't handle
-                // dependency tracking correctly.
-                let err = Python::with_gil(|py| -> Result<WorkerError, SerializablePyErr> {
-                    Ok(WorkerError {
-                        worker_actor_id,
-                        backtrace: pyerr.to_string(),
-                    })
-                })?;
-                self.controller_actor
-                    .remote_function_failed(cx, params.seq, err)
-                    .await?;
-            }
-            Ok(value) => {
-                let result = Python::with_gil(|py| {
-                    pickle_python_result(py, value.into_bound(py), worker_actor_id)
-                })?;
-                let result = Serialized::serialize(&result).unwrap();
-                self.controller_actor
-                    .fetch_result(cx, params.seq, Ok(result))
-                    .await?;
-            }
-        }
-        Ok(())
+    async fn call_actor_method(
+        &mut self,
+        cx: &Context<Self>,
+        params: ActorMethodParams,
+    ) -> anyhow::Result<()> {
+        let seq = params.call.seq;
+        let mutates = params.call.mutates.clone();
+        self.try_define(cx, seq, params.results, &mutates, async |self| {
+            let result = self.call_actor(cx, params.call).await?;
+            let result = Python::with_gil(|py| {
+                PyTree::<RValue>::extract_bound(&result.into_bound(py))
+                    .map_err(SerializablePyErr::from_fn(py))
+            })?;
+            Ok(result.into_leaves())
+        })
+        .await
     }
 
     async fn set_value(

@@ -783,11 +783,13 @@ PyMODINIT_FUNC PyInit__gradient_generator(void) {
   PyGradientGeneratorType.tp_new = PyType_GenericNew;
 
   PyObject* m;
-  if (PyType_Ready(&PyGradientGeneratorType) < 0)
+  if (PyType_Ready(&PyGradientGeneratorType) < 0) {
     return NULL;
+  }
   m = PyModule_Create(&gradientmodule);
-  if (m == NULL)
+  if (m == NULL) {
     return NULL;
+  }
   Py_INCREF(&PyGradientGeneratorType);
   if (PyModule_AddObject(
           m, "GradientGenerator", (PyObject*)&PyGradientGeneratorType) < 0) {

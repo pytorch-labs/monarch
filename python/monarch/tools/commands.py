@@ -7,18 +7,19 @@
 # pyre-strict
 
 import argparse
+import asyncio
 import inspect
 import logging
 import os
-import time
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any, Callable, Mapping, Optional, Union
+
+from monarch.tools.components.hyperactor import DEFAULT_NAME
 
 from monarch.tools.config import (  # @manual=//monarch/python/monarch/tools/config/meta:defaults
     Config,
     defaults,
 )
-
 from monarch.tools.mesh_spec import mesh_spec_from_metadata, ServerSpec
 from torchx.runner import Runner  # @manual=//torchx/runner:lib_core
 from torchx.specs import AppDef, AppDryRunInfo, AppState, CfgVal, parse_app_handle
@@ -83,7 +84,7 @@ def component_args_from_cli(
 
 def create(
     config: Config,
-    appdef: AppDef,
+    name: str = DEFAULT_NAME,
 ) -> Union[str, AppDryRunInfo]:
     """Creates a monarch server by submitting it as a job to the target scheduler.
 
@@ -94,7 +95,7 @@ def create(
         from monarch.tools.config import defaults
 
         config = defaults.config(scheduler="slurm")
-        appdef = defaults.component_fn(scheduler=config.scheduler)()
+        config.appdef = defaults.component_fn(scheduler=config.scheduler)()
 
         config.scheduler_args.update(
             {
@@ -105,7 +106,7 @@ def create(
         )
         config.dryrun = True
 
-        create(config, appdef)
+        create(config)
 
 
     Args:
@@ -114,6 +115,7 @@ def create(
         component_fn: a function that returns the AppDef (job def).
             If not provided, defaults to the configured default for the scheduler
             (in most cases ``monarch.tools.components.hyperactor.proc_mesh``)
+        name: the name of the job. If none, a default job name will be created.
     """
     scheduler: str = config.scheduler
     cfg: Mapping[str, CfgVal] = config.scheduler_args
@@ -122,6 +124,8 @@ def create(
     os.environ["TORCHX_CONTEXT_NAME"] = os.getenv("TORCHX_CONTEXT_NAME", "monarch")
 
     with torchx_runner() as runner:
+        appdef: AppDef = AppDef(name, config.appdef.roles, config.appdef.metadata)
+
         info = runner.dryrun(appdef, scheduler, cfg, config.workspace)
 
         info_json_fmt = AppDryRunInfo(
@@ -170,6 +174,8 @@ def info(server_handle: str) -> Optional[ServerSpec]:
         # null-guard since some schedulers do not fill replica_status
         if host_status := replica_status.get(role.name):
             spec.hostnames = [h.hostname for h in host_status]
+            # the mesh status is based on the "least progressive" replica status
+            spec.state = min(h.state for h in host_status)
 
         mesh_specs.append(spec)
 
@@ -211,6 +217,8 @@ async def server_ready(
 
     """
 
+    check_interval_seconds = check_interval.total_seconds()
+    start = datetime.now()
     while True:
         server_spec = info(server_handle)
 
@@ -220,42 +228,56 @@ async def server_ready(
         if server_spec.state <= AppState.PENDING:  # UNSUBMITTED or SUBMITTED or PENDING
             # NOTE: TorchX currently does not have async APIs so need to loop-on-interval
             # TODO maybe inverse exponential backoff instead of constant interval?
-            check_interval_seconds = check_interval.total_seconds()
-            logger.info(
-                "waiting for %s to be %s (current: %s), will check again in %g seconds...",
-                server_handle,
-                AppState.RUNNING,
-                server_spec.state,
-                check_interval_seconds,
+            print(
+                f"Waiting for {server_handle} to be {AppState.RUNNING} (current: {server_spec.state}); "
+                f"will check again in {check_interval_seconds} seconds. "
+                f"Total wait time: {datetime.now() - start}",
+                end="\r",
             )
-            time.sleep(check_interval_seconds)
+            await asyncio.sleep(check_interval_seconds)
             continue
-        else:
-            return server_spec
+
+        # check if hosts are allocated for all the meshes
+        if server_spec.state == AppState.RUNNING:
+            running = True
+            for mesh_spec in server_spec.meshes:
+                if mesh_spec.state <= AppState.PENDING:
+                    print(
+                        f"Job {server_handle} is running but waiting for mesh {mesh_spec.name} "
+                        f"to be {AppState.RUNNING} (current: {mesh_spec.state}); "
+                        f"will check again in {check_interval_seconds} seconds. "
+                        f"Total wait time: {datetime.now() - start}",
+                        end="\r",
+                    )
+                    running = False
+                    break
+            if not running:
+                await asyncio.sleep(check_interval_seconds)
+                continue
+
+        return server_spec
 
 
+# TODO: this API is overloaded. Ideally, we do not need config to get or an handle to create.
 async def get_or_create(
     name: str,
     config: Config,
-    appdef: AppDef,
     check_interval: timedelta = _5_SECONDS,
 ) -> ServerSpec:
-    """Waits for the server called `name` in the scheduler specified in the `config`
+    """Waits for the server based on identity `name` in the scheduler specified in the `config`
     to be ready (e.g. RUNNING). If the server is not found then this function creates one
-    per the `appdef` spec, and waits for the server to be ready before returning.
+    per the `config` spec, and waits for the server to be ready before returning.
 
     Usage:
 
     .. code-block:: python
 
-        import getpass
         from monarch.tools.config import defaults
 
-        USER = getpass.getuser()
         config = defaults.config(scheduler)
-        appdef = defaults.component_fn(config.scheduler)()
+        config.appdef = defaults.component_fn(config.scheduler)()
 
-        server_handle = get_or_create(f"{USER}_monarch", config, appdef)
+        server_handle = get_or_create(name="my_job_name", config)
         server_info = info(server_handle)
 
     Returns: A `ServerSpec` containing information about either the existing or the newly
@@ -273,7 +295,7 @@ async def get_or_create(
         )
 
         # no dryrun (see assertion above) support so will always be a handle (str)
-        new_server_handle = str(create(config, appdef))
+        new_server_handle = str(create(config, name))
 
         logger.info(f"created new `{new_server_handle}` waiting for it to be ready...")
 
@@ -289,10 +311,10 @@ async def get_or_create(
                 f"the new server `{new_server_handle}` has {server_info.state}"
             )
 
-        logger.info(f"server `{new_server_handle}` is: {server_info.state}")
+        print(f"\x1b[36mNew job `{new_server_handle}` is ready to serve. \x1b[0m")
         return server_info
     else:
-        logger.info("found existing RUNNING server `%s`", server_handle)
+        print(f"\x1b[36mFound existing job `{server_handle}` ready to serve. \x1b[0m")
         return server_info
 
 

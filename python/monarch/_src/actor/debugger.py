@@ -20,9 +20,9 @@ from monarch._src.actor.actor_mesh import (
     Actor,
     ActorMeshRef,
     DebugContext,
-    endpoint,
     MonarchContext,
 )
+from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.pdb_wrapper import DebuggerWrite, PdbWrapper
 from monarch._src.actor.sync_state import fake_sync_state
 

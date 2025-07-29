@@ -192,7 +192,11 @@ class TestShape(TestCase):
 
 
 class TestSelection(TestCase):
-    def test_parse_repr(self) -> None:
+    def test_constants(self) -> None:
+        self.assertEqual(repr(Selection.any()), "Any(True)")
+        self.assertEqual(repr(Selection.all()), "All(True)")
+
+    def test_parse(self) -> None:
         sel = Selection.from_string("(*, 1:3) & (0, *)")
         self.assertIsInstance(sel, Selection)
         self.assertEqual(

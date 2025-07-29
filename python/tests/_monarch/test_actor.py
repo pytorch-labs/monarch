@@ -9,6 +9,7 @@
 import time
 
 from monarch._rust_bindings.monarch_hyperactor.actor import (
+    MethodSpecifier,
     PythonMessage,
     PythonMessageKind,
 )
@@ -22,6 +23,9 @@ def test_python_message() -> None:
     payload: str = "a" * 2**30  # 1gb
     blob: bytes = payload.encode("utf-8")
     t = time.time()
-    PythonMessage(PythonMessageKind.CallMethod(method, None), blob)
+    PythonMessage(
+        PythonMessageKind.CallMethod(MethodSpecifier.ReturnsResponse(method), None),
+        blob,
+    )
     t_spent = time.time() - t
     assert t_spent < 1

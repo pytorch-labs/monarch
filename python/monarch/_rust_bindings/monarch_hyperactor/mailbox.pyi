@@ -6,8 +6,7 @@
 
 # pyre-strict
 
-import asyncio
-from typing import Any, final, Generator, Generic, Protocol, TypeVar
+from typing import final, Protocol
 
 from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessage,
@@ -17,6 +16,7 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape
+from monarch._rust_bindings.monarch_hyperactor.tokio import PythonTask
 
 @final
 class PortId:
@@ -219,25 +219,3 @@ class Reducer(Protocol):
 
     This method's Rust counterpart is `CommReducer::reduce`.
     """
-
-T = TypeVar("T")
-
-class PythonTask(Generic[T]):
-    """
-    A tokio::Future whose result returns a python object.
-    """
-    def into_future(self) -> asyncio.Future[T]:
-        """
-        Return an asyncio.Future that can be awaited to get the result of this task.
-        Consumes the PythonTask object.
-        """
-        ...
-
-    def block_on(self) -> T:
-        """
-        Synchronously wait on the result of this task, returning the result.
-        Consumes the PythonTask object.
-        """
-        ...
-
-    def __await__(self) -> Generator[T, None, T]: ...

@@ -12,7 +12,7 @@ anyhow = "1.0.98"
 async-trait = "0.1.86"
 controller = { version = "0.0.0", path = "../controller" }
 dashmap = { version = "5.5.3", features = ["rayon", "serde"] }
-futures = { version = "0.3.30", features = ["async-await", "compat"] }
+futures = { version = "0.3.31", features = ["async-await", "compat"] }
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_multiprocess = { version = "0.0.0", path = "../hyperactor_multiprocess" }
 lazy_static = "1.5"

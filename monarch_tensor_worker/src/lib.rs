@@ -72,6 +72,7 @@ use monarch_messages::controller::ControllerMessageClient;
 use monarch_messages::controller::Seq;
 use monarch_messages::wire_value::WireValue;
 use monarch_messages::worker::ActorCallParams;
+use monarch_messages::worker::ActorMethodParams;
 use monarch_messages::worker::CallFunctionError;
 use monarch_messages::worker::CallFunctionParams;
 use monarch_messages::worker::Factory;
@@ -858,6 +859,15 @@ impl WorkerMessageHandler for WorkerActor {
         stream
             .send_result_of_actor_call(cx, cx.self_id().clone(), params)
             .await?;
+        Ok(())
+    }
+    async fn call_actor_method(
+        &mut self,
+        cx: &hyperactor::Context<Self>,
+        params: ActorMethodParams,
+    ) -> Result<()> {
+        let stream = self.try_get_stream(params.call.stream)?;
+        stream.call_actor_method(cx, params).await?;
         Ok(())
     }
     async fn split_comm(

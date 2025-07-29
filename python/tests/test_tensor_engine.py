@@ -8,7 +8,7 @@ import monarch
 import pytest
 import torch
 from monarch import remote
-from monarch.actor import Actor, endpoint, proc_mesh
+from monarch.actor import Actor, as_endpoint, endpoint, proc_mesh
 from monarch.mesh_controller import spawn_tensor_engine
 
 
@@ -104,3 +104,29 @@ def test_actor_tensor_ordering() -> None:
             results.append(counter.incr.call(1))
 
         assert list(range(10)) == [r.get().item(hosts=0, gpus=0) for r in results]
+
+
+class Linear(Actor):
+    def __init__(self, N: int, M: int):
+        self.weight = torch.zeros((N, M))
+
+    def forward(self, x) -> torch.Tensor:
+        return x @ self.weight
+
+    @endpoint(propagate="inspect")
+    def update(self, w: torch.Tensor) -> None:
+        self.weight += w
+
+
+@two_gpu
+def test_rref_actor() -> None:
+    pm = proc_mesh(gpus=1).get()
+    with pm.activate():
+        x = pm.spawn("linear", Linear, 3, 4).get()
+
+        y = torch.ones((4, 3))
+        t = as_endpoint(x.forward, propagate=lambda x: torch.rand(3, 4)).rref(y)
+        assert monarch.inspect(t.sum()).item() == 0
+        x.update.rref(torch.ones((3, 4)))
+        t = as_endpoint(x.forward, propagate=lambda x: torch.rand(3, 4)).rref(y)
+        assert monarch.inspect(t.sum()).item() == 3 * 4 * 4

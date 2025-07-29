@@ -30,7 +30,8 @@ import monarch.common.messages as messages
 import torch
 from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape
-from monarch._src.actor.actor_mesh import Extent, Port, PortTuple, Selection
+from monarch._src.actor.actor_mesh import Port, PortTuple
+from monarch._src.actor.endpoint import Extent, Selection
 
 from monarch.common import _coalescing, device_mesh, stream
 from monarch.common.future import Future as OldFuture
@@ -38,7 +39,7 @@ from monarch.common.future import Future as OldFuture
 if TYPE_CHECKING:
     from monarch.common.client import Client
 
-from monarch._src.actor.actor_mesh import Endpoint
+from monarch._src.actor.endpoint import Endpoint
 from monarch.common.device_mesh import RemoteProcessGroup
 from monarch.common.fake import fake_call
 
@@ -70,9 +71,11 @@ T = TypeVar("T")
 
 class Remote(Generic[P, R], Endpoint[P, R]):
     def __init__(self, impl: Any, propagator_arg: Propagator):
+        super().__init__(propagator_arg)
         self._remote_impl = impl
-        self._propagator_arg = propagator_arg
-        self._cache: Optional[dict] = None
+
+    def _call_name(self) -> Any:
+        return self._remote_impl
 
     def _send(
         self,
@@ -154,29 +157,7 @@ class Remote(Generic[P, R], Endpoint[P, R]):
     def _maybe_resolvable(self):
         return None if self._remote_impl is None else self._resolvable
 
-    def _propagate(self, args, kwargs, fake_args, fake_kwargs):
-        if self._propagator_arg is None or self._propagator_arg == "cached":
-            if self._cache is None:
-                self._cache = {}
-            return _cached_propagation(self._cache, self._resolvable, args, kwargs)
-        elif self._propagator_arg == "inspect":
-            return None
-        elif self._propagator_arg == "mocked":
-            raise NotImplementedError("mocked propagation")
-        else:
-            return fake_call(self._propagator_arg, *fake_args, **fake_kwargs)
-
-    def _fetch_propagate(self, args, kwargs, fake_args, fake_kwargs):
-        if self._propagator_arg is None:
-            return  # no propgator provided, so we just assume no mutations
-        return self._propagate(args, kwargs, fake_args, fake_kwargs)
-
-    def _pipe_propagate(self, args, kwargs, fake_args, fake_kwargs):
-        if not callable(self._propagator_arg):
-            raise ValueError("Must specify explicit callable for pipe")
-        return self._propagate(args, kwargs, fake_args, fake_kwargs)
-
-    def rref(self, *args: P.args, **kwargs: P.kwargs) -> R:
+    def _rref(self, args, kwargs):
         return dtensor_dispatch(
             self._resolvable,
             self._propagate,
@@ -230,7 +211,7 @@ remote_identity = Remote(None, lambda x: x)
 
 
 def call_on_shard_and_fetch(
-    remote: Remote[P, R], *args, shard: Dict[str, int] | None = None, **kwargs
+    remote: Endpoint[P, R], *args, shard: Dict[str, int] | None = None, **kwargs
 ) -> OldFuture[R]:
     # We have to flatten the tensors twice: first to discover
     # which mesh we are working on to shard it, and then again when doing the
@@ -238,13 +219,13 @@ def call_on_shard_and_fetch(
     # implicit inference of the mesh from the tensors.
     dtensors, unflatten = flatten((args, kwargs), lambda x: isinstance(x, torch.Tensor))
     with InputChecker.from_flat_args(
-        remote._remote_impl, dtensors, unflatten
+        remote._call_name(), dtensors, unflatten
     ) as checker:
         checker.check_mesh_stream_local(device_mesh._active, stream._active)
 
         if not hasattr(checker.mesh.client, "_mesh_controller"):
             return _old_call_on_shard_and_fetch(
-                remote,
+                cast("Remote[P, R]", remote),
                 *args,
                 shard=shard,
                 **kwargs,
@@ -371,8 +352,9 @@ _miss = 0
 _hit = 0
 
 
-def _cached_propagation(_cache, rfunction, args, kwargs):
+def _cached_propagation(_cache, rfunction: ResolvableFunction, args, kwargs):
     tensors, shape_key = hashable_tensor_flatten(args, kwargs)
+    # pyre-ignore
     inputs_group = TensorGroup([t._fake for t in tensors])
     requires_grads = tuple(t.requires_grad for t in tensors)
     key = (shape_key, inputs_group.pattern, requires_grads)

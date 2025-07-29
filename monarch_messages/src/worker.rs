@@ -415,6 +415,13 @@ pub struct ActorCallParams {
     pub mutates: Vec<Ref>,
     pub stream: StreamRef,
 }
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ActorMethodParams {
+    pub results: Vec<Option<Ref>>,
+    pub call: ActorCallParams,
+}
+
 /// Type of reduction for [`WorkerMessage::Reduce`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Reduction {
@@ -817,6 +824,7 @@ pub enum WorkerMessage {
     },
 
     SendResultOfActorCall(ActorCallParams),
+    CallActorMethod(ActorMethodParams),
     PipeRecv {
         seq: Seq,
         /// Result refs.

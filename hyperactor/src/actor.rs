@@ -674,7 +674,8 @@ mod tests {
         let client = proc.attach("client").unwrap();
         let (undeliverable_msg_tx, _) = client.open_port();
 
-        let ping_pong_actor_params = PingPongActorParams::new(undeliverable_msg_tx.bind(), None);
+        let ping_pong_actor_params =
+            PingPongActorParams::new(Some(undeliverable_msg_tx.bind()), None);
         let ping_handle = proc
             .spawn::<PingPongActor>("ping", ping_pong_actor_params.clone())
             .await
@@ -705,7 +706,7 @@ mod tests {
 
         let error_ttl = 66;
         let ping_pong_actor_params =
-            PingPongActorParams::new(undeliverable_msg_tx.bind(), Some(error_ttl));
+            PingPongActorParams::new(Some(undeliverable_msg_tx.bind()), Some(error_ttl));
         let ping_handle = proc
             .spawn::<PingPongActor>("ping", ping_pong_actor_params.clone())
             .await

@@ -8,6 +8,7 @@
 
 use std::time::Instant;
 
+use criterion::BenchmarkId;
 use criterion::Criterion;
 use criterion::Throughput;
 use criterion::criterion_group;
@@ -40,8 +41,6 @@ impl Message {
 
 // Benchmark message sizes
 fn bench_message_sizes(c: &mut Criterion) {
-    let mut group = c.benchmark_group("message_sizes");
-
     let transports = vec![
         ("local", ChannelTransport::Local),
         ("tcp", ChannelTransport::Tcp),
@@ -49,42 +48,32 @@ fn bench_message_sizes(c: &mut Criterion) {
         ("unix", ChannelTransport::Unix),
     ];
 
-    for size_exp in 5..10 {
-        let size = 10_usize.pow(size_exp);
-        let fsize = size as f64;
-        let (nice_size, postfix) = match size {
-            1_000..=999_999 => (fsize / 1000f64, "kb"),
-            1_000_000..=999_999_999 => (fsize / 1_000_000f64, "mb"),
-            1_000_000_000..=999_999_999_999 => (fsize / 1_000_000_000f64, "gb"),
-            _ => (fsize, "b"),
-        };
-
-        for (transport_name, transport) in &transports {
+    for (transport_name, transport) in &transports {
+        for size in [10_000, 1_000_000, 10_000_000, 100_000_000, 1_000_000_000] {
+            let mut group = c.benchmark_group(format!("send_receive/{}", transport_name));
             let transport = transport.clone();
             group.throughput(Throughput::Bytes(size as u64));
-            group.bench_function(
-                format!("message_{}_{}{}", transport_name, nice_size, postfix),
-                move |b| {
-                    let mut b = b.to_async(Runtime::new().unwrap());
-                    let tt = &transport;
-                    b.iter_custom(|iters| async move {
-                        let addr = ChannelAddr::any(tt.clone());
-                        let (listen_addr, mut rx) = serve::<Message>(addr).await.unwrap();
-                        let tx = dial::<Message>(listen_addr).unwrap();
-                        let msg = Message::new(0, size);
-                        let start = Instant::now();
-                        for _ in 0..iters {
-                            tx.post(msg.clone());
-                            rx.recv().await.unwrap();
-                        }
-                        start.elapsed()
-                    });
-                },
-            );
+            group.sampling_mode(criterion::SamplingMode::Flat);
+            group.sample_size(10);
+            group.bench_function(BenchmarkId::from_parameter(size), move |b| {
+                let mut b = b.to_async(Runtime::new().unwrap());
+                let tt = &transport;
+                b.iter_custom(|iters| async move {
+                    let addr = ChannelAddr::any(tt.clone());
+                    let (listen_addr, mut rx) = serve::<Message>(addr).await.unwrap();
+                    let tx = dial::<Message>(listen_addr).unwrap();
+                    let msg = Message::new(0, size);
+                    let start = Instant::now();
+                    for _ in 0..iters {
+                        tx.post(msg.clone());
+                        rx.recv().await.unwrap();
+                    }
+                    start.elapsed()
+                });
+            });
+            group.finish();
         }
     }
-
-    group.finish();
 }
 
 criterion_group!(benches, bench_message_sizes);

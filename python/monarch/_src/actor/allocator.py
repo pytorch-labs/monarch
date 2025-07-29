@@ -8,7 +8,7 @@
 
 import abc
 import logging
-from typing import final, Optional
+from typing import Awaitable, final, Optional, TYPE_CHECKING
 
 from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monarch/monarch_extension:monarch_extension
     Alloc,
@@ -19,6 +19,9 @@ from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monar
     SimAllocatorBase,
 )
 
+if TYPE_CHECKING:
+    from monarch._rust_bindings.monarch_hyperactor.tokio import PythonTask
+
 from monarch._src.actor.future import Future
 
 ALLOC_LABEL_PROC_MESH_NAME = "procmesh.monarch.meta.com/name"
@@ -26,61 +29,42 @@ ALLOC_LABEL_PROC_MESH_NAME = "procmesh.monarch.meta.com/name"
 logger: logging.Logger = logging.getLogger(__name__)
 
 
+class AllocateMixin(abc.ABC):
+    @abc.abstractmethod
+    def allocate_nonblocking(self, spec: AllocSpec) -> "Awaitable[Alloc]": ...
+
+    def allocate(self, spec: AllocSpec) -> Future[Alloc]:
+        """
+        Allocate a process according to the provided spec.
+
+        Arguments:
+        - `spec`: The spec to allocate according to.
+
+        Returns:
+        - A future that will be fulfilled when the requested allocation is fulfilled.
+        """
+        return Future(impl=lambda: self.allocate_nonblocking(spec), requires_loop=False)
+
+
 @final
-class ProcessAllocator(ProcessAllocatorBase):
+class ProcessAllocator(ProcessAllocatorBase, AllocateMixin):
     """
     An allocator that allocates by spawning local processes.
     """
 
-    def allocate(self, spec: AllocSpec) -> Future[Alloc]:
-        """
-        Allocate a process according to the provided spec.
-
-        Arguments:
-        - `spec`: The spec to allocate according to.
-
-        Returns:
-        - A future that will be fulfilled when the requested allocation is fulfilled.
-        """
-        return Future(impl=lambda: self.allocate_nonblocking(spec), requires_loop=False)
-
 
 @final
-class LocalAllocator(LocalAllocatorBase):
+class LocalAllocator(LocalAllocatorBase, AllocateMixin):
     """
     An allocator that allocates by spawning actors into the current process.
     """
 
-    def allocate(self, spec: AllocSpec) -> Future[Alloc]:
-        """
-        Allocate a process according to the provided spec.
-
-        Arguments:
-        - `spec`: The spec to allocate according to.
-
-        Returns:
-        - A future that will be fulfilled when the requested allocation is fulfilled.
-        """
-        return Future(impl=lambda: self.allocate_nonblocking(spec), requires_loop=False)
-
 
 @final
-class SimAllocator(SimAllocatorBase):
+class SimAllocator(SimAllocatorBase, AllocateMixin):
     """
     An allocator that allocates by spawning actors into the current process using simulated channels for transport
     """
-
-    def allocate(self, spec: AllocSpec) -> Future[Alloc]:
-        """
-        Allocate a process according to the provided spec.
-
-        Arguments:
-        - `spec`: The spec to allocate according to.
-
-        Returns:
-        - A future that will be fulfilled when the requested allocation is fulfilled.
-        """
-        return Future(impl=lambda: self.allocate_nonblocking(spec), requires_loop=False)
 
 
 class RemoteAllocInitializer(abc.ABC):
@@ -210,20 +194,8 @@ class TorchXRemoteAllocInitializer(RemoteAllocInitializer):
 
 
 @final
-class RemoteAllocator(RemoteAllocatorBase):
+class RemoteAllocator(RemoteAllocatorBase, AllocateMixin):
     """
     An allocator that allocates by spawning actors on a remote host.
     The remote host must be running hyperactor's remote-process-allocator.
     """
-
-    def allocate(self, spec: AllocSpec) -> Future[Alloc]:
-        """
-        Allocate a process according to the provided spec.
-
-        Arguments:
-        - `spec`: The spec to allocate according to.
-
-        Returns:
-        - A future that will be fulfilled when the requested allocation is fulfilled.
-        """
-        return Future(impl=lambda: self.allocate_nonblocking(spec), requires_loop=False)

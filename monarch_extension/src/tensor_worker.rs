@@ -1373,6 +1373,7 @@ pub(crate) fn worker_message_to_py(py: Python<'_>, message: &WorkerMessage) -> P
         WorkerMessage::SetRefUnitTestsOnly { .. } => unimplemented!(),
         WorkerMessage::GetRefUnitTestsOnly { .. } => unimplemented!(),
         WorkerMessage::SendResultOfActorCall { .. } => unimplemented!(),
+        WorkerMessage::CallActorMethod { .. } => unimplemented!(),
     }
 }
 

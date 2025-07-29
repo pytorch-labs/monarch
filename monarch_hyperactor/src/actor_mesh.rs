@@ -35,10 +35,8 @@ use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::Mutex;
 
-use crate::actor::PyPythonTask;
 use crate::actor::PythonActor;
 use crate::actor::PythonMessage;
-use crate::actor::PythonTask;
 use crate::mailbox::PyMailbox;
 use crate::mailbox::PythonOncePortReceiver;
 use crate::mailbox::PythonPortReceiver;
@@ -48,6 +46,8 @@ use crate::selection::PySelection;
 use crate::shape::PyShape;
 use crate::supervision::SupervisionError;
 use crate::supervision::Unhealthy;
+use crate::tokio::PyPythonTask;
+use crate::tokio::PythonTask;
 
 #[pyclass(
     name = "PythonActorMesh",
@@ -98,6 +98,7 @@ impl PythonActorMesh {
     ) {
         loop {
             let event = events.next().await;
+            tracing::debug!("actor_mesh_monitor received supervision event: {event:?}");
             let mut inner_unhealthy_event = unhealthy_event.lock().unwrap();
             match &event {
                 None => *inner_unhealthy_event = Unhealthy::StreamClosed,
@@ -107,7 +108,8 @@ impl PythonActorMesh {
             // Ignore the sender error when there is no receiver,
             // which happens when there is no active requests to this
             // mesh.
-            let _ = user_sender.send(event.clone());
+            let ret = user_sender.send(event.clone());
+            tracing::debug!("actor_mesh_monitor user_sender send: {ret:?}");
 
             if event.is_none() {
                 // The mesh is stopped, so we can stop the monitor.
@@ -395,14 +397,17 @@ struct ActorMeshMonitor {
 }
 
 impl ActorMeshMonitor {
-    pub async fn next(&self) -> PyActorSupervisionEvent {
+    pub async fn next(&self) -> Result<PyActorSupervisionEvent, PyErr> {
         let receiver = self.receiver.clone();
         let receiver = receiver
             .borrow()
             .expect("`Actor mesh receiver` is shutdown");
         let mut receiver = receiver.lock().await;
-        let event = receiver.recv().await.unwrap();
-        match event {
+        let event = receiver.recv().await.map_err(|e| {
+            PyErr::new::<PyEOFError, _>(format!("Actor mesh monitor channel closed: {}", e))
+        })?;
+
+        Ok(match event {
             None => PyActorSupervisionEvent {
                 // Dummy actor as place holder to indicate the whole mesh is stopped
                 // TODO(albertli): remove this when pushing all supervision logic to rust.
@@ -410,7 +415,7 @@ impl ActorMeshMonitor {
                 actor_status: "actor mesh is stopped due to proc mesh shutdown".to_string(),
             },
             Some(event) => PyActorSupervisionEvent::from(event.clone()),
-        }
+        })
     }
 }
 

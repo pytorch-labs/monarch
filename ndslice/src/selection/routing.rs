@@ -233,12 +233,39 @@ impl RoutingFrameKey {
 
 impl RoutingFrame {
     /// Constructs the initial frame at the root coordinate (all
-    /// zeros).
+    /// zeros). Selections are expanded as necessary to ensure they
+    /// have depth equal to the slice dimensionality. See the docs for
+    /// `canonicalize_to_dimensions` for the rules.
+    ///
+    /// ### Canonical Handling of Zero-Dimensional Slices
+    ///
+    /// A `Slice` with zero dimensions represents the empty product
+    /// `∏_{i=1}^{0} Xᵢ`, which has exactly one element: the empty
+    /// tuple. To maintain uniform routing semantics, we canonically
+    /// embed such 0D slices as 1D slices of extent 1:
+    ///
+    /// ```text
+    /// Slice::new(offset, [1], [1])
+    /// ```
+    ///
+    /// This embedding preserves the correct number of addressable
+    /// points and allows the routing machinery to proceed through the
+    /// usual recursive strategy without introducing special cases. The
+    /// selected coordinate is `vec![0]`, and `dim = 0` proceeds as
+    /// usual. This makes the routing logic consistent with evaluation
+    /// and avoids edge case handling throughout the codebase.
     pub fn root(selection: Selection, slice: Slice) -> Self {
+        // Canonically embed 0D as 1D (extent 1).
+        let slice = if slice.num_dim() > 0 {
+            Arc::new(slice)
+        } else {
+            Arc::new(Slice::new(slice.offset(), vec![1], vec![1]).unwrap())
+        };
+        let n = slice.num_dim();
         RoutingFrame {
-            here: vec![0; slice.num_dim()],
-            selection,
-            slice: Arc::new(slice),
+            here: vec![0; n],
+            selection: selection.canonicalize_to_dimensions(n),
+            slice,
             dim: 0,
         }
     }
@@ -360,23 +387,11 @@ impl RoutingFrame {
     ///
     /// ---
     ///
-    /// ### Canonical Handling of Zero-Dimensional Slices
+    /// ### Panics
     ///
-    /// A `Slice` with zero dimensions represents the empty product
-    /// `∏_{i=1}^{0} Xᵢ`, which has exactly one element: the empty
-    /// tuple. To maintain uniform routing semantics, we canonically
-    /// embed such 0D slices as 1D slices of extent 1:
-    ///
-    /// ```text
-    /// Slice::new(offset, [1], [1])
-    /// ```
-    ///
-    /// This embedding preserves the correct number of addressable
-    /// points and allows the routing machinery to proceed through the
-    /// usual recursive strategy without introducing special cases. The
-    /// selected coordinate is `vec![0]`, and `dim = 0` proceeds as
-    /// usual. This makes the routing logic consistent with evaluation
-    /// and avoids edge case handling throughout the codebase.
+    /// Panics if `slice.num_dim() == 0`. Use a canonical embedding
+    /// (e.g., 0D → 1D) before calling this (see e.g.
+    /// `RoutingFrame::root`).
     ///
     /// ---
     ///
@@ -398,19 +413,9 @@ impl RoutingFrame {
         _chooser: &mut dyn FnMut(&Choice) -> usize,
         f: &mut dyn FnMut(RoutingStep) -> ControlFlow<()>,
     ) -> ControlFlow<()> {
-        if self.slice.num_dim() == 0 {
-            // Canonically embed 0D as 1D (extent 1).
-            let embedded = Slice::new(self.slice.offset(), vec![1], vec![1]).unwrap();
-            let mut this = self.clone();
-            this.slice = Arc::new(embedded);
-            this.here = vec![0];
-            return this.next_steps(_chooser, f);
-        }
-        let selection = self
-            .selection
-            .clone()
-            .promote_terminal(self.dim, self.slice.num_dim());
-        match &selection {
+        assert!(self.slice.num_dim() > 0, "next_steps requires num_dims > 0");
+
+        match &self.selection {
             Selection::True => ControlFlow::Continue(()),
             Selection::False => ControlFlow::Continue(()),
             Selection::All(inner) => {
@@ -1626,9 +1631,26 @@ mod tests {
         use crate::selection::dsl::*;
 
         let slice = Slice::new(42, vec![], vec![]).unwrap();
+
         let selection = true_();
         let frame = RoutingFrame::root(selection, slice.clone());
+        let mut steps = vec![];
+        let _ = frame.next_steps(
+            &mut |_| panic!("Unexpected Choice in 0D test"),
+            &mut |step| {
+                steps.push(step);
+                ControlFlow::Continue(())
+            },
+        );
 
+        assert_eq!(steps.len(), 1);
+        let step = steps[0].as_forward().unwrap();
+        assert_eq!(step.here, vec![0]);
+        assert!(step.deliver_here());
+        assert_eq!(step.slice.location(&step.here).unwrap(), 42);
+
+        let selection = all(true_());
+        let frame = RoutingFrame::root(selection, slice.clone());
         let mut steps = vec![];
         let _ = frame.next_steps(
             &mut |_| panic!("Unexpected Choice in 0D test"),
@@ -1645,8 +1667,7 @@ mod tests {
         assert_eq!(step.slice.location(&step.here).unwrap(), 42);
 
         let selection = false_();
-        let frame = RoutingFrame::root(selection, slice);
-
+        let frame = RoutingFrame::root(selection, slice.clone());
         let mut steps = vec![];
         let _ = frame.next_steps(
             &mut |_| panic!("Unexpected Choice in 0D test"),
@@ -1656,6 +1677,22 @@ mod tests {
             },
         );
 
+        assert_eq!(steps.len(), 1);
+        let step = steps[0].as_forward().unwrap();
+        assert_eq!(step.here, vec![0]);
+        assert!(!step.deliver_here());
+        assert_eq!(step.slice.location(&step.here).unwrap(), 42);
+
+        let selection = all(false_());
+        let frame = RoutingFrame::root(selection, slice.clone());
+        let mut steps = vec![];
+        let _ = frame.next_steps(
+            &mut |_| panic!("Unexpected Choice in 0D test"),
+            &mut |step| {
+                steps.push(step);
+                ControlFlow::Continue(())
+            },
+        );
         assert_eq!(steps.len(), 1);
         let step = steps[0].as_forward().unwrap();
         assert_eq!(step.here, vec![0]);

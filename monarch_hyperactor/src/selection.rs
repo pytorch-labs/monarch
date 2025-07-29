@@ -6,6 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use hyperactor_mesh::sel;
 use ndslice::selection::Selection;
 use pyo3::PyResult;
 use pyo3::prelude::*;
@@ -39,6 +40,17 @@ impl PySelection {
         format!("{:?}", self.inner)
     }
 
+    /// Parses a selection expression from a string.
+    ///
+    /// This allows you to construct a `PySelection` using the
+    /// selection algebra surface syntax, such as `"(*, 0:4, ?)"`.
+    ///
+    /// Raises:
+    ///     ValueError: If the input string is not a valid selection
+    ///     expression.
+    ///
+    /// Example:
+    ///     PySelection.from_string("(*, 1:3, ?)") # subset of a mesh
     #[classmethod]
     #[pyo3(name = "from_string")]
     pub fn parse(_cls: Bound<'_, PyType>, input: &str) -> PyResult<Self> {
@@ -47,6 +59,28 @@ impl PySelection {
         })?;
 
         Ok(PySelection::from(selection))
+    }
+
+    /// Selects all elements in the mesh — use this to mean "route to
+    /// all nodes".
+    ///
+    /// The '*' expression is automatically expanded to match the
+    /// dimensionality of the slice. For example, in a 3D slice, the
+    /// selection becomes `*, *, *`.
+    #[classmethod]
+    pub fn all(_cls: Bound<'_, PyType>) -> Self {
+        PySelection::from(sel!(*))
+    }
+
+    /// Selects one element nondeterministically — use this to mean
+    /// "route to a single random node".
+    ///
+    /// The '?' expression is automatically expanded to match the
+    /// dimensionality of the slice. For example, in a 3D slice, the
+    /// selection becomes `?, ?, ?`.
+    #[classmethod]
+    pub fn any(_cls: Bound<'_, PyType>) -> Self {
+        PySelection::from(sel!(?))
     }
 }
 

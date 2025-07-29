@@ -42,10 +42,9 @@ from monarch._src.actor.actor_mesh import (
     _ActorMeshRefImpl,
     Actor,
     ActorMeshRef,
-    endpoint,
     fake_sync_state,
-    MonarchContext,
 )
+
 from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator, SimAllocator
 from monarch._src.actor.code_sync import (
     CodeSyncMeshClient,
@@ -60,20 +59,22 @@ from monarch._src.actor.debugger import (
 )
 
 from monarch._src.actor.device_utils import _local_device_count
+
+from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.future import Future
 from monarch._src.actor.shape import MeshTrait
 
 HAS_TENSOR_ENGINE = False
 try:
     from monarch._rust_bindings.rdma import (  # type: ignore[import]
+        _RdmaBuffer,
         _RdmaManager,
-        create_rdma_manager_blocking,
     )
 
-    HAS_TENSOR_ENGINE = True
+    # type: ignore[16]
+    HAS_TENSOR_ENGINE = _RdmaBuffer.rdma_supported()
 except ImportError:
     logging.warning("RDMA is not available on this platform")
-    pass
 
 
 if TYPE_CHECKING:
@@ -87,7 +88,7 @@ class SetupActor(Actor):
     Typically used to setup the environment variables.
     """
 
-    def __init__(self, env: Callable[[MonarchContext], None]) -> None:
+    def __init__(self, env: Callable[[], None]) -> None:
         """
         Initialize the setup actor with the user defined setup method.
         """
@@ -98,8 +99,7 @@ class SetupActor(Actor):
         """
         Call the user defined setup method with the monarch context.
         """
-        ctx = MonarchContext.get()
-        self._setup_method(ctx)
+        self._setup_method()
 
 
 T = TypeVar("T")
@@ -112,7 +112,7 @@ except ImportError:
 
 
 async def _allocate_nonblocking(
-    alloc: Alloc, setup: Callable[[MonarchContext], None] | None = None
+    alloc: Alloc, setup: Callable[[], None] | None = None
 ) -> "ProcMesh":
     _proc_mesh = await HyProcMesh.allocate_nonblocking(alloc)
     if setup is None:
@@ -153,7 +153,9 @@ class ProcMesh(MeshTrait):
         with fake_sync_state():
             if _mock_shape is None and HAS_TENSOR_ENGINE:
                 # type: ignore[21]
-                self._rdma_manager = create_rdma_manager_blocking(self._proc_mesh)
+                self._rdma_manager = _RdmaManager.create_rdma_manager_blocking(
+                    self._proc_mesh
+                )
             if not _is_initializing_debugger and _mock_shape is None:
                 self._debug_manager = self.spawn(
                     _DEBUG_MANAGER_ACTOR_NAME, DebugManager, debug_client()
@@ -207,7 +209,7 @@ class ProcMesh(MeshTrait):
 
     @classmethod
     def from_alloc(
-        self, alloc: Alloc, setup: Callable[[MonarchContext], None] | None = None
+        self, alloc: Alloc, setup: Callable[[], None] | None = None
     ) -> Future["ProcMesh"]:
         """
         Allocate a process mesh according to the provided alloc.
@@ -215,7 +217,17 @@ class ProcMesh(MeshTrait):
 
         Arguments:
         - `alloc`: The alloc to allocate according to.
-        - `setup`: A lambda taking MonarchContext as param, can be used to setup env vars on the allocated mesh
+        - `setup`: An optional lambda function to configure environment variables on the allocated mesh.
+        Use the `current_rank()` method within the lambda to obtain the rank.
+
+        Example of a setup method to initialize torch distributed environment variables:
+        ```
+        def setup():
+            rank = current_rank()
+            os.environ["RANK"] = str(rank)
+            os.environ["WORLD_SIZE"] = str(len(rank.shape))
+            os.environ["LOCAL_RANK"] = str(rank["gpus"])
+        ```
         """
         return Future(
             impl=lambda: _allocate_nonblocking(alloc, setup),
@@ -424,7 +436,7 @@ async def proc_mesh_nonblocking(
     gpus: Optional[int] = None,
     hosts: int = 1,
     env: dict[str, str] | None = None,
-    setup: Callable[[MonarchContext], None] | None = None,
+    setup: Callable[[], None] | None = None,
 ) -> ProcMesh:
     if gpus is None:
         gpus = _local_device_count()
@@ -453,7 +465,7 @@ def proc_mesh(
     gpus: Optional[int] = None,
     hosts: int = 1,
     env: dict[str, str] | None = None,
-    setup: Callable[[MonarchContext], None] | None = None,
+    setup: Callable[[], None] | None = None,
 ) -> Future[ProcMesh]:
     return Future(
         impl=lambda: proc_mesh_nonblocking(

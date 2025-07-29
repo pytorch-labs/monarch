@@ -595,6 +595,8 @@ async def test_supervision_with_proc_mesh_stopped(mesh):
         await proc.spawn("immediate", Intermediate)
 
 
+# TODO - re-enable after resolving T232206970
+@pytest.mark.oss_skip
 async def test_supervision_with_sending_error():
     os.environ["HYPERACTOR_CODEC_MAX_FRAME_LENGTH"] = "9999999999"
     os.environ["HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT_SECS"] = "1"

@@ -38,6 +38,13 @@ pub enum SliceError {
 
     #[error("noncontiguous shape")]
     NonContiguous,
+
+    #[error("empty range: {begin}..{end} (step {step})")]
+    EmptyRange {
+        begin: usize,
+        end: usize,
+        step: usize,
+    },
 }
 
 /// Slice is a compact representation of indices into the flat
@@ -184,6 +191,69 @@ impl Slice {
             expected_stride *= *size
         }
         true
+    }
+
+    /// A slice defines a **strided view**; a triple (`offset,
+    /// `sizes`, `strides`). Each coordinate maps to a flat memory
+    /// index using the formula:
+    /// ```text
+    /// index = offset + ∑ iₖ × strides[k]
+    /// ```
+    /// where `iₖ` is the coordinate in dimension `k`.
+    ///
+    /// The `select(dim, range)` operation restricts the view to a
+    /// subrange along a single dimension. It calculates a new slice
+    /// from a base slice by updating the `offset`, `sizes[dim]`, and
+    /// `strides[dim]` to describe a logically reindexed subregion:
+    /// ```text
+    /// offset       += begin × strides[dim]
+    /// sizes[dim]    = ⎡(end - begin) / step⎤
+    /// strides[dim] ×= step
+    /// ```
+    ///
+    /// This transformation preserves the strided layout and avoids
+    /// copying data. After `select`, the view behaves as if indexing
+    /// starts at zero in the selected dimension, with a new length
+    /// and stride. From the user's perspective, nothing changes;
+    /// indexing remains zero-based, and the resulting shape can be
+    /// used like any other. The transformation is internal: the
+    /// view's offset and stride absorb the selection logic.
+    pub fn select(
+        &self,
+        dim: usize,
+        begin: usize,
+        end: usize,
+        step: usize,
+    ) -> Result<Self, SliceError> {
+        if dim >= self.sizes.len() {
+            return Err(SliceError::IndexOutOfRange {
+                index: dim,
+                total: self.sizes.len(),
+            });
+        }
+        if begin >= self.sizes[dim] {
+            return Err(SliceError::IndexOutOfRange {
+                index: begin,
+                total: self.sizes[dim],
+            });
+        }
+        if end <= begin {
+            return Err(SliceError::EmptyRange { begin, end, step });
+        }
+
+        let mut offset = self.offset();
+        let mut sizes = self.sizes().to_vec();
+        let mut strides = self.strides().to_vec();
+
+        offset += begin * strides[dim];
+        // The # of elems in `begin..end` with step `step`. This is
+        // ⌈(end - begin) / stride⌉ — the number of steps that fit in
+        // the half-open interval.
+        sizes[dim] = (end - begin).div_ceil(step);
+        strides[dim] *= step;
+
+        let slice = Slice::new(offset, sizes, strides)?;
+        Ok(slice)
     }
 
     /// Return the location of the provided coordinates.

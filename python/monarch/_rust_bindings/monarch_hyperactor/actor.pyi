@@ -9,7 +9,18 @@
 import abc
 from enum import Enum
 
-from typing import Any, final, Iterable, List, Optional, Protocol, Tuple, Type
+from typing import (
+    Any,
+    final,
+    Generic,
+    Iterable,
+    List,
+    Optional,
+    Protocol,
+    Tuple,
+    Type,
+    TypeVar,
+)
 
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     Mailbox,
@@ -126,12 +137,36 @@ class Exception(PythonMessageKind):
 
 class CallMethod(PythonMessageKind):
     def __init__(
-        self, name: str, response_port: PortRef | OncePortRef | None
+        self, name: MethodSpecifier, response_port: PortRef | OncePortRef | None
     ) -> None: ...
     @property
-    def name(self) -> str: ...
+    def name(self) -> MethodSpecifier: ...
     @property
     def response_port(self) -> PortRef | OncePortRef | None: ...
+
+class MethodSpecifier:
+    @classmethod
+    @property
+    def ReturnsResponse(cls) -> "Type[ReturnsResponse]": ...
+    @classmethod
+    @property
+    def ExplicitPort(cls) -> "Type[ExplicitPort]": ...
+    @classmethod
+    @property
+    def Init(cls) -> "Type[Init]": ...
+
+class ReturnsResponse(MethodSpecifier):
+    def __init__(self, name: str) -> None: ...
+    @property
+    def name(self) -> str: ...
+
+class ExplicitPort(MethodSpecifier):
+    def __init__(self, name: str) -> None: ...
+    @property
+    def name(self) -> str: ...
+
+class Init(MethodSpecifier):
+    pass
 
 class UnflattenArg(Enum):
     Mailbox = 0
@@ -140,16 +175,19 @@ class UnflattenArg(Enum):
 class CallMethodIndirect(PythonMessageKind):
     def __init__(
         self,
-        name: str,
+        name: MethodSpecifier,
         broker_id: Tuple[str, int],
         id: int,
         unflatten_args: List[UnflattenArg],
     ) -> None: ...
-
-class Init(PythonMessageKind):
-    def __init__(self, response_port: PortRef | OncePortRef | None) -> None: ...
     @property
-    def response_port(self) -> PortRef | OncePortRef | None: ...
+    def name(self) -> MethodSpecifier: ...
+    @property
+    def broker_id(self) -> Tuple[str, int]: ...
+    @property
+    def id(self) -> int: ...
+    @property
+    def unflatten_args(self) -> List[UnflattenArg]: ...
 
 class Uninit(PythonMessageKind):
     pass
@@ -219,8 +257,10 @@ class PanicFlag:
         """
         ...
 
-class PortProtocol(Protocol):
-    def send(self, obj: Any) -> None: ...
+R = TypeVar("R")
+
+class PortProtocol(Generic[R], Protocol):
+    def send(self, obj: R) -> None: ...
     def exception(self, obj: Any) -> None: ...
 
 class Actor(Protocol):
@@ -229,9 +269,9 @@ class Actor(Protocol):
         mailbox: Mailbox,
         rank: int,
         shape: Shape,
-        method: str,
+        method: MethodSpecifier,
         message: bytes,
         panic_flag: PanicFlag,
         local_state: Iterable[Any],
-        response_port: PortProtocol,
+        response_port: PortProtocol[Any],
     ) -> None: ...
