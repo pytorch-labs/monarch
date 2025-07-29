@@ -339,8 +339,29 @@ impl<M: RemoteMessage> NetTx<M> {
                 );
 
                 if let Some(largest) = self.largest_acked {
-                    // It is possible the message was delivered, but the send branch
-                    // did put it into unacked queue. This chould happen when:
+                    // Note: some scenarios of why this if branch could happen:
+                    //
+                    // message.0 <= largest could happen in the following scenario:
+                    //
+                    // 1. NetTx sent seq=2 and seq=3.
+                    // 2. NetRx received messages and put them on its mspc channel.
+                    //    But before NetRx acked, the connection was broken.
+                    // 3. NetTx reconnected. In this case, NetTx will put unacked
+                    //    messages, i.e. 2 and 3, back to outbox.
+                    // 2. At the beginning of the new connection. NetRx acked 2
+                    //    and 3 immediately.
+                    // 3. Before sending messages, NetTx received the acks first
+                    //    with the new connection. NetTx Stored 3 as largest_acked.
+                    // 4. Now NetRx finally got the chance to resend 2 and 3.
+                    //    When it resent 2, 2 < largest_acked, which is 3.
+                    //    * similarly, if there was only one message, seq=3
+                    //      involved, we would have 3 == largest_acked.
+                    //
+                    // message.0 == largest could also happen in the following
+                    // scenario:
+                    //
+                    // The message was delivered, but the send branch did not push
+                    // it into unacked queue. This chould happen when:
                     //   1. `outbox.send_message` future was canceled by tokio::select.
                     //   2. `outbox.send_message` returns an error, which makes
                     //      the deliver result unknown to Tx.
@@ -349,7 +370,7 @@ impl<M: RemoteMessage> NetTx<M> {
                     // Tx resends. As a result, this message's ack would be
                     // recorded already by `largest_acked` before it is put into
                     // unacked queue.
-                    if message.0 == largest {
+                    if message.0 <= largest {
                         // since the message is already delivered and acked, it
                         // does need to be put in the queue again.
                         return;
