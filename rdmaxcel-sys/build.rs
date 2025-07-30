@@ -45,12 +45,23 @@ fn find_cuda_home() -> Option<String> {
                     cuda_home = None;
                 }
             } else {
-                // Not Windows
-                let cuda_candidate = "/usr/local/cuda";
-                if Path::new(cuda_candidate).exists() {
-                    cuda_home = Some(cuda_candidate.to_string());
-                } else {
-                    cuda_home = None;
+                // Walk through possible locations, starting with newest
+                for candidate in &[
+                    "/usr/local/cuda-12.8",
+                    "/usr/local/cuda-12.6",
+                    "/usr/local/cuda-12.4",
+                    "/usr/local/cuda-12.2",
+                    "/usr/local/cuda-12.1",
+                    "/usr/local/cuda-12.0",
+                    "/usr/local/cuda-11.8",
+                    "/usr/local/cuda-11.7",
+                    "/usr/local/cuda-11.6",
+                    "/usr/local/cuda-11.5",
+                ] {
+                    if Path::new(candidate).exists() {
+                        cuda_home = Some(candidate.to_string());
+                        break;
+                    }
                 }
             }
         }
@@ -94,24 +105,92 @@ fn python_env_dirs() -> (Option<String>, Option<String>) {
 }
 
 fn main() {
+    // Tell cargo to look for shared libraries in the specified directory
+    println!("cargo:rustc-link-search=/usr/lib");
+    println!("cargo:rustc-link-search=/usr/lib64");
+
+    // Link against the ibverbs library
+    println!("cargo:rustc-link-lib=ibverbs");
+
+    // Link against the mlx5 library
+    println!("cargo:rustc-link-lib=mlx5");
+
+    // Tell cargo to invalidate the built crate whenever the wrapper changes
+    println!("cargo:rerun-if-changed=src/rdmaxcel.h");
+
+    // Get the directory of the current crate
+    let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| {
+        // For buck2 run, we know the package is in fbcode/monarch/rdmaxcel-sys
+        // Get the fbsource directory from the current directory path
+        let current_dir = std::env::current_dir().expect("Failed to get current directory");
+        let current_path = current_dir.to_string_lossy();
+
+        // Find the fbsource part of the path
+        if let Some(fbsource_pos) = current_path.find("fbsource") {
+            let fbsource_path = &current_path[..fbsource_pos + "fbsource".len()];
+            format!("{}/fbcode/monarch/rdmaxcel-sys", fbsource_path)
+        } else {
+            // If we can't find fbsource in the path, just use the current directory
+            format!("{}/src", current_dir.to_string_lossy())
+        }
+    });
+
+    // Create the absolute path to the header file
+    let header_path = format!("{}/src/rdmaxcel.h", manifest_dir);
+
+    // Check if the header file exists
+    if !Path::new(&header_path).exists() {
+        panic!("Header file not found at {}", header_path);
+    }
+
     // Start building the bindgen configuration
     let mut builder = bindgen::Builder::default()
         // The input header we would like to generate bindings for
-        .header("src/wrapper.h")
+        .header(&header_path)
         .clang_arg("-x")
         .clang_arg("c++")
         .clang_arg("-std=gnu++20")
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
-        // Allow the specified functions and types
-        .allowlist_function("cu.*")
-        .allowlist_function("CU.*")
-        .allowlist_type("cu.*")
-        .allowlist_type("CU.*")
-        // Use newtype enum style
-        .default_enum_style(bindgen::EnumVariation::NewType {
-            is_bitfield: false,
-            is_global: false,
-        });
+        // Allow the specified functions, types, and variables
+        .allowlist_function("ibv_.*")
+        .allowlist_function("mlx5dv_.*")
+        .allowlist_function("mlx5_wqe_.*")
+        .allowlist_function("create_qp")
+        .allowlist_function("create_mlx5dv_.*")
+        .allowlist_function("register_cuda_memory")
+        .allowlist_function("db_ring")
+        .allowlist_function("cqe_poll")
+        .allowlist_function("send_wqe")
+        .allowlist_function("recv_wqe")
+        .allowlist_function("launch_db_ring")
+        .allowlist_function("launch_cqe_poll")
+        .allowlist_function("launch_send_wqe")
+        .allowlist_function("launch_recv_wqe")
+        .allowlist_type("ibv_.*")
+        .allowlist_type("mlx5dv_.*")
+        .allowlist_type("mlx5_wqe_.*")
+        .allowlist_type("cqe_poll_result_t")
+        .allowlist_type("wqe_params_t")
+        .allowlist_type("cqe_poll_params_t")
+        .allowlist_var("MLX5_.*")
+        .allowlist_var("IBV_.*")
+        // Block specific types that are manually defined in lib.rs
+        .blocklist_type("ibv_wc")
+        .blocklist_type("mlx5_wqe_ctrl_seg")
+        // Apply the same bindgen flags as in the BUCK file
+        .bitfield_enum("ibv_access_flags")
+        .bitfield_enum("ibv_qp_attr_mask")
+        .bitfield_enum("ibv_wc_flags")
+        .bitfield_enum("ibv_send_flags")
+        .bitfield_enum("ibv_port_cap_flags")
+        .constified_enum_module("ibv_qp_type")
+        .constified_enum_module("ibv_qp_state")
+        .constified_enum_module("ibv_port_state")
+        .constified_enum_module("ibv_wc_opcode")
+        .constified_enum_module("ibv_wr_opcode")
+        .constified_enum_module("ibv_wc_status")
+        .derive_default(true)
+        .prepend_enum_name(false);
 
     // Add CUDA include path if available
     if let Some(cuda_home) = find_cuda_home() {
@@ -142,22 +221,20 @@ fn main() {
     if let Some(cuda_home) = find_cuda_home() {
         emit_cuda_link_directives(&cuda_home);
     }
-    println!("cargo:rustc-link-lib=cuda");
-    println!("cargo:rustc-link-lib=cudart");
+
+    // Generate bindings
+    let bindings = builder.generate().expect("Unable to generate bindings");
 
     // Write the bindings to the $OUT_DIR/bindings.rs file
     match env::var("OUT_DIR") {
         Ok(out_dir) => {
             let out_path = PathBuf::from(out_dir);
-            match builder.generate() {
-                Ok(bindings) => match bindings.write_to_file(out_path.join("bindings.rs")) {
-                    Ok(_) => {
-                        println!("cargo::rustc-cfg=cargo");
-                        println!("cargo::rustc-check-cfg=cfg(cargo)");
-                    }
-                    Err(e) => eprintln!("Warning: Couldn't write bindings: {}", e),
-                },
-                Err(e) => eprintln!("Warning: Unable to generate bindings: {}", e),
+            match bindings.write_to_file(out_path.join("bindings.rs")) {
+                Ok(_) => {
+                    println!("cargo:rustc-cfg=cargo");
+                    println!("cargo:rustc-check-cfg=cfg(cargo)");
+                }
+                Err(e) => eprintln!("Warning: Couldn't write bindings: {}", e),
             }
         }
         Err(_) => {
