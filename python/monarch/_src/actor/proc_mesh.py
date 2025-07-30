@@ -65,15 +65,19 @@ from monarch._src.actor.shape import MeshTrait
 
 HAS_TENSOR_ENGINE = False
 try:
+    # Torch is needed for tensor engine
+    import torch  # @manual
+
+    # Confirm that rust bindings were built with tensor engine enabled
     from monarch._rust_bindings.rdma import (  # type: ignore[import]
         _RdmaBuffer,
         _RdmaManager,
     )
 
     # type: ignore[16]
-    HAS_TENSOR_ENGINE = _RdmaBuffer.rdma_supported()
+    HAS_TENSOR_ENGINE = torch.cuda.is_available()
 except ImportError:
-    logging.warning("RDMA is not available on this platform")
+    logging.warning("Tensor engine is not available on this platform")
 
 
 if TYPE_CHECKING:
@@ -133,9 +137,10 @@ class ProcMesh(MeshTrait):
         setup: Callable[[], None] | None = None,
     ) -> "ProcMesh":
         _rdma_manager = (
-            # pyre-ignore
+            # type: ignore[16]
             await _RdmaManager.create_rdma_manager_nonblocking(self._proc_mesh)
-            if HAS_TENSOR_ENGINE
+            # type: ignore[16]
+            if HAS_TENSOR_ENGINE and _RdmaBuffer.rdma_supported()
             else None
         )
 
