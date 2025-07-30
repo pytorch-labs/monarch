@@ -6,7 +6,6 @@
 
 # pyre-strict
 
-import asyncio
 import pickle
 from typing import (
     Any,
@@ -29,10 +28,9 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessageKind,
 )
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
-from monarch._src.actor.future import Future
 
 if TYPE_CHECKING:
-    from monarch._rust_bindings.monarch_hyperactor.actor import CallMethod, PortProtocol
+    from monarch._rust_bindings.monarch_hyperactor.actor import PortProtocol
 
 
 from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints, AllocSpec
@@ -202,3 +200,6 @@ async def test_reducer() -> None:
     messge = await receiver.recv_task().with_timeout(seconds=5)
     value = pickle.loads(messge.message)
     assert "[reduced](start+msg0)" in value
+
+    #  Note: occasionally test would hang without this stop
+    await proc_mesh.stop_nonblocking()
