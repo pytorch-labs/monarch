@@ -4,7 +4,7 @@ version = "0.0.1"
 authors = ["Facebook"]
 edition = "2021"
 license = "MIT"
-links = "ibverbs"
+links = "rdmaxcel"
 
 [dependencies]
 cxx = "1.0.119"
