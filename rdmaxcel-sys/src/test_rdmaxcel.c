@@ -6,5 +6,11 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-#include <infiniband/mlx5dv.h>
-#include <infiniband/verbs.h>
+#include <stdio.h>
+#include "rdmaxcel.h"
+
+int main() {
+  void* func_ptr = (void*)&cu_db_ring;
+  printf("cu_db_ring function address: %p\n", func_ptr);
+  return 0;
+}
