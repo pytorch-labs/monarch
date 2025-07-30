@@ -14,8 +14,6 @@ members = [
     "monarch_tensor_worker",
     "monarch_rdma",
     "nccl-sys",
-    "rdmacore-sys",
+    "rdmaxcel-sys",
     "torch-sys",
-    "rdmacore-sys",
-    "cuda-sys",
 ]

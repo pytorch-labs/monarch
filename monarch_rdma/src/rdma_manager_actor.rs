@@ -302,7 +302,7 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
             .get_mut(&other.actor_id().clone())
             .unwrap()
             .state()?;
-        Ok(qp_state == rdmacore_sys::ibv_qp_state::IBV_QPS_RTS)
+        Ok(qp_state == rdmaxcel_sys::ibv_qp_state::IBV_QPS_RTS)
     }
 
     /// Establishes a connection with another actor
