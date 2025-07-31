@@ -70,16 +70,10 @@ fn find_cuda_home() -> Option<String> {
 }
 
 fn emit_cuda_link_directives(cuda_home: &str) {
-    let stubs_path = format!("{}/lib64/stubs", cuda_home);
-    if Path::new(&stubs_path).exists() {
-        println!("cargo:rustc-link-search=native={}", stubs_path);
-    } else {
-        let lib64_path = format!("{}/lib64", cuda_home);
-        if Path::new(&lib64_path).exists() {
-            println!("cargo:rustc-link-search=native={}", lib64_path);
-        }
+    let lib64_path = format!("{}/lib64", cuda_home);
+    if Path::new(&lib64_path).exists() {
+        println!("cargo:rustc-link-search=native={}", lib64_path);
     }
-
     println!("cargo:rustc-link-lib=cuda");
     println!("cargo:rustc-link-lib=cudart");
 }
@@ -117,6 +111,7 @@ fn main() {
 
     // Tell cargo to invalidate the built crate whenever the wrapper changes
     println!("cargo:rerun-if-changed=src/rdmaxcel.h");
+    println!("cargo:rerun-if-changed=src/rdmaxcel.c");
 
     // Get the directory of the current crate
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| {
@@ -192,10 +187,10 @@ fn main() {
         .derive_default(true)
         .prepend_enum_name(false);
 
-    // Add CUDA include path if available
     if let Some(cuda_home) = find_cuda_home() {
         let cuda_include_path = format!("{}/include", cuda_home);
         if Path::new(&cuda_include_path).exists() {
+            println!("cargo:rustc-env=CUDA_INCLUDE_PATH={}", cuda_include_path);
             builder = builder.clang_arg(format!("-I{}", cuda_include_path));
         } else {
             eprintln!(
@@ -204,7 +199,7 @@ fn main() {
             );
         }
     } else {
-        eprintln!("Warning: CUDA home directory not found. Continuing without CUDA include path.");
+        eprintln!("Warning: CUDA home directory not found. Trying fallback paths.");
     }
 
     // Include headers and libs from the active environment.
@@ -213,10 +208,10 @@ fn main() {
         builder = builder.clang_arg(format!("-I{}", include_dir));
     }
     if let Some(lib_dir) = lib_dir {
-        println!("cargo::rustc-link-search=native={}", lib_dir);
+        println!("cargo:rustc-link-search=native={}", lib_dir);
         // Set cargo metadata to inform dependent binaries about how to set their
         // RPATH (see controller/build.rs for an example).
-        println!("cargo::metadata=LIB_PATH={}", lib_dir);
+        println!("cargo:metadata=LIB_PATH={}", lib_dir);
     }
     if let Some(cuda_home) = find_cuda_home() {
         emit_cuda_link_directives(&cuda_home);
@@ -235,6 +230,28 @@ fn main() {
                     println!("cargo:rustc-check-cfg=cfg(cargo)");
                 }
                 Err(e) => eprintln!("Warning: Couldn't write bindings: {}", e),
+            }
+
+            // Compile the C source file
+            let c_source_path = format!("{}/src/rdmaxcel.c", manifest_dir);
+            if Path::new(&c_source_path).exists() {
+                let mut build = cc::Build::new();
+                build
+                    .file(&c_source_path)
+                    .include(format!("{}/src", manifest_dir))
+                    .flag("-fPIC");
+
+                // Add CUDA include paths - reuse the paths we already found for bindgen
+                if let Some(cuda_home) = find_cuda_home() {
+                    let cuda_include_path = format!("{}/include", cuda_home);
+                    if Path::new(&cuda_include_path).exists() {
+                        build.include(&cuda_include_path);
+                    }
+                }
+
+                build.compile("rdmaxcel");
+            } else {
+                panic!("C source file not found at {}", c_source_path);
             }
         }
         Err(_) => {

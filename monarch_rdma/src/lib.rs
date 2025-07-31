@@ -12,7 +12,6 @@
 mod ibverbs_primitives;
 mod rdma_components;
 mod rdma_manager_actor;
-mod test_utils;
 
 #[macro_use]
 mod macros;
@@ -20,3 +19,8 @@ mod macros;
 pub use ibverbs_primitives::*;
 pub use rdma_components::*;
 pub use rdma_manager_actor::*;
+pub use test_utils::is_cuda_available;
+
+#[cfg(test)]
+mod rdma_manager_actor_tests;
+mod test_utils;
