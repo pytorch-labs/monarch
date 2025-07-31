@@ -1,4 +1,4 @@
-# Getting Started with Monarch
+# Get Started
 
 Welcome to Monarch! This guide will help you get up and running with Monarch, a distributed execution engine for PyTorch that delivers high-quality user experience at cluster scale.
 

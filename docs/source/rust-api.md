@@ -1,4 +1,4 @@
-# Rust API Documentation
+# Rust API
 
 This page provides access to the Rust API documentation for Monarch.
 

@@ -1,4 +1,4 @@
-Monarch Examples
+Examples
 ================
 
 This directory contains examples demonstrating how to use Monarch for distributed computing.
