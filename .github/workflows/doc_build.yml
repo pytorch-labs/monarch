@@ -15,6 +15,11 @@ jobs:
         with:
           python-version: "3.10"
           architecture: x64
+      - name: Setup Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -28,6 +33,12 @@ jobs:
           pip install --no-build-isolation .
 
           pip install -r docs/requirements.txt
+
+      - name: Generate Rust API Documentation
+        run: |
+          set -eux
+          # Generate documentation for all crates in the workspace
+          cargo doc --workspace --no-deps
 
       - name: Build Sphinx Docs
         working-directory: docs

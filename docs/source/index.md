@@ -41,7 +41,7 @@ Here are some suggested steps to get started with Monarch:
 get_started
 ./generated/examples/index
 books/books
-api
+rust-api
 howtos
 glossary
 ```

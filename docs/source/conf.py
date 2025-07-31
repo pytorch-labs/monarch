@@ -25,8 +25,7 @@ extensions = [
     # "nbsphinx",
     "sphinx_gallery.gen_gallery",
     # "myst_nb",
-    #"sphinx_rust",
-    
+    # "sphinx_rust",
 ]
 
 sphinx_gallery_conf = {
@@ -44,7 +43,6 @@ sphinx_gallery_conf = {
     # "show_memory": False,  # Don't show memory usage
     # "show_signature": True,  # Show function signatures
 }
-
 
 
 templates_path = ["_templates"]
@@ -135,7 +133,8 @@ exclude_patterns = []  # Reset exclude_patterns to ensure books are included
 
 # Add the books directory to the Sphinx path
 import sphinx.util.matching
-html_extra_path = []
+
+html_extra_path = ["../../target/doc"]
 html_static_path = ["_static"]
 
 # Configure MyST-Parser to find markdown files in the books directory
@@ -144,6 +143,7 @@ myst_heading_anchors = 3
 
 # Add the books directory to the Sphinx search path
 import os
+
 books_path = os.path.abspath("../../books")
 
 
@@ -159,6 +159,7 @@ myst_url_schemes = ["http", "https", "mailto"]
 # Add the books directory to the Sphinx extensions path
 import os
 import sys
+
 sys.path.insert(0, os.path.abspath("../../books"))
 
 # Allow errors in notebook execution
