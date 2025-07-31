@@ -952,10 +952,10 @@ impl<A: Actor> Instance<A> {
             }
             if actor_status.is_failed() {
                 // Parent exists, failure should be propagated to the parent.
-                parent.send_supervision_event_or_crash(ActorSupervisionEvent::new(
-                    self.cell.actor_id().clone(),
-                    actor_status.clone(),
-                ));
+                parent.send_supervision_event_or_crash(ActorSupervisionEvent {
+                    actor_id: self.cell.actor_id().clone(),
+                    actor_status: actor_status.clone(),
+                });
             }
         } else {
             // Failure happened to the root actor or orphaned child actors.
@@ -964,11 +964,10 @@ impl<A: Actor> Instance<A> {
             // Note that orphaned actor is unexpected and would only happen if
             // there is a bug.
             if actor_status.is_failed() {
-                self.proc
-                    .handle_supervision_event(ActorSupervisionEvent::new(
-                        self.cell.actor_id().clone(),
-                        actor_status.clone(),
-                    ))
+                self.proc.handle_supervision_event(ActorSupervisionEvent {
+                    actor_id: self.cell.actor_id().clone(),
+                    actor_status: actor_status.clone(),
+                })
             }
         }
         self.change_status(actor_status);
@@ -2531,7 +2530,7 @@ mod tests {
         assert!(!root_2_state.load(Ordering::SeqCst));
         assert!(!root_2_1_state.load(Ordering::SeqCst));
         assert_eq!(
-            reported_event.event().map(|e| e.actor_id().clone()),
+            reported_event.event().map(|e| e.actor_id.clone()),
             Some(root_2_1.actor_id().clone())
         );
     }

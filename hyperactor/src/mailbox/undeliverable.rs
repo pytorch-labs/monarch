@@ -139,10 +139,13 @@ pub fn supervise_undeliverable_messages(
                 "message returned to undeliverable port".to_string(),
             ));
             if supervision_port
-                .send(ActorSupervisionEvent::new(
-                    envelope.dest().actor_id().clone(),
-                    ActorStatus::Failed(format!("message not delivered: {}", envelope)),
-                ))
+                .send(ActorSupervisionEvent {
+                    actor_id: envelope.dest().actor_id().clone(),
+                    actor_status: ActorStatus::Failed(format!(
+                        "message not delivered: {}",
+                        envelope
+                    )),
+                })
                 .is_err()
             {
                 UndeliverableMailboxSender

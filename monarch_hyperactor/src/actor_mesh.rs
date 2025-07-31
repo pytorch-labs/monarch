@@ -444,7 +444,7 @@ impl SupervisedPythonPortReceiver {
                     result.map_err(|err| PyErr::new::<PyEOFError, _>(format!("port closed: {}", err)))
                 }
                 event = monitor.next() => {
-                    Python::with_gil(|py| {
+                    Python::with_gil(|_py| {
                         Err(PyErr::new::<SupervisionError, _>(format!("supervision error: {:?}", event)))
                     })
                 }
@@ -482,7 +482,7 @@ impl SupervisedPythonOncePortReceiver {
                     result.map_err(|err| PyErr::new::<PyEOFError, _>(format!("port closed: {}", err)))
                 }
                 event = monitor.next() => {
-                    Python::with_gil(|py| {
+                    Python::with_gil(|_py| {
                         Err(PyErr::new::<SupervisionError, _>(format!("supervision error: {:?}", event)))
                     })
                 }
@@ -520,8 +520,8 @@ impl PyActorSupervisionEvent {
 impl From<ActorSupervisionEvent> for PyActorSupervisionEvent {
     fn from(event: ActorSupervisionEvent) -> Self {
         PyActorSupervisionEvent {
-            actor_id: event.actor_id().clone().into(),
-            actor_status: event.actor_status().to_string(),
+            actor_id: event.actor_id.clone().into(),
+            actor_status: event.actor_status.to_string(),
         }
     }
 }

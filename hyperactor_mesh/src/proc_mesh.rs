@@ -549,10 +549,10 @@ impl ProcEvents {
                     for entry in self.actor_event_router.iter() {
                         // Make a dummy actor supervision event, all actors on the proc are affected if a proc stops.
                         // TODO(T231868026): find a better way to represent all actors in a proc for supervision event
-                        let event = ActorSupervisionEvent::new(
-                            proc_id.actor_id("any", 0),
-                            ActorStatus::Failed(format!("proc {} is stopped", proc_id))
-                        );
+                        let event = ActorSupervisionEvent {
+                            actor_id: proc_id.actor_id("any", 0),
+                            actor_status: ActorStatus::Failed(format!("proc {} is stopped", proc_id)),
+                        };
                         if entry.value().send(event).is_err() {
                             tracing::warn!("unable to transmit supervision event to actor {}", entry.key());
                         }
@@ -562,7 +562,8 @@ impl ProcEvents {
                 }
                 Ok(event) = self.event_state.supervision_events.recv() => {
                     tracing::debug!("received ProcEvent supervision event: {event:?}");
-                    let (actor_id, actor_status) = event.clone().into_inner();
+                    let actor_id = event.actor_id.clone();
+                    let actor_status = event.actor_status.clone();
                     let Some(rank) = self.ranks.get(actor_id.proc_id()) else {
                         tracing::warn!("received supervision event for unmapped actor {}", actor_id);
                         continue;
@@ -799,9 +800,9 @@ mod tests {
         );
 
         let mut event = actor_events.next().await.unwrap();
-        assert_matches!(event.actor_status(), ActorStatus::Failed(_));
-        assert_eq!(event.actor_id().1, "failing".to_string());
-        assert_eq!(event.actor_id().2, 0);
+        assert_matches!(event.actor_status, ActorStatus::Failed(_));
+        assert_eq!(event.actor_id.1, "failing".to_string());
+        assert_eq!(event.actor_id.2, 0);
 
         stop();
         assert_matches!(
@@ -815,8 +816,8 @@ mod tests {
 
         assert!(events.next().await.is_none());
         event = actor_events.next().await.unwrap();
-        assert_matches!(event.actor_status(), ActorStatus::Failed(_));
-        assert_eq!(event.actor_id().2, 0);
+        assert_matches!(event.actor_status, ActorStatus::Failed(_));
+        assert_eq!(event.actor_id.2, 0);
     }
 
     #[timed_test::async_timed_test(timeout_secs = 5)]
