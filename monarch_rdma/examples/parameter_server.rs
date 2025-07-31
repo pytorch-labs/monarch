@@ -609,13 +609,12 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
     Ok(())
 }
 
-// TODO: re-enable when p2p gpu test infra aviailable
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-//     #[timed_test::async_timed_test(timeout_secs = 30)]
-//     async fn test_parameter_server() -> Result<(), anyhow::Error> {
-//         run(1, 4).await
-//     }
-// }
+    #[timed_test::async_timed_test(timeout_secs = 30)]
+    async fn test_parameter_server() -> Result<(), anyhow::Error> {
+        run(1, 4).await
+    }
+}
