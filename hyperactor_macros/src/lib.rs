@@ -605,7 +605,7 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
                     }
                 };
                 let log_message = quote! {
-                        hyperactor::metrics::MESSAGES_RECEIVED.add(1, hyperactor::kv_pairs!(
+                        hyperactor::metrics::ACTOR_MESSAGES_RECEIVED.add(1, hyperactor::kv_pairs!(
                             "rpc" => "call",
                             "actor_id" => cx.self_id().to_string(),
                             "message_type" => stringify!(#enum_name),
@@ -672,7 +672,7 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
                     tracing::Level::#log_level
                 };
                 let log_message = quote! {
-                        hyperactor::metrics::MESSAGES_RECEIVED.add(1, hyperactor::kv_pairs!(
+                        hyperactor::metrics::ACTOR_MESSAGES_RECEIVED.add(1, hyperactor::kv_pairs!(
                             "rpc" => "call",
                             "actor_id" => cx.self_id().to_string(),
                             "message_type" => stringify!(#enum_name),
@@ -804,7 +804,7 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
                     }
                 };
                 let log_message = quote! {
-                        hyperactor::metrics::MESSAGES_SENT.add(1, hyperactor::kv_pairs!(
+                        hyperactor::metrics::ACTOR_MESSAGES_SENT.add(1, hyperactor::kv_pairs!(
                             "rpc" => "call",
                             "actor_id" => self.actor_id().to_string(),
                             "message_type" => stringify!(#enum_name),
@@ -870,7 +870,7 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
                     }
                 };
                 let log_message = quote! {
-                    hyperactor::metrics::MESSAGES_SENT.add(1, hyperactor::kv_pairs!(
+                    hyperactor::metrics::ACTOR_MESSAGES_SENT.add(1, hyperactor::kv_pairs!(
                         "rpc" => "oneway",
                         "actor_id" => self.actor_id().to_string(),
                         "message_type" => stringify!(#enum_name),

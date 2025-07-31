@@ -594,11 +594,11 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
         }
         .map_err(|err| err.into())
         .inspect_err(|err| {
-            hyperactor::metrics::MESSAGE_RECEIVE_ERRORS.add(1, hyperactor::kv_pairs!("actor_id" => self.actor_id().to_string()));
+            hyperactor::metrics::ACTOR_MESSAGE_RECEIVE_ERRORS.add(1, hyperactor::kv_pairs!("actor_id" => self.actor_id().to_string()));
             tracing::error!(err=?err, actor_id=%self.actor_id(), "unable to receive next py message");
         })
         .inspect(|_|{
-            hyperactor::metrics::MESSAGES_RECEIVED.add(1, hyperactor::kv_pairs!("actor_id" => self.actor_id().to_string()));
+            hyperactor::metrics::ACTOR_MESSAGES_RECEIVED.add(1, hyperactor::kv_pairs!("actor_id" => self.actor_id().to_string()));
         })
     }
 
