@@ -224,6 +224,10 @@ impl PythonActorMesh {
         self.bind()?.slice(kwargs)
     }
 
+    fn new_with_shape(&self, shape: PyShape) -> PyResult<PythonActorMeshRef> {
+        self.bind()?.new_with_shape(shape)
+    }
+
     #[getter]
     pub fn client(&self) -> PyMailbox {
         self.client.clone()
@@ -356,6 +360,14 @@ impl PythonActorMeshRef {
         Ok(Self { inner: sliced })
     }
 
+    fn new_with_shape(&self, shape: PyShape) -> PyResult<PythonActorMeshRef> {
+        let sliced = self
+            .inner
+            .new_with_shape(shape.get_inner().clone())
+            .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
+        Ok(Self { inner: sliced })
+    }
+
     #[getter]
     fn shape(&self) -> PyShape {
         PyShape::from(self.inner.shape().clone())
@@ -444,7 +456,7 @@ impl SupervisedPythonPortReceiver {
                     result.map_err(|err| PyErr::new::<PyEOFError, _>(format!("port closed: {}", err)))
                 }
                 event = monitor.next() => {
-                    Python::with_gil(|py| {
+                    Python::with_gil(|_py| {
                         Err(PyErr::new::<SupervisionError, _>(format!("supervision error: {:?}", event)))
                     })
                 }
@@ -482,7 +494,7 @@ impl SupervisedPythonOncePortReceiver {
                     result.map_err(|err| PyErr::new::<PyEOFError, _>(format!("port closed: {}", err)))
                 }
                 event = monitor.next() => {
-                    Python::with_gil(|py| {
+                    Python::with_gil(|_py| {
                         Err(PyErr::new::<SupervisionError, _>(format!("supervision error: {:?}", event)))
                     })
                 }
@@ -520,8 +532,8 @@ impl PyActorSupervisionEvent {
 impl From<ActorSupervisionEvent> for PyActorSupervisionEvent {
     fn from(event: ActorSupervisionEvent) -> Self {
         PyActorSupervisionEvent {
-            actor_id: event.actor_id().clone().into(),
-            actor_status: event.actor_status().to_string(),
+            actor_id: event.actor_id.clone().into(),
+            actor_status: event.actor_status.to_string(),
         }
     }
 }

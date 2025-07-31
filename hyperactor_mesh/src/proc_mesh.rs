@@ -48,6 +48,7 @@ use tokio::sync::mpsc;
 
 use crate::CommActor;
 use crate::Mesh;
+use crate::actor_mesh::CAST_ACTOR_MESH_ID;
 use crate::actor_mesh::RootActorMesh;
 use crate::alloc::Alloc;
 use crate::alloc::AllocatorError;
@@ -549,10 +550,11 @@ impl ProcEvents {
                     for entry in self.actor_event_router.iter() {
                         // Make a dummy actor supervision event, all actors on the proc are affected if a proc stops.
                         // TODO(T231868026): find a better way to represent all actors in a proc for supervision event
-                        let event = ActorSupervisionEvent::new(
-                            proc_id.actor_id("any", 0),
-                            ActorStatus::Failed(format!("proc {} is stopped", proc_id))
-                        );
+                        let event = ActorSupervisionEvent {
+                            actor_id: proc_id.actor_id("any", 0),
+                            actor_status: ActorStatus::Failed(format!("proc {} is stopped", proc_id)),
+                            message_headers: None,
+                        };
                         if entry.value().send(event).is_err() {
                             tracing::warn!("unable to transmit supervision event to actor {}", entry.key());
                         }
@@ -560,9 +562,27 @@ impl ProcEvents {
 
                     break Some(ProcEvent::Stopped(*rank, reason));
                 }
-                Ok(event) = self.event_state.supervision_events.recv() => {
+                Ok(mut event) = self.event_state.supervision_events.recv() => {
                     tracing::debug!("received ProcEvent supervision event: {event:?}");
-                    let (actor_id, actor_status) = event.clone().into_inner();
+                    // Cast message might fail to deliver when it is propagated
+                    // through the comm actor tree. In this case, the event is
+                    // for the actor mesh, not the comm actor. In that case,
+                    // we update the event with the actor mesh id, so it can be
+                    // forwarded to the mesh.
+                    if event.actor_id.name() == "comm" && let Some(headers) = &event.message_headers
+                        && let Some(actor_mesh_id) = headers.get(CAST_ACTOR_MESH_ID)
+                    {
+                        // Make a dummy actor id to represent the mesh in ActorSupervisionEvent.
+                        // TODO(T231868026): find a better way to represent all actors in an actor
+                        // mesh for supervision event
+                        event.actor_id = ActorId(
+                            ProcId(WorldId(actor_mesh_id.0.0.clone()), 0),
+                            actor_mesh_id.1.clone(),
+                            0,
+                        );
+                    };
+                    let actor_id = event.actor_id.clone();
+                    let actor_status = event.actor_status.clone();
                     let Some(rank) = self.ranks.get(actor_id.proc_id()) else {
                         tracing::warn!("received supervision event for unmapped actor {}", actor_id);
                         continue;
@@ -799,9 +819,9 @@ mod tests {
         );
 
         let mut event = actor_events.next().await.unwrap();
-        assert_matches!(event.actor_status(), ActorStatus::Failed(_));
-        assert_eq!(event.actor_id().1, "failing".to_string());
-        assert_eq!(event.actor_id().2, 0);
+        assert_matches!(event.actor_status, ActorStatus::Failed(_));
+        assert_eq!(event.actor_id.1, "failing".to_string());
+        assert_eq!(event.actor_id.2, 0);
 
         stop();
         assert_matches!(
@@ -815,8 +835,8 @@ mod tests {
 
         assert!(events.next().await.is_none());
         event = actor_events.next().await.unwrap();
-        assert_matches!(event.actor_status(), ActorStatus::Failed(_));
-        assert_eq!(event.actor_id().2, 0);
+        assert_matches!(event.actor_status, ActorStatus::Failed(_));
+        assert_eq!(event.actor_id.2, 0);
     }
 
     #[timed_test::async_timed_test(timeout_secs = 5)]
