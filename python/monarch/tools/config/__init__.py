@@ -6,9 +6,26 @@
 
 # pyre-strict
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+
+from enum import Enum
+from typing import Any, Dict, List
 
 from torchx.specs import Role
+
+
+class EmptyWorkspaceOption(Enum):
+    """
+    Allow users to specify the behavior when no local workspace is needed.
+
+    Attributes:
+        NO_WORKSPACE: Do not use any workspace. The main function is provided
+            by the client script.
+        USE_PROVIDED_IMAGE: Use a pre-built container image that has been
+            provided in the configuration.
+    """
+
+    NO_WORKSPACE = 1
+    USE_PROVIDED_IMAGE = 2
 
 
 NOT_SET: str = "__NOT_SET__"
@@ -28,10 +45,25 @@ class UnnamedAppDef:
 class Config:
     """
     All configs needed to schedule a mesh of allocators.
+
+    This class encapsulates the configuration parameters required to schedule
+    and run jobs using the Monarch framework.
+
+    Attributes:
+        scheduler: The name of the scheduler to use for job execution.
+            Defaults to NOT_SET.
+        scheduler_args: Additional arguments to pass to the scheduler.
+        workspace: Specifies how the workspace should be configured.
+            Can be a string to represent the directory location or
+            a EmptyWorkspaceOption enum value when no local workspace is needed.
+            A new package will be built if a workspace is explicitly provided
+            or if no workspace is needed.
+        dryrun: When True, performs a dry run without executing the job.
+        appdef: The application definition containing roles and metadata.
     """
 
     scheduler: str = NOT_SET
     scheduler_args: dict[str, Any] = field(default_factory=dict)
-    workspace: Optional[str] = None
+    workspace: str | EmptyWorkspaceOption = EmptyWorkspaceOption.NO_WORKSPACE
     dryrun: bool = False
     appdef: UnnamedAppDef = field(default_factory=UnnamedAppDef)
