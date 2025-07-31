@@ -104,7 +104,9 @@ class TestActor(Actor):
 
 @contextlib.contextmanager
 def remote_process_allocator(
-    addr: Optional[str] = None, timeout: Optional[int] = None
+    addr: Optional[str] = None,
+    timeout: Optional[int] = None,
+    envs: Optional[dict[str, str]] = None,
 ) -> Generator[str, None, None]:
     """Start a remote process allocator on addr. If timeout is not None, have it
     timeout after that many seconds if no messages come in"""
@@ -120,16 +122,19 @@ def remote_process_allocator(
         if timeout is not None:
             args.append(f"--timeout-sec={timeout}")
 
+        env = {
+            # prefix PATH with this test module's directory to
+            # give 'process_allocator' and 'monarch_bootstrap' binary resources
+            # in this test module's directory precedence over the installed ones
+            # useful in BUCK where these binaries are added as 'resources' of this test target
+            "PATH": f"{package_path}:{os.getenv('PATH', '')}",
+            "RUST_LOG": "debug",
+        }
+        if envs:
+            env.update(envs)
         process_allocator = subprocess.Popen(
             args=args,
-            env={
-                # prefix PATH with this test module's directory to
-                # give 'process_allocator' and 'monarch_bootstrap' binary resources
-                # in this test module's directory precedence over the installed ones
-                # useful in BUCK where these binaries are added as 'resources' of this test target
-                "PATH": f"{package_path}:{os.getenv('PATH', '')}",
-                "RUST_LOG": "debug",
-            },
+            env=env,
         )
         try:
             yield addr
@@ -232,6 +237,26 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
         }
         computed_world_sizes = {p.rank: v for p, v in list(computed.flatten("rank"))}
         self.assertDictEqual(expected_world_sizes, computed_world_sizes)
+
+    async def test_allocate_failure_message(self) -> None:
+        spec = AllocSpec(AllocConstraints(), host=2, gpu=4)
+
+        with self.assertRaisesRegex(
+            Exception,
+            r"exited with code 1: Traceback \(most recent call last\).*",
+        ):
+            with remote_process_allocator(
+                envs={"MONARCH_ERROR_DURING_BOOTSTRAP_FOR_TESTING": "1"}
+            ) as host1, remote_process_allocator(
+                envs={"MONARCH_ERROR_DURING_BOOTSTRAP_FOR_TESTING": "1"}
+            ) as host2:
+                allocator = RemoteAllocator(
+                    world_id="test_remote_allocator",
+                    initializer=StaticRemoteAllocInitializer(host1, host2),
+                    heartbeat_interval=_100_MILLISECONDS,
+                )
+                alloc = await allocator.allocate(spec)
+                await ProcMesh.from_alloc(alloc)
 
     async def test_call_allocate_twice(self) -> None:
         class DeletingAllocInitializer(StaticRemoteAllocInitializer):

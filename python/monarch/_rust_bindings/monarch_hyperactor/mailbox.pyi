@@ -14,9 +14,9 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
 )
 
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
+from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape
-from monarch._rust_bindings.monarch_hyperactor.tokio import PythonTask
 
 @final
 class PortId:

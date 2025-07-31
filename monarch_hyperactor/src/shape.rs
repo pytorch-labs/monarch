@@ -66,6 +66,15 @@ impl PyShape {
             .and_then(|x| PyDict::from_sequence(&x.into_bound_py_any(py)?))
     }
 
+    fn at(&self, label: &str, index: usize) -> PyResult<PyShape> {
+        Ok(PyShape {
+            inner: self
+                .inner
+                .at(label, index)
+                .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?,
+        })
+    }
+
     #[pyo3(signature = (**kwargs))]
     fn index(&self, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<PyShape> {
         if let Some(kwargs) = kwargs {
@@ -87,6 +96,27 @@ impl PyShape {
                 inner: self.inner.clone(),
             })
         }
+    }
+
+    fn select(&self, label: &str, slice: &Bound<'_, pyo3::types::PySlice>) -> PyResult<PyShape> {
+        let dim = self
+            .inner
+            .dim(label)
+            .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
+        let size = self.inner.slice().sizes()[dim];
+
+        let indices = slice.indices(size as isize)?;
+        let start = indices.start as usize;
+        let stop = indices.stop as usize;
+        let step = indices.step as usize;
+
+        let range = ndslice::shape::Range(start, Some(stop), step);
+        Ok(PyShape {
+            inner: self
+                .inner
+                .select(label, range)
+                .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?,
+        })
     }
 
     #[staticmethod]

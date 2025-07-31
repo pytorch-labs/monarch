@@ -13,9 +13,9 @@ from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
 
 from monarch._rust_bindings.monarch_hyperactor.alloc import Alloc
 from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
+from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape
-from monarch._rust_bindings.monarch_hyperactor.tokio import PythonTask
 
 @final
 class ProcMesh:

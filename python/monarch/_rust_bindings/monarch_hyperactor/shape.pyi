@@ -123,6 +123,20 @@ class Shape:
         """
         ...
 
+    def at(self, label: str, index: int) -> "Shape":
+        """
+        Select a single index along a named dimension, removing
+        that dimension entirely. This reduces the dimensionality by 1.
+        """
+        ...
+
+    def select(self, label: str, slice: slice[Any, Any, Any]) -> "Shape":
+        """
+        Restrict this shape along a named dimension using a slice. The
+        dimension is kept but its size may change.
+        """
+        ...
+
     def index(self, **kwargs: Dict[str, int]) -> "Shape":
         """
         Create a sub-slice of this shape:

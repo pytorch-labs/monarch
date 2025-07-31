@@ -7,7 +7,21 @@
 import asyncio
 import traceback
 from functools import partial
-from typing import Generator, Generic, Optional, TypeVar
+from typing import (
+    Any,
+    cast,
+    Coroutine,
+    Generator,
+    Generic,
+    Literal,
+    NamedTuple,
+    Optional,
+    TypeVar,
+)
+
+from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
+
+from typing_extensions import Self
 
 R = TypeVar("R")
 
@@ -48,43 +62,76 @@ async def _aincomplete(impl, self):
 # loop machinery, this gives it the same throughput as if we ran it synchronously.
 
 
+class _Unawaited(NamedTuple):
+    coro: PythonTask
+
+
+class _Complete(NamedTuple):
+    value: Any
+
+
+class _Exception(NamedTuple):
+    exe: Exception
+
+
+class _Asyncio(NamedTuple):
+    fut: asyncio.Future
+
+
+_Status = _Unawaited | _Complete | _Exception | _Asyncio
+
+
 class Future(Generic[R]):
-    def __init__(self, *, impl, requires_loop=True):
-        self._aget = partial(_aincomplete, impl)
-        self._requires_loop = requires_loop
+    def __init__(self, *, coro: "Coroutine[Any, Any, R] | PythonTask[R]"):
+        self._status: _Status = _Unawaited(
+            coro if isinstance(coro, PythonTask) else PythonTask.from_coroutine(coro)
+        )
 
     def get(self, timeout: Optional[float] = None) -> R:
-        if asyncio._get_running_loop() is not None:
-            raise RuntimeError("get() cannot be called from within an async context")
-        if timeout is not None:
-            return asyncio.run(asyncio.wait_for(self._aget(self), timeout))
-        if not self._requires_loop:
-            try:
-                coro = self._aget(self)
-                next(coro.__await__())
-                tb_str = "".join(traceback.format_stack(coro.cr_frame))
-                raise RuntimeError(
-                    f"a coroutine paused with a future with requires_loop=False cannot block on a python asyncio.Future. Use requires_loop=True.\n{tb_str}"
+        match self._status:
+            case _Unawaited(coro=coro):
+                try:
+                    if timeout is not None:
+                        coro = coro.with_timeout(timeout)
+                    v = coro.block_on()
+                    self._status = _Complete(v)
+                    return cast("R", v)
+                except Exception as e:
+                    self._status = _Exception(e)
+                    raise e from None
+            case _Asyncio(_):
+                raise ValueError(
+                    "already converted into an asyncio.Future, use 'await' to get the value."
                 )
-            except StopIteration as e:
-                return e.value
-        return asyncio.run(self._aget(self))
+            case _Complete(value=value):
+                return cast("R", value)
+            case _Exception(exe=exe):
+                raise exe
+            case _:
+                raise RuntimeError("unknown status")
 
-    def __await__(self) -> Generator[R, None, R]:
-        return self._aget(self).__await__()
+    def __await__(self) -> Generator[Any, Any, R]:
+        match self._status:
+            case _Unawaited(coro=coro):
+                loop = asyncio.get_running_loop()
+                fut = loop.create_future()
+                self._status = _Asyncio(fut)
 
-    def _set_result(self, result):
-        async def af(self):
-            return result
+                async def mark_complete():
+                    try:
+                        func, value = fut.set_result, await coro
+                    except Exception as e:
+                        func, value = fut.set_exception, e
+                    loop.call_soon_threadsafe(func, value)
 
-        self._aget = af
-        return result
-
-    def _set_exception(self, e):
-        async def af(self):
-            raise e
-
-        self._aget = af
+                PythonTask.from_coroutine(mark_complete()).spawn()
+                return fut.__await__()
+            case _Asyncio(fut=fut):
+                return fut.__await__()
+            case _:
+                raise ValueError(
+                    "already converted into a synchronous future, use 'get' to get the value."
+                )
 
     # compatibility with old tensor engine Future objects
     # hopefully we do not need done(), add_callback because

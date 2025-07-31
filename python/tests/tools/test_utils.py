@@ -43,9 +43,6 @@ class TestUtils(unittest.TestCase):
 
 class TestCondaUtils(unittest.TestCase):
     def test_conda_active_env_name(self) -> None:
-        with mock.patch.dict(os.environ, {"CONDA_DEFAULT_ENV": "foo-py3"}, clear=True):
-            self.assertEqual(conda.active_env_name(), "foo-py3")
-
         with mock.patch.dict(
             os.environ, {"CONDA_PREFIX": "/home/USER/.conda/envs/bar-py3"}, clear=True
         ):

@@ -38,7 +38,8 @@ use pyo3::types::PyDict;
 use tokio::process::Command;
 
 use crate::channel::PyChannelAddr;
-use crate::tokio::PyPythonTask;
+use crate::pytokio::PyPythonTask;
+use crate::runtime::get_tokio_runtime;
 
 /// A python class that wraps a Rust Alloc trait object. It represents what
 /// is shown on the python side. Internals are not exposed.
@@ -297,18 +298,25 @@ impl PyRemoteProcessAllocInitializer {
     ///   the method signature of `RemoteAllocInitializer` in
     ///   `monarch/python/monarch/_rust_bindings/monarch_hyperactor/alloc.pyi`
     async fn py_initialize_alloc(&self) -> PyResult<Vec<String>> {
-        // call the function as implemented in python
         let args = (&self.constraints.match_labels,);
-        let future = Python::with_gil(|py| -> PyResult<_> {
-            let coroutine = self
-                .py_inner
+        let coro = Python::with_gil(|py| -> PyResult<PyObject> {
+            self.py_inner
                 .bind(py)
-                .call_method1("initialize_alloc", args)?;
-            pyo3_async_runtimes::tokio::into_future(coroutine)
+                .call_method1("initialize_alloc", args)
+                .map(|x| x.unbind())
         })?;
-
-        let addrs = future.await?;
-        Python::with_gil(|py| -> PyResult<Vec<String>> { addrs.extract(py) })
+        get_tokio_runtime()
+            .spawn_blocking(move || -> PyResult<Vec<String>> {
+                // call the function as implemented in python
+                Python::with_gil(|py| {
+                    let asyncio = py.import("asyncio").unwrap();
+                    let addrs = asyncio.call_method1("run", (coro,))?;
+                    let addrs: PyResult<Vec<String>> = addrs.extract();
+                    addrs
+                })
+            })
+            .await
+            .map_err(|err| PyRuntimeError::new_err(err.to_string()))?
     }
 
     async fn get_transport_and_port(&self) -> PyResult<(ChannelTransport, u16)> {

@@ -150,9 +150,9 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         "monarch_hyperactor.actor",
     )?)?;
 
-    monarch_hyperactor::tokio::register_python_bindings(&get_or_add_new_module(
+    monarch_hyperactor::pytokio::register_python_bindings(&get_or_add_new_module(
         module,
-        "monarch_hyperactor.tokio",
+        "monarch_hyperactor.pytokio",
     )?)?;
 
     monarch_hyperactor::mailbox::register_python_bindings(&get_or_add_new_module(

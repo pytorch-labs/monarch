@@ -6,6 +6,72 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::sync::Once;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+
+/// Cached result of CUDA availability check
+static CUDA_AVAILABLE: AtomicBool = AtomicBool::new(false);
+static INIT: Once = Once::new();
+
+/// Safely checks if CUDA is available on the system.
+///
+/// This function attempts to initialize CUDA and determine if it's available.
+/// The result is cached after the first call, so subsequent calls are very fast.
+///
+/// # Returns
+///
+/// `true` if CUDA is available and can be initialized, `false` otherwise.
+///
+/// # Examples
+///
+/// ```
+/// use monarch_rdma::is_cuda_available;
+///
+/// if is_cuda_available() {
+///     println!("CUDA is available, can use GPU features");
+/// } else {
+///     println!("CUDA is not available, falling back to CPU-only mode");
+/// }
+/// ```
+pub fn is_cuda_available() -> bool {
+    INIT.call_once(|| {
+        let available = check_cuda_available();
+        CUDA_AVAILABLE.store(available, Ordering::SeqCst);
+    });
+    CUDA_AVAILABLE.load(Ordering::SeqCst)
+}
+
+/// Internal function that performs the actual CUDA availability check
+fn check_cuda_available() -> bool {
+    unsafe {
+        // Try to initialize CUDA
+        let result = cuda_sys::cuInit(0);
+
+        if result != cuda_sys::CUresult::CUDA_SUCCESS {
+            return false;
+        }
+
+        // Check if there are any CUDA devices
+        let mut device_count: i32 = 0;
+        let count_result = cuda_sys::cuDeviceGetCount(&mut device_count);
+
+        if count_result != cuda_sys::CUresult::CUDA_SUCCESS || device_count <= 0 {
+            return false;
+        }
+
+        // Try to get the first device to verify it's actually accessible
+        let mut device: cuda_sys::CUdevice = std::mem::zeroed();
+        let device_result = cuda_sys::cuDeviceGet(&mut device, 0);
+
+        if device_result != cuda_sys::CUresult::CUDA_SUCCESS {
+            return false;
+        }
+
+        true
+    }
+}
+
 #[cfg(test)]
 pub mod test_utils {
     use std::time::Duration;
@@ -22,8 +88,10 @@ pub mod test_utils {
     use hyperactor_mesh::alloc::Allocator;
     use hyperactor_mesh::alloc::LocalAllocator;
     use ndslice::shape;
+    use rdmaxcel_sys::launch_cqe_poll;
 
     use crate::IbverbsConfig;
+    use crate::PollTarget;
     use crate::RdmaBuffer;
     use crate::cu_check;
     use crate::ibverbs_primitives::get_all_devices;
@@ -31,6 +99,40 @@ pub mod test_utils {
     use crate::rdma_manager_actor::RdmaManagerActor;
     use crate::rdma_manager_actor::RdmaManagerMessageClient;
 
+    // Utility to validate execution context.  Remote Exectuion environments do
+    // not always have access to the nvidia_peermem module and/or set the PeerMappingOverride
+    // parameter due to security.  This function can be used to validate that the execution context when
+    // running the tests that need this functionality (ie. cudaHostRegisterIoMemory)
+    pub async fn validate_execution_context() -> Result<(), anyhow::Error> {
+        // Check for nvidia peermem
+        match std::fs::read_to_string("/proc/modules") {
+            Ok(contents) => {
+                if !contents.contains("nvidia_peermem") {
+                    return Err(anyhow::anyhow!(
+                        "nvidia_peermem module not found in /proc/modules"
+                    ));
+                }
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!(e));
+            }
+        }
+
+        // Test file access to nvidia params
+        match std::fs::read_to_string("/proc/driver/nvidia/params") {
+            Ok(contents) => {
+                if !contents.contains("PeerMappingOverride=1") {
+                    return Err(anyhow::anyhow!(
+                        "PeerMappingOverride=1 not found in /proc/driver/nvidia/params"
+                    ));
+                }
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!(e));
+            }
+        }
+        Ok(())
+    }
     // Waits for the completion of an RDMA operation.
 
     // This function polls for the completion of an RDMA operation by repeatedly
@@ -39,23 +141,156 @@ pub mod test_utils {
     // completes or the specified timeout is reached.
 
     pub async fn wait_for_completion(
-        qp: &RdmaQueuePair,
+        qp: &mut RdmaQueuePair,
+        poll_target: PollTarget,
         timeout_secs: u64,
     ) -> Result<bool, anyhow::Error> {
         let timeout = Duration::from_secs(timeout_secs);
         let start_time = Instant::now();
+        let recv_cq = qp.dv_recv_cq as *mut rdmaxcel_sys::mlx5dv_cq;
+        let ibv_qp = qp.qp as *mut rdmaxcel_sys::ibv_qp;
+        let dv_qp = qp.dv_qp as *mut rdmaxcel_sys::mlx5dv_qp;
+        let a = 1;
+        unsafe {}
         while start_time.elapsed() < timeout {
-            match qp.poll_completion() {
+            match qp.poll_completion_target(poll_target) {
                 Ok(Some(wc)) => {
-                    if wc.wr_id() == 0 {
-                        return Ok(true);
-                    }
+                    return Ok(true);
                 }
                 Ok(None) => {
                     RealClock.sleep(Duration::from_millis(1)).await;
                 }
                 Err(e) => {
                     return Err(anyhow::anyhow!(e));
+                }
+            }
+        }
+        Err(anyhow::Error::msg("Timeout while waiting for completion"))
+    }
+
+    /// Posts a work request to the send queue of the given RDMA queue pair.
+    pub async fn send_wqe_gpu(
+        qp: &mut RdmaQueuePair,
+        lhandle: &RdmaBuffer,
+        rhandle: &RdmaBuffer,
+        op_type: u32,
+    ) -> Result<(), anyhow::Error> {
+        unsafe {
+            let ibv_qp = qp.qp as *mut rdmaxcel_sys::ibv_qp;
+            let dv_qp = qp.dv_qp as *mut rdmaxcel_sys::mlx5dv_qp;
+            let params = rdmaxcel_sys::wqe_params_t {
+                laddr: lhandle.addr,
+                length: lhandle.size,
+                lkey: lhandle.lkey,
+                wr_id: u32::from_be(*(*dv_qp).dbrec.wrapping_add(1)) as u64,
+                signaled: true,
+                op_type,
+                raddr: rhandle.addr,
+                rkey: rhandle.rkey,
+                qp_num: (*ibv_qp).qp_num,
+                buf: (*dv_qp).sq.buf as *mut u8,
+                wqe_cnt: (*dv_qp).sq.wqe_cnt,
+                dbrec: (*dv_qp).dbrec,
+                ..Default::default()
+            };
+            rdmaxcel_sys::launch_send_wqe(params);
+            qp.send_wqe_idx += 1;
+        }
+        Ok(())
+    }
+
+    /// Posts a work request to the receive queue of the given RDMA queue pair.
+    pub async fn recv_wqe_gpu(
+        qp: &mut RdmaQueuePair,
+        lhandle: &RdmaBuffer,
+        rhandle: &RdmaBuffer,
+        op_type: u32,
+    ) -> Result<(), anyhow::Error> {
+        // Populate params using lhandle and rhandle
+        unsafe {
+            let ibv_qp = qp.qp as *mut rdmaxcel_sys::ibv_qp;
+            let dv_qp = qp.dv_qp as *mut rdmaxcel_sys::mlx5dv_qp;
+            let params = rdmaxcel_sys::wqe_params_t {
+                laddr: lhandle.addr,
+                length: lhandle.size,
+                lkey: lhandle.lkey,
+                wr_id: u32::from_be(*(*dv_qp).dbrec) as u64,
+                op_type,
+                signaled: true,
+                qp_num: (*ibv_qp).qp_num,
+                buf: (*dv_qp).rq.buf as *mut u8,
+                wqe_cnt: (*dv_qp).rq.wqe_cnt,
+                dbrec: (*dv_qp).dbrec,
+                ..Default::default()
+            };
+            rdmaxcel_sys::launch_recv_wqe(params);
+            qp.recv_wqe_idx += 1;
+            qp.recv_db_idx += 1;
+        }
+        Ok(())
+    }
+
+    pub async fn ring_db_gpu(qp: &mut RdmaQueuePair) -> Result<(), anyhow::Error> {
+        unsafe {
+            let dv_qp = qp.dv_qp as *mut rdmaxcel_sys::mlx5dv_qp;
+            let base_ptr = (*dv_qp).sq.buf as *mut u8;
+            let wqe_cnt = (*dv_qp).sq.wqe_cnt;
+            let stride = (*dv_qp).sq.stride;
+            if wqe_cnt < (qp.send_wqe_idx - qp.send_db_idx) {
+                return Err(anyhow::anyhow!("Overflow of WQE, possible data loss"));
+            }
+            while qp.send_db_idx < qp.send_wqe_idx {
+                let offset = (qp.send_db_idx % wqe_cnt) * stride;
+                let src_ptr = (base_ptr as *mut u8).wrapping_add(offset as usize);
+                rdmaxcel_sys::launch_db_ring((*dv_qp).bf.reg, src_ptr as *mut std::ffi::c_void);
+                qp.send_db_idx += 1;
+            }
+        }
+        Ok(())
+    }
+
+    /// Wait for completion on a specific completion queue
+    pub async fn wait_for_completion_gpu(
+        qp: &mut RdmaQueuePair,
+        poll_target: PollTarget,
+        timeout_secs: u64,
+    ) -> Result<bool, anyhow::Error> {
+        let timeout = Duration::from_secs(timeout_secs);
+        let start_time = Instant::now();
+
+        while start_time.elapsed() < timeout {
+            // Get the appropriate completion queue and index based on the poll target
+            let (cq, idx, cq_type_str) = match poll_target {
+                PollTarget::Send => (
+                    qp.dv_send_cq as *mut rdmaxcel_sys::mlx5dv_cq,
+                    qp.send_cq_idx as i32,
+                    "send",
+                ),
+                PollTarget::Recv => (
+                    qp.dv_recv_cq as *mut rdmaxcel_sys::mlx5dv_cq,
+                    qp.recv_cq_idx as i32,
+                    "receive",
+                ),
+            };
+
+            // Poll the completion queue
+            let result = unsafe { rdmaxcel_sys::launch_cqe_poll(cq as *mut std::ffi::c_void, idx) };
+
+            match result {
+                rdmaxcel_sys::CQE_POLL_TRUE => {
+                    // Update the appropriate index based on the poll target
+                    match poll_target {
+                        PollTarget::Send => qp.send_cq_idx += 1,
+                        PollTarget::Recv => qp.recv_cq_idx += 1,
+                    }
+                    return Ok(true);
+                }
+                rdmaxcel_sys::CQE_POLL_ERROR => {
+                    return Err(anyhow::anyhow!("Error polling {} completion", cq_type_str));
+                }
+                _ => {
+                    // No completion yet, sleep and try again
+                    RealClock.sleep(Duration::from_millis(1)).await;
                 }
             }
         }
@@ -101,48 +336,39 @@ pub mod test_utils {
             devices: (&str, &str),
         ) -> Result<Self, anyhow::Error> {
             let all_devices = get_all_devices();
-            let mut config1 = None;
-            let mut config2 = None;
+            let mut config1 = IbverbsConfig::default();
+            let mut config2 = IbverbsConfig::default();
 
             for device in all_devices.iter() {
                 if device.name == nics.0 {
-                    config1 = Some(IbverbsConfig {
-                        device: device.clone(),
-                        ..Default::default()
-                    });
+                    config1.device = device.clone();
                 }
                 if device.name == nics.1 {
-                    config2 = Some(IbverbsConfig {
-                        device: device.clone(),
-                        ..Default::default()
-                    });
+                    config2.device = device.clone();
                 }
             }
-            assert!(config1.is_some() && config2.is_some());
 
             let device_str1 = (String::new(), 0);
             let device_str2 = (String::new(), 0);
 
             if let Some((backend, idx)) = devices.0.split_once(':') {
                 assert!(backend == "cuda");
-                let parsed_idx = idx
+                let _parsed_idx = idx
                     .parse::<usize>()
                     .expect("Device index is not a valid integer");
-                let _device_str1 = (backend.to_string(), parsed_idx.to_string());
             } else {
                 assert!(devices.0 == "cpu");
-                let _device_str1 = (devices.0.to_string(), 0);
+                config1.use_cuda = false;
             }
 
             if let Some((backend, idx)) = devices.1.split_once(':') {
                 assert!(backend == "cuda");
-                let parsed_idx = idx
+                let _parsed_idx = idx
                     .parse::<usize>()
                     .expect("Device index is not a valid integer");
-                let _device_str1 = (backend.to_string(), parsed_idx.to_string());
             } else {
                 assert!(devices.1 == "cpu");
-                let _device_str2 = (devices.1.to_string(), 0);
+                config2.use_cuda = false;
             }
 
             let alloc_1 = LocalAllocator
@@ -154,10 +380,8 @@ pub mod test_utils {
                 .unwrap();
 
             let proc_mesh_1 = Box::leak(Box::new(ProcMesh::allocate(alloc_1).await.unwrap()));
-            let actor_mesh_1: RootActorMesh<'_, RdmaManagerActor> = proc_mesh_1
-                .spawn("rdma_manager", &(config1.unwrap()))
-                .await
-                .unwrap();
+            let actor_mesh_1: RootActorMesh<'_, RdmaManagerActor> =
+                proc_mesh_1.spawn("rdma_manager", &(config1)).await.unwrap();
 
             let alloc_2 = LocalAllocator
                 .allocate(AllocSpec {
@@ -168,10 +392,8 @@ pub mod test_utils {
                 .unwrap();
 
             let proc_mesh_2 = Box::leak(Box::new(ProcMesh::allocate(alloc_2).await.unwrap()));
-            let actor_mesh_2: RootActorMesh<'_, RdmaManagerActor> = proc_mesh_2
-                .spawn("rdma_manager", &(config2.unwrap()))
-                .await
-                .unwrap();
+            let actor_mesh_2: RootActorMesh<'_, RdmaManagerActor> =
+                proc_mesh_2.spawn("rdma_manager", &(config2)).await.unwrap();
 
             let mut buf_vec = Vec::new();
 
@@ -215,7 +437,6 @@ pub mod test_utils {
                         cuda_sys::CUmemAllocationGranularity_flags::CU_MEM_ALLOC_GRANULARITY_MINIMUM,
                     ));
 
-                    println!("granularity: {}", granularity);
                     // ensure our size is aligned
                     padded_size = ((buffer_size - 1) / granularity + 1) * granularity;
                     assert!(padded_size == buffer_size);
@@ -226,9 +447,7 @@ pub mod test_utils {
                         &prop,
                         0
                     ));
-                    println!("cuMemCreate done");
                     // reserve and map the memory
-                    // let mut dptr: cuda_sys::CUdeviceptr = std::mem::zeroed();
                     cu_check!(cuda_sys::cuMemAddressReserve(
                         &mut dptr as *mut cuda_sys::CUdeviceptr,
                         padded_size,
@@ -236,11 +455,6 @@ pub mod test_utils {
                         0,
                         0,
                     ));
-                    println!("cuMemAddressReserve done");
-                    println!("dptr: 0x{:x}", dptr);
-                    println!("padded_size: {:?}", padded_size);
-                    println!("handle: {:?}", handle);
-
                     assert!(dptr as usize % granularity == 0);
                     assert!(padded_size % granularity == 0);
 
@@ -263,9 +477,7 @@ pub mod test_utils {
                     access_desc.location.id = device;
                     access_desc.flags =
                         cuda_sys::CUmemAccess_flags::CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
-                    println!("mem set access");
                     cu_check!(cuda_sys::cuMemSetAccess(dptr, padded_size, &access_desc, 1));
-                    println!("mem set access completed");
                     buf_vec.push(Buffer {
                         ptr: dptr,
                         len: padded_size,

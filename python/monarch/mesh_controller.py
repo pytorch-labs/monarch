@@ -11,6 +11,7 @@ import os
 import pdb  # noqa
 import traceback
 from collections import deque
+from functools import partial
 from logging import Logger
 from typing import (
     Any,
@@ -32,6 +33,7 @@ from monarch._rust_bindings.monarch_extension.client import (  # @manual=//monar
 from monarch._rust_bindings.monarch_extension.mesh_controller import _Controller
 from monarch._rust_bindings.monarch_extension.tensor_worker import Ref
 from monarch._rust_bindings.monarch_hyperactor.actor import (
+    MethodSpecifier,
     PythonMessage,
     PythonMessageKind,
     UnflattenArg,
@@ -40,6 +42,7 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
 from monarch._rust_bindings.monarch_hyperactor.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
     ActorId,
 )
+from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 from monarch._src.actor.actor_mesh import ActorEndpoint, Port, PortTuple
 from monarch._src.actor.endpoint import Selection
 from monarch._src.actor.shape import NDSlice
@@ -48,7 +51,7 @@ from monarch.common.controller_api import TController
 from monarch.common.function import ResolvableFunction
 from monarch.common.invocation import Seq
 from monarch.common.messages import Referenceable, SendResultOfActorCall
-from monarch.common.stream import StreamRef
+from monarch.common.stream import Stream, StreamRef
 from monarch.common.tensor import dtensor_check, InputChecker, Tensor
 from monarch.common.tree import flatten
 from monarch.tensor_worker_main import _set_trace
@@ -322,9 +325,39 @@ def actor_send(
 
     client = cast(MeshClient, checker.mesh.client)
 
-    stream_ref = chosen_stream._to_ref(client)
+    rest = partial(
+        _actor_send,
+        endpoint,
+        args_kwargs_tuple,
+        refs,
+        port,
+        selection,
+        client,
+        checker.mesh,
+        tensors,
+        chosen_stream,
+    )
+    if isinstance(endpoint._name, MethodSpecifier.Init):
+        # Init runs within the tokio loop, but creating a node blocks the loop sending actor messages, so
+        # we offload to a blocking thread
+        PythonTask.spawn_blocking(rest)
+    else:
+        rest()
 
-    fut = (port, checker.mesh._ndslice) if port is not None else None
+
+def _actor_send(
+    endpoint: ActorEndpoint,
+    args_kwargs_tuple: bytes,
+    refs: Sequence[Any],
+    port: Optional[Port[Any]],
+    selection: Selection,
+    client: MeshClient,
+    mesh: DeviceMesh,
+    tensors: List[Tensor],
+    chosen_stream: Stream,
+):
+    stream_ref = chosen_stream._to_ref(client)
+    fut = (port, mesh._ndslice) if port is not None else None
 
     ident = client.new_node([], tensors, cast("OldFuture", fut))
 
@@ -340,7 +373,7 @@ def actor_send(
         endpoint, selection, client, ident, args_kwargs_tuple, refs
     )
     worker_msg = SendResultOfActorCall(ident, broker_id, tensors, [], stream_ref)
-    client.send(checker.mesh._ndslice, worker_msg)
+    client.send(mesh._ndslice, worker_msg)
     # we have to ask for status updates
     # from workers to be sure they have finished
     # enough work to count this future as finished,

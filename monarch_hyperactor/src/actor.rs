@@ -54,10 +54,10 @@ use crate::proc::InstanceWrapper;
 use crate::proc::PyActorId;
 use crate::proc::PyProc;
 use crate::proc::PySerialized;
+use crate::pytokio::PyPythonTask;
+use crate::pytokio::PythonTask;
 use crate::runtime::signal_safe_block_on;
 use crate::shape::PyShape;
-use crate::tokio::PyPythonTask;
-use crate::tokio::PythonTask;
 
 #[pyclass(frozen, module = "monarch._rust_bindings.monarch_hyperactor.actor")]
 #[derive(Serialize, Deserialize, Named)]
@@ -235,6 +235,7 @@ fn mailbox<'py, T: Actor>(py: Python<'py>, cx: &Context<'_, T>) -> Bound<'py, Py
 #[derive(Clone, Serialize, Deserialize, Named, PartialEq, Default)]
 pub struct PythonMessage {
     pub kind: PythonMessageKind,
+    #[serde(with = "serde_bytes")]
     pub message: Vec<u8>,
 }
 

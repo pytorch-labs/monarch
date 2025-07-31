@@ -53,3 +53,6 @@ pub mod strategy;
 
 /// Utilities.
 pub mod utils;
+
+/// Types to describe extents, points and views.
+pub mod view;

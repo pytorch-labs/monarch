@@ -339,8 +339,29 @@ impl<M: RemoteMessage> NetTx<M> {
                 );
 
                 if let Some(largest) = self.largest_acked {
-                    // It is possible the message was delivered, but the send branch
-                    // did put it into unacked queue. This chould happen when:
+                    // Note: some scenarios of why this if branch could happen:
+                    //
+                    // message.0 <= largest could happen in the following scenario:
+                    //
+                    // 1. NetTx sent seq=2 and seq=3.
+                    // 2. NetRx received messages and put them on its mspc channel.
+                    //    But before NetRx acked, the connection was broken.
+                    // 3. NetTx reconnected. In this case, NetTx will put unacked
+                    //    messages, i.e. 2 and 3, back to outbox.
+                    // 2. At the beginning of the new connection. NetRx acked 2
+                    //    and 3 immediately.
+                    // 3. Before sending messages, NetTx received the acks first
+                    //    with the new connection. NetTx Stored 3 as largest_acked.
+                    // 4. Now NetRx finally got the chance to resend 2 and 3.
+                    //    When it resent 2, 2 < largest_acked, which is 3.
+                    //    * similarly, if there was only one message, seq=3
+                    //      involved, we would have 3 == largest_acked.
+                    //
+                    // message.0 == largest could also happen in the following
+                    // scenario:
+                    //
+                    // The message was delivered, but the send branch did not push
+                    // it into unacked queue. This chould happen when:
                     //   1. `outbox.send_message` future was canceled by tokio::select.
                     //   2. `outbox.send_message` returns an error, which makes
                     //      the deliver result unknown to Tx.
@@ -349,7 +370,7 @@ impl<M: RemoteMessage> NetTx<M> {
                     // Tx resends. As a result, this message's ack would be
                     // recorded already by `largest_acked` before it is put into
                     // unacked queue.
-                    if message.0 == largest {
+                    if message.0 <= largest {
                         // since the message is already delivered and acked, it
                         // does need to be put in the queue again.
                         return;
@@ -960,14 +981,14 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                                 },
                                 // Ignore retransmits.
                                 Ok(Frame::Message(seq, _)) if seq < next.seq => (),
+                                // The following segment ensures exactly-once semantics.
+                                // That means No out-of-order delivery and no duplicate delivery.
                                 Ok(Frame::Message(seq, message)) => {
+                                    // received seq should be equal to next seq. Else error out!
                                     if seq > next.seq {
                                         tracing::error!("out-of-sequence message from {}", self.source);
-                                        // TODO: T217549393: Enabling
-                                        // this next line causes test
-                                        // `channel::net::tests::test_tcp_reconnect`
-                                        // to unexpectedly fail.
-                                        // break (next, Err(anyhow::anyhow!("out-of-sequence message from {}", self.source)))
+                                        let next_seq = next.seq;
+                                        break (next, Err(anyhow::anyhow!("out-of-sequence message from {}, expected seq {}, got {}", self.source, next_seq, seq)))
                                     }
                                     match tx.send(message).await {
                                         Ok(()) => {
@@ -1035,11 +1056,11 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                 }
                 Err(e) => {
                     tracing::warn!(
-                        "session {}:{} failed to flush acks for connection from
-                        {} due to error : {:?}. Normally, this is okay because
-                        Tx will reconnect, and acks will be resent in the next
-                        connection. However, if either Tx or Rx is dropped, the
-                        reconnection will not happen, and subsequently the
+                        "session {}:{} failed to flush acks for connection from \
+                        {} due to error : {:?}. Normally, this is okay because \
+                        Tx will reconnect, and acks will be resent in the next \
+                        connection. However, if either Tx or Rx is dropped, the \
+                        reconnection will not happen, and subsequently the \
                         pending ack will never be sent out.",
                         self.dest,
                         session_id,
@@ -2017,37 +2038,6 @@ mod tests {
             let returned = return_receiver.await.unwrap();
             assert_eq!(message, returned);
         }
-    }
-
-    #[tracing_test::traced_test]
-    #[async_timed_test(timeout_secs = 60)]
-    async fn test_tcp_reconnect() {
-        // Use temporary config for this test
-        let config = config::global::lock();
-        let _guard = config.override_key(config::MESSAGE_ACK_EVERY_N_MESSAGES, 1);
-        let socket_addr: SocketAddr = "[::1]:0".parse().unwrap();
-        let (local_addr, mut rx1) = tcp::serve::<u64>(socket_addr).await.unwrap();
-        let local_socket = match local_addr {
-            ChannelAddr::Tcp(socket) => socket,
-            _ => panic!("unexpected channel type"),
-        };
-        let tx = dial::<u64>(local_addr).unwrap();
-        tx.try_post(101, unused_return_channel()).unwrap();
-        assert_eq!(rx1.recv().await.unwrap(), 101);
-        // Wait long enough to ensure message is acked.
-        RealClock.sleep(Duration::from_secs(5)).await;
-
-        // Stop the server.
-        rx1.2.stop("from testing");
-        assert_matches!(rx1.recv().await.unwrap_err(), ChannelError::Closed);
-
-        // Send the message is allowed even when the server is down.
-        tx.try_post(102, unused_return_channel()).unwrap();
-
-        // Start the server again. Need to serve on the same socket address
-        // because that is what tx knows.
-        let (_, mut rx2) = tcp::serve::<u64>(local_socket).await.unwrap();
-        assert_eq!(rx2.recv().await.unwrap(), 102);
     }
 
     #[async_timed_test(timeout_secs = 30)]

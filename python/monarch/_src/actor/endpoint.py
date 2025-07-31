@@ -16,7 +16,9 @@ from typing import (
     Callable,
     cast,
     Concatenate,
+    Coroutine,
     Dict,
+    Generator,
     Generic,
     List,
     Literal,
@@ -145,7 +147,7 @@ class Endpoint(ABC, Generic[P, R]):
 
             results: List[R] = [None] * extent.nelements  # pyre-fixme[9]
             for _ in range(extent.nelements):
-                rank, value = await r.recv()
+                rank, value = await r._recv()
                 results[rank] = value
             call_shape = Shape(
                 extent.labels,
@@ -153,9 +155,11 @@ class Endpoint(ABC, Generic[P, R]):
             )
             return ValueMesh(call_shape, results)
 
-        return Future(impl=process, requires_loop=False)
+        return Future(coro=process())
 
-    async def stream(self, *args: P.args, **kwargs: P.kwargs) -> AsyncGenerator[R, R]:
+    def _stream(
+        self, *args: P.args, **kwargs: P.kwargs
+    ) -> Generator[Coroutine[Any, Any, R], None, None]:
         """
         Broadcasts to all actors and yields their responses as a stream / generator.
 
@@ -168,7 +172,14 @@ class Endpoint(ABC, Generic[P, R]):
         # pyre-ignore
         extent = self._send(args, kwargs, port=p)
         for _ in range(extent.nelements):
-            yield await r.recv()
+            # pyre-ignore
+            yield r._recv()
+
+    def stream(
+        self, *args: P.args, **kwargs: P.kwargs
+    ) -> Generator[Future[R], None, None]:
+        for coro in self._stream(*args, **kwargs):
+            yield Future(coro=coro)
 
     def broadcast(self, *args: P.args, **kwargs: P.kwargs) -> None:
         """

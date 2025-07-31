@@ -40,11 +40,11 @@ use tokio::sync::mpsc;
 use crate::actor_mesh::PythonActorMesh;
 use crate::alloc::PyAlloc;
 use crate::mailbox::PyMailbox;
+use crate::pytokio::PyPythonTask;
+use crate::pytokio::PythonTask;
 use crate::shape::PyShape;
 use crate::supervision::SupervisionError;
 use crate::supervision::Unhealthy;
-use crate::tokio::PyPythonTask;
-use crate::tokio::PythonTask;
 
 // A wrapper around `ProcMesh` which keeps track of all `RootActorMesh`s that it spawns.
 pub struct TrackedProcMesh {
