@@ -51,8 +51,8 @@ use hyperactor::Mailbox;
 use hyperactor::Named;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
-/// Direct access to low-level libibverbs rdmacore_sys.
-use rdmacore_sys::ibv_qp_type;
+/// Direct access to low-level libibverbs rdmaxcel_sys.
+use rdmaxcel_sys::ibv_qp_type;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -65,6 +65,32 @@ use crate::ibverbs_primitives::IbverbsConfig;
 use crate::ibverbs_primitives::RdmaMemoryRegionView;
 use crate::ibverbs_primitives::RdmaOperation;
 use crate::ibverbs_primitives::RdmaQpInfo;
+
+#[derive(Debug, Named, Clone, Serialize, Deserialize)]
+pub struct DoorBell {
+    pub src_ptr: usize,
+    pub dst_ptr: usize,
+    pub size: usize,
+}
+
+impl DoorBell {
+    /// Rings the doorbell to trigger the execution of previously enqueued operations.
+    ///
+    /// This method uses unsafe code to directly interact with the RDMA device,
+    /// sending a signal from the source pointer to the destination pointer.
+    ///
+    /// # Returns
+    /// * `Ok(())` if the operation is successful.
+    /// * `Err(anyhow::Error)` if an error occurs during the operation.
+    pub fn ring(&self) -> Result<(), anyhow::Error> {
+        unsafe {
+            let mut src_ptr = self.src_ptr as *mut std::ffi::c_void;
+            let mut dst_ptr = self.dst_ptr as *mut std::ffi::c_void;
+            rdmaxcel_sys::db_ring(dst_ptr, src_ptr);
+            Ok(())
+        }
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize, Named, Clone)]
 pub struct RdmaBuffer {
@@ -107,7 +133,8 @@ impl RdmaBuffer {
             .await?;
 
         qp.put(self.clone(), remote)?;
-        self.wait_for_completion(qp, timeout).await
+        self.wait_for_completion(&mut qp, PollTarget::Send, timeout)
+            .await
     }
 
     /// Write from the provided memory into the RdmaBuffer.
@@ -140,7 +167,8 @@ impl RdmaBuffer {
             .request_queue_pair(client, remote.owner.clone())
             .await?;
         qp.get(self.clone(), remote)?;
-        self.wait_for_completion(qp, timeout).await
+        self.wait_for_completion(&mut qp, PollTarget::Send, timeout)
+            .await
     }
     /// Waits for the completion of an RDMA operation.
     ///
@@ -156,19 +184,18 @@ impl RdmaBuffer {
     /// or an error if the timeout is reached
     async fn wait_for_completion(
         &self,
-        qp: RdmaQueuePair,
+        qp: &mut RdmaQueuePair,
+        poll_target: PollTarget,
         timeout: u64,
     ) -> Result<bool, anyhow::Error> {
         let timeout = Duration::from_secs(timeout);
         let start_time = std::time::Instant::now();
 
         while start_time.elapsed() < timeout {
-            match qp.poll_completion() {
+            match qp.poll_completion_target(poll_target) {
                 Ok(Some(wc)) => {
-                    if wc.wr_id() == 0 {
-                        tracing::debug!("work completed");
-                        return Ok(true);
-                    }
+                    tracing::debug!("work completed");
+                    return Ok(true);
                 }
                 Ok(None) => {
                     RealClock.sleep(Duration::from_millis(1)).await;
@@ -201,9 +228,9 @@ impl RdmaBuffer {
 /// * `mr_map`: A map of memory region IDs to pointers, representing registered memory regions.
 /// * `counter`: A counter for generating unique memory region IDs.
 pub struct RdmaDomain {
-    pub context: *mut rdmacore_sys::ibv_context,
-    pub pd: *mut rdmacore_sys::ibv_pd,
-    mr_map: HashMap<u32, *mut rdmacore_sys::ibv_mr>,
+    pub context: *mut rdmaxcel_sys::ibv_context,
+    pub pd: *mut rdmaxcel_sys::ibv_pd,
+    mr_map: HashMap<u32, *mut rdmaxcel_sys::ibv_mr>,
     counter: u32,
 }
 
@@ -219,21 +246,21 @@ impl std::fmt::Debug for RdmaDomain {
 }
 
 // SAFETY:
-// This function contains code marked unsafe as it interacts with the Rdma device through rdmacore_sys calls.
+// This function contains code marked unsafe as it interacts with the Rdma device through rdmaxcel_sys calls.
 // RdmaDomain is `Send` because the raw pointers to ibverbs structs can be
 // accessed from any thread, and it is safe to drop `RdmaDomain` (and run the
 // ibverbs destructors) from any thread.
 unsafe impl Send for RdmaDomain {}
 
 // SAFETY:
-// This function contains code marked unsafe as it interacts with the Rdma device through rdmacore_sys calls.
+// This function contains code marked unsafe as it interacts with the Rdma device through rdmaxcel_sys calls.
 // RdmaDomain is `Sync` because the underlying ibverbs APIs are thread-safe.
 unsafe impl Sync for RdmaDomain {}
 
 impl Drop for RdmaDomain {
     fn drop(&mut self) {
         unsafe {
-            rdmacore_sys::ibv_dealloc_pd(self.pd);
+            rdmaxcel_sys::ibv_dealloc_pd(self.pd);
         }
     }
 }
@@ -268,7 +295,7 @@ impl RdmaDomain {
     pub fn new(device: RdmaDevice) -> Result<Self, anyhow::Error> {
         tracing::debug!("creating RdmaDomain for device {}", device.name());
         // SAFETY:
-        // This code uses unsafe rdmacore_sys calls to interact with the RDMA device, but is safe because:
+        // This code uses unsafe rdmaxcel_sys calls to interact with the RDMA device, but is safe because:
         // - All pointers are properly initialized and checked for null before use
         // - Memory registration follows the ibverbs API contract with proper access flags
         // - Resources are properly cleaned up in error cases to prevent leaks
@@ -277,7 +304,7 @@ impl RdmaDomain {
             // Get the device based on the provided RdmaDevice
             let device_name = device.name();
             let mut num_devices = 0i32;
-            let devices = rdmacore_sys::ibv_get_device_list(&mut num_devices as *mut _);
+            let devices = rdmaxcel_sys::ibv_get_device_list(&mut num_devices as *mut _);
 
             if devices.is_null() || num_devices == 0 {
                 return Err(anyhow::anyhow!("no RDMA devices found"));
@@ -288,7 +315,7 @@ impl RdmaDomain {
             for i in 0..num_devices {
                 let dev = *devices.offset(i as isize);
                 let dev_name =
-                    CStr::from_ptr(rdmacore_sys::ibv_get_device_name(dev)).to_string_lossy();
+                    CStr::from_ptr(rdmaxcel_sys::ibv_get_device_name(dev)).to_string_lossy();
 
                 if dev_name == *device_name {
                     device_ptr = dev;
@@ -298,24 +325,24 @@ impl RdmaDomain {
 
             // If we didn't find the device, return an error
             if device_ptr.is_null() {
-                rdmacore_sys::ibv_free_device_list(devices);
+                rdmaxcel_sys::ibv_free_device_list(devices);
                 return Err(anyhow::anyhow!("device '{}' not found", device_name));
             }
             tracing::info!("using RDMA device: {}", device_name);
 
             // Open device
-            let context = rdmacore_sys::ibv_open_device(device_ptr);
+            let context = rdmaxcel_sys::ibv_open_device(device_ptr);
             if context.is_null() {
-                rdmacore_sys::ibv_free_device_list(devices);
+                rdmaxcel_sys::ibv_free_device_list(devices);
                 let os_error = Error::last_os_error();
                 return Err(anyhow::anyhow!("failed to create context: {}", os_error));
             }
 
             // Create protection domain
-            let pd = rdmacore_sys::ibv_alloc_pd(context);
+            let pd = rdmaxcel_sys::ibv_alloc_pd(context);
             if pd.is_null() {
-                rdmacore_sys::ibv_close_device(context);
-                rdmacore_sys::ibv_free_device_list(devices);
+                rdmaxcel_sys::ibv_close_device(context);
+                rdmaxcel_sys::ibv_free_device_list(devices);
                 let os_error = Error::last_os_error();
                 return Err(anyhow::anyhow!(
                     "failed to create protection domain (PD): {}",
@@ -324,7 +351,7 @@ impl RdmaDomain {
             }
 
             // Avoids memory leaks
-            rdmacore_sys::ibv_free_device_list(devices);
+            rdmaxcel_sys::ibv_free_device_list(devices);
 
             Ok(RdmaDomain {
                 context,
@@ -350,10 +377,10 @@ impl RdmaDomain {
             );
             let is_cuda = err == cuda_sys::CUresult::CUDA_SUCCESS;
 
-            let access = rdmacore_sys::ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
-                | rdmacore_sys::ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
-                | rdmacore_sys::ibv_access_flags::IBV_ACCESS_REMOTE_READ
-                | rdmacore_sys::ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC;
+            let access = rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
+                | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
+                | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_READ
+                | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC;
 
             let mr;
             if is_cuda {
@@ -365,9 +392,9 @@ impl RdmaDomain {
                     cuda_sys::CUmemRangeHandleType::CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
                     0,
                 );
-                mr = rdmacore_sys::ibv_reg_dmabuf_mr(self.pd, 0, size, 0, fd, access.0 as i32);
+                mr = rdmaxcel_sys::ibv_reg_dmabuf_mr(self.pd, 0, size, 0, fd, access.0 as i32);
             } else {
-                mr = rdmacore_sys::ibv_reg_mr(
+                mr = rdmaxcel_sys::ibv_reg_mr(
                     self.pd,
                     addr as *mut std::ffi::c_void,
                     size,
@@ -396,7 +423,7 @@ impl RdmaDomain {
         let mr = self.mr_map.remove(&id);
         if mr.is_some() {
             unsafe {
-                rdmacore_sys::ibv_dereg_mr(mr.expect("mr is required"));
+                rdmaxcel_sys::ibv_dereg_mr(mr.expect("mr is required"));
             }
         }
         Ok(())
@@ -418,6 +445,12 @@ impl RdmaDomain {
         Ok(())
     }
 }
+/// Enum to specify which completion queue to poll
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PollTarget {
+    Send,
+    Recv,
+}
 
 /// Represents an RDMA Queue Pair (QP) that enables communication between two endpoints.
 ///
@@ -427,12 +460,14 @@ impl RdmaDomain {
 ///
 /// # Fields
 ///
-/// * `cq` - Completion Queue pointer for tracking operation completions
+/// * `send_cq` - Send Completion Queue pointer for tracking send operation completions
+/// * `recv_cq` - Receive Completion Queue pointer for tracking receive operation completions
 /// * `qp` - Queue Pair pointer that manages send and receive operations
+/// * `dv_qp` - Pointer to the mlx5 device-specific queue pair structure
+/// * `dv_send_cq` - Pointer to the mlx5 device-specific send completion queue structure
+/// * `dv_recv_cq` - Pointer to the mlx5 device-specific receive completion queue structure
 /// * `context` - RDMA device context pointer
 /// * `config` - Configuration settings for the queue pair
-/// * `lkey` - Local key for memory region access
-/// * `rkey` - Remote key for memory region access
 ///
 /// # Connection Lifecycle
 ///
@@ -440,15 +475,25 @@ impl RdmaDomain {
 /// 2. Get connection info with `get_qp_info()`
 /// 3. Exchange connection info with remote peer (application must handle this)
 /// 4. Connect to remote endpoint with `connect()`
-/// 5. Perform RDMA operations with `post_send()`
-/// 6. Poll for completions with `poll_completion()`
+/// 5. Perform RDMA operations with `put()` or `get()`
+/// 6. Poll for completions with `poll_send_completion()` or `poll_recv_completion()`
 
 #[derive(Debug, Serialize, Deserialize, Named, Clone)]
 pub struct RdmaQueuePair {
-    cq: usize,      // *mut rdmacore_sys::ibv_cq,
-    qp: usize,      // *mut rdmacore_sys::ibv_qp,
-    context: usize, // *mut rdmacore_sys::ibv_context,
+    pub send_cq: usize,    // *mut rdmaxcel_sys::ibv_cq,
+    pub recv_cq: usize,    // *mut rdmaxcel_sys::ibv_cq,
+    pub qp: usize,         // *mut rdmaxcel_sys::ibv_qp,
+    pub dv_qp: usize,      // *mut rdmaxcel_sys::mlx5dv_qp,
+    pub dv_send_cq: usize, // *mut rdmaxcel_sys::mlx5dv_cq,
+    pub dv_recv_cq: usize, // *mut rdmaxcel_sys::mlx5dv_cq,
+    context: usize,        // *mut rdmaxcel_sys::ibv_context,
     config: IbverbsConfig,
+    pub send_wqe_idx: u32,
+    pub send_db_idx: u32,
+    pub send_cq_idx: u32,
+    pub recv_wqe_idx: u32,
+    pub recv_db_idx: u32,
+    pub recv_cq_idx: u32,
 }
 
 impl RdmaQueuePair {
@@ -473,64 +518,74 @@ impl RdmaQueuePair {
     /// * Completion queue (CQ) creation fails
     /// * Queue pair (QP) creation fails
     pub fn new(
-        context: *mut rdmacore_sys::ibv_context,
-        pd: *mut rdmacore_sys::ibv_pd,
+        context: *mut rdmaxcel_sys::ibv_context,
+        pd: *mut rdmaxcel_sys::ibv_pd,
         config: IbverbsConfig,
     ) -> Result<Self, anyhow::Error> {
         tracing::debug!("creating an RdmaQueuePair from config {}", config);
-        // SAFETY:
-        // This code uses unsafe rdmacore_sys calls to interact with the RDMA device, but is safe because:
-        // - All pointers are properly initialized and checked for null before use
-        // - Resources (CQ, QP) are created following the ibverbs API contract
-        // - Error handling properly cleans up resources in failure cases
-        // - The operations follow the documented RDMA protocol for queue pair initialization
         unsafe {
-            let cq = rdmacore_sys::ibv_create_cq(
+            // standard ibverbs QP
+            let qp = rdmaxcel_sys::create_qp(
                 context,
+                pd,
                 config.cq_entries,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                0,
+                config.max_send_wr.try_into().unwrap(),
+                config.max_recv_wr.try_into().unwrap(),
+                config.max_send_sge.try_into().unwrap(),
+                config.max_recv_sge.try_into().unwrap(),
             );
-            if cq.is_null() {
-                let os_error = Error::last_os_error();
-                return Err(anyhow::anyhow!(
-                    "failed to create completion queue (CQ): {}",
-                    os_error
-                ));
-            }
 
-            // Create queue pair - note we currently share a CQ for both send and receive for simplicity.
-            let mut qp_init_attr = rdmacore_sys::ibv_qp_init_attr {
-                qp_context: std::ptr::null::<std::os::raw::c_void>() as *mut _,
-                send_cq: cq,
-                recv_cq: cq,
-                srq: std::ptr::null::<rdmacore_sys::ibv_srq>() as *mut _,
-                cap: rdmacore_sys::ibv_qp_cap {
-                    max_send_wr: config.max_send_wr,
-                    max_recv_wr: config.max_recv_wr,
-                    max_send_sge: config.max_send_sge,
-                    max_recv_sge: config.max_recv_sge,
-                    max_inline_data: 0,
-                },
-                qp_type: ibv_qp_type::IBV_QPT_RC,
-                sq_sig_all: 0,
-            };
-
-            let qp = rdmacore_sys::ibv_create_qp(pd, &mut qp_init_attr);
             if qp.is_null() {
-                rdmacore_sys::ibv_destroy_cq(cq);
                 let os_error = Error::last_os_error();
                 return Err(anyhow::anyhow!(
                     "failed to create queue pair (QP): {}",
                     os_error
                 ));
             }
+
+            let send_cq = (*qp).send_cq;
+            let recv_cq = (*qp).recv_cq;
+
+            // mlx5dv provider APIs
+            let dv_qp = rdmaxcel_sys::create_mlx5dv_qp(qp);
+            let dv_send_cq = rdmaxcel_sys::create_mlx5dv_send_cq(qp);
+            let dv_recv_cq = rdmaxcel_sys::create_mlx5dv_recv_cq(qp);
+
+            if dv_qp.is_null() || dv_send_cq.is_null() || dv_recv_cq.is_null() {
+                rdmaxcel_sys::ibv_destroy_cq((*qp).recv_cq);
+                rdmaxcel_sys::ibv_destroy_cq((*qp).send_cq);
+                rdmaxcel_sys::ibv_destroy_qp(qp);
+                return Err(anyhow::anyhow!(
+                    "failed to init mlx5dv_qp or completion queues"
+                ));
+            }
+
+            // CUDA specific registrations
+            if config.use_cuda {
+                let ret = rdmaxcel_sys::register_cuda_memory(dv_qp, dv_recv_cq, dv_send_cq);
+                if ret != 0 {
+                    rdmaxcel_sys::ibv_destroy_cq((*qp).recv_cq);
+                    rdmaxcel_sys::ibv_destroy_cq((*qp).send_cq);
+                    rdmaxcel_sys::ibv_destroy_qp(qp);
+                    return Err(anyhow::anyhow!("failed to register cuda memory: {:?}", ret));
+                }
+            }
+
             Ok(RdmaQueuePair {
-                cq: cq as usize,
+                send_cq: send_cq as usize,
+                recv_cq: recv_cq as usize,
                 qp: qp as usize,
+                dv_qp: dv_qp as usize,
+                dv_send_cq: dv_send_cq as usize,
+                dv_recv_cq: dv_recv_cq as usize,
                 context: context as usize,
                 config,
+                recv_db_idx: 0,
+                recv_wqe_idx: 0,
+                recv_cq_idx: 0,
+                send_db_idx: 0,
+                send_wqe_idx: 0,
+                send_cq_idx: 0,
             })
         }
     }
@@ -552,19 +607,19 @@ impl RdmaQueuePair {
     /// * GID query fails
     pub fn get_qp_info(&mut self) -> Result<RdmaQpInfo, anyhow::Error> {
         // SAFETY:
-        // This code uses unsafe rdmacore_sys calls to query RDMA device information, but is safe because:
+        // This code uses unsafe rdmaxcel_sys calls to query RDMA device information, but is safe because:
         // - All pointers are properly initialized before use
         // - Port and GID queries follow the documented ibverbs API contract
         // - Error handling properly checks return codes from ibverbs functions
         // - The memory address provided is only stored, not dereferenced in this function
         unsafe {
-            let context = self.context as *mut rdmacore_sys::ibv_context;
-            let qp = self.qp as *mut rdmacore_sys::ibv_qp;
-            let mut port_attr = rdmacore_sys::ibv_port_attr::default();
-            let errno = rdmacore_sys::ibv_query_port(
+            let context = self.context as *mut rdmaxcel_sys::ibv_context;
+            let qp = self.qp as *mut rdmaxcel_sys::ibv_qp;
+            let mut port_attr = rdmaxcel_sys::ibv_port_attr::default();
+            let errno = rdmaxcel_sys::ibv_query_port(
                 context,
                 self.config.port_num,
-                &mut port_attr as *mut rdmacore_sys::ibv_port_attr as *mut _,
+                &mut port_attr as *mut rdmaxcel_sys::ibv_port_attr as *mut _,
             );
             if errno != 0 {
                 let os_error = Error::last_os_error();
@@ -575,7 +630,7 @@ impl RdmaQueuePair {
             }
 
             let mut gid = Gid::default();
-            let ret = rdmacore_sys::ibv_query_gid(
+            let ret = rdmaxcel_sys::ibv_query_gid(
                 context,
                 self.config.port_num,
                 i32::from(self.config.gid_index),
@@ -595,18 +650,18 @@ impl RdmaQueuePair {
     }
 
     pub fn state(&mut self) -> Result<u32, anyhow::Error> {
-        // SAFETY: This block interacts with the RDMA device through rdmacore_sys calls.
+        // SAFETY: This block interacts with the RDMA device through rdmaxcel_sys calls.
         unsafe {
-            let qp = self.qp as *mut rdmacore_sys::ibv_qp;
-            let mut qp_attr = rdmacore_sys::ibv_qp_attr {
+            let qp = self.qp as *mut rdmaxcel_sys::ibv_qp;
+            let mut qp_attr = rdmaxcel_sys::ibv_qp_attr {
                 ..Default::default()
             };
-            let mut qp_init_attr = rdmacore_sys::ibv_qp_init_attr {
+            let mut qp_init_attr = rdmaxcel_sys::ibv_qp_init_attr {
                 ..Default::default()
             };
-            let mask = rdmacore_sys::ibv_qp_attr_mask::IBV_QP_STATE;
+            let mask = rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_STATE;
             let errno =
-                rdmacore_sys::ibv_query_qp(qp, &mut qp_attr, mask.0 as i32, &mut qp_init_attr);
+                rdmaxcel_sys::ibv_query_qp(qp, &mut qp_attr, mask.0 as i32, &mut qp_init_attr);
             if errno != 0 {
                 let os_error = Error::last_os_error();
                 return Err(anyhow::anyhow!("failed to query QP state: {}", os_error));
@@ -623,7 +678,7 @@ impl RdmaQueuePair {
     /// * `connection_info` - The remote connection info to connect to
     pub fn connect(&mut self, connection_info: &RdmaQpInfo) -> Result<(), anyhow::Error> {
         // SAFETY:
-        // This unsafe block is necessary because we're interacting with the RDMA device through rdmacore_sys calls.
+        // This unsafe block is necessary because we're interacting with the RDMA device through rdmaxcel_sys calls.
         // The operations are safe because:
         // 1. We're following the documented ibverbs API contract
         // 2. All pointers used are properly initialized and owned by this struct
@@ -631,26 +686,27 @@ impl RdmaQueuePair {
         // 4. Memory access is properly bounded by the registered memory regions
         unsafe {
             // Transition to INIT
-            let qp = self.qp as *mut rdmacore_sys::ibv_qp;
+            let qp = self.qp as *mut rdmaxcel_sys::ibv_qp;
 
-            let qp_access_flags = rdmacore_sys::ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
-                | rdmacore_sys::ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
-                | rdmacore_sys::ibv_access_flags::IBV_ACCESS_REMOTE_READ;
+            let qp_access_flags = rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
+                | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
+                | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_READ
+                | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC;
 
-            let mut qp_attr = rdmacore_sys::ibv_qp_attr {
-                qp_state: rdmacore_sys::ibv_qp_state::IBV_QPS_INIT,
+            let mut qp_attr = rdmaxcel_sys::ibv_qp_attr {
+                qp_state: rdmaxcel_sys::ibv_qp_state::IBV_QPS_INIT,
                 qp_access_flags: qp_access_flags.0,
                 pkey_index: self.config.pkey_index,
                 port_num: self.config.port_num,
                 ..Default::default()
             };
 
-            let mask = rdmacore_sys::ibv_qp_attr_mask::IBV_QP_STATE
-                | rdmacore_sys::ibv_qp_attr_mask::IBV_QP_PKEY_INDEX
-                | rdmacore_sys::ibv_qp_attr_mask::IBV_QP_PORT
-                | rdmacore_sys::ibv_qp_attr_mask::IBV_QP_ACCESS_FLAGS;
+            let mask = rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_STATE
+                | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_PKEY_INDEX
+                | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_PORT
+                | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_ACCESS_FLAGS;
 
-            let errno = rdmacore_sys::ibv_modify_qp(qp, &mut qp_attr, mask.0 as i32);
+            let errno = rdmaxcel_sys::ibv_modify_qp(qp, &mut qp_attr, mask.0 as i32);
             if errno != 0 {
                 let os_error = Error::last_os_error();
                 return Err(anyhow::anyhow!(
@@ -660,14 +716,14 @@ impl RdmaQueuePair {
             }
 
             // Transition to RTR (Ready to Receive)
-            let mut qp_attr = rdmacore_sys::ibv_qp_attr {
-                qp_state: rdmacore_sys::ibv_qp_state::IBV_QPS_RTR,
+            let mut qp_attr = rdmaxcel_sys::ibv_qp_attr {
+                qp_state: rdmaxcel_sys::ibv_qp_state::IBV_QPS_RTR,
                 path_mtu: self.config.path_mtu,
                 dest_qp_num: connection_info.qp_num,
                 rq_psn: connection_info.psn,
                 max_dest_rd_atomic: self.config.max_dest_rd_atomic,
                 min_rnr_timer: self.config.min_rnr_timer,
-                ah_attr: rdmacore_sys::ibv_ah_attr {
+                ah_attr: rdmaxcel_sys::ibv_ah_attr {
                     dlid: connection_info.lid,
                     sl: 0,
                     src_path_bits: 0,
@@ -690,15 +746,15 @@ impl RdmaQueuePair {
                 qp_attr.ah_attr.is_global = 0;
             }
 
-            let mask = rdmacore_sys::ibv_qp_attr_mask::IBV_QP_STATE
-                | rdmacore_sys::ibv_qp_attr_mask::IBV_QP_AV
-                | rdmacore_sys::ibv_qp_attr_mask::IBV_QP_PATH_MTU
-                | rdmacore_sys::ibv_qp_attr_mask::IBV_QP_DEST_QPN
-                | rdmacore_sys::ibv_qp_attr_mask::IBV_QP_RQ_PSN
-                | rdmacore_sys::ibv_qp_attr_mask::IBV_QP_MAX_DEST_RD_ATOMIC
-                | rdmacore_sys::ibv_qp_attr_mask::IBV_QP_MIN_RNR_TIMER;
+            let mask = rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_STATE
+                | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_AV
+                | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_PATH_MTU
+                | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_DEST_QPN
+                | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_RQ_PSN
+                | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_MAX_DEST_RD_ATOMIC
+                | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_MIN_RNR_TIMER;
 
-            let errno = rdmacore_sys::ibv_modify_qp(qp, &mut qp_attr, mask.0 as i32);
+            let errno = rdmaxcel_sys::ibv_modify_qp(qp, &mut qp_attr, mask.0 as i32);
             if errno != 0 {
                 let os_error = Error::last_os_error();
                 return Err(anyhow::anyhow!(
@@ -708,8 +764,8 @@ impl RdmaQueuePair {
             }
 
             // Transition to RTS (Ready to Send)
-            let mut qp_attr = rdmacore_sys::ibv_qp_attr {
-                qp_state: rdmacore_sys::ibv_qp_state::IBV_QPS_RTS,
+            let mut qp_attr = rdmaxcel_sys::ibv_qp_attr {
+                qp_state: rdmaxcel_sys::ibv_qp_state::IBV_QPS_RTS,
                 sq_psn: self.config.psn,
                 max_rd_atomic: self.config.max_rd_atomic,
                 retry_cnt: self.config.retry_cnt,
@@ -718,14 +774,14 @@ impl RdmaQueuePair {
                 ..Default::default()
             };
 
-            let mask = rdmacore_sys::ibv_qp_attr_mask::IBV_QP_STATE
-                | rdmacore_sys::ibv_qp_attr_mask::IBV_QP_TIMEOUT
-                | rdmacore_sys::ibv_qp_attr_mask::IBV_QP_RETRY_CNT
-                | rdmacore_sys::ibv_qp_attr_mask::IBV_QP_SQ_PSN
-                | rdmacore_sys::ibv_qp_attr_mask::IBV_QP_RNR_RETRY
-                | rdmacore_sys::ibv_qp_attr_mask::IBV_QP_MAX_QP_RD_ATOMIC;
+            let mask = rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_STATE
+                | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_TIMEOUT
+                | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_RETRY_CNT
+                | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_SQ_PSN
+                | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_RNR_RETRY
+                | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_MAX_QP_RD_ATOMIC;
 
-            let errno = rdmacore_sys::ibv_modify_qp(qp, &mut qp_attr, mask.0 as i32);
+            let errno = rdmaxcel_sys::ibv_modify_qp(qp, &mut qp_attr, mask.0 as i32);
             if errno != 0 {
                 let os_error = Error::last_os_error();
                 return Err(anyhow::anyhow!(
@@ -742,33 +798,204 @@ impl RdmaQueuePair {
         }
     }
 
-    pub fn put(&mut self, lhandle: RdmaBuffer, rhandle: RdmaBuffer) -> Result<(), anyhow::Error> {
-        self.post_op(
-            lhandle.addr,
-            lhandle.lkey,
-            lhandle.size,
+    pub fn recv(&mut self, lhandle: RdmaBuffer, rhandle: RdmaBuffer) -> Result<(), anyhow::Error> {
+        let idx = self.recv_wqe_idx;
+        self.recv_wqe_idx += 1;
+        self.send_wqe(
             0,
+            lhandle.lkey,
+            0,
+            idx,
             true,
-            RdmaOperation::Write,
-            rhandle.addr,
+            RdmaOperation::Recv,
+            0,
             rhandle.rkey,
         )
         .unwrap();
         Ok(())
     }
 
-    pub fn get(&mut self, lhandle: RdmaBuffer, rhandle: RdmaBuffer) -> Result<(), anyhow::Error> {
+    pub fn put_with_recv(
+        &mut self,
+        lhandle: RdmaBuffer,
+        rhandle: RdmaBuffer,
+    ) -> Result<(), anyhow::Error> {
+        let idx = self.send_wqe_idx;
+        self.send_wqe_idx += 1;
         self.post_op(
             lhandle.addr,
             lhandle.lkey,
             lhandle.size,
-            0,
+            idx,
+            true,
+            RdmaOperation::WriteWithImm,
+            rhandle.addr,
+            rhandle.rkey,
+        )
+        .unwrap();
+        self.send_db_idx += 1;
+        Ok(())
+    }
+
+    pub fn put(&mut self, lhandle: RdmaBuffer, rhandle: RdmaBuffer) -> Result<(), anyhow::Error> {
+        let idx = self.send_wqe_idx;
+        self.send_wqe_idx += 1;
+        self.post_op(
+            lhandle.addr,
+            lhandle.lkey,
+            lhandle.size,
+            idx,
+            true,
+            RdmaOperation::Write,
+            rhandle.addr,
+            rhandle.rkey,
+        )
+        .unwrap();
+        self.send_db_idx += 1;
+        Ok(())
+    }
+
+    /// Get a doorbell for the queue pair.
+    ///
+    /// This method returns a doorbell that can be used to trigger the execution of
+    /// previously enqueued operations.
+    ///
+    /// # Returns
+    ///
+    /// * `Result<DoorBell, anyhow::Error>` - A doorbell for the queue pair
+    pub fn ring_doorbell(&mut self) -> Result<(), anyhow::Error> {
+        unsafe {
+            let dv_qp = self.dv_qp as *mut rdmaxcel_sys::mlx5dv_qp;
+            let base_ptr = (*dv_qp).sq.buf as *mut u8;
+            let wqe_cnt = (*dv_qp).sq.wqe_cnt;
+            let stride = (*dv_qp).sq.stride;
+            if wqe_cnt < (self.send_wqe_idx - self.send_db_idx) {
+                return Err(anyhow::anyhow!("Overflow of WQE, possible data loss"));
+            }
+            while self.send_db_idx < self.send_wqe_idx {
+                let offset = (self.send_db_idx % wqe_cnt) * stride;
+                let src_ptr = (base_ptr as *mut u8).wrapping_add(offset as usize);
+                rdmaxcel_sys::db_ring((*dv_qp).bf.reg, src_ptr as *mut std::ffi::c_void);
+                self.send_db_idx += 1;
+            }
+            Ok(())
+        }
+    }
+
+    /// Enqueues a put operation without ringing the doorbell.
+    ///
+    /// This method prepares a put operation but does not execute it.
+    /// Use `get_doorbell().ring()` to execute the operation.
+    ///
+    /// # Arguments
+    ///
+    /// * `lhandle` - Local buffer handle
+    /// * `rhandle` - Remote buffer handle
+    ///
+    /// # Returns
+    ///
+    /// * `Result<(), anyhow::Error>` - Success or error
+    pub fn enqueue_put(
+        &mut self,
+        lhandle: RdmaBuffer,
+        rhandle: RdmaBuffer,
+    ) -> Result<(), anyhow::Error> {
+        let idx = self.send_wqe_idx;
+        self.send_wqe_idx += 1;
+        self.send_wqe(
+            lhandle.addr,
+            lhandle.lkey,
+            lhandle.size,
+            idx,
+            true,
+            RdmaOperation::Write,
+            rhandle.addr,
+            rhandle.rkey,
+        )?;
+        Ok(())
+    }
+
+    /// Enqueues a put with receive operation without ringing the doorbell.
+    ///
+    /// This method prepares a put with receive operation but does not execute it.
+    /// Use `get_doorbell().ring()` to execute the operation.
+    ///
+    /// # Arguments
+    ///
+    /// * `lhandle` - Local buffer handle
+    /// * `rhandle` - Remote buffer handle
+    ///
+    /// # Returns
+    ///
+    /// * `Result<(), anyhow::Error>` - Success or error
+    pub fn enqueue_put_with_recv(
+        &mut self,
+        lhandle: RdmaBuffer,
+        rhandle: RdmaBuffer,
+    ) -> Result<(), anyhow::Error> {
+        let idx = self.send_wqe_idx;
+        self.send_wqe_idx += 1;
+        self.send_wqe(
+            lhandle.addr,
+            lhandle.lkey,
+            lhandle.size,
+            idx,
+            true,
+            RdmaOperation::WriteWithImm,
+            rhandle.addr,
+            rhandle.rkey,
+        )?;
+        Ok(())
+    }
+
+    /// Enqueues a get operation without ringing the doorbell.
+    ///
+    /// This method prepares a get operation but does not execute it.
+    /// Use `get_doorbell().ring()` to execute the operation.
+    ///
+    /// # Arguments
+    ///
+    /// * `lhandle` - Local buffer handle
+    /// * `rhandle` - Remote buffer handle
+    ///
+    /// # Returns
+    ///
+    /// * `Result<(), anyhow::Error>` - Success or error
+    pub fn enqueue_get(
+        &mut self,
+        lhandle: RdmaBuffer,
+        rhandle: RdmaBuffer,
+    ) -> Result<(), anyhow::Error> {
+        let idx = self.send_wqe_idx;
+        self.send_wqe_idx += 1;
+        self.send_wqe(
+            lhandle.addr,
+            lhandle.lkey,
+            lhandle.size,
+            idx,
+            true,
+            RdmaOperation::Read,
+            rhandle.addr,
+            rhandle.rkey,
+        )?;
+        Ok(())
+    }
+
+    pub fn get(&mut self, lhandle: RdmaBuffer, rhandle: RdmaBuffer) -> Result<(), anyhow::Error> {
+        let idx = self.send_wqe_idx;
+        self.send_wqe_idx += 1;
+        self.post_op(
+            lhandle.addr,
+            lhandle.lkey,
+            lhandle.size,
+            idx,
             true,
             RdmaOperation::Read,
             rhandle.addr,
             rhandle.rkey,
         )
         .unwrap();
+        self.send_db_idx += 1;
         Ok(())
     }
 
@@ -788,54 +1015,74 @@ impl RdmaQueuePair {
         laddr: usize,
         lkey: u32,
         length: usize,
-        wr_id: u64,
+        wr_id: u32,
         signaled: bool,
         op_type: RdmaOperation,
         raddr: usize,
         rkey: u32,
     ) -> Result<(), anyhow::Error> {
         // SAFETY:
-        // This code uses unsafe rdmacore_sys calls to post work requests to the RDMA device, but is safe because:
+        // This code uses unsafe rdmaxcel_sys calls to post work requests to the RDMA device, but is safe because:
         // - All pointers (send_sge, send_wr) are properly initialized on the stack before use
         // - The memory address in `local_addr` is not dereferenced, only passed to the device
         // - The remote connection info is verified to exist before accessing
         // - The ibverbs post_send operation follows the documented API contract
         // - Error codes from the device are properly checked and propagated
         unsafe {
-            let qp = self.qp as *mut rdmacore_sys::ibv_qp;
-            let context = self.context as *mut rdmacore_sys::ibv_context;
-            let mut send_sge = rdmacore_sys::ibv_sge {
-                addr: laddr as u64,
-                length: length as u32,
-                lkey,
-            };
-
-            let send_flags = if signaled {
-                rdmacore_sys::ibv_send_flags::IBV_SEND_SIGNALED.0
-            } else {
-                0
-            };
-
-            let mut send_wr = rdmacore_sys::ibv_send_wr {
-                wr_id,
-                next: std::ptr::null_mut(),
-                sg_list: &mut send_sge as *mut _,
-                num_sge: 1,
-                opcode: op_type.into(),
-                send_flags,
-                wr: Default::default(),
-                qp_type: Default::default(),
-                __bindgen_anon_1: Default::default(),
-                __bindgen_anon_2: Default::default(),
-            };
-
-            // Set remote address and rkey for RDMA operations
-            send_wr.wr.rdma.remote_addr = raddr as u64;
-            send_wr.wr.rdma.rkey = rkey;
-            let mut bad_send_wr: *mut rdmacore_sys::ibv_send_wr = std::ptr::null_mut();
+            let qp = self.qp as *mut rdmaxcel_sys::ibv_qp;
+            let context = self.context as *mut rdmaxcel_sys::ibv_context;
             let ops = &mut (*context).ops;
-            let errno =
-                ops.post_send.as_mut().unwrap()(qp, &mut send_wr as *mut _, &mut bad_send_wr);
+            let errno;
+            if op_type == RdmaOperation::Recv {
+                let mut sge = rdmaxcel_sys::ibv_sge {
+                    addr: laddr as u64,
+                    length: length as u32,
+                    lkey,
+                };
+                let mut wr = rdmaxcel_sys::ibv_recv_wr {
+                    wr_id: wr_id.try_into().unwrap(),
+                    sg_list: &mut sge as *mut _,
+                    num_sge: 1,
+                    ..Default::default()
+                };
+                let mut bad_wr: *mut rdmaxcel_sys::ibv_recv_wr = std::ptr::null_mut();
+                errno = ops.post_recv.as_mut().unwrap()(qp, &mut wr as *mut _, &mut bad_wr);
+            } else if (op_type == RdmaOperation::Write
+                || op_type == RdmaOperation::Read
+                || op_type == RdmaOperation::WriteWithImm)
+            {
+                let send_flags = if signaled {
+                    rdmaxcel_sys::ibv_send_flags::IBV_SEND_SIGNALED.0
+                } else {
+                    0
+                };
+                let mut sge = rdmaxcel_sys::ibv_sge {
+                    addr: laddr as u64,
+                    length: length as u32,
+                    lkey,
+                };
+                let mut wr = rdmaxcel_sys::ibv_send_wr {
+                    wr_id: wr_id.try_into().unwrap(),
+                    next: std::ptr::null_mut(),
+                    sg_list: &mut sge as *mut _,
+                    num_sge: 1,
+                    opcode: op_type.into(),
+                    send_flags,
+                    wr: Default::default(),
+                    qp_type: Default::default(),
+                    __bindgen_anon_1: Default::default(),
+                    __bindgen_anon_2: Default::default(),
+                };
+
+                wr.wr.rdma.remote_addr = raddr as u64;
+                wr.wr.rdma.rkey = rkey;
+
+                let mut bad_wr: *mut rdmaxcel_sys::ibv_send_wr = std::ptr::null_mut();
+
+                errno = ops.post_send.as_mut().unwrap()(qp, &mut wr as *mut _, &mut bad_wr);
+            } else {
+                panic!("Not Implemented");
+            }
 
             if errno != 0 {
                 let os_error = Error::last_os_error();
@@ -855,61 +1102,170 @@ impl RdmaQueuePair {
         }
     }
 
-    /// Polls the completion queue for a completion event.
+    fn send_wqe(
+        &mut self,
+        laddr: usize,
+        lkey: u32,
+        length: usize,
+        wr_id: u32,
+        signaled: bool,
+        op_type: RdmaOperation,
+        raddr: usize,
+        rkey: u32,
+    ) -> Result<DoorBell, anyhow::Error> {
+        unsafe {
+            let op_type_val = match op_type {
+                RdmaOperation::Write => rdmaxcel_sys::MLX5_OPCODE_RDMA_WRITE,
+                RdmaOperation::WriteWithImm => rdmaxcel_sys::MLX5_OPCODE_RDMA_WRITE_IMM,
+                RdmaOperation::Read => rdmaxcel_sys::MLX5_OPCODE_RDMA_READ,
+                RdmaOperation::Recv => 0,
+            };
+
+            let qp = self.qp as *mut rdmaxcel_sys::ibv_qp;
+            let dv_qp = self.dv_qp as *mut rdmaxcel_sys::mlx5dv_qp;
+            let _dv_cq = if op_type == RdmaOperation::Recv {
+                self.dv_recv_cq as *mut rdmaxcel_sys::mlx5dv_cq
+            } else {
+                self.dv_send_cq as *mut rdmaxcel_sys::mlx5dv_cq
+            };
+
+            // Create the WQE parameters struct
+
+            let buf = if op_type == RdmaOperation::Recv {
+                (*dv_qp).rq.buf as *mut u8
+            } else {
+                (*dv_qp).sq.buf as *mut u8
+            };
+
+            let params = rdmaxcel_sys::wqe_params_t {
+                laddr,
+                lkey,
+                length,
+                wr_id: wr_id.try_into().unwrap(),
+                signaled,
+                op_type: op_type_val,
+                raddr,
+                rkey,
+                qp_num: (*qp).qp_num,
+                buf,
+                dbrec: (*dv_qp).dbrec,
+                wqe_cnt: (*dv_qp).sq.wqe_cnt,
+            };
+
+            // Call the C function to post the WQE
+            if op_type == RdmaOperation::Recv {
+                rdmaxcel_sys::recv_wqe(params);
+                std::ptr::write_volatile((*dv_qp).dbrec, 1_u32.to_be());
+            } else {
+                rdmaxcel_sys::send_wqe(params);
+            };
+
+            // Create and return a DoorBell struct
+            Ok(DoorBell {
+                dst_ptr: (*dv_qp).bf.reg as usize,
+                src_ptr: (*dv_qp).sq.buf as usize,
+                size: 8,
+            })
+        }
+    }
+
+    /// Poll for completions on the specified completion queue(s)
     ///
-    /// This function performs a single poll of the completion queue and returns the result.
-    /// It does not perform any timing or retry logic - the application is responsible for
-    /// implementing any polling strategy (timeouts, retries, etc.).
+    /// # Arguments
     ///
-    /// Note - while this method does not mutate the Rust struct (e.g. RdmaQueuePair),
-    /// it does consume work completions from the underlying ibverbs completion queue (CQ)
-    /// as a side effect. This is thread-safe, but may affect concurrent polls on
-    /// the same completion queue.
+    /// * `target` - Which completion queue(s) to poll (Send, Receive, or Both)
     ///
     /// # Returns
     ///
     /// * `Ok(Some(wc))` - A completion was found
     /// * `Ok(None)` - No completion was found
     /// * `Err(e)` - An error occurred
-    pub fn poll_completion(&self) -> Result<Option<IbvWc>, anyhow::Error> {
-        // SAFETY:
-        // This code uses unsafe rdmacore_sys calls to poll the completion queue, but is safe because:
-        // - The completion queue pointer is properly initialized and owned by this struct
-        // - The work completion structure is properly zeroed before use
-        // - We only access the completion queue through the documented ibverbs API
-        // - Error codes from polling operations are properly checked and propagated
-        // - The work completion validity is verified before returning it to the caller
+    pub fn poll_completion_target(
+        &mut self,
+        target: PollTarget,
+    ) -> Result<Option<IbvWc>, anyhow::Error> {
         unsafe {
-            let context = self.context as *mut rdmacore_sys::ibv_context;
-            let cq = self.cq as *mut rdmacore_sys::ibv_cq;
-            let mut wc = std::mem::MaybeUninit::<rdmacore_sys::ibv_wc>::zeroed().assume_init();
-            let ops = &mut (*context).ops;
+            let context = self.context as *mut rdmaxcel_sys::ibv_context;
+            let mut outstanding_wqe =
+                self.send_db_idx + self.recv_db_idx - self.send_cq_idx - self.recv_cq_idx;
 
-            let ret = ops.poll_cq.as_mut().unwrap()(cq, 1, &mut wc);
+            // Check for send completions if requested
+            if (target == PollTarget::Send) && self.send_db_idx > self.send_cq_idx {
+                let send_cq = self.send_cq as *mut rdmaxcel_sys::ibv_cq;
+                let ops = &mut (*context).ops;
+                let mut wc = std::mem::MaybeUninit::<rdmaxcel_sys::ibv_wc>::zeroed().assume_init();
+                let ret = ops.poll_cq.as_mut().unwrap()(send_cq, 1, &mut wc);
 
-            if ret < 0 {
-                return Err(anyhow::anyhow!(
-                    "Failed to poll CQ: {}",
-                    Error::last_os_error()
-                ));
+                if ret < 0 {
+                    return Err(anyhow::anyhow!(
+                        "Failed to poll send CQ: {}",
+                        Error::last_os_error()
+                    ));
+                }
+
+                if ret > 0 {
+                    if !wc.is_valid() {
+                        if let Some((status, vendor_err)) = wc.error() {
+                            return Err(anyhow::anyhow!(
+                                "Send work completion failed with status: {:?}, vendor error: {}",
+                                status,
+                                vendor_err
+                            ));
+                        }
+                    }
+
+                    // This should be a send completion
+                    self.send_cq_idx += 1;
+                    outstanding_wqe -= 1;
+
+                    return Ok(Some(IbvWc::from(wc)));
+                }
             }
 
-            if ret > 0 {
-                if !wc.is_valid() {
-                    if let Some((status, vendor_err)) = wc.error() {
-                        return Err(anyhow::anyhow!(
-                            "Work completion failed with status: {:?}, vendor error: {}",
-                            status,
-                            vendor_err
-                        ));
-                    }
+            // Check for receive completions if requested
+            if (target == PollTarget::Recv) && self.recv_db_idx > self.recv_cq_idx {
+                let recv_cq = self.recv_cq as *mut rdmaxcel_sys::ibv_cq;
+                let ops = &mut (*context).ops;
+                let mut wc = std::mem::MaybeUninit::<rdmaxcel_sys::ibv_wc>::zeroed().assume_init();
+                let ret = ops.poll_cq.as_mut().unwrap()(recv_cq, 1, &mut wc);
+
+                if ret < 0 {
+                    return Err(anyhow::anyhow!(
+                        "Failed to poll receive CQ: {}",
+                        Error::last_os_error()
+                    ));
                 }
-                return Ok(Some(IbvWc::from(wc)));
+
+                if ret > 0 {
+                    if !wc.is_valid() {
+                        if let Some((status, vendor_err)) = wc.error() {
+                            return Err(anyhow::anyhow!(
+                                "Receive work completion failed with status: {:?}, vendor error: {}",
+                                status,
+                                vendor_err
+                            ));
+                        }
+                    }
+
+                    // This should be a receive completion
+                    self.recv_cq_idx += 1;
+                    outstanding_wqe -= 1;
+
+                    return Ok(Some(IbvWc::from(wc)));
+                }
             }
 
             // No completion found
             Ok(None)
         }
+    }
+
+    pub fn poll_send_completion(&mut self) -> Result<Option<IbvWc>, anyhow::Error> {
+        self.poll_completion_target(PollTarget::Send)
+    }
+
+    pub fn poll_recv_completion(&mut self) -> Result<Option<IbvWc>, anyhow::Error> {
+        self.poll_completion_target(PollTarget::Recv)
     }
 }
 
@@ -919,7 +1275,16 @@ mod tests {
 
     #[test]
     fn test_create_connection() {
-        let config = IbverbsConfig::default();
+        // Skip test if RDMA devices are not available
+        if crate::ibverbs_primitives::get_all_devices().len() < 1 {
+            println!("Skipping test: RDMA devices not available");
+            return;
+        }
+
+        let config = IbverbsConfig {
+            use_cuda: false,
+            ..Default::default()
+        };
         let domain = RdmaDomain::new(config.device.clone());
         assert!(domain.is_ok());
 
@@ -930,8 +1295,20 @@ mod tests {
 
     #[test]
     fn test_loopback_connection() {
-        let server_config = IbverbsConfig::default();
-        let client_config = IbverbsConfig::default();
+        // Skip test if RDMA devices are not available
+        if crate::ibverbs_primitives::get_all_devices().len() < 1 {
+            println!("Skipping test: RDMA devices not available");
+            return;
+        }
+
+        let server_config = IbverbsConfig {
+            use_cuda: false,
+            ..Default::default()
+        };
+        let client_config = IbverbsConfig {
+            use_cuda: false,
+            ..Default::default()
+        };
 
         let server_domain = RdmaDomain::new(server_config.device.clone()).unwrap();
         let client_domain = RdmaDomain::new(client_config.device.clone()).unwrap();

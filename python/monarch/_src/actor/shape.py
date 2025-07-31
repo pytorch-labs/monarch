@@ -31,6 +31,32 @@ def iter_ranks(ranks: Slices) -> Generator[int, None, None]:
         yield from ranks
 
 
+class ShapeExt:
+    """Extension methods for Shape that add higher-level
+    functionality."""
+
+    @staticmethod
+    def slice(shape: Shape, **kwargs) -> Shape:
+        """Select along named dimensions. Integer values remove
+        dimensions, slice objects keep dimensions but restrict them.
+
+        Examples: ShapeExt.slice(shape, batch=3, gpu=slice(2, 6))
+        """
+        for label, selector in kwargs.items():
+            if label not in shape.labels:
+                raise TypeError(f"Shape does not have dimension labeled {label!r}")
+            if isinstance(selector, slice):
+                shape = shape.select(label, selector)
+            else:
+                if (
+                    selector < 0
+                    or selector >= shape.ndslice.sizes[shape.labels.index(label)]
+                ):
+                    raise IndexError("index out of range")
+                shape = shape.at(label, selector)
+        return shape
+
+
 class MeshTrait(ABC):
     """
     Mesh interface. Implemented via Shape.
@@ -51,45 +77,13 @@ class MeshTrait(ABC):
     def _new_with_shape(self, shape: Shape) -> Self: ...
 
     def slice(self, **kwargs) -> Self:
-        """
-        mesh.slice(batch=3) or mesh.slice(batch=slice(3, None))
-        """
-        ndslice = self._ndslice
-        labels = self._labels
-        offset = ndslice.offset
-        names = []
-        sizes = []
-        strides = []
-        for name, size, stride in zip(labels, ndslice.sizes, ndslice.strides):
-            if name in kwargs:
-                e = kwargs.pop(name)
-                if isinstance(e, slice):
-                    start, stop, slice_stride = e.indices(size)
-                    offset += start * stride
-                    names.append(name)
-                    # The number of elems in `start..stop` with step
-                    # `slice_stride`. This is:
-                    #    ⌈(stop - start) /slice_stride⌉
-                    # — the number of stride steps that fit in the
-                    # half-open interval.
-                    sizes.append((stop - start + slice_stride - 1) // slice_stride)
-                    strides.append(slice_stride * stride)
-                else:
-                    if e >= size or e < 0:
-                        raise IndexError("index out of range")
-                    offset += e * stride
-            else:
-                names.append(name)
-                sizes.append(size)
-                strides.append(stride)
+        """Select along named dimensions. Integer values remove
+        dimensions, slice objects keep dimensions but restrict them.
 
-        if kwargs:
-            raise TypeError(
-                f"{self} does not have dimension(s) named {tuple(kwargs.keys())}"
-            )
-
-        new_ndslice = NDSlice(offset=offset, sizes=sizes, strides=strides)
-        return self._new_with_shape(Shape(names, new_ndslice))
+        Examples: mesh.slice(batch=3, gpu=slice(2, 6))
+        """
+        shape = Shape(list(self._labels), self._ndslice)
+        return self._new_with_shape(ShapeExt.slice(shape, **kwargs))
 
     def split(self, **kwargs) -> Self:
         """

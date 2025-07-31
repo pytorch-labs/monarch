@@ -24,7 +24,9 @@ from typing import (
     Callable,
     cast,
     Concatenate,
+    Coroutine,
     Dict,
+    Generator,
     Generic,
     Iterable,
     Iterator,
@@ -403,15 +405,17 @@ class Accumulator(Generic[P, R, A]):
         self._combine: Callable[[A, R], A] = combine
 
     def accumulate(self, *args: P.args, **kwargs: P.kwargs) -> "Future[A]":
-        gen: AsyncGenerator[R, R] = self._endpoint.stream(*args, **kwargs)
+        gen: Generator[Coroutine[None, None, R], None, None] = self._endpoint._stream(
+            *args, **kwargs
+        )
 
         async def impl() -> A:
             value = self._identity
-            async for x in gen:
-                value = self._combine(value, x)
+            for x in gen:
+                value = self._combine(value, await x)
             return value
 
-        return Future(impl=impl)
+        return Future(coro=impl())
 
 
 class ValueMesh(MeshTrait, Generic[R]):
@@ -587,7 +591,7 @@ class PortReceiver(Generic[R]):
                 raise ValueError(f"Unexpected message kind: {msg.kind}")
 
     def recv(self) -> "Future[R]":
-        return Future(impl=lambda: self._recv(), requires_loop=False)
+        return Future(coro=self._recv())
 
 
 class RankedPortReceiver(PortReceiver[Tuple[int, R]]):

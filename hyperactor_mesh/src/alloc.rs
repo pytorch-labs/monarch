@@ -171,8 +171,8 @@ impl fmt::Display for ProcState {
 pub enum ProcStopReason {
     /// The proc stopped gracefully, e.g., with exit code 0.
     Stopped,
-    /// The proc exited with the provided error code.
-    Exited(i32),
+    /// The proc exited with the provided error code and stderr
+    Exited(i32, String),
     /// The proc was killed. The signal number is indicated;
     /// the flags determines whether there was a core dump.
     Killed(i32, bool),
@@ -189,7 +189,13 @@ impl fmt::Display for ProcStopReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Stopped => write!(f, "stopped"),
-            Self::Exited(code) => write!(f, "exited with code {}", code),
+            Self::Exited(code, stderr) => {
+                if stderr.is_empty() {
+                    write!(f, "exited with code {}", code)
+                } else {
+                    write!(f, "exited with code {}: {}", code, stderr)
+                }
+            }
             Self::Killed(signal, dumped) => {
                 write!(f, "killed with signal {} (core dumped={})", signal, dumped)
             }

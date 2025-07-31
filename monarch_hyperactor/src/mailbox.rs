@@ -48,10 +48,10 @@ use serde::Serialize;
 use crate::actor::PythonMessage;
 use crate::actor::PythonMessageKind;
 use crate::proc::PyActorId;
+use crate::pytokio::PyPythonTask;
+use crate::pytokio::PythonTask;
 use crate::runtime::signal_safe_block_on;
 use crate::shape::PyShape;
-use crate::tokio::PyPythonTask;
-use crate::tokio::PythonTask;
 #[derive(Clone, Debug)]
 #[pyclass(
     name = "Mailbox",

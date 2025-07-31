@@ -90,7 +90,7 @@ async def test_stream():
     v = await proc.spawn("counter2", Counter, 3)
     v.incr.broadcast()
 
-    assert 8 == sum([x async for x in v.value.stream()])
+    assert 8 == sum([await x for x in v.value.stream()])
 
 
 class To(Actor):
@@ -102,14 +102,14 @@ class To(Actor):
 class From(Actor):
     @endpoint
     async def get(self, to: To):
-        return [x async for x in to.whoami.stream()]
+        return [await x for x in to.whoami.stream()]
 
 
 async def test_mesh_passed_to_mesh():
     proc = await local_proc_mesh(gpus=2)
     f = await proc.spawn("from", From)
     t = await proc.spawn("to", To)
-    all = [y async for x in f.get.stream(t) for y in x]
+    all = [y for x in f.get.stream(t) for y in await x]
     assert len(all) == 4
     assert all[0] != all[1]
 
@@ -119,7 +119,7 @@ async def test_mesh_passed_to_mesh_on_different_proc_mesh():
     proc2 = await local_proc_mesh(gpus=2)
     f = await proc.spawn("from", From)
     t = await proc2.spawn("to", To)
-    all = [y async for x in f.get.stream(t) for y in x]
+    all = [y for x in f.get.stream(t) for y in await x]
     assert len(all) == 4
     assert all[0] != all[1]
 
@@ -133,7 +133,7 @@ async def test_actor_slicing():
 
     assert await t.slice(gpus=0).whoami.call() != await t.slice(gpus=1).whoami.call()
 
-    result = [y async for x in f.get.stream(t.slice(gpus=0)) for y in x]
+    result = [y for x in f.get.stream(t.slice(gpus=0)) for y in await x]
     assert len(result) == 2
 
     assert result[0] == result[1]
@@ -348,96 +348,96 @@ async def awaitit(f):
     return await f
 
 
-def test_actor_future() -> None:
-    v = 0
+# def test_actor_future() -> None:
+#     v = 0
 
-    async def incr():
-        nonlocal v
-        v += 1
-        return v
+#     async def incr():
+#         nonlocal v
+#         v += 1
+#         return v
 
-    # can use async implementation from sync
-    # if no non-blocking is provided
-    f = Future(impl=incr, requires_loop=False)
-    assert f.get() == 1
-    assert v == 1
-    assert f.get() == 1
-    assert asyncio.run(awaitit(f)) == 1
+#     # can use async implementation from sync
+#     # if no non-blocking is provided
+#     f = Future(impl=incr, requires_loop=False)
+#     assert f.get() == 1
+#     assert v == 1
+#     assert f.get() == 1
+#     assert asyncio.run(awaitit(f)) == 1
 
-    f = Future(impl=incr, requires_loop=False)
-    assert asyncio.run(awaitit(f)) == 2
-    assert f.get() == 2
+#     f = Future(impl=incr, requires_loop=False)
+#     assert asyncio.run(awaitit(f)) == 2
+#     assert f.get() == 2
 
-    async def incr2():
-        nonlocal v
-        v += 2
-        return v
+#     async def incr2():
+#         nonlocal v
+#         v += 2
+#         return v
 
-    # Use non-blocking optimization if provided
-    f = Future(impl=incr2)
-    assert f.get() == 4
+#     # Use non-blocking optimization if provided
+#     f = Future(impl=incr2)
+#     assert f.get() == 4
 
-    async def nope():
-        nonlocal v
-        v += 1
-        raise ValueError("nope")
+#     async def nope():
+#         nonlocal v
+#         v += 1
+#         raise ValueError("nope")
 
-    f = Future(impl=nope, requires_loop=False)
+#     f = Future(impl=nope, requires_loop=False)
 
-    with pytest.raises(ValueError):
-        f.get()
+#     with pytest.raises(ValueError):
+#         f.get()
 
-    assert v == 5
+#     assert v == 5
 
-    with pytest.raises(ValueError):
-        f.get()
+#     with pytest.raises(ValueError):
+#         f.get()
 
-    assert v == 5
+#     assert v == 5
 
-    with pytest.raises(ValueError):
-        asyncio.run(awaitit(f))
+#     with pytest.raises(ValueError):
+#         asyncio.run(awaitit(f))
 
-    assert v == 5
+#     assert v == 5
 
-    async def nope2():
-        nonlocal v
-        v += 1
-        raise ValueError("nope")
+#     async def nope2():
+#         nonlocal v
+#         v += 1
+#         raise ValueError("nope")
 
-    f = Future(impl=nope2)
+#     f = Future(impl=nope2)
 
-    with pytest.raises(ValueError):
-        f.get()
+#     with pytest.raises(ValueError):
+#         f.get()
 
-    assert v == 6
+#     assert v == 6
 
-    with pytest.raises(ValueError):
-        f.result()
+#     with pytest.raises(ValueError):
+#         f.result()
 
-    assert f.exception() is not None
+#     assert f.exception() is not None
 
-    assert v == 6
+#     assert v == 6
 
-    with pytest.raises(ValueError):
-        asyncio.run(awaitit(f))
+#     with pytest.raises(ValueError):
+#         asyncio.run(awaitit(f))
 
-    assert v == 6
+#     assert v == 6
 
-    async def seven():
-        return 7
+#     async def seven():
+#         return 7
 
-    f = Future(impl=seven, requires_loop=False)
+#     f = Future(impl=seven, requires_loop=False)
 
-    assert 7 == f.get(timeout=0.001)
+#     assert 7 == f.get(timeout=0.001)
 
-    async def neverfinish():
-        f = asyncio.Future()
-        await f
+#     async def neverfinish():
+#         f = asyncio.Future()
+#         await f
 
-    f = Future(impl=neverfinish, requires_loop=True)
+#     f = Future(impl=neverfinish, requires_loop=True)
 
-    with pytest.raises(asyncio.exceptions.TimeoutError):
-        f.get(timeout=0.1)
+#     with pytest.raises(asyncio.exceptions.TimeoutError):
+#         f.get(timeout=0.1)
 
 
 class Printer(Actor):

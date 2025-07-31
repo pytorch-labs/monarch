@@ -795,7 +795,7 @@ impl Handler<ActorSupervisionEvent> for ProcActor {
             proc_id: self.params.proc.proc_id().clone(),
             proc_addr: self.params.local_addr.clone(),
             proc_health: ProcStatus::Alive,
-            failed_actors: Vec::from([event.into_inner()]),
+            failed_actors: Vec::from([(event.actor_id, event.actor_status)]),
         };
         self.params.supervisor_actor_ref.update(cx, message).await?;
         Ok(())

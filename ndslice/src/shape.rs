@@ -8,7 +8,6 @@
 
 use std::fmt;
 
-use itertools::izip;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -80,6 +79,25 @@ impl Shape {
         Ok(Self { labels, slice })
     }
 
+    /// Select a single index along a named dimension, removing that
+    /// dimension entirely. This reduces the dimensionality by 1. In
+    /// effect it results in a cross section of the shape at the given
+    /// index in the given dimension.
+    pub fn at(&self, label: &str, index: usize) -> Result<Self, ShapeError> {
+        let dim = self.dim(label)?;
+        let slice = self.slice.at(dim, index).map_err(|err| match err {
+            SliceError::IndexOutOfRange { index, total } => ShapeError::OutOfRange {
+                range: Range(index, Some(index + 1), 1),
+                dim: label.to_string(),
+                size: total,
+            },
+            other => other.into(),
+        })?;
+        let mut labels = self.labels.clone();
+        labels.remove(dim);
+        Ok(Self { labels, slice })
+    }
+
     /// Restrict this shape along a named dimension using a [`Range`].
     /// The provided range must be nonempty.
     ///
@@ -133,48 +151,16 @@ impl Shape {
         })
     }
 
-    /// Sub-set this shape by select a particular row of the given indices
-    /// The resulting shape will no longer have dimensions for the given indices
-    /// Example shape.index(vec![("gpu", 3), ("host", 0)])
+    /// Sub-set this shape by select a particular row of the given
+    /// indices The resulting shape will no longer have dimensions for
+    /// the given indices Example shape.index(vec![("gpu", 3),
+    /// ("host", 0)])
     pub fn index(&self, indices: Vec<(String, usize)>) -> Result<Shape, ShapeError> {
-        let mut offset = self.slice.offset();
-        let mut names = Vec::new();
-        let mut sizes = Vec::new();
-        let mut strides = Vec::new();
-        let mut used_indices_count = 0;
-        let slice = self.slice();
-        for (dim, size, stride) in izip!(self.labels.iter(), slice.sizes(), slice.strides()) {
-            if let Some(index) = indices
-                .iter()
-                .find_map(|(name, index)| if *name == *dim { Some(index) } else { None })
-            {
-                if *index >= *size {
-                    return Err(ShapeError::IndexOutOfRange {
-                        index: *index,
-                        dim: dim.clone(),
-                        size: *size,
-                    });
-                }
-                offset += index * stride;
-                used_indices_count += 1;
-            } else {
-                names.push(dim.clone());
-                sizes.push(*size);
-                strides.push(*stride);
-            }
+        let mut shape = self.clone();
+        for (label, index) in indices {
+            shape = shape.at(&label, index)?;
         }
-        if used_indices_count != indices.len() {
-            let unused_indices = indices
-                .iter()
-                .filter(|(key, _)| !self.labels.contains(key))
-                .map(|(key, _)| key.clone())
-                .collect();
-            return Err(ShapeError::InvalidLabels {
-                labels: unused_indices,
-            });
-        }
-        let slice = Slice::new(offset, sizes, strides)?;
-        Shape::new(names, slice)
+        Ok(shape)
     }
 
     /// The per-dimension labels of this shape.
@@ -602,5 +588,63 @@ mod tests {
             &Slice::new(0, vec![4], vec![3]).unwrap(),
             "Expected offset 0, size 4, stride 3"
         );
+    }
+
+    #[test]
+    fn test_shape_at_removes_dimension() {
+        let labels = vec![
+            "batch".to_string(),
+            "height".to_string(),
+            "width".to_string(),
+        ];
+        let slice = Slice::new_row_major(vec![2, 3, 4]);
+        let shape = Shape::new(labels, slice).unwrap();
+
+        // Select index 1 from "batch" dimension
+        let result = shape.at("batch", 1).unwrap();
+
+        // Should have 2 dimensions now
+        assert_eq!(result.labels(), &["height", "width"]);
+        assert_eq!(result.slice().sizes(), &[3, 4]);
+        assert_eq!(result.slice().offset(), 12); // 1 * 12 (batch stride)
+    }
+
+    #[test]
+    fn test_shape_at_middle_dimension() {
+        let labels = vec![
+            "batch".to_string(),
+            "height".to_string(),
+            "width".to_string(),
+        ];
+        let slice = Slice::new_row_major(vec![2, 3, 4]);
+        let shape = Shape::new(labels, slice).unwrap();
+
+        // Select index 1 from "height" dimension (middle)
+        let result = shape.at("height", 1).unwrap();
+
+        // Should remove middle label
+        assert_eq!(result.labels(), &["batch", "width"]);
+        assert_eq!(result.slice().sizes(), &[2, 4]);
+        assert_eq!(result.slice().offset(), 4); // 1 * 4 (height stride)
+    }
+
+    #[test]
+    fn test_shape_at_invalid_label() {
+        let labels = vec!["batch".to_string(), "height".to_string()];
+        let slice = Slice::new_row_major(vec![2, 3]);
+        let shape = Shape::new(labels, slice).unwrap();
+
+        let result = shape.at("nonexistent", 0);
+        assert!(matches!(result, Err(ShapeError::InvalidLabels { .. })));
+    }
+
+    #[test]
+    fn test_shape_at_index_out_of_range() {
+        let labels = vec!["batch".to_string(), "height".to_string()];
+        let slice = Slice::new_row_major(vec![2, 3]);
+        let shape = Shape::new(labels, slice).unwrap();
+
+        let result = shape.at("batch", 5); // batch only has size 2
+        assert!(matches!(result, Err(ShapeError::OutOfRange { .. })));
     }
 }

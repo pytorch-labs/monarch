@@ -42,12 +42,12 @@ use crate::mailbox::PythonOncePortReceiver;
 use crate::mailbox::PythonPortReceiver;
 use crate::proc::PyActorId;
 use crate::proc_mesh::Keepalive;
+use crate::pytokio::PyPythonTask;
+use crate::pytokio::PythonTask;
 use crate::selection::PySelection;
 use crate::shape::PyShape;
 use crate::supervision::SupervisionError;
 use crate::supervision::Unhealthy;
-use crate::tokio::PyPythonTask;
-use crate::tokio::PythonTask;
 
 #[pyclass(
     name = "PythonActorMesh",
@@ -383,10 +383,11 @@ impl PythonActorMeshRef {
 
 impl Drop for PythonActorMesh {
     fn drop(&mut self) {
-        tracing::info!(
-            "Dropping PythonActorMesh: {}",
-            self.inner.borrow().unwrap().name()
-        );
+        if let Ok(mesh) = self.inner.borrow() {
+            tracing::info!("Dropping PythonActorMesh: {}", mesh.name());
+        } else {
+            tracing::info!("Dropping stopped PythonActorMesh");
+        }
         self.monitor.abort();
     }
 }
@@ -403,18 +404,15 @@ impl ActorMeshMonitor {
             .borrow()
             .expect("`Actor mesh receiver` is shutdown");
         let mut receiver = receiver.lock().await;
-        let event = receiver.recv().await.map_err(|e| {
-            PyErr::new::<PyEOFError, _>(format!("Actor mesh monitor channel closed: {}", e))
-        })?;
-
+        let event = receiver.recv().await;
         Ok(match event {
-            None => PyActorSupervisionEvent {
-                // Dummy actor as place holder to indicate the whole mesh is stopped
+            Ok(Some(event)) => PyActorSupervisionEvent::from(event.clone()),
+            Ok(None) | Err(_) => PyActorSupervisionEvent {
+                // Dummy actor as placeholder to indicate the whole mesh is stopped
                 // TODO(albertli): remove this when pushing all supervision logic to rust.
                 actor_id: id!(default[0].actor[0]).into(),
                 actor_status: "actor mesh is stopped due to proc mesh shutdown".to_string(),
             },
-            Some(event) => PyActorSupervisionEvent::from(event.clone()),
         })
     }
 }
@@ -446,7 +444,7 @@ impl SupervisedPythonPortReceiver {
                     result.map_err(|err| PyErr::new::<PyEOFError, _>(format!("port closed: {}", err)))
                 }
                 event = monitor.next() => {
-                    Python::with_gil(|py| {
+                    Python::with_gil(|_py| {
                         Err(PyErr::new::<SupervisionError, _>(format!("supervision error: {:?}", event)))
                     })
                 }
@@ -484,7 +482,7 @@ impl SupervisedPythonOncePortReceiver {
                     result.map_err(|err| PyErr::new::<PyEOFError, _>(format!("port closed: {}", err)))
                 }
                 event = monitor.next() => {
-                    Python::with_gil(|py| {
+                    Python::with_gil(|_py| {
                         Err(PyErr::new::<SupervisionError, _>(format!("supervision error: {:?}", event)))
                     })
                 }
@@ -522,8 +520,8 @@ impl PyActorSupervisionEvent {
 impl From<ActorSupervisionEvent> for PyActorSupervisionEvent {
     fn from(event: ActorSupervisionEvent) -> Self {
         PyActorSupervisionEvent {
-            actor_id: event.actor_id().clone().into(),
-            actor_status: event.actor_status().to_string(),
+            actor_id: event.actor_id.clone().into(),
+            actor_status: event.actor_status.to_string(),
         }
     }
 }

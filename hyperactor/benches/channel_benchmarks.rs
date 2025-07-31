@@ -44,7 +44,6 @@ fn bench_message_sizes(c: &mut Criterion) {
     let transports = vec![
         ("local", ChannelTransport::Local),
         ("tcp", ChannelTransport::Tcp),
-        ("metatls", ChannelTransport::MetaTls),
         ("unix", ChannelTransport::Unix),
     ];
 

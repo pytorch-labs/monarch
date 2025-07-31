@@ -10,7 +10,7 @@ import multiprocessing
 import os
 import signal
 import time
-from typing import Any, Iterable
+from typing import Any, Callable, Coroutine, Iterable
 
 import monarch
 
@@ -23,6 +23,7 @@ from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monar
 from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
+from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape
 
 
@@ -69,18 +70,30 @@ async def test_allocator() -> None:
     _ = await allocator.allocate(spec)
 
 
+def _python_task_test(
+    fn: Callable[[], Coroutine[Any, Any, None]],
+) -> Callable[[], None]:
+    """
+    Wrapper for tests that use the internal tokio event loop
+    APIs and need to run on that event loop.
+    """
+    return lambda: PythonTask.from_coroutine(fn()).block_on()
+
+
+@_python_task_test
 async def test_proc_mesh() -> None:
     spec = AllocSpec(AllocConstraints(), replica=2)
     allocator = monarch.LocalAllocator()
-    alloc = await allocator.allocate(spec)
+    alloc = await allocator.allocate_nonblocking(spec)
     proc_mesh = await ProcMesh.allocate_nonblocking(alloc)
     assert str(proc_mesh) == "<ProcMesh { shape: {replica=2} }>"
 
 
+@_python_task_test
 async def test_actor_mesh() -> None:
     spec = AllocSpec(AllocConstraints(), replica=2)
     allocator = monarch.LocalAllocator()
-    alloc = await allocator.allocate(spec)
+    alloc = await allocator.allocate_nonblocking(spec)
     proc_mesh = await ProcMesh.allocate_nonblocking(alloc)
     actor_mesh = await proc_mesh.spawn_nonblocking("test", MyActor)
 

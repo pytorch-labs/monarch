@@ -74,7 +74,7 @@ fn emit_cuda_link_directives(cuda_home: &str) {
 }
 
 fn python_env_dirs() -> (Option<String>, Option<String>) {
-    let output = std::process::Command::new(PathBuf::from("python"))
+    let output = std::process::Command::new(PathBuf::from("python3"))
         .arg("-c")
         .arg(PYTHON_PRINT_DIRS)
         .output()
@@ -94,13 +94,13 @@ fn python_env_dirs() -> (Option<String>, Option<String>) {
 }
 
 fn main() {
+    // Start building the bindgen configuration
     let mut builder = bindgen::Builder::default()
         // The input header we would like to generate bindings for
         .header("src/wrapper.h")
         .clang_arg("-x")
         .clang_arg("c++")
         .clang_arg("-std=gnu++20")
-        .clang_arg(format!("-I{}/include", find_cuda_home().unwrap()))
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         // Allow the specified functions and types
         .allowlist_function("cu.*")
@@ -112,6 +112,21 @@ fn main() {
             is_bitfield: false,
             is_global: false,
         });
+
+    // Add CUDA include path if available
+    if let Some(cuda_home) = find_cuda_home() {
+        let cuda_include_path = format!("{}/include", cuda_home);
+        if Path::new(&cuda_include_path).exists() {
+            builder = builder.clang_arg(format!("-I{}", cuda_include_path));
+        } else {
+            eprintln!(
+                "Warning: CUDA include directory not found at {}",
+                cuda_include_path
+            );
+        }
+    } else {
+        eprintln!("Warning: CUDA home directory not found. Continuing without CUDA include path.");
+    }
 
     // Include headers and libs from the active environment.
     let (include_dir, lib_dir) = python_env_dirs();
@@ -127,17 +142,26 @@ fn main() {
     if let Some(cuda_home) = find_cuda_home() {
         emit_cuda_link_directives(&cuda_home);
     }
-
-    // Write the bindings to the $OUT_DIR/bindings.rs file
-    let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
-    builder
-        .generate()
-        .expect("Unable to generate bindings")
-        .write_to_file(out_path.join("bindings.rs"))
-        .expect("Couldn't write bindings!");
-
     println!("cargo:rustc-link-lib=cuda");
     println!("cargo:rustc-link-lib=cudart");
-    println!("cargo::rustc-cfg=cargo");
-    println!("cargo::rustc-check-cfg=cfg(cargo)");
+
+    // Write the bindings to the $OUT_DIR/bindings.rs file
+    match env::var("OUT_DIR") {
+        Ok(out_dir) => {
+            let out_path = PathBuf::from(out_dir);
+            match builder.generate() {
+                Ok(bindings) => match bindings.write_to_file(out_path.join("bindings.rs")) {
+                    Ok(_) => {
+                        println!("cargo::rustc-cfg=cargo");
+                        println!("cargo::rustc-check-cfg=cfg(cargo)");
+                    }
+                    Err(e) => eprintln!("Warning: Couldn't write bindings: {}", e),
+                },
+                Err(e) => eprintln!("Warning: Unable to generate bindings: {}", e),
+            }
+        }
+        Err(_) => {
+            println!("Note: OUT_DIR not set, skipping bindings file generation");
+        }
+    }
 }

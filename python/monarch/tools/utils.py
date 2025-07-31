@@ -53,13 +53,10 @@ class conda:
         Returns the currently active conda environment name.
         `None` if run outside of a conda environment.
         """
-        env_name = os.getenv("CONDA_DEFAULT_ENV")
-
-        if not env_name:
-            # conda envs activated with metaconda doesn't set CODNA_DEFAULT_ENV so
-            # fallback to CONDA_PREFIX which points to the path of the currently active conda environment
-            # e.g./home/$USER/.conda/envs/{env_name}
-            if env_dir := conda.active_env_dir():
-                env_name = os.path.basename(env_dir)
+        # we do not check CODNA_DEFAULT_ENV as CONDA_PREFIX is a preferred way
+        # to get the active conda environment, e.g./home/$USER/.conda/envs/{env_name}
+        env_name: Optional[str] = None
+        if env_dir := conda.active_env_dir():
+            env_name = os.path.basename(env_dir)
 
         return env_name
