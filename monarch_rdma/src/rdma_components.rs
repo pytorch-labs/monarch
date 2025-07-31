@@ -42,6 +42,7 @@
 
 use std::collections::HashMap;
 use std::ffi::CStr;
+use std::fs;
 use std::io::Error;
 use std::result::Result;
 use std::time::Duration;
@@ -51,8 +52,6 @@ use hyperactor::Mailbox;
 use hyperactor::Named;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
-/// Direct access to low-level libibverbs rdmaxcel_sys.
-use rdmaxcel_sys::ibv_qp_type;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -84,8 +83,8 @@ impl DoorBell {
     /// * `Err(anyhow::Error)` if an error occurs during the operation.
     pub fn ring(&self) -> Result<(), anyhow::Error> {
         unsafe {
-            let mut src_ptr = self.src_ptr as *mut std::ffi::c_void;
-            let mut dst_ptr = self.dst_ptr as *mut std::ffi::c_void;
+            let src_ptr = self.src_ptr as *mut std::ffi::c_void;
+            let dst_ptr = self.dst_ptr as *mut std::ffi::c_void;
             rdmaxcel_sys::db_ring(dst_ptr, src_ptr);
             Ok(())
         }
@@ -560,14 +559,17 @@ impl RdmaQueuePair {
                 ));
             }
 
-            // CUDA specific registrations
-            if config.use_cuda {
+            // GPU Direct RDMA specific registrations
+            if config.use_gpu_direct {
                 let ret = rdmaxcel_sys::register_cuda_memory(dv_qp, dv_recv_cq, dv_send_cq);
                 if ret != 0 {
                     rdmaxcel_sys::ibv_destroy_cq((*qp).recv_cq);
                     rdmaxcel_sys::ibv_destroy_cq((*qp).send_cq);
                     rdmaxcel_sys::ibv_destroy_qp(qp);
-                    return Err(anyhow::anyhow!("failed to register cuda memory: {:?}", ret));
+                    return Err(anyhow::anyhow!(
+                        "failed to register GPU Direct RDMA memory: {:?}",
+                        ret
+                    ));
                 }
             }
 
@@ -1047,9 +1049,9 @@ impl RdmaQueuePair {
                 };
                 let mut bad_wr: *mut rdmaxcel_sys::ibv_recv_wr = std::ptr::null_mut();
                 errno = ops.post_recv.as_mut().unwrap()(qp, &mut wr as *mut _, &mut bad_wr);
-            } else if (op_type == RdmaOperation::Write
+            } else if op_type == RdmaOperation::Write
                 || op_type == RdmaOperation::Read
-                || op_type == RdmaOperation::WriteWithImm)
+                || op_type == RdmaOperation::WriteWithImm
             {
                 let send_flags = if signaled {
                     rdmaxcel_sys::ibv_send_flags::IBV_SEND_SIGNALED.0
@@ -1269,6 +1271,48 @@ impl RdmaQueuePair {
     }
 }
 
+/// Utility to validate execution context.
+///
+/// Remote Execution environments do not always have access to the nvidia_peermem module
+/// and/or set the PeerMappingOverride parameter due to security. This function can be
+/// used to validate that the execution context when running operations that need this
+/// functionality (ie. cudaHostRegisterIoMemory).
+///
+/// # Returns
+///
+/// * `Ok(())` if the execution context is valid
+/// * `Err(anyhow::Error)` if the execution context is invalid
+pub async fn validate_execution_context() -> Result<(), anyhow::Error> {
+    // Check for nvidia peermem
+    match fs::read_to_string("/proc/modules") {
+        Ok(contents) => {
+            if !contents.contains("nvidia_peermem") {
+                return Err(anyhow::anyhow!(
+                    "nvidia_peermem module not found in /proc/modules"
+                ));
+            }
+        }
+        Err(e) => {
+            return Err(anyhow::anyhow!(e));
+        }
+    }
+
+    // Test file access to nvidia params
+    match fs::read_to_string("/proc/driver/nvidia/params") {
+        Ok(contents) => {
+            if !contents.contains("PeerMappingOverride=1") {
+                return Err(anyhow::anyhow!(
+                    "PeerMappingOverride=1 not found in /proc/driver/nvidia/params"
+                ));
+            }
+        }
+        Err(e) => {
+            return Err(anyhow::anyhow!(e));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1282,7 +1326,7 @@ mod tests {
         }
 
         let config = IbverbsConfig {
-            use_cuda: false,
+            use_gpu_direct: false,
             ..Default::default()
         };
         let domain = RdmaDomain::new(config.device.clone());
@@ -1302,11 +1346,11 @@ mod tests {
         }
 
         let server_config = IbverbsConfig {
-            use_cuda: false,
+            use_gpu_direct: false,
             ..Default::default()
         };
         let client_config = IbverbsConfig {
-            use_cuda: false,
+            use_gpu_direct: false,
             ..Default::default()
         };
 

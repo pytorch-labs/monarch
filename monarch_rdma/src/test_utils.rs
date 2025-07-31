@@ -88,7 +88,6 @@ pub mod test_utils {
     use hyperactor_mesh::alloc::Allocator;
     use hyperactor_mesh::alloc::LocalAllocator;
     use ndslice::shape;
-    use rdmaxcel_sys::launch_cqe_poll;
 
     use crate::IbverbsConfig;
     use crate::PollTarget;
@@ -98,41 +97,6 @@ pub mod test_utils {
     use crate::rdma_components::RdmaQueuePair;
     use crate::rdma_manager_actor::RdmaManagerActor;
     use crate::rdma_manager_actor::RdmaManagerMessageClient;
-
-    // Utility to validate execution context.  Remote Exectuion environments do
-    // not always have access to the nvidia_peermem module and/or set the PeerMappingOverride
-    // parameter due to security.  This function can be used to validate that the execution context when
-    // running the tests that need this functionality (ie. cudaHostRegisterIoMemory)
-    pub async fn validate_execution_context() -> Result<(), anyhow::Error> {
-        // Check for nvidia peermem
-        match std::fs::read_to_string("/proc/modules") {
-            Ok(contents) => {
-                if !contents.contains("nvidia_peermem") {
-                    return Err(anyhow::anyhow!(
-                        "nvidia_peermem module not found in /proc/modules"
-                    ));
-                }
-            }
-            Err(e) => {
-                return Err(anyhow::anyhow!(e));
-            }
-        }
-
-        // Test file access to nvidia params
-        match std::fs::read_to_string("/proc/driver/nvidia/params") {
-            Ok(contents) => {
-                if !contents.contains("PeerMappingOverride=1") {
-                    return Err(anyhow::anyhow!(
-                        "PeerMappingOverride=1 not found in /proc/driver/nvidia/params"
-                    ));
-                }
-            }
-            Err(e) => {
-                return Err(anyhow::anyhow!(e));
-            }
-        }
-        Ok(())
-    }
     // Waits for the completion of an RDMA operation.
 
     // This function polls for the completion of an RDMA operation by repeatedly
@@ -147,11 +111,6 @@ pub mod test_utils {
     ) -> Result<bool, anyhow::Error> {
         let timeout = Duration::from_secs(timeout_secs);
         let start_time = Instant::now();
-        let recv_cq = qp.dv_recv_cq as *mut rdmaxcel_sys::mlx5dv_cq;
-        let ibv_qp = qp.qp as *mut rdmaxcel_sys::ibv_qp;
-        let dv_qp = qp.dv_qp as *mut rdmaxcel_sys::mlx5dv_qp;
-        let a = 1;
-        unsafe {}
         while start_time.elapsed() < timeout {
             match qp.poll_completion_target(poll_target) {
                 Ok(Some(wc)) => {
@@ -358,7 +317,7 @@ pub mod test_utils {
                     .expect("Device index is not a valid integer");
             } else {
                 assert!(devices.0 == "cpu");
-                config1.use_cuda = false;
+                config1.use_gpu_direct = false;
             }
 
             if let Some((backend, idx)) = devices.1.split_once(':') {
@@ -368,7 +327,7 @@ pub mod test_utils {
                     .expect("Device index is not a valid integer");
             } else {
                 assert!(devices.1 == "cpu");
-                config2.use_cuda = false;
+                config2.use_gpu_direct = false;
             }
 
             let alloc_1 = LocalAllocator

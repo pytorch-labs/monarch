@@ -15,12 +15,10 @@
 
 #[cfg(test)]
 mod tests {
-    use std::thread::sleep;
 
     use crate::PollTarget;
     use crate::ibverbs_primitives::get_all_devices;
-    use crate::rdma_components::RdmaQueuePair;
-    use crate::rdma_manager_actor::RdmaManagerActor;
+    use crate::rdma_components::validate_execution_context;
     use crate::rdma_manager_actor::RdmaManagerMessageClient;
     use crate::test_utils::test_utils::RdmaManagerTestEnv;
     use crate::test_utils::test_utils::*;
@@ -114,7 +112,7 @@ mod tests {
             .actor_1
             .request_queue_pair(&env.client_1.clone(), env.actor_2.clone())
             .await?;
-        let mut qp_2 = env
+        let qp_2 = env
             .actor_2
             .request_queue_pair(&env.client_2.clone(), env.actor_1.clone())
             .await?;
@@ -353,7 +351,7 @@ mod tests {
             .actor_1
             .request_queue_pair(&env.client_1.clone(), env.actor_2.clone())
             .await?;
-        let mut qp_2 = env
+        let qp_2 = env
             .actor_2
             .request_queue_pair(&env.client_2.clone(), env.actor_1.clone())
             .await?;
@@ -479,7 +477,7 @@ mod tests {
             .request_queue_pair(&env.client_2.clone(), env.actor_1.clone())
             .await?;
 
-        let mut rdma_handle_2_first_half = &mut env.rdma_handle_2.clone();
+        let rdma_handle_2_first_half = &mut env.rdma_handle_2.clone();
         rdma_handle_2_first_half.size = BSIZE;
 
         send_wqe_gpu(
@@ -540,7 +538,7 @@ mod tests {
         }
         let env = RdmaManagerTestEnv::setup(BSIZE * 2, ("mlx5_0", "mlx5_4"), ("cuda:0", "cuda:1"))
             .await?;
-        let mut qp_1 = env
+        let qp_1 = env
             .actor_1
             .request_queue_pair(&env.client_1.clone(), env.actor_2.clone())
             .await?;
@@ -549,7 +547,7 @@ mod tests {
             .request_queue_pair(&env.client_2.clone(), env.actor_1.clone())
             .await?;
 
-        let mut rdma_handle_2_first_half = &mut env.rdma_handle_2.clone();
+        let rdma_handle_2_first_half = &mut env.rdma_handle_2.clone();
         rdma_handle_2_first_half.size = BSIZE;
 
         // four sends, fills sqe buffer

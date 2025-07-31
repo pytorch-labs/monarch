@@ -49,6 +49,7 @@ use crate::ibverbs_primitives::RdmaQpInfo;
 use crate::rdma_components::RdmaBuffer;
 use crate::rdma_components::RdmaDomain;
 use crate::rdma_components::RdmaQueuePair;
+use crate::validate_execution_context;
 
 /// Represents a reference to a remote RDMA buffer that can be accessed via RDMA operations.
 /// This struct encapsulates all the information needed to identify and access a memory region
@@ -129,7 +130,24 @@ impl Actor for RdmaManagerActor {
     type Params = IbverbsConfig;
 
     async fn new(_params: Self::Params) -> Result<Self, anyhow::Error> {
-        let config = _params;
+        let mut config = _params;
+
+        // check config and hardware support align
+        if config.use_gpu_direct {
+            match validate_execution_context().await {
+                Ok(_) => {
+                    tracing::info!("GPU Direct RDMA execution context validated successfully");
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "GPU Direct RDMA execution context validation failed: {}. Downgrading to standard ibverbs mode.",
+                        e
+                    );
+                    config.use_gpu_direct = false;
+                }
+            }
+        }
+
         let domain = RdmaDomain::new(config.device.clone())
             .map_err(|e| anyhow::anyhow!("rdmaManagerActor could not create domain: {}", e))?;
         Ok(Self {

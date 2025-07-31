@@ -127,8 +127,8 @@ pub struct IbverbsConfig {
     pub pkey_index: u16,
     /// `psn` - The packet sequence number.
     pub psn: u32,
-    /// `use_cuda` - Whether to enable CUDA support on init.
-    pub use_cuda: bool,
+    /// `use_gpu_direct` - Whether to enable GPU Direct RDMA support on init.
+    pub use_gpu_direct: bool,
 }
 
 /// Default RDMA parameters below are based on common values from rdma-core examples
@@ -154,7 +154,7 @@ impl Default for IbverbsConfig {
             max_rd_atomic: 1,
             pkey_index: 0,
             psn: rand::random::<u32>() & 0xffffff,
-            use_cuda: true,
+            use_gpu_direct: true,
         }
     }
 }
