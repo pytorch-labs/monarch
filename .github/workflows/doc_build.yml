@@ -6,64 +6,56 @@ on:
       - main
   pull_request:
 
+concurrency:
+  group: docs-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-          architecture: x64
-      - name: Setup Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: nightly
-          override: true
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Install Dependencies
-        run: |
-          set -eux
-          pip install --upgrade pip
-          pip install -r build-requirements.txt
+    name: Build Documentation
+    uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+    with:
+      timeout: 60
+      runner: linux.4xlarge
+      submodules: recursive
+      script: |
+        # Source common setup functions
+        source scripts/common-setup.sh
 
-          # Skip building the Python package for documentation purposes
-          # This avoids the Rust build issues
-          # pip install --no-build-isolation .
+        # Setup build environment (conda + system deps + rust + build deps)
+        setup_build_environment "3.10"
 
-          pip install -r docs/requirements.txt
+        # Set environment variables for CPU-only build
+        export USE_CUDA=0
+        export USE_TENSOR_ENGINE=0
+        export RUSTFLAGS="-Zthreads=16"
+        export _GLIBCXX_USE_CXX11_ABI=1
 
-      - name: Generate Rust API Documentation
-        run: |
-          set -eux
-          # Set required environment variables for Rust documentation generation
-          export RUSTFLAGS="-Zthreads=16"
-          export _GLIBCXX_USE_CXX11_ABI=1
+        # Install documentation dependencies
+        pip install -r docs/requirements.txt
 
-          # Generate documentation for all crates in the workspace with nightly features
-          cargo +nightly doc --workspace --no-deps
+        # Build Monarch in CPU-only mode
+        python setup.py build_rust --release
 
-          # Create an index.html file in the target/doc directory to serve as the main entry point
-          echo '<meta http-equiv="refresh" content="0; url=help.html">' > target/doc/index.html
+        # Generate Rust API documentation
+        cargo +nightly doc --workspace --no-deps
 
-          # Ensure the target/doc directory exists in the expected location for Sphinx
-          mkdir -p docs/source/target
-          cp -r target/doc docs/source/target/
+        # Create an index.html file in the target/doc directory to serve as the main entry point
+        echo '<meta http-equiv="refresh" content="0; url=hyperactor/index.html">' > target/doc/index.html
 
-      - name: Build Sphinx Docs
-        working-directory: docs
-        run: |
-          set -eux
+        # Ensure the target/doc directory exists in the expected location for Sphinx
+        mkdir -p docs/source/target
+        cp -r target/doc docs/source/target/
 
-          make html
-      - name: Upload static files as artifact
-        id: deployment
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: docs/build/html/
+        # Build Sphinx documentation
+        cd docs
+        make html
+
+        # Move the built documentation to the artifact directory
+        mkdir -p "${RUNNER_ARTIFACT_DIR}/docs"
+        cp -r build/html/* "${RUNNER_ARTIFACT_DIR}/docs/"
+
+      upload-artifact: monarch-docs-${{ github.sha }}
 
   deploy:
     runs-on: ubuntu-latest
@@ -76,6 +68,20 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: monarch-docs-${{ github.sha }}
+          path: docs
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
