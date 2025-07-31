@@ -26,22 +26,32 @@ jobs:
           fetch-depth: 0
       - name: Install Dependencies
         run: |
-
           set -eux
           pip install --upgrade pip
           pip install -r build-requirements.txt
-          pip install --no-build-isolation .
+
+          # Skip building the Python package for documentation purposes
+          # This avoids the Rust build issues
+          # pip install --no-build-isolation .
 
           pip install -r docs/requirements.txt
 
       - name: Generate Rust API Documentation
         run: |
           set -eux
+          # Set required environment variables for Rust documentation generation
+          export RUSTFLAGS="-Zthreads=16"
+          export _GLIBCXX_USE_CXX11_ABI=1
+
           # Generate documentation for all crates in the workspace with nightly features
           cargo +nightly doc --workspace --no-deps
 
           # Create an index.html file in the target/doc directory to serve as the main entry point
           echo '<meta http-equiv="refresh" content="0; url=help.html">' > target/doc/index.html
+
+          # Ensure the target/doc directory exists in the expected location for Sphinx
+          mkdir -p docs/source/target
+          cp -r target/doc docs/source/target/
 
       - name: Build Sphinx Docs
         working-directory: docs
