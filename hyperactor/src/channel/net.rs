@@ -1056,11 +1056,11 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                 }
                 Err(e) => {
                     tracing::warn!(
-                        "session {}:{} failed to flush acks for connection from
-                        {} due to error : {:?}. Normally, this is okay because
-                        Tx will reconnect, and acks will be resent in the next
-                        connection. However, if either Tx or Rx is dropped, the
-                        reconnection will not happen, and subsequently the
+                        "session {}:{} failed to flush acks for connection from \
+                        {} due to error : {:?}. Normally, this is okay because \
+                        Tx will reconnect, and acks will be resent in the next \
+                        connection. However, if either Tx or Rx is dropped, the \
+                        reconnection will not happen, and subsequently the \
                         pending ack will never be sent out.",
                         self.dest,
                         session_id,
