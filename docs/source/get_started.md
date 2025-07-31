@@ -176,9 +176,9 @@ mon.shutdown()
 
 Now that you've got the basics, you can:
 
-1. Check out the [examples](./examples/index) directory for more detailed demonstrations
-2. Explore the [API documentation](api) for a complete reference
-3. Learn about advanced features in the [How-to guides](howtos)
+1. Check out the [examples](./generated/examples/index) directory for more detailed demonstrations
+2. Explore the [API documentation](rust-api) for a complete reference
+
 
 ## Troubleshooting
 
