@@ -253,7 +253,6 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
                 allocator = RemoteAllocator(
                     world_id="test_remote_allocator",
                     initializer=StaticRemoteAllocInitializer(host1, host2),
-                    heartbeat_interval=_100_MILLISECONDS,
                 )
                 alloc = await allocator.allocate(spec)
                 await ProcMesh.from_alloc(alloc)
@@ -275,7 +274,6 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             allocator = RemoteAllocator(
                 world_id="test_remote_allocator",
                 initializer=initializer,
-                heartbeat_interval=_100_MILLISECONDS,
             )
 
             spec = AllocSpec(AllocConstraints(), host=1, gpu=1)
@@ -301,7 +299,6 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             allocator = RemoteAllocator(
                 world_id="test_remote_allocator",
                 initializer=empty_initializer,
-                heartbeat_interval=_100_MILLISECONDS,
             )
             await allocator.allocate(AllocSpec(AllocConstraints(), host=1, gpu=1))
 
@@ -316,7 +313,6 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             allocator = RemoteAllocator(
                 world_id="test_remote_allocator",
                 initializer=StaticRemoteAllocInitializer(host1, host2),
-                heartbeat_interval=_100_MILLISECONDS,
             )
             alloc = await allocator.allocate(spec)
             proc_mesh = await ProcMesh.from_alloc(alloc)
@@ -335,7 +331,6 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             allocator = RemoteAllocator(
                 world_id="test_remote_allocator",
                 initializer=StaticRemoteAllocInitializer(host1, host2),
-                heartbeat_interval=_100_MILLISECONDS,
             )
 
             alloc = await allocator.allocate(spec)
@@ -362,7 +357,6 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             allocator = RemoteAllocator(
                 world_id="test_remote_allocator",
                 initializer=StaticRemoteAllocInitializer(wrong_host),
-                heartbeat_interval=_100_MILLISECONDS,
             )
             alloc = await allocator.allocate(spec)
 
@@ -385,7 +379,6 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             allocator = RemoteAllocator(
                 world_id="helloworld",
                 initializer=StaticRemoteAllocInitializer(host1, host2),
-                heartbeat_interval=_100_MILLISECONDS,
             )
             spec = AllocSpec(AllocConstraints(), host=2, gpu=2)
             proc_mesh = await ProcMesh.from_alloc(await allocator.allocate(spec))
@@ -405,7 +398,6 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             allocator = RemoteAllocator(
                 world_id="test_remote_allocator",
                 initializer=StaticRemoteAllocInitializer(host1, host2),
-                heartbeat_interval=_100_MILLISECONDS,
             )
             alloc = await allocator.allocate(spec)
             proc_mesh = await ProcMesh.from_alloc(alloc)
@@ -431,7 +423,6 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             allocator = RemoteAllocator(
                 world_id="test_remote_allocator",
                 initializer=StaticRemoteAllocInitializer(host1, host2),
-                heartbeat_interval=_100_MILLISECONDS,
             )
             alloc = await allocator.allocate(spec)
             proc_mesh = await ProcMesh.from_alloc(alloc)
@@ -467,7 +458,6 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             allocator = RemoteAllocator(
                 world_id="test_remote_allocator",
                 initializer=StaticRemoteAllocInitializer(host1, host2),
-                heartbeat_interval=_100_MILLISECONDS,
             )
             alloc = await allocator.allocate(spec)
             proc_mesh = await ProcMesh.from_alloc(alloc, setup=setup_env_vars)
@@ -494,7 +484,6 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             allocator = RemoteAllocator(
                 world_id="test_remote_allocator",
                 initializer=StaticRemoteAllocInitializer(host1, host2),
-                heartbeat_interval=_100_MILLISECONDS,
             )
             alloc = await allocator.allocate(spec)
             proc_mesh = await ProcMesh.from_alloc(alloc)
@@ -524,7 +513,6 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             allocator = RemoteAllocator(
                 world_id="test_remote_allocator",
                 initializer=StaticRemoteAllocInitializer(host1),
-                heartbeat_interval=_100_MILLISECONDS,
             )
             with self.assertRaisesRegex(
                 Exception, "no process has ever been allocated on"
@@ -540,12 +528,10 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             allocator_a = RemoteAllocator(
                 world_id="a",
                 initializer=StaticRemoteAllocInitializer(host1_a),
-                heartbeat_interval=_100_MILLISECONDS,
             )
             allocator_b = RemoteAllocator(
                 world_id="b",
                 initializer=StaticRemoteAllocInitializer(host1_b),
-                heartbeat_interval=_100_MILLISECONDS,
             )
 
             spec_a = AllocSpec(AllocConstraints(), host=1, gpu=2)
@@ -623,7 +609,6 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
                 allocator = RemoteAllocator(
                     world_id="test",
                     initializer=initializer,
-                    heartbeat_interval=_100_MILLISECONDS,
                 )
                 alloc = await allocator.allocate(
                     AllocSpec(AllocConstraints(), host=1, gpu=4)
@@ -657,7 +642,6 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
                 allocator = RemoteAllocator(
                     world_id="test",
                     initializer=initializer,
-                    heartbeat_interval=_100_MILLISECONDS,
                 )
                 alloc = await allocator.allocate(
                     AllocSpec(
@@ -716,7 +700,6 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             allocator = RemoteAllocator(
                 world_id="test_actor_logger",
                 initializer=StaticRemoteAllocInitializer(host),
-                heartbeat_interval=_100_MILLISECONDS,
             )
 
             spec = AllocSpec(AllocConstraints(), host=1, gpu=2)
