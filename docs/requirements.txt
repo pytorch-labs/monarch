@@ -11,3 +11,4 @@ sphinx-gallery==0.14.0  # only if hosting interactive tutorials
 sphinx-sitemap==2.7.1
 sphinxext-opengraph
 nbsphinx
+pillow  # Required for image processing in documentation
