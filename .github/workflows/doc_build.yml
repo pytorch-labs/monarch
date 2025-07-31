@@ -18,7 +18,7 @@ jobs:
       - name: Setup Rust
         uses: actions-rs/toolchain@v1
         with:
-          toolchain: stable
+          toolchain: nightly
           override: true
       - name: Checkout
         uses: actions/checkout@v4
@@ -37,8 +37,11 @@ jobs:
       - name: Generate Rust API Documentation
         run: |
           set -eux
-          # Generate documentation for all crates in the workspace
-          cargo doc --workspace --no-deps
+          # Generate documentation for all crates in the workspace with nightly features
+          cargo +nightly doc --workspace --no-deps
+
+          # Create an index.html file in the target/doc directory to serve as the main entry point
+          echo '<meta http-equiv="refresh" content="0; url=help.html">' > target/doc/index.html
 
       - name: Build Sphinx Docs
         working-directory: docs
