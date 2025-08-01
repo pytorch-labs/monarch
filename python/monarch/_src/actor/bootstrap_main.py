@@ -4,6 +4,8 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-unsafe
+
 """
 This is the main function for the boostrapping a new process using a ProcessAllocator.
 """
@@ -17,7 +19,7 @@ import sys
 
 # Import torch to avoid import-time races if a spawned actor tries to import torch.
 try:
-    import torch  # @manual
+    import torch  # @manual  # noqa: F401
 except ImportError:
     pass
 
@@ -36,14 +38,15 @@ def invoke_main():
     global bootstrap_main
 
     # TODO: figure out what from worker_main.py we should reproduce here.
-    from monarch._src.actor.telemetry import TracingForwarder
+    from monarch._src.actor.telemetry import TracingForwarder  # noqa
 
     if os.environ.get("MONARCH_ERROR_DURING_BOOTSTRAP_FOR_TESTING") == "1":
         raise RuntimeError("Error during bootstrap for testing")
 
     # forward logs to rust tracing. Defaults to on.
     if os.environ.get("MONARCH_PYTHON_LOG_TRACING", "1") == "1":
-        logging.root.addHandler(TracingForwarder(level=logging.DEBUG))
+        # we can stream python logs now; no need to forward them to rust processes
+        pass
         # install opentelemetry tracing
 
     try:

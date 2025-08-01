@@ -17,6 +17,7 @@ pub mod channel;
 pub mod code_sync;
 pub mod config;
 pub mod local_state_broker;
+pub mod logging;
 pub mod mailbox;
 pub mod ndslice;
 pub mod proc;

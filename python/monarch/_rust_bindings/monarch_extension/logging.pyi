@@ -18,5 +18,5 @@ class LoggingMeshClient:
     @staticmethod
     async def spawn(proc_mesh: ProcMesh) -> LoggingMeshClient: ...
     def set_mode(
-        self, stream_to_client: bool, aggregate_window_sec: int | None
+        self, stream_to_client: bool, aggregate_window_sec: int | None, level: int
     ) -> None: ...
