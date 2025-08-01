@@ -439,6 +439,9 @@ pub enum CastError {
 // is not built in test mode, and requires access to TestActor.
 pub(crate) mod test_util {
     use std::collections::VecDeque;
+    use std::fmt;
+    use std::fmt::Debug;
+    use std::sync::Arc;
 
     use anyhow::ensure;
     use hyperactor::Context;
@@ -542,6 +545,77 @@ pub(crate) mod test_util {
             Ok(())
         }
     }
+
+    // -- ProxyActor
+
+    #[hyperactor::export(
+        spawn = true,
+        handlers = [
+            Echo,
+        ],
+    )]
+    pub struct ProxyActor {
+        proc_mesh: Arc<ProcMesh>,
+        actor_mesh: RootActorMesh<'static, TestActor>,
+    }
+
+    impl fmt::Debug for ProxyActor {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("ProxyActor")
+                .field("proc_mesh", &"...")
+                .field("actor_mesh", &"...")
+                .finish()
+        }
+    }
+
+    #[async_trait]
+    impl Actor for ProxyActor {
+        type Params = ();
+
+        async fn new(_params: Self::Params) -> Result<Self, anyhow::Error> {
+            // The actor creates a mesh.
+            use std::sync::Arc;
+
+            use ndslice::shape;
+
+            use crate::alloc::AllocSpec;
+            use crate::alloc::Allocator;
+            use crate::alloc::LocalAllocator;
+
+            let mut allocator = LocalAllocator;
+            let alloc = allocator
+                .allocate(AllocSpec {
+                    shape: shape! { replica = 1 },
+                    constraints: Default::default(),
+                })
+                .await
+                .unwrap();
+            let proc_mesh = Arc::new(ProcMesh::allocate(alloc).await.unwrap());
+            let leaked: &'static Arc<ProcMesh> = Box::leak(Box::new(proc_mesh));
+            let actor_mesh: RootActorMesh<'static, TestActor> =
+                leaked.spawn("echo", &()).await.unwrap();
+            Ok(Self {
+                proc_mesh: Arc::clone(leaked),
+                actor_mesh,
+            })
+        }
+    }
+
+    #[async_trait]
+    impl Handler<Echo> for ProxyActor {
+        async fn handle(
+            &mut self,
+            _cx: &Context<Self>,
+            message: Echo,
+        ) -> Result<(), anyhow::Error> {
+            let actor = self.actor_mesh.get(0).unwrap();
+
+            // Have the remote mesh reply directly to the client.
+            actor.send(self.proc_mesh.client(), message).unwrap();
+
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -576,6 +650,31 @@ mod tests {
 
             use super::*;
             use super::test_util::*;
+
+            #[ignore] // Remove in D79478197.
+            #[tokio::test]
+            async fn test_proxy_mesh() {
+                use super::test_util::*;
+                use $crate::alloc::AllocSpec;
+                use $crate::alloc::Allocator;
+
+
+                use ndslice::shape;
+
+                let alloc = $allocator
+                    .allocate(AllocSpec {
+                        shape: shape! { replica = 1 },
+                        constraints: Default::default(),
+                    })
+                    .await
+                    .unwrap();
+                let proc_mesh = ProcMesh::allocate(alloc).await.unwrap();
+                let actor_mesh: RootActorMesh<'_, ProxyActor> = proc_mesh.spawn("proxy", &()).await.unwrap();
+                let proxy_actor = actor_mesh.get(0).unwrap();
+                let (tx, mut rx) = actor_mesh.open_port::<String>();
+                proxy_actor.send(proc_mesh.client(), Echo("hello!".to_owned(), tx.bind())).unwrap();
+                assert_eq!(rx.recv().await.unwrap(), "hello!");
+            }
 
             #[tokio::test]
             async fn test_basic() {
