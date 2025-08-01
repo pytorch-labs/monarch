@@ -8,6 +8,8 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::path::Path;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Context as TaskContext;
@@ -43,6 +45,7 @@ use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::Unbind;
 use hyperactor_telemetry::env;
+use hyperactor_telemetry::log_file_path;
 use regex::Regex;
 use serde::Deserialize;
 use serde::Serialize;
@@ -381,31 +384,38 @@ pub struct LogWriter<T: LogSender + Unpin + 'static, S: io::AsyncWrite + Send + 
 fn create_file_writer(
     local_rank: usize,
     output_target: OutputTarget,
-) -> io::Result<Box<dyn io::AsyncWrite + Send + Unpin + 'static>> {
+    env: env::Env,
+) -> Result<Box<dyn io::AsyncWrite + Send + Unpin + 'static>> {
     let suffix = match output_target {
         OutputTarget::Stderr => "stderr",
         OutputTarget::Stdout => "stdout",
     };
-    let path = format!("/logs/dedicated_log_monarch_{local_rank}.{suffix}");
+    let (path, filename) = log_file_path(env)?;
+    let path = Path::new(&path);
+    let mut full_path = PathBuf::from(path);
+    full_path.push(format!("{}_{}.{}", filename, local_rank, suffix));
     let file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(path)?;
+        .open(full_path)?;
     let tokio_file = tokio::fs::File::from_std(file);
     // TODO: should we buffer this?
     Ok(Box::new(tokio_file))
 }
 
-pub fn get_local_log_destination(
+fn get_local_log_destination(
     local_rank: usize,
     output_target: OutputTarget,
 ) -> Result<Box<dyn io::AsyncWrite + Send + Unpin>> {
-    Ok(match env::Env::current() {
-        env::Env::Local | env::Env::MastEmulator | env::Env::Test => match output_target {
+    let env: env::Env = env::Env::current();
+    Ok(match env {
+        env::Env::Test => match output_target {
             OutputTarget::Stdout => Box::new(LinePrefixingWriter::new(local_rank, io::stdout())),
             OutputTarget::Stderr => Box::new(LinePrefixingWriter::new(local_rank, io::stderr())),
         },
-        env::Env::Mast => create_file_writer(local_rank, output_target)?,
+        env::Env::Local | env::Env::MastEmulator | env::Env::Mast => {
+            create_file_writer(local_rank, output_target, env)?
+        }
     })
 }
 

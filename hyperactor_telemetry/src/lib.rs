@@ -80,6 +80,25 @@ impl TelemetryClock for DefaultTelemetryClock {
     }
 }
 
+// Given an environment, determine the log file path to write to.
+pub fn log_file_path(env: env::Env) -> Result<(String, String), anyhow::Error> {
+    match env {
+        env::Env::Local | env::Env::MastEmulator => {
+            let username = if whoami::username().is_empty() {
+                "monarch".to_string()
+            } else {
+                whoami::username()
+            };
+            Ok((format!("/tmp/{}", username), "monarch_log".to_string()))
+        }
+        env::Env::Mast => Ok(("/logs/".to_string(), "dedicated_log_monarch".to_string())),
+        _ => Err(anyhow::anyhow!(
+            "file writer unsupported for environment {}",
+            env
+        )),
+    }
+}
+
 fn try_create_appender(
     path: &str,
     filename: &str,
@@ -95,22 +114,10 @@ fn try_create_appender(
 }
 
 fn writer() -> Box<dyn Write + Send> {
-    let username = if whoami::username().is_empty() {
-        "monarch".to_string()
-    } else {
-        whoami::username()
-    };
-    let (path, filename) = match env::Env::current() {
-        env::Env::Test => (String::new(), String::new()),
-        env::Env::Local | env::Env::MastEmulator => {
-            (format!("/tmp/{}/", username), "monarch_log".to_string())
-        }
-        env::Env::Mast => ("/logs/".to_string(), "dedicated_log_monarch".to_string()),
-    };
-
     match env::Env::current() {
         env::Env::Test => Box::new(std::io::stderr()),
         env::Env::Local | env::Env::MastEmulator | env::Env::Mast => {
+            let (path, filename) = log_file_path(env::Env::current()).unwrap();
             match try_create_appender(&path, &filename, true) {
                 Ok(file_appender) => Box::new(file_appender),
                 Err(e) => {
