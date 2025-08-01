@@ -45,23 +45,12 @@ fn find_cuda_home() -> Option<String> {
                     cuda_home = None;
                 }
             } else {
-                // Walk through possible locations, starting with newest
-                for candidate in &[
-                    "/usr/local/cuda-12.8",
-                    "/usr/local/cuda-12.6",
-                    "/usr/local/cuda-12.4",
-                    "/usr/local/cuda-12.2",
-                    "/usr/local/cuda-12.1",
-                    "/usr/local/cuda-12.0",
-                    "/usr/local/cuda-11.8",
-                    "/usr/local/cuda-11.7",
-                    "/usr/local/cuda-11.6",
-                    "/usr/local/cuda-11.5",
-                ] {
-                    if Path::new(candidate).exists() {
-                        cuda_home = Some(candidate.to_string());
-                        break;
-                    }
+                // Not Windows
+                let cuda_candidate = "/usr/local/cuda";
+                if Path::new(cuda_candidate).exists() {
+                    cuda_home = Some(cuda_candidate.to_string());
+                } else {
+                    cuda_home = None;
                 }
             }
         }
@@ -69,13 +58,27 @@ fn find_cuda_home() -> Option<String> {
     cuda_home
 }
 
-fn emit_cuda_link_directives(cuda_home: &str) {
-    let lib64_path = format!("{}/lib64", cuda_home);
-    if Path::new(&lib64_path).exists() {
-        println!("cargo:rustc-link-search=native={}", lib64_path);
+fn get_cuda_lib_dir() -> String {
+    // Check if user explicitly set CUDA_LIB_DIR
+    if let Ok(cuda_lib_dir) = env::var("CUDA_LIB_DIR") {
+        return cuda_lib_dir;
     }
-    println!("cargo:rustc-link-lib=cuda");
-    println!("cargo:rustc-link-lib=cudart");
+
+    // Try to deduce from CUDA_HOME
+    if let Some(cuda_home) = find_cuda_home() {
+        let lib64_path = format!("{}/lib64", cuda_home);
+        if Path::new(&lib64_path).exists() {
+            return lib64_path;
+        }
+    }
+
+    // If we can't find it, error out with helpful message
+    eprintln!("Error: CUDA library directory not found!");
+    eprintln!("Please set CUDA_LIB_DIR environment variable to your CUDA library directory.");
+    eprintln!();
+    eprintln!("Example: export CUDA_LIB_DIR=/usr/local/cuda-12.0/lib64");
+    eprintln!("Or: export CUDA_LIB_DIR=/usr/lib64");
+    std::process::exit(1);
 }
 
 fn python_env_dirs() -> (Option<String>, Option<String>) {
@@ -98,6 +101,37 @@ fn python_env_dirs() -> (Option<String>, Option<String>) {
     (include_dir, lib_dir)
 }
 
+fn validate_cuda_installation() -> String {
+    // Check for CUDA availability
+    let cuda_home = find_cuda_home();
+    if cuda_home.is_none() {
+        eprintln!("Error: CUDA installation not found!");
+        eprintln!("Please ensure CUDA is installed and one of the following is true:");
+        eprintln!("  1. Set CUDA_HOME environment variable to your CUDA installation directory");
+        eprintln!("  2. Set CUDA_PATH environment variable to your CUDA installation directory");
+        eprintln!("  3. Ensure 'nvcc' is in your PATH");
+        eprintln!("  4. Install CUDA to the default location (/usr/local/cuda on Linux)");
+        eprintln!();
+        eprintln!("Example: export CUDA_HOME=/usr/local/cuda-12.0");
+        std::process::exit(1);
+    }
+
+    let cuda_home = cuda_home.unwrap();
+
+    // Verify CUDA include directory exists
+    let cuda_include_path = format!("{}/include", cuda_home);
+    if !Path::new(&cuda_include_path).exists() {
+        eprintln!(
+            "Error: CUDA include directory not found at {}",
+            cuda_include_path
+        );
+        eprintln!("Please verify your CUDA installation is complete.");
+        std::process::exit(1);
+    }
+
+    cuda_home
+}
+
 fn main() {
     // Tell cargo to look for shared libraries in the specified directory
     println!("cargo:rustc-link-search=/usr/lib");
@@ -112,6 +146,9 @@ fn main() {
     // Tell cargo to invalidate the built crate whenever the wrapper changes
     println!("cargo:rerun-if-changed=src/rdmaxcel.h");
     println!("cargo:rerun-if-changed=src/rdmaxcel.c");
+
+    // Validate CUDA installation and get CUDA home path
+    let cuda_home = validate_cuda_installation();
 
     // Get the directory of the current crate
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| {
@@ -187,20 +224,10 @@ fn main() {
         .derive_default(true)
         .prepend_enum_name(false);
 
-    if let Some(cuda_home) = find_cuda_home() {
-        let cuda_include_path = format!("{}/include", cuda_home);
-        if Path::new(&cuda_include_path).exists() {
-            println!("cargo:rustc-env=CUDA_INCLUDE_PATH={}", cuda_include_path);
-            builder = builder.clang_arg(format!("-I{}", cuda_include_path));
-        } else {
-            eprintln!(
-                "Warning: CUDA include directory not found at {}",
-                cuda_include_path
-            );
-        }
-    } else {
-        eprintln!("Warning: CUDA home directory not found. Trying fallback paths.");
-    }
+    // Add CUDA include path (we already validated it exists)
+    let cuda_include_path = format!("{}/include", cuda_home);
+    println!("cargo:rustc-env=CUDA_INCLUDE_PATH={}", cuda_include_path);
+    builder = builder.clang_arg(format!("-I{}", cuda_include_path));
 
     // Include headers and libs from the active environment.
     let (include_dir, lib_dir) = python_env_dirs();
@@ -213,9 +240,11 @@ fn main() {
         // RPATH (see controller/build.rs for an example).
         println!("cargo:metadata=LIB_PATH={}", lib_dir);
     }
-    if let Some(cuda_home) = find_cuda_home() {
-        emit_cuda_link_directives(&cuda_home);
-    }
+    // Get CUDA library directory and emit link directives
+    let cuda_lib_dir = get_cuda_lib_dir();
+    println!("cargo:rustc-link-search=native={}", cuda_lib_dir);
+    println!("cargo:rustc-link-lib=cuda");
+    println!("cargo:rustc-link-lib=cudart");
 
     // Generate bindings
     let bindings = builder.generate().expect("Unable to generate bindings");
@@ -242,12 +271,7 @@ fn main() {
                     .flag("-fPIC");
 
                 // Add CUDA include paths - reuse the paths we already found for bindgen
-                if let Some(cuda_home) = find_cuda_home() {
-                    let cuda_include_path = format!("{}/include", cuda_home);
-                    if Path::new(&cuda_include_path).exists() {
-                        build.include(&cuda_include_path);
-                    }
-                }
+                build.include(&cuda_include_path);
 
                 build.compile("rdmaxcel");
             } else {

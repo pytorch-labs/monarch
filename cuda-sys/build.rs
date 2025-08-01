@@ -58,19 +58,27 @@ fn find_cuda_home() -> Option<String> {
     cuda_home
 }
 
-fn emit_cuda_link_directives(cuda_home: &str) {
-    let stubs_path = format!("{}/lib64/stubs", cuda_home);
-    if Path::new(&stubs_path).exists() {
-        println!("cargo:rustc-link-search=native={}", stubs_path);
-    } else {
+fn get_cuda_lib_dir() -> String {
+    // Check if user explicitly set CUDA_LIB_DIR
+    if let Ok(cuda_lib_dir) = env::var("CUDA_LIB_DIR") {
+        return cuda_lib_dir;
+    }
+
+    // Try to deduce from CUDA_HOME
+    if let Some(cuda_home) = find_cuda_home() {
         let lib64_path = format!("{}/lib64", cuda_home);
         if Path::new(&lib64_path).exists() {
-            println!("cargo:rustc-link-search=native={}", lib64_path);
+            return lib64_path;
         }
     }
 
-    println!("cargo:rustc-link-lib=cuda");
-    println!("cargo:rustc-link-lib=cudart");
+    // If we can't find it, error out with helpful message
+    eprintln!("Error: CUDA library directory not found!");
+    eprintln!("Please set CUDA_LIB_DIR environment variable to your CUDA library directory.");
+    eprintln!();
+    eprintln!("Example: export CUDA_LIB_DIR=/usr/local/cuda-12.0/lib64");
+    eprintln!("Or: export CUDA_LIB_DIR=/usr/lib64");
+    std::process::exit(1);
 }
 
 fn python_env_dirs() -> (Option<String>, Option<String>) {
@@ -93,7 +101,41 @@ fn python_env_dirs() -> (Option<String>, Option<String>) {
     (include_dir, lib_dir)
 }
 
+fn validate_cuda_installation() -> String {
+    // Check for CUDA availability
+    let cuda_home = find_cuda_home();
+    if cuda_home.is_none() {
+        eprintln!("Error: CUDA installation not found!");
+        eprintln!("Please ensure CUDA is installed and one of the following is true:");
+        eprintln!("  1. Set CUDA_HOME environment variable to your CUDA installation directory");
+        eprintln!("  2. Set CUDA_PATH environment variable to your CUDA installation directory");
+        eprintln!("  3. Ensure 'nvcc' is in your PATH");
+        eprintln!("  4. Install CUDA to the default location (/usr/local/cuda on Linux)");
+        eprintln!();
+        eprintln!("Example: export CUDA_HOME=/usr/local/cuda-12.0");
+        std::process::exit(1);
+    }
+
+    let cuda_home = cuda_home.unwrap();
+
+    // Verify CUDA include directory exists
+    let cuda_include_path = format!("{}/include", cuda_home);
+    if !Path::new(&cuda_include_path).exists() {
+        eprintln!(
+            "Error: CUDA include directory not found at {}",
+            cuda_include_path
+        );
+        eprintln!("Please verify your CUDA installation is complete.");
+        std::process::exit(1);
+    }
+
+    cuda_home
+}
+
 fn main() {
+    // Validate CUDA installation and get CUDA home path
+    let cuda_home = validate_cuda_installation();
+
     // Start building the bindgen configuration
     let mut builder = bindgen::Builder::default()
         // The input header we would like to generate bindings for
@@ -113,20 +155,9 @@ fn main() {
             is_global: false,
         });
 
-    // Add CUDA include path if available
-    if let Some(cuda_home) = find_cuda_home() {
-        let cuda_include_path = format!("{}/include", cuda_home);
-        if Path::new(&cuda_include_path).exists() {
-            builder = builder.clang_arg(format!("-I{}", cuda_include_path));
-        } else {
-            eprintln!(
-                "Warning: CUDA include directory not found at {}",
-                cuda_include_path
-            );
-        }
-    } else {
-        eprintln!("Warning: CUDA home directory not found. Continuing without CUDA include path.");
-    }
+    // Add CUDA include path (we already validated it exists)
+    let cuda_include_path = format!("{}/include", cuda_home);
+    builder = builder.clang_arg(format!("-I{}", cuda_include_path));
 
     // Include headers and libs from the active environment.
     let (include_dir, lib_dir) = python_env_dirs();
@@ -139,9 +170,10 @@ fn main() {
         // RPATH (see controller/build.rs for an example).
         println!("cargo::metadata=LIB_PATH={}", lib_dir);
     }
-    if let Some(cuda_home) = find_cuda_home() {
-        emit_cuda_link_directives(&cuda_home);
-    }
+
+    // Get CUDA library directory and emit link directives
+    let cuda_lib_dir = get_cuda_lib_dir();
+    println!("cargo:rustc-link-search=native={}", cuda_lib_dir);
     println!("cargo:rustc-link-lib=cuda");
     println!("cargo:rustc-link-lib=cudart");
 

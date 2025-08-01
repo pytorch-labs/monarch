@@ -47,6 +47,8 @@ jobs:
         # Setup Tensor Engine dependencies
         setup_tensor_engine
 
+        export CUDA_LIB_DIR=/usr/lib64
+
         # Install the built wheel from artifact
         install_wheel_from_artifact
 

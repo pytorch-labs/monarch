@@ -40,5 +40,7 @@ jobs:
         # Build the process allocator binary
         build_process_allocator
 
+        export CUDA_LIB_DIR=/usr/lib64
+
         # Build monarch (CUDA version)
         python setup.py bdist_wheel
