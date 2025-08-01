@@ -11,7 +11,7 @@ license = "BSD-3-Clause"
 
 [[bin]]
 name = "channel_benchmarks"
-path = "benches/channel_benchmarks.rs"
+path = "benches/main.rs"
 
 [[bin]]
 name = "hyperactor_example_derive"
