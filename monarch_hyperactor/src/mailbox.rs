@@ -69,6 +69,12 @@ impl PyMailbox {
 
 #[pymethods]
 impl PyMailbox {
+    #[staticmethod]
+    fn root_client_mailbox() -> PyMailbox {
+        PyMailbox {
+            inner: hyperactor_mesh::proc_mesh::global_mailbox(),
+        }
+    }
     fn open_port<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         let (handle, receiver) = self.inner.open_port();
         let handle = Py::new(py, PythonPortHandle { inner: handle })?;

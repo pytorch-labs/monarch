@@ -60,6 +60,7 @@ use crate::proc_mesh::mesh_agent::MeshAgent;
 use crate::proc_mesh::mesh_agent::MeshAgentMessageClient;
 use crate::proc_mesh::mesh_agent::StopActorResult;
 use crate::reference::ProcMeshId;
+use crate::shortuuid::ShortUuid;
 
 pub mod mesh_agent;
 
@@ -74,6 +75,30 @@ use std::sync::OnceLock;
 fn global_router() -> &'static MailboxRouter {
     static GLOBAL_ROUTER: OnceLock<MailboxRouter> = OnceLock::new();
     GLOBAL_ROUTER.get_or_init(MailboxRouter::new)
+}
+
+pub fn global_mailbox() -> Mailbox {
+    static GLOBAL_MAILBOX: OnceLock<Mailbox> = OnceLock::new();
+    GLOBAL_MAILBOX
+        .get_or_init(|| {
+            let world_id = WorldId(ShortUuid::generate().to_string());
+            let client_proc_id = ProcId(world_id.clone(), 0);
+            let (client_proc_addr, client_rx) = channel::serve_local();
+            let router = DialMailboxRouter::new_with_default(global_router().boxed());
+            let client_proc = Proc::new(
+                client_proc_id.clone(),
+                BoxedMailboxSender::new(router.clone()),
+            );
+            client_proc
+                .clone()
+                .serve(client_rx, mailbox::monitored_return_handle());
+            router.bind(client_proc_id.clone().into(), client_proc_addr.clone());
+
+            global_router().bind(world_id.clone().into(), router.clone());
+
+            client_proc.attach("client").expect("root mailbox creation")
+        })
+        .clone()
 }
 
 type ActorEventRouter = Arc<DashMap<ActorMeshName, mpsc::UnboundedSender<ActorSupervisionEvent>>>;

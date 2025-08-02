@@ -28,9 +28,8 @@ from typing import (
 import monarch.common.messages as messages
 
 import torch
-from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape
-from monarch._src.actor.actor_mesh import Port, PortTuple
+from monarch._src.actor.actor_mesh import Port
 from monarch._src.actor.endpoint import Extent, Selection
 
 from monarch.common import _coalescing, device_mesh, stream
@@ -134,20 +133,6 @@ class Remote(Generic[P, R], Endpoint[P, R]):
         # and all potential errors have been reported
         client._request_status()
         return Extent(ambient_mesh._labels, ambient_mesh._ndslice.sizes)
-
-    def _port(self, once: bool = False) -> "PortTuple[R]":
-        ambient_mesh = device_mesh._active
-        if ambient_mesh is None:
-            raise ValueError(
-                "FIXME - cannot create a port without an active proc_mesh, because there is not way to create a port without a mailbox"
-            )
-        mesh_controller = getattr(ambient_mesh.client, "_mesh_controller", None)
-        if mesh_controller is None:
-            raise ValueError(
-                "Cannot create raw port objects with an old-style tensor engine controller."
-            )
-        mailbox: Mailbox = mesh_controller._mailbox
-        return PortTuple.create(mailbox, once)
 
     @property
     def _resolvable(self):
