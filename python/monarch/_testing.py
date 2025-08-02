@@ -133,9 +133,7 @@ class TestingContext:
     ) -> Generator[DeviceMesh, None, None]:
         key = (num_hosts, gpu_per_host)
         if key not in self._proc_mesh_cache:
-            self._proc_mesh_cache[key] = proc_mesh(
-                hosts=num_hosts, gpus=gpu_per_host
-            ).get()
+            self._proc_mesh_cache[key] = proc_mesh(hosts=num_hosts, gpus=gpu_per_host)
 
         dm = spawn_tensor_engine(self._proc_mesh_cache[key])
         dm = dm.rename(hosts="host", gpus="gpu")

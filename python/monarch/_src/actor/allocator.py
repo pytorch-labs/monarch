@@ -8,7 +8,8 @@
 
 import abc
 import logging
-from typing import Awaitable, final, Optional, TYPE_CHECKING
+from dataclasses import dataclass
+from typing import Dict, final, Literal, Optional, TYPE_CHECKING
 
 from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monarch/monarch_extension:monarch_extension
     Alloc,
@@ -18,21 +19,41 @@ from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monar
     RemoteAllocatorBase,
     SimAllocatorBase,
 )
-from monarch._src.actor.future import Future
+from monarch._src.actor.future import DeprecatedNotAFuture, Future
 
 if TYPE_CHECKING:
-    from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
+    from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 
 ALLOC_LABEL_PROC_MESH_NAME = "procmesh.monarch.meta.com/name"
 
 logger: logging.Logger = logging.getLogger(__name__)
 
 
+@dataclass
+class AllocHandle(DeprecatedNotAFuture):
+    _hy_alloc: "Shared[Alloc]"
+    _extent: Dict[str, int]
+
+    @property
+    def initialized(self) -> Future[Literal[True]]:
+        """
+        Future completes with 'True' when the alloc has initialized.
+        Because alloc are remote objects, there is no guarentee that the alloc is
+        still usable after this completes, only that at some point in the past it was usable.
+        """
+
+        async def task() -> Literal[True]:
+            await self._hy_alloc
+            return True
+
+        return Future(coro=task())
+
+
 class AllocateMixin(abc.ABC):
     @abc.abstractmethod
     def allocate_nonblocking(self, spec: AllocSpec) -> "PythonTask[Alloc]": ...
 
-    def allocate(self, spec: AllocSpec) -> "Future[Alloc]":
+    def allocate(self, spec: AllocSpec) -> "AllocHandle":
         """
         Allocate a process according to the provided spec.
 
@@ -42,7 +63,7 @@ class AllocateMixin(abc.ABC):
         Returns:
         - A future that will be fulfilled when the requested allocation is fulfilled.
         """
-        return Future(coro=self.allocate_nonblocking(spec))
+        return AllocHandle(self.allocate_nonblocking(spec).spawn(), spec.extent)
 
 
 @final

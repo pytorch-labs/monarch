@@ -175,6 +175,20 @@ impl PyAllocSpec {
             },
         })
     }
+    #[getter]
+    fn extent<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let d = PyDict::new(py);
+        for (name, size) in self
+            .inner
+            .shape
+            .labels()
+            .iter()
+            .zip(self.inner.shape.slice().sizes().iter())
+        {
+            d.set_item(name, size)?;
+        }
+        Ok(d)
+    }
 }
 
 #[pyclass(

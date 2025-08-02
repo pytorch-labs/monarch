@@ -184,8 +184,8 @@ async def test_gpu_trainer_generator():
 @needs_rdma
 @needs_cuda
 def test_gpu_trainer_generator_sync() -> None:
-    trainer_proc = proc_mesh(gpus=1).get()
-    gen_proc = proc_mesh(gpus=1).get()
+    trainer_proc = proc_mesh(gpus=1)
+    gen_proc = proc_mesh(gpus=1)
     trainer = trainer_proc.spawn("trainer", TrainerActor).get()
     generator = gen_proc.spawn("gen", GeneratorActor).get()
 

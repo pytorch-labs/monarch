@@ -235,7 +235,9 @@ def spawn_tensor_engine(proc_mesh: "ProcMesh") -> DeviceMesh:
     # is currently only used for debug printing. It should be fixed to
     # report the proc ID instead of the rank it currently does.
     gpus = proc_mesh.sizes.get("gpus", 1)
-    backend_ctrl = Controller(proc_mesh._proc_mesh)
+
+    # we currently block on the creation of the proc mesh, but conceivably we could init concurrently here.
+    backend_ctrl = Controller(proc_mesh._proc_mesh.block_on())
     client = MeshClient(cast("TController", backend_ctrl), proc_mesh.size(), gpus)
     dm = DeviceMesh(
         client,

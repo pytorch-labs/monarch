@@ -20,7 +20,7 @@ two_gpu = pytest.mark.skipif(
 
 @two_gpu
 def test_tensor_engine() -> None:
-    pm = proc_mesh(gpus=2).get()
+    pm = proc_mesh(gpus=2)
 
     dm = spawn_tensor_engine(pm)
     with dm.activate():
@@ -46,7 +46,7 @@ def test_tensor_engine() -> None:
 
 @two_gpu
 def test_proc_mesh_tensor_engine() -> None:
-    pm = proc_mesh(gpus=2).get()
+    pm = proc_mesh(gpus=2)
     with pm.activate():
         f = 10 * pm.rank_tensor("gpus").cuda()
         a = monarch.inspect(f, hosts=0, gpus=0)
@@ -73,7 +73,7 @@ class AddWithState(Actor):
 
 @two_gpu
 def test_actor_with_tensors() -> None:
-    pm = proc_mesh(gpus=1).get()
+    pm = proc_mesh(gpus=1)
     with pm.activate():
         x = pm.spawn("adder", AddWithState, torch.ones(())).get()
         y = torch.ones(())
@@ -93,7 +93,7 @@ class Counter(Actor):
 
 @two_gpu
 def test_actor_tensor_ordering() -> None:
-    pm = proc_mesh(gpus=1).get()
+    pm = proc_mesh(gpus=1)
     with pm.activate():
         counter = pm.spawn("a", Counter).get()
         results = []
@@ -120,7 +120,7 @@ class Linear(Actor):
 
 @two_gpu
 def test_rref_actor() -> None:
-    pm = proc_mesh(gpus=1).get()
+    pm = proc_mesh(gpus=1)
     with pm.activate():
         x = pm.spawn("linear", Linear, 3, 4).get()
 

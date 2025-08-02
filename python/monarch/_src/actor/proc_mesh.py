@@ -6,9 +6,11 @@
 
 # pyre-strict
 
+import asyncio
 import logging
 import os
 import sys
+import threading
 import warnings
 from contextlib import AbstractContextManager
 
@@ -18,6 +20,7 @@ from typing import (
     cast,
     Dict,
     List,
+    Literal,
     Optional,
     Sequence,
     Type,
@@ -31,16 +34,18 @@ from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monar
     AllocConstraints,
     AllocSpec,
 )
-from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
+
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import (
     ProcMesh as HyProcMesh,
     ProcMeshMonitor,
 )
+from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape, Slice
 from monarch._src.actor.actor_mesh import _Actor, _ActorMeshRefImpl, Actor, ActorMeshRef
 
 from monarch._src.actor.allocator import (
     AllocateMixin,
+    AllocHandle,
     LocalAllocator,
     ProcessAllocator,
     SimAllocator,
@@ -60,7 +65,7 @@ from monarch._src.actor.debugger import (
 from monarch._src.actor.device_utils import _local_device_count
 
 from monarch._src.actor.endpoint import endpoint
-from monarch._src.actor.future import Future
+from monarch._src.actor.future import DeprecatedNotAFuture, Future
 from monarch._src.actor.shape import MeshTrait
 
 HAS_TENSOR_ENGINE = False
@@ -114,42 +119,72 @@ except ImportError:
     IN_PAR = False
 
 
-class ProcMesh(MeshTrait):
+class ProcMesh(MeshTrait, DeprecatedNotAFuture):
     def __init__(
         self,
-        hy_proc_mesh: HyProcMesh,
-        _mock_shape: Optional[Shape] = None,
+        hy_proc_mesh: "Shared[HyProcMesh]",
+        shape: Shape,
         _device_mesh: Optional["DeviceMesh"] = None,
     ) -> None:
         self._proc_mesh = hy_proc_mesh
-        self._mock_shape: Optional[Shape] = _mock_shape
+        self._shape = shape
+        # until we have real slicing support keep track
+        # of whether this is a slice of a real proc_meshg
+        self._slice = False
         # type: ignore[21]
         self._rdma_manager: Optional["_RdmaManager"] = None
         self._debug_manager: Optional[DebugManager] = None
-        self._mailbox: Mailbox = self._proc_mesh.client
         self._code_sync_client: Optional[CodeSyncMeshClient] = None
         self._logging_mesh_client: Optional[LoggingMeshClient] = None
         self._maybe_device_mesh: Optional["DeviceMesh"] = _device_mesh
         self._stopped = False
 
-    async def _init_manager_actors(
+    @property
+    def initialized(self) -> Future[Literal[True]]:
+        """
+        Future completes with 'True' when the ProcMesh has initialized.
+        Because ProcMesh are remote objects, there is no guarentee that the ProcMesh is
+        still usable after this completes, only that at some point in the past it was usable.
+        """
+        pm: Shared[HyProcMesh] = self._proc_mesh
+
+        async def task() -> Literal[True]:
+            await pm
+            return True
+
+        return Future(coro=task())
+
+    def _init_manager_actors(self, setup: Callable[[], None] | None = None) -> None:
+        self._proc_mesh = PythonTask.from_coroutine(
+            self._init_manager_actors_coro(self._proc_mesh, setup)
+        ).spawn()
+
+    async def _init_manager_actors_coro(
         self,
+        proc_mesh_: "Shared[HyProcMesh]",
         setup: Callable[[], None] | None = None,
-    ) -> "ProcMesh":
-        # Initialize default logging options
-        # TODO: @marius move this to host mesh init
-        await self.logging_option()
+    ) -> "HyProcMesh":
+        proc_mesh = await proc_mesh_
+        # WARNING: it is unsafe to await self._proc_mesh here
+        # because self._proc_mesh is the result of this function itself!
+
+        self._logging_mesh_client = await LoggingMeshClient.spawn(proc_mesh=proc_mesh)
+        self._logging_mesh_client.set_mode(
+            stream_to_client=True,
+            aggregate_window_sec=3,
+            level=logging.INFO,
+        )
 
         _rdma_manager = (
             # type: ignore[16]
-            await _RdmaManager.create_rdma_manager_nonblocking(self._proc_mesh)
+            await _RdmaManager.create_rdma_manager_nonblocking(proc_mesh)
             # type: ignore[16]
             if HAS_TENSOR_ENGINE and _RdmaBuffer.rdma_supported()
             else None
         )
 
-        _debug_manager = await self._spawn_nonblocking(
-            _DEBUG_MANAGER_ACTOR_NAME, DebugManager, await _debug_client()
+        _debug_manager = await self._spawn_nonblocking_on(
+            proc_mesh, _DEBUG_MANAGER_ACTOR_NAME, DebugManager, await _debug_client()
         )
 
         self._debug_manager = _debug_manager
@@ -159,15 +194,13 @@ class ProcMesh(MeshTrait):
             # If the user has passed the setup lambda, we need to call
             # it here before any of the other actors are spawned so that
             # the environment variables are set up before cuda init.
-            setup_actor = await self._spawn_nonblocking("setup", SetupActor, setup)
+            setup_actor = await self._spawn_nonblocking_on(
+                proc_mesh, "setup", SetupActor, setup
+            )
             # pyre-ignore
             await setup_actor.setup.call()._status.coro
 
-        return self
-
-    @property
-    def _shape(self) -> Shape:
-        return self._proc_mesh.shape if self._mock_shape is None else self._mock_shape
+        return proc_mesh
 
     @property
     def _ndslice(self) -> Slice:
@@ -183,12 +216,24 @@ class ProcMesh(MeshTrait):
             if self._maybe_device_mesh is None
             else self._device_mesh._new_with_shape(shape)
         )
-        return ProcMesh(self._proc_mesh, _mock_shape=shape, _device_mesh=device_mesh)
+        pm = ProcMesh(self._proc_mesh, shape, _device_mesh=device_mesh)
+        pm._slice = True
+        return pm
 
     def spawn(self, name: str, Class: Type[T], *args: Any, **kwargs: Any) -> Future[T]:
-        if self._mock_shape is not None:
+        if self._slice:
             raise NotImplementedError("NYI: spawn on slice of a proc mesh.")
         return Future(coro=self._spawn_nonblocking(name, Class, *args, **kwargs))
+
+    @property
+    async def _proc_mesh_for_asyncio_fixme(self) -> HyProcMesh:
+        """
+        Get ProcMesh on the asyncio event stream.
+        We should redo this functionality to work on the tokio stream.
+        This must be called on the asyncio stream.
+        """
+        assert asyncio.get_running_loop() is not None
+        return await Future(coro=self._proc_mesh.task())
 
     async def monitor(self) -> ProcMeshMonitor:
         """
@@ -206,12 +251,17 @@ class ProcMesh(MeshTrait):
         # Kick off in background
         asyncio.create_task(monitor_loop(monitor))
         """
-        return await self._proc_mesh.monitor()
+        # todo: move monitor to tokio loop
+        proc_mesh = await Future(coro=self._proc_mesh.task())
+        return await proc_mesh.monitor()
 
     @classmethod
     def from_alloc(
-        self, alloc: Alloc, setup: Callable[[], None] | None = None
-    ) -> Future["ProcMesh"]:
+        self,
+        alloc: AllocHandle,
+        setup: Callable[[], None] | None = None,
+        _init_manager_actors: bool = True,
+    ) -> "ProcMesh":
         """
         Allocate a process mesh according to the provided alloc.
         Returns when the mesh is fully allocated.
@@ -230,9 +280,19 @@ class ProcMesh(MeshTrait):
             os.environ["LOCAL_RANK"] = str(rank["gpus"])
         ```
         """
-        return Future(
-            coro=_proc_mesh_from_alloc_coro(alloc, setup, init_manager_actors=True)
+
+        async def task() -> HyProcMesh:
+            return await HyProcMesh.allocate_nonblocking(await alloc._hy_alloc)
+
+        shape = Shape(
+            list(alloc._extent.keys()),
+            Slice.new_row_major(list(alloc._extent.values())),
         )
+        pm = ProcMesh(PythonTask.from_coroutine(task()).spawn(), shape)
+
+        if _init_manager_actors:
+            pm._init_manager_actors(setup)
+        return pm
 
     def __repr__(self) -> str:
         return repr(self._proc_mesh)
@@ -243,15 +303,22 @@ class ProcMesh(MeshTrait):
     async def _spawn_nonblocking(
         self, name: str, Class: Type[T], *args: Any, **kwargs: Any
     ) -> T:
+        return await self._spawn_nonblocking_on(
+            await self._proc_mesh, name, Class, *args, **kwargs
+        )
+
+    async def _spawn_nonblocking_on(
+        self, pm: HyProcMesh, name: str, Class: Type[T], *args: Any, **kwargs: Any
+    ) -> T:
         if not issubclass(Class, Actor):
             raise ValueError(
                 f"{Class} must subclass monarch.service.Actor to spawn it."
             )
-        actor_mesh = await self._proc_mesh.spawn_nonblocking(name, _Actor)
+        actor_mesh = await pm.spawn_nonblocking(name, _Actor)
         service = ActorMeshRef(
             Class,
-            _ActorMeshRefImpl.from_hyperactor_mesh(self._mailbox, actor_mesh, self),
-            self._mailbox,
+            _ActorMeshRefImpl.from_hyperactor_mesh(pm.client, actor_mesh, self),
+            pm.client,
         )
         # useful to have this separate, because eventually we can reconstitute ActorMeshRef objects across pickling by
         # doing `ActorMeshRef(Class, actor_handle)` but not calling _create.
@@ -269,7 +336,7 @@ class ProcMesh(MeshTrait):
         from monarch.mesh_controller import spawn_tensor_engine  # @manual
 
         if self._maybe_device_mesh is None:
-            if self._mock_shape is not None:
+            if self._slice:
                 raise NotImplementedError(
                     "NYI: activating a proc mesh must first happen on the root proc_mesh until we fix spawning on submeshes."
                 )
@@ -290,13 +357,13 @@ class ProcMesh(MeshTrait):
     async def sync_workspace(self, auto_reload: bool = False) -> None:
         if self._code_sync_client is None:
             self._code_sync_client = CodeSyncMeshClient.spawn_blocking(
-                proc_mesh=self._proc_mesh,
+                proc_mesh=await self._proc_mesh_for_asyncio_fixme,
             )
         # TODO(agallagher): We need some way to configure and pass this
         # in -- right now we're assuming the `gpu` dimension, which isn't
         # correct.
         # The workspace shape (i.e. only perform one rsync per host).
-        assert set(self._proc_mesh.shape.labels).issubset({"gpus", "hosts"})
+        assert set(self._shape.labels).issubset({"gpus", "hosts"})
         assert self._code_sync_client is not None
         await self._code_sync_client.sync_workspace(
             # TODO(agallagher): Is there a better way to infer/set the local
@@ -331,11 +398,9 @@ class ProcMesh(MeshTrait):
         """
         if level < 0 or level > 255:
             raise ValueError("Invalid logging level: {}".format(level))
+        await self.initialized
 
-        if self._logging_mesh_client is None:
-            self._logging_mesh_client = await LoggingMeshClient.spawn(
-                proc_mesh=self._proc_mesh
-            )
+        assert self._logging_mesh_client is not None
         self._logging_mesh_client.set_mode(
             stream_to_client=stream_to_client,
             aggregate_window_sec=aggregate_window_sec,
@@ -349,7 +414,7 @@ class ProcMesh(MeshTrait):
 
     def stop(self) -> Future[None]:
         async def _stop_nonblocking() -> None:
-            await self._proc_mesh.stop_nonblocking()
+            await (await self._proc_mesh).stop_nonblocking()
             self._stopped = True
 
         return Future(coro=_stop_nonblocking())
@@ -374,16 +439,12 @@ class ProcMesh(MeshTrait):
             # Cannot call stop here because it is async.
 
 
-def local_proc_mesh(*, gpus: Optional[int] = None, hosts: int = 1) -> Future[ProcMesh]:
-    return Future(
-        coro=_proc_mesh_coro(gpus=gpus, hosts=hosts, allocator=LocalAllocator())
-    )
+def local_proc_mesh(*, gpus: Optional[int] = None, hosts: int = 1) -> ProcMesh:
+    return _proc_mesh_from_allocator(allocator=LocalAllocator(), gpus=gpus, hosts=hosts)
 
 
-def sim_proc_mesh(*, gpus: Optional[int] = None, hosts: int = 1) -> Future[ProcMesh]:
-    return Future(
-        coro=_proc_mesh_coro(gpus=gpus, hosts=hosts, allocator=SimAllocator())
-    )
+def sim_proc_mesh(*, gpus: Optional[int] = None, hosts: int = 1) -> ProcMesh:
+    return _proc_mesh_from_allocator(allocator=SimAllocator(), gpus=gpus, hosts=hosts)
 
 
 _BOOTSTRAP_MAIN = "monarch._src.actor.bootstrap_main"
@@ -404,25 +465,19 @@ def _get_bootstrap_args() -> tuple[str, Optional[list[str]], dict[str, str]]:
     return cmd, args, env
 
 
-async def _proc_mesh_from_alloc_coro(
-    alloc: Alloc,
-    setup: Callable[[], None] | None,
-    init_manager_actors: bool,
-) -> ProcMesh:
-    _hy_proc_mesh = await HyProcMesh.allocate_nonblocking(alloc)
-    proc_mesh = ProcMesh(_hy_proc_mesh)
-    if init_manager_actors:
-        await proc_mesh._init_manager_actors(setup)
-    return proc_mesh
+async def _hy_proc_mesh_from_alloc_coro(
+    alloc: "Shared[Alloc] | PythonTask[Alloc]",
+) -> HyProcMesh:
+    return await HyProcMesh.allocate_nonblocking(await alloc)
 
 
-async def _proc_mesh_coro(
+def _proc_mesh_from_allocator(
     *,
     allocator: AllocateMixin,
-    gpus: Optional[int] = None,
-    hosts: int = 1,
+    gpus: Optional[int],
+    hosts: int,
     setup: Callable[[], None] | None = None,
-    init_manager_actors: bool = True,
+    _init_manager_actors: bool = True,
 ) -> ProcMesh:
     if gpus is None:
         gpus = _local_device_count()
@@ -430,9 +485,8 @@ async def _proc_mesh_coro(
     # test_remote_function_all_gather expects that hosts comes before gpus
     # in the order of the dimensions.
     spec: AllocSpec = AllocSpec(AllocConstraints(), hosts=hosts, gpus=gpus)
-    alloc = await allocator.allocate_nonblocking(spec)
-
-    return await _proc_mesh_from_alloc_coro(alloc, setup, init_manager_actors)
+    alloc = allocator.allocate(spec)
+    return ProcMesh.from_alloc(alloc, setup, _init_manager_actors)
 
 
 def proc_mesh(
@@ -441,53 +495,48 @@ def proc_mesh(
     hosts: int = 1,
     env: dict[str, str] | None = None,
     setup: Callable[[], None] | None = None,
-) -> Future[ProcMesh]:
+) -> ProcMesh:
     env = env or {}
-
     # Todo: Deprecate the env field from the ProcessAllocator
     # The PAR_MAIN_OVERRIDE needs to be passed as an env
     # to the proc mesh construction in rust, so can not be moved to the
     # SetupActor yet
     cmd, args, bootstrap_env = _get_bootstrap_args()
     env.update(bootstrap_env)
-    task = _proc_mesh_coro(
-        gpus=gpus,
-        hosts=hosts,
-        setup=setup,
+    return _proc_mesh_from_allocator(
         allocator=ProcessAllocator(cmd, args, env),
-        init_manager_actors=True,
+        hosts=hosts,
+        gpus=gpus,
+        setup=setup,
+        _init_manager_actors=True,
     )
-    return Future(coro=task)
 
 
+_debug_client_init = threading.Lock()
 _debug_proc_mesh: Optional["ProcMesh"] = None
+_debug_client_mesh: "Optional[Shared[DebugClient]]" = None
 
 
-# Lazy init of the debug proc mesh so that importing monarch.proc_mesh
-# doesn't trigger the debug client to spawn, which could cause confusing
-# logs. This is defined in proc_mesh.py instead of debugger.py for
-# circular import reasons.
-async def _get_debug_proc_mesh() -> "ProcMesh":
-    global _debug_proc_mesh
-    if _debug_proc_mesh is None:
-        _debug_proc_mesh = await _proc_mesh_coro(
-            gpus=1, hosts=1, allocator=LocalAllocator(), init_manager_actors=False
+# Lazy init so that the debug client and proc does not produce logs when it isn't used.
+# Checking for the client needs a lock otherwise two initializing procs will both
+# try to init resulting in duplicates. The critical region is not blocking: it spawns
+# a separate task to do the init, asigns the Shared[Client] from that task to the global
+# and releases the lock.
+def _debug_client() -> "Shared[DebugClient]":
+    global _debug_client_mesh, _debug_proc_mesh
+
+    async def create() -> DebugClient:
+        _debug_proc_mesh = _proc_mesh_from_allocator(
+            gpus=1, hosts=1, allocator=LocalAllocator(), _init_manager_actors=False
         )
-    return _debug_proc_mesh
+        return await _debug_proc_mesh._spawn_nonblocking("debug_client", DebugClient)
 
+    with _debug_client_init:
+        if _debug_client_mesh is None:
+            _debug_client_mesh = PythonTask.from_coroutine(create()).spawn()
 
-_debug_client_mesh: Optional[DebugClient] = None
-
-
-# Lazy init for the same reason as above. This is defined in proc_mesh.py
-# instead of debugger.py for circular import reasons.
-async def _debug_client() -> DebugClient:
-    global _debug_client_mesh
-    if _debug_client_mesh is None:
-        mesh = await _get_debug_proc_mesh()
-        _debug_client_mesh = await mesh._spawn_nonblocking("debug_client", DebugClient)
     return _debug_client_mesh
 
 
 def debug_client() -> DebugClient:
-    return Future(coro=_debug_client()).get()
+    return Future(coro=_debug_client().task()).get()

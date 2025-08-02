@@ -7,7 +7,8 @@
 # pyre-strict
 
 from datetime import timedelta
-from typing import final, Optional
+
+from typing import Dict, final, Optional
 
 from monarch._rust_bindings.monarch_hyperactor.alloc import Alloc, AllocSpec
 from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
@@ -43,6 +44,13 @@ class AllocSpec:
         For example, `AllocSpec(constraints, replica=2, host=3, gpu=8)` creates a
         shape with 2 replicas with 3 hosts each, each of which in turn
         has 8 GPUs.
+        """
+        ...
+
+    @property
+    def extent(self) -> Dict[str, int]:
+        """
+        Size of requested alloc.
         """
         ...
 

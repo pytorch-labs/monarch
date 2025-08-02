@@ -253,7 +253,7 @@ impl PyPythonTask {
 pub struct PyShared {
     rx: watch::Receiver<Option<PyResult<PyObject>>>,
 }
-
+#[pymethods]
 impl PyShared {
     fn task(&mut self) -> PyResult<PyPythonTask> {
         // watch channels start unchanged, and when a value is sent to them signal
@@ -272,14 +272,11 @@ impl PyShared {
             })
         })
     }
-}
-#[pymethods]
-impl PyShared {
     fn __await__(&mut self, py: Python<'_>) -> PyResult<PythonTaskAwaitIterator> {
         let task = self.task()?;
         Ok(PythonTaskAwaitIterator::new(task.into_py_any(py)?))
     }
-    fn block_on(&mut self, py: Python<'_>) -> PyResult<PyObject> {
+    pub fn block_on(&mut self, py: Python<'_>) -> PyResult<PyObject> {
         let mut task = self.task()?;
         task.block_on(py)
     }
@@ -287,5 +284,6 @@ impl PyShared {
 
 pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResult<()> {
     hyperactor_mod.add_class::<PyPythonTask>()?;
+    hyperactor_mod.add_class::<PyShared>()?;
     Ok(())
 }
