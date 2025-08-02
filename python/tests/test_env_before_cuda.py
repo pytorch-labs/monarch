@@ -75,9 +75,9 @@ class TestEnvBeforeCuda(unittest.IsolatedAsyncioTestCase):
 
         spec = AllocSpec(AllocConstraints(), gpus=1, hosts=1)
         allocator = LocalAllocator()
-        alloc = await allocator.allocate(spec)
+        alloc = allocator.allocate(spec)
 
-        proc_mesh = await ProcMesh.from_alloc(alloc, setup=setup_cuda_env)
+        proc_mesh = ProcMesh.from_alloc(alloc, setup=setup_cuda_env)
 
         try:
             actor = await proc_mesh.spawn("cuda_init", CudaInitTestActor)
@@ -110,7 +110,7 @@ class TestEnvBeforeCuda(unittest.IsolatedAsyncioTestCase):
             for name, value in cuda_env_vars.items():
                 os.environ[name] = value
 
-        proc_mesh_instance = await proc_mesh(gpus=1, hosts=1, setup=setup_cuda_env)
+        proc_mesh_instance = proc_mesh(gpus=1, hosts=1, setup=setup_cuda_env)
 
         try:
             actor = await proc_mesh_instance.spawn("cuda_init", CudaInitTestActor)
@@ -136,7 +136,7 @@ class TestEnvBeforeCuda(unittest.IsolatedAsyncioTestCase):
             "CUDA_DEVICE_MAX_CONNECTIONS": "1",
         }
 
-        proc_mesh_instance = await proc_mesh(gpus=1, hosts=1, env=cuda_env_vars)
+        proc_mesh_instance = proc_mesh(gpus=1, hosts=1, env=cuda_env_vars)
 
         try:
             actor = await proc_mesh_instance.spawn("cuda_init", CudaInitTestActor)

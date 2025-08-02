@@ -67,7 +67,7 @@ def test_no_hang_on_shutdown() -> None:
 async def test_allocator() -> None:
     spec = AllocSpec(AllocConstraints(), replica=2)
     allocator = monarch.LocalAllocator()
-    _ = await allocator.allocate(spec)
+    _ = allocator.allocate(spec)
 
 
 def _python_task_test(

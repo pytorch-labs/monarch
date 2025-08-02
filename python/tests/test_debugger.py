@@ -133,7 +133,7 @@ async def test_debug() -> None:
     with patch(
         "monarch._src.actor.debugger._debugger_input", side_effect=input_mock
     ), patch("monarch._src.actor.debugger._debugger_output", new=_patch_output):
-        proc = await proc_mesh(hosts=2, gpus=2)
+        proc = proc_mesh(hosts=2, gpus=2)
         debugee = await proc.spawn("debugee", DebugeeActor)
         debug_client = actor.debug_client()
 
