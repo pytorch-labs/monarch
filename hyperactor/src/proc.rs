@@ -955,6 +955,7 @@ impl<A: Actor> Instance<A> {
                 parent.send_supervision_event_or_crash(ActorSupervisionEvent {
                     actor_id: self.cell.actor_id().clone(),
                     actor_status: actor_status.clone(),
+                    message_headers: None,
                 });
             }
         } else {
@@ -967,6 +968,7 @@ impl<A: Actor> Instance<A> {
                 self.proc.handle_supervision_event(ActorSupervisionEvent {
                     actor_id: self.cell.actor_id().clone(),
                     actor_status: actor_status.clone(),
+                    message_headers: None,
                 })
             }
         }
