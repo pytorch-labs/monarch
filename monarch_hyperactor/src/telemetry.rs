@@ -14,6 +14,8 @@ use hyperactor::clock::ClockKind;
 use hyperactor::clock::RealClock;
 use hyperactor::clock::SimClock;
 use hyperactor_telemetry::swap_telemetry_clock;
+use opentelemetry::global;
+use opentelemetry::metrics;
 use pyo3::prelude::*;
 use pyo3::types::PyTraceback;
 use tracing::span::EnteredSpan;
@@ -110,6 +112,85 @@ pub fn use_sim_clock() -> PyResult<()> {
     Ok(())
 }
 
+// opentelemetry requires that the names of counters etc are static for the lifetime of the program.
+// Since we are binding these classes from python to rust, we have to leak these strings in order to
+// ensure they live forever. This is fine, as these classes aren't dynamically created.
+fn as_static_str(to_leak: &str) -> &'static str {
+    String::from(to_leak).leak()
+}
+
+#[pyclass(
+    subclass,
+    module = "monarch._rust_bindings.monarch_hyperactor.telemetry"
+)]
+struct PyCounter {
+    inner: metrics::Counter<u64>,
+}
+
+#[pymethods]
+impl PyCounter {
+    #[new]
+    fn new(name: &str) -> Self {
+        Self {
+            inner: global::meter("monarch")
+                .u64_counter(as_static_str(name))
+                .build(),
+        }
+    }
+
+    fn add(&mut self, value: u64) {
+        self.inner.add(value, &[]);
+    }
+}
+
+#[pyclass(
+    subclass,
+    module = "monarch._rust_bindings.monarch_hyperactor.telemetry"
+)]
+struct PyHistogram {
+    inner: metrics::Histogram<f64>,
+}
+
+#[pymethods]
+impl PyHistogram {
+    #[new]
+    fn new(name: &str) -> Self {
+        Self {
+            inner: global::meter("monarch")
+                .f64_histogram(as_static_str(name))
+                .build(),
+        }
+    }
+
+    fn record(&mut self, value: f64) {
+        self.inner.record(value, &[]);
+    }
+}
+
+#[pyclass(
+    subclass,
+    module = "monarch._rust_bindings.monarch_hyperactor.telemetry"
+)]
+struct PyUpDownCounter {
+    inner: metrics::UpDownCounter<i64>,
+}
+
+#[pymethods]
+impl PyUpDownCounter {
+    #[new]
+    fn new(name: &str) -> Self {
+        Self {
+            inner: global::meter("monarch")
+                .i64_up_down_counter(as_static_str(name))
+                .build(),
+        }
+    }
+
+    fn add(&mut self, value: i64) {
+        self.inner.add(value, &[]);
+    }
+}
+
 #[pyclass(
     unsendable,
     subclass,
@@ -183,5 +264,8 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(use_sim_clock_fn)?;
 
     module.add_class::<PySpan>()?;
+    module.add_class::<PyCounter>()?;
+    module.add_class::<PyHistogram>()?;
+    module.add_class::<PyUpDownCounter>()?;
     Ok(())
 }
