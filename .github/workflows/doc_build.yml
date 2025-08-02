@@ -1,0 +1,87 @@
+name: Docs
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+concurrency:
+  group: docs-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          architecture: x64
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt, clippy
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libunwind-dev
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r build-requirements.txt
+          pip install -r docs/requirements.txt
+
+      - name: Generate Rust API Documentation
+        run: |
+          # Set environment variables for CPU-only build
+          export USE_CUDA=0
+          export USE_TENSOR_ENGINE=0
+          export RUSTFLAGS="-Zthreads=16"
+          export _GLIBCXX_USE_CXX11_ABI=1
+
+          # Generate documentation for specific crates that don't depend on CUDA
+          cargo doc --no-deps -p hyperactor -p hyperactor_macros -p hyperactor_multiprocess -p hyperactor_mesh -p hyperactor_mesh_macros
+
+          # Create an index.html file in the target/doc directory to serve as the main entry point
+          echo '<meta http-equiv="refresh" content="0; url=hyperactor/index.html">' > target/doc/index.html
+
+          # Ensure the target/doc directory exists in the expected location for Sphinx
+          mkdir -p docs/source/target
+          cp -r target/doc docs/source/target/
+
+      - name: Build Sphinx Docs
+        working-directory: docs
+        run: |
+          make html
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/build/html
+
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
