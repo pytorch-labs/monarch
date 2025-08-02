@@ -401,13 +401,13 @@ impl Slice {
     /// multidimensional point in a row-major flattened array,
     /// assuming dense gapless storage with zero offset:
     ///
-    /// ```lang=text
+    /// ```plain
     ///     index := Σ(coordinate[i] × ∏(sizes[j] for j > i))
     /// ```
     ///
     /// For example, given a 3x2 row-major base array B:
     ///
-    /// ```lang=text
+    /// ```plain
     ///       0 1 2         1
     /// B =   3 4 5    V =  4
     ///       6 7 8         7
@@ -415,7 +415,7 @@ impl Slice {
     ///
     /// Let V be the first column of B. Then,
     ///
-    /// ```lang=text
+    /// ```plain
     /// V      | loc   | index
     /// -------+-------+------
     /// (0, 0) |  1    | 0
@@ -428,17 +428,17 @@ impl Slice {
     /// The physical offset formula computes the memory location of a
     /// point `p` as:
     ///
-    /// ```lang=text
+    /// ```plain
     /// loc := offset + Σ(coordinate[i] × stride[i])
     /// ```
     ///
     /// Let the layout be dense row-major and offset = 0.
     /// Then,
-    /// ```lang=text
+    /// ```plain
     /// stride[i] := ∏(sizes[j] for j > i).
     /// ```
     /// and substituting into the physical offset formula:
-    /// ```lang=text
+    /// ```plain
     ///   loc = Σ(coordinate[i] × stride[i])
     ///       = Σ(coordinate[i] × ∏(sizes[j] for j > i))
     ///       = index.

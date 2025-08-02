@@ -41,6 +41,7 @@ use crate::selection::EvalOpts;
 use crate::selection::Selection;
 use crate::selection::dsl;
 use crate::shape::Range;
+use crate::view::Extent;
 
 /// Generates a random [`Slice`] with up to `max_dims` dimensions,
 /// where each dimension has a size between 1 and `max_len`
@@ -74,6 +75,25 @@ use crate::shape::Range;
 /// ```
 pub fn gen_slice(max_dims: usize, max_len: usize) -> impl Strategy<Value = Slice> {
     prop::collection::vec(1..=max_len, 1..=max_dims).prop_map(Slice::new_row_major)
+}
+
+/// Generate a random [`Extent`] with `dims` dimensions, where each
+/// size is in `1..=max_len`.
+///
+/// For example, `gen_extent(1..=4, 1..=8)` generates extents like:
+/// - x=3
+/// - x=2, y=4
+/// - x=2, y=4, z=1, w=5
+pub fn gen_extent(
+    dims: std::ops::RangeInclusive<usize>,
+    max_len: usize,
+) -> impl Strategy<Value = Extent> {
+    prop::collection::vec(1..=max_len, dims).prop_map(|sizes| {
+        let labels = (0..sizes.len())
+            .map(|i| format!("d/{}", i))
+            .collect::<Vec<_>>();
+        Extent::new(labels, sizes).unwrap()
+    })
 }
 
 /// Generates a pair `(base, subview)` where:
@@ -617,6 +637,93 @@ mod tests {
                     .collect();
 
                 assert!(base.location(&b).is_ok());
+            }
+        }
+    }
+
+    // Coordinate–Rank Isomorphism for Extents
+
+    // Theorem 1: Rank is injective on valid points
+    //
+    // For a given Extent, every distinct coordinate (i.e. Point)
+    // maps to a unique rank.
+    //
+    // ∀ p ≠ q ∈ extent.iter(),  p.rank() ≠ q.rank()
+    proptest! {
+      #[test]
+      fn rank_is_injective(extent in gen_extent(1..=4, 8)) {
+        let mut seen = HashSet::new();
+        for point in extent.iter() {
+          let rank = point.rank();
+          prop_assert!(
+            seen.insert(rank),
+            "Duplicate rank {} for point {}",
+            rank,
+            point
+          );
+        }
+      }
+    }
+
+    // Theorem 2: Row-major monotonicity
+    //
+    // The rank function is monotonic in lexicographic (row-major)
+    // coordinate order.
+    //
+    // ∀ p, q ∈ ℕᵈ, p ≺ q ⇒ rank(p) < rank(q)
+    proptest! {
+      #[test]
+      fn rank_is_monotonic(extent in gen_extent(1..=4, 8)) {
+        let mut last_rank = None;
+        for point in extent.iter() {
+          let rank = point.rank();
+          if let Some(prev) = last_rank {
+            prop_assert!(prev < rank, "Rank not monotonic: {} >= {}", prev, rank);
+          }
+          last_rank = Some(rank);
+        }
+      }
+    }
+
+    // Theorem 3: Rank bounds
+    //
+    // For any point p in extent E, the rank of p is in the range:
+    //     0 ≤ rank(p) < E.len()
+    //
+    // ∀ p ∈ E, 0 ≤ rank(p) < |E|
+    proptest! {
+      #[test]
+      fn rank_bounds(extent in gen_extent(1..=4, 8)) {
+        let len = extent.len();
+        for point in extent.iter() {
+          let rank = point.rank();
+          prop_assert!(rank < len, "Rank {} out of bounds for extent of size {}", rank, len);
+        }
+      }
+    }
+
+    // Theorem 4: Isomorphism (Rank-point round-trip is identity on
+    // all ranks)
+    //
+    // For every valid rank ∈ [0, extent.len()), converting it to a
+    // point and back gives the same rank:
+    //
+    //     rank(point_of_rank(r)) = r
+    //
+    // In categorical terms: point_of_rank ∘ rank = 𝟙ₙ
+    proptest! {
+        #[test]
+        fn rank_point_trip(extent in gen_extent(1..=4, 8)) {
+            for r in 0..extent.len() {
+                let point = extent.point_of_rank(r).unwrap();
+                prop_assert_eq!(
+                    point.rank(),
+                    r,
+                    "point_of_rank({}) returned {}, which maps to rank {}",
+                    r,
+                    point,
+                    point.rank()
+                );
             }
         }
     }
