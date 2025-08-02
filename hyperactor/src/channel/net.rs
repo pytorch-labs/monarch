@@ -457,7 +457,11 @@ impl<M: RemoteMessage> NetTx<M> {
             /// Channel is running.
             Running(Deliveries<'a, M>),
             /// Message delivery not possible.
-            Closing(Deliveries<'a, M>),
+            Closing {
+                deliveries: Deliveries<'a, M>,
+                /// why closing
+                reason: String,
+            },
         }
 
         impl<'a, M: RemoteMessage> State<'a, M> {
@@ -518,16 +522,29 @@ impl<M: RemoteMessage> NetTx<M> {
                             (running, conn)
                         }
                         Err(err) => {
-                            tracing::error!(
+                            let error_msg = format!(
                                 "session {}.{}: failed to push message to outbox: {}",
                                 link.dest(),
                                 session_id,
                                 err
                             );
-                            (State::Closing(Deliveries { outbox, unacked }), conn)
+                            tracing::error!(error_msg);
+                            (
+                                State::Closing {
+                                    deliveries: Deliveries { outbox, unacked },
+                                    reason: error_msg,
+                                },
+                                conn,
+                            )
                         }
                     },
-                    None => (State::Closing(Deliveries { outbox, unacked }), conn),
+                    None => (
+                        State::Closing {
+                            deliveries: Deliveries { outbox, unacked },
+                            reason: "NetTx is dropped".to_string(),
+                        },
+                        conn,
+                    ),
                 },
                 (
                     State::Running(Deliveries {
@@ -542,13 +559,17 @@ impl<M: RemoteMessage> NetTx<M> {
                     tokio::select! {
                         // If acking message takes too long, consider the link broken.
                         _ = unacked.wait_for_timeout(), if !unacked.is_empty() => {
-                            tracing::error!(
+                            let error_msg = format!(
                                 "session {}.{}: failed to receive ack within timeout {} secs; link is currently connected",
                                 link.dest(),
                                 session_id,
                                 config::global::get(config::MESSAGE_DELIVERY_TIMEOUT).as_secs(),
                             );
-                            (State::Closing(Deliveries{outbox, unacked}), Conn::Connected { sink, stream })
+                            tracing::error!(error_msg);
+                            (State::Closing {
+                                deliveries: Deliveries{outbox, unacked},
+                                reason: error_msg,
+                            }, Conn::Connected { sink, stream })
                         }
                         // tokio_stream::StreamExt::next is cancel safe.
                         ack_result = tokio_stream::StreamExt::next(&mut stream) => {
@@ -560,15 +581,19 @@ impl<M: RemoteMessage> NetTx<M> {
                                             (State::Running(Deliveries { outbox, unacked }), Conn::Connected { sink, stream })
                                         }
                                         Err(len) => {
-                                            tracing::error!(
+                                            let error_msg = format!(
                                                 "session {}.{}: ack message size is not 8 bytes. It is {} bytes",
                                                 link.dest(),
                                                 session_id,
                                                 len,
                                             );
+                                            tracing::error!(error_msg);
                                             // Similar to the message flow, we always close the
                                             // channel when encountering ser/deser errors.
-                                            (State::Closing(Deliveries{outbox, unacked}), Conn::Connected { sink, stream })
+                                            (State::Closing {
+                                                deliveries: Deliveries{outbox, unacked},
+                                                reason: error_msg,
+                                            }, Conn::Connected { sink, stream })
                                         }
                                     }
                                 },
@@ -627,17 +652,24 @@ impl<M: RemoteMessage> NetTx<M> {
                                             (running, Conn::Connected { sink, stream })
                                         }
                                         Err(err) => {
-                                            tracing::error!(
+                                            let error_msg = format!(
                                                 "session {}.{}: failed to push message to outbox: {}",
                                                 link.dest(),
                                                 session_id,
                                                 err
                                             );
-                                            (State::Closing(Deliveries {outbox, unacked}), Conn::Connected { sink, stream })
+                                            tracing::error!(error_msg);
+                                            (State::Closing {
+                                                deliveries: Deliveries {outbox, unacked},
+                                                reason: error_msg,
+                                            }, Conn::Connected { sink, stream })
                                         }
                                     }
                                 }
-                                None => (State::Closing(Deliveries{outbox, unacked}), Conn::Connected { sink, stream }),
+                                None => (State::Closing {
+                                    deliveries: Deliveries{outbox, unacked},
+                                    reason: "NetTx is dropped".to_string(),
+                                }, Conn::Connected { sink, stream }),
                             }
                         },
                     }
@@ -654,24 +686,32 @@ impl<M: RemoteMessage> NetTx<M> {
                     // If delivering this message is taking too long,
                     // consider the link broken.
                     if outbox.is_expired() {
-                        tracing::error!(
+                        let error_msg = format!(
                             "session {}.{}: failed to deliver message within timeout",
                             link.dest(),
                             session_id,
                         );
+                        tracing::error!(error_msg);
                         (
-                            State::Closing(Deliveries { outbox, unacked }),
+                            State::Closing {
+                                deliveries: Deliveries { outbox, unacked },
+                                reason: error_msg,
+                            },
                             Conn::reconnect_with_default(),
                         )
                     } else if unacked.is_expired() {
-                        tracing::error!(
+                        let error_msg = format!(
                             "session {}.{}: failed to receive ack within timeout {} secs; link is currently broken",
                             link.dest(),
                             session_id,
                             config::global::get(config::MESSAGE_DELIVERY_TIMEOUT).as_secs(),
                         );
+                        tracing::error!(error_msg);
                         (
-                            State::Closing(Deliveries { outbox, unacked }),
+                            State::Closing {
+                                deliveries: Deliveries { outbox, unacked },
+                                reason: error_msg,
+                            },
                             Conn::reconnect_with_default(),
                         )
                     } else {
@@ -718,8 +758,8 @@ impl<M: RemoteMessage> NetTx<M> {
                 }
 
                 // The link is no longer viable.
-                (State::Closing(Deliveries { outbox, unacked }), stream) => {
-                    break (State::Closing(Deliveries { outbox, unacked }), stream);
+                (State::Closing { deliveries, reason }, stream) => {
+                    break (State::Closing { deliveries, reason }, stream);
                 }
             };
 
@@ -731,10 +771,15 @@ impl<M: RemoteMessage> NetTx<M> {
         }; // loop
 
         match state {
-            State::Closing(Deliveries {
-                mut outbox,
-                mut unacked,
-            }) => {
+            State::Closing {
+                deliveries:
+                    Deliveries {
+                        mut outbox,
+                        mut unacked,
+                    },
+                // TODO(T233029051): Return reason through return_channel too.
+                reason: _,
+            } => {
                 // Return in order from oldest to newest, messages
                 // either not acknowledged or not sent.
                 unacked
