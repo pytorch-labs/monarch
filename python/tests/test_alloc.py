@@ -20,6 +20,6 @@ class TestAlloc(IsolatedAsyncioTestCase):
         cmd = "echo hello"
         allocator = ProcessAllocator(cmd)
         spec = AllocSpec(AllocConstraints(), replica=2)
-        alloc = await allocator.allocate(spec)
+        alloc = allocator.allocate(spec)
 
         print(alloc)
