@@ -18,7 +18,7 @@ hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }
 hyperactor_telemetry = { version = "0.0.0", path = "../hyperactor_telemetry" }
 remoteprocess = { git = "https://github.com/technicianted/remoteprocess", rev = "72505594a19d80c07df6f1dc4a80556b7e462148" }
-serde = { version = "1.0.185", features = ["derive", "rc"] }
+serde = { version = "1.0.219", features = ["derive", "rc"] }
 thiserror = "2.0.12"
 tokio = { version = "1.46.1", features = ["full", "test-util", "tracing"] }
 tokio-retry = "0.3"

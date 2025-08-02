@@ -26,7 +26,7 @@ ndslice = { version = "0.0.0", path = "../ndslice" }
 nix = { version = "0.29.0", features = ["dir", "event", "hostname", "inotify", "ioctl", "mman", "mount", "net", "poll", "ptrace", "reboot", "resource", "sched", "signal", "term", "time", "user", "zerocopy"] }
 parking_lot = { version = "0.12.1", features = ["send_guard"] }
 pyo3 = { version = "0.24", features = ["anyhow", "multiple-pymethods"] }
-serde = { version = "1.0.185", features = ["derive", "rc"] }
+serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "unbounded_depth"] }
 sorted-vec = "0.8.3"
 tokio = { version = "1.46.1", features = ["full", "test-util", "tracing"] }

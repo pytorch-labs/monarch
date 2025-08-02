@@ -55,7 +55,7 @@ pin-project = "1.1.10"
 preempt_rwlock = { version = "0.0.0", path = "../preempt_rwlock" }
 rand = { version = "0.8", features = ["small_rng"] }
 regex = "1.11.1"
-serde = { version = "1.0.185", features = ["derive", "rc"] }
+serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_bytes = "0.11"
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "unbounded_depth"] }
 thiserror = "2.0.12"
