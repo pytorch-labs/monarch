@@ -32,7 +32,6 @@ from monarch.actor import (
     current_rank,
     current_size,
     endpoint,
-    Future,
     local_proc_mesh,
     proc_mesh,
 )
@@ -491,7 +490,9 @@ async def test_actor_log_streaming() -> None:
                 am = await pm.spawn("printer", Printer)
 
                 # Disable streaming logs to client
-                await pm.logging_option(stream_to_client=False)
+                await pm.logging_option(
+                    stream_to_client=False, aggregate_window_sec=None
+                )
                 await asyncio.sleep(1)
 
                 # These should not be streamed to client initially
@@ -594,6 +595,88 @@ async def test_actor_log_streaming() -> None:
         assert re.search(
             r"processes.*log streaming as level matched", stderr_content
         ), stderr_content
+
+    finally:
+        # Ensure file descriptors are restored even if something goes wrong
+        try:
+            os.dup2(original_stdout_fd, 1)
+            os.dup2(original_stderr_fd, 2)
+            os.close(original_stdout_fd)
+            os.close(original_stderr_fd)
+        except OSError:
+            pass
+
+
+async def test_logging_option_defaults() -> None:
+    # Save original file descriptors
+    original_stdout_fd = os.dup(1)  # stdout
+    original_stderr_fd = os.dup(2)  # stderr
+
+    try:
+        # Create temporary files to capture output
+        with tempfile.NamedTemporaryFile(
+            mode="w+", delete=False
+        ) as stdout_file, tempfile.NamedTemporaryFile(
+            mode="w+", delete=False
+        ) as stderr_file:
+            stdout_path = stdout_file.name
+            stderr_path = stderr_file.name
+
+            # Redirect file descriptors to our temp files
+            # This will capture both Python and Rust output
+            os.dup2(stdout_file.fileno(), 1)
+            os.dup2(stderr_file.fileno(), 2)
+
+            # Also redirect Python's sys.stdout/stderr for completeness
+            original_sys_stdout = sys.stdout
+            original_sys_stderr = sys.stderr
+            sys.stdout = stdout_file
+            sys.stderr = stderr_file
+
+            try:
+                pm = await proc_mesh(gpus=2)
+                am = await pm.spawn("printer", Printer)
+
+                for _ in range(5):
+                    await am.print.call("print streaming")
+                    await am.log.call("log streaming")
+                await asyncio.sleep(4)
+
+                # Flush all outputs
+                stdout_file.flush()
+                stderr_file.flush()
+                os.fsync(stdout_file.fileno())
+                os.fsync(stderr_file.fileno())
+
+            finally:
+                # Restore Python's sys.stdout/stderr
+                sys.stdout = original_sys_stdout
+                sys.stderr = original_sys_stderr
+
+        # Restore original file descriptors
+        os.dup2(original_stdout_fd, 1)
+        os.dup2(original_stderr_fd, 2)
+
+        # Read the captured output
+        with open(stdout_path, "r") as f:
+            stdout_content = f.read()
+
+        with open(stderr_path, "r") as f:
+            stderr_content = f.read()
+
+        # Clean up temp files
+        os.unlink(stdout_path)
+        os.unlink(stderr_path)
+
+        # Assertions on the captured output
+        assert re.search(r"processes.*print streaming", stdout_content), stdout_content
+        assert not re.search(
+            r"processes.*print streaming", stderr_content
+        ), stderr_content
+        assert not re.search(
+            r"processes.*log streaming", stdout_content
+        ), stdout_content
+        assert re.search(r"processes.*log streaming", stderr_content), stderr_content
 
     finally:
         # Ensure file descriptors are restored even if something goes wrong

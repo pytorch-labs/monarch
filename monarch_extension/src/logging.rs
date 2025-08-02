@@ -20,6 +20,7 @@ use hyperactor_mesh::shared_cell::SharedCell;
 use monarch_hyperactor::logging::LoggerRuntimeActor;
 use monarch_hyperactor::logging::LoggerRuntimeMessage;
 use monarch_hyperactor::proc_mesh::PyProcMesh;
+use monarch_hyperactor::pytokio::PyPythonTask;
 use pyo3::Bound;
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
@@ -40,10 +41,9 @@ pub struct LoggingMeshClient {
 #[pymethods]
 impl LoggingMeshClient {
     #[staticmethod]
-    #[pyo3(signature = (*, proc_mesh))]
-    fn spawn<'py>(py: Python<'py>, proc_mesh: &PyProcMesh) -> PyResult<Bound<'py, PyAny>> {
+    fn spawn(proc_mesh: &PyProcMesh) -> PyResult<PyPythonTask> {
         let proc_mesh = proc_mesh.try_inner()?;
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        PyPythonTask::new(async move {
             let client_actor = proc_mesh.client_proc().spawn("log_client", ()).await?;
             let client_actor_ref = client_actor.bind();
             let forwarder_mesh = proc_mesh.spawn("log_forwarder", &client_actor_ref).await?;
