@@ -9,12 +9,12 @@ import asyncio
 import logging
 import operator
 import os
+import re
 import sys
 import tempfile
 import threading
 import time
 import unittest
-from logging import INFO
 from types import ModuleType
 from typing import cast
 
@@ -441,17 +441,22 @@ async def awaitit(f):
 
 
 class Printer(Actor):
-    def __init__(self):
-        self.logger = logging.getLogger()
-        self.logger.setLevel(INFO)
+    def __init__(self) -> None:
+        self._logger: logging.Logger = logging.getLogger()
 
     @endpoint
-    async def print(self, content: str):
-        print(f"{os.getpid()} {content}")
+    async def print(self, content: str) -> None:
+        print(f"{content}", flush=True)
+        sys.stdout.flush()
+        sys.stderr.flush()
 
     @endpoint
-    async def log(self, content: str):
-        self.logger.info(f"{os.getpid()} {content}")
+    async def log(self, content: str) -> None:
+        self._logger.error(f"{content}")
+        for handler in self._logger.handlers:
+            handler.flush()
+        sys.stdout.flush()
+        sys.stderr.flush()
 
 
 async def test_actor_log_streaming() -> None:
@@ -484,16 +489,43 @@ async def test_actor_log_streaming() -> None:
                 pm = await proc_mesh(gpus=2)
                 am = await pm.spawn("printer", Printer)
 
-                await am.print.call("hello 1")
-                await am.log.call("hello 2")
+                # Disable streaming logs to client
+                await pm.logging_option(stream_to_client=False)
+                await asyncio.sleep(1)
 
-                await pm.logging_option(stream_to_client=True)
+                # These should not be streamed to client initially
+                for _ in range(5):
+                    await am.print.call("no print streaming")
+                    await am.log.call("no log streaming")
+                await asyncio.sleep(1)
 
-                await am.print.call("hello 3")
-                await am.log.call("hello 4")
+                # Enable streaming logs to client
+                await pm.logging_option(
+                    stream_to_client=True, aggregate_window_sec=1, level=logging.FATAL
+                )
+                # Give it some time to reflect
+                await asyncio.sleep(1)
 
-                # Give it sometime to send log back
-                time.sleep(5)
+                # These should be streamed to client
+                for _ in range(5):
+                    await am.print.call("has print streaming")
+                    await am.log.call("no log streaming due to level mismatch")
+                await asyncio.sleep(1)
+
+                # Enable streaming logs to client
+                await pm.logging_option(
+                    stream_to_client=True, aggregate_window_sec=1, level=logging.ERROR
+                )
+                # Give it some time to reflect
+                await asyncio.sleep(1)
+
+                # These should be streamed to client
+                for _ in range(5):
+                    await am.print.call("has print streaming too")
+                    await am.log.call("has log streaming as level matched")
+
+                # Give it some time to reflect and aggregate
+                await asyncio.sleep(1)
 
                 # Flush all outputs
                 stdout_file.flush()
@@ -514,16 +546,53 @@ async def test_actor_log_streaming() -> None:
         with open(stdout_path, "r") as f:
             stdout_content = f.read()
 
+        with open(stderr_path, "r") as f:
+            stderr_content = f.read()
+
         # Clean up temp files
         os.unlink(stdout_path)
         os.unlink(stderr_path)
 
-        # TODO: (@jamessun) we need to disable logging forwarder for python logger
-        # assert "hello 1" not in stdout_content
-        assert "hello 2" not in stdout_content
+        # Assertions on the captured output
+        # Has a leading context so we can distinguish between streamed log and
+        # the log directly printed by the child processes as they share the same stdout/stderr
+        assert not re.search(
+            r"processes.*no print streaming", stdout_content
+        ), stdout_content
+        assert not re.search(
+            r"processes.*no print streaming", stderr_content
+        ), stderr_content
+        assert not re.search(
+            r"processes.*no log streaming", stdout_content
+        ), stdout_content
+        assert not re.search(
+            r"processes.*no log streaming", stderr_content
+        ), stderr_content
+        assert not re.search(
+            r"processes.*no log streaming due to level mismatch", stdout_content
+        ), stdout_content
+        assert not re.search(
+            r"processes.*no log streaming due to level mismatch", stderr_content
+        ), stderr_content
 
-        assert "hello 3" in stdout_content
-        # assert "hello 4" in stdout_content
+        assert re.search(
+            r"processes.*has print streaming", stdout_content
+        ), stdout_content
+        assert not re.search(
+            r"processes.*has print streaming", stderr_content
+        ), stderr_content
+        assert re.search(
+            r"processes.*has print streaming too", stdout_content
+        ), stdout_content
+        assert not re.search(
+            r"processes.*has print streaming too", stderr_content
+        ), stderr_content
+        assert not re.search(
+            r"processes.*log streaming as level matched", stdout_content
+        ), stdout_content
+        assert re.search(
+            r"processes.*log streaming as level matched", stderr_content
+        ), stderr_content
 
     finally:
         # Ensure file descriptors are restored even if something goes wrong
