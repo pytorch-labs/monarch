@@ -118,6 +118,7 @@ use crate::channel::SendError;
 use crate::channel::TxStatus;
 use crate::data::Serialized;
 use crate::id;
+use crate::metrics;
 use crate::reference::ActorId;
 use crate::reference::PortId;
 use crate::reference::Reference;
@@ -278,6 +279,16 @@ impl MessageEnvelope {
         error: DeliveryError,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
+        metrics::MAILBOX_UNDELIVERABLE_MESSAGES.add(
+            1,
+            hyperactor_telemetry::kv_pairs!(
+                "actor_id" => self.sender.to_string(),
+                "dest_actor_id" => self.dest.0.to_string(),
+                "message_type" => self.data.typename().unwrap_or("unknown"),
+                "error_type" =>  error.to_string(),
+            ),
+        );
+
         self.try_set_error(error);
         undeliverable::return_undeliverable(return_handle, self);
     }
@@ -772,15 +783,14 @@ impl MailboxSender for BoxedMailboxSender {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        hyperactor_telemetry::declare_static_counter!(MAILBOX_POSTS, "mailbox.posts");
-        MAILBOX_POSTS.add(
+        metrics::MAILBOX_POSTS.add(
             1,
             hyperactor_telemetry::kv_pairs!(
                 "actor_id" => envelope.sender.to_string(),
                 "dest_actor_id" => envelope.dest.0.to_string(),
             ),
         );
-        self.0.post(envelope, return_handle)
+        self.0.post(envelope, return_handle);
     }
 }
 
@@ -963,14 +973,23 @@ impl MailboxSender for MailboxClient {
     ) {
         // tracing::trace!(name = "post", "posting message to {}", envelope.dest);
         tracing::event!(target:"message", tracing::Level::DEBUG, "crc"=envelope.data.crc(), "size"=envelope.data.len(), "sender"= %envelope.sender, "dest" = %envelope.dest.0, "port"= envelope.dest.1, "message_type" = envelope.data.typename().unwrap_or("unknown"), "send_message");
+
         if let Err(mpsc::error::SendError((envelope, return_handle))) =
             self.buffer.send((envelope, return_handle))
         {
-            // Failed to enqueue.
-            envelope.undeliverable(
-                DeliveryError::BrokenLink("failed to enqueue in MailboxClient".to_string()),
-                return_handle,
+            let err = DeliveryError::BrokenLink("failed to enqueue in MailboxClient".to_string());
+            metrics::MAILBOX_UNDELIVERABLE_MESSAGES.add(
+                1,
+                hyperactor_telemetry::kv_pairs!(
+                    "actor_id" => envelope.sender.to_string(),
+                    "dest_actor_id" => envelope.dest.0.to_string(),
+                    "message_type" => envelope.data.typename().unwrap_or("unknown"),
+                    "reason" => err.to_string(),
+                ),
             );
+
+            // Failed to enqueue.
+            envelope.undeliverable(err, return_handle);
         }
     }
 }
@@ -1248,15 +1267,26 @@ impl MailboxSender for Mailbox {
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
         tracing::trace!(name = "post", "posting message to {}", envelope.dest);
+
         if envelope.dest().actor_id() != &self.inner.actor_id {
             return self.inner.forwarder.post(envelope, return_handle);
         }
 
         match self.inner.ports.entry(envelope.dest().index()) {
-            Entry::Vacant(_) => envelope.undeliverable(
-                DeliveryError::Unroutable("port not bound in mailbox".to_string()),
-                return_handle,
-            ),
+            Entry::Vacant(_) => {
+                let err = DeliveryError::Unroutable("port not bound in mailbox".to_string());
+                metrics::MAILBOX_UNDELIVERABLE_MESSAGES.add(
+                    1,
+                    hyperactor_telemetry::kv_pairs!(
+                        "actor_id" => envelope.sender.to_string(),
+                        "dest_actor_id" => envelope.dest.0.to_string(),
+                        "message_type" => envelope.data.typename().unwrap_or("unknown"),
+                        "reason" => err.to_string(),
+                    ),
+                );
+
+                envelope.undeliverable(err, return_handle);
+            }
             Entry::Occupied(entry) => {
                 let (metadata, data) = envelope.open();
                 let MessageMetadata {
@@ -1265,6 +1295,7 @@ impl MailboxSender for Mailbox {
                     dest,
                     error: metadata_error,
                 } = metadata;
+
                 // We use the entry API here so that we can remove the
                 // entry while holding an (entry) reference. The DashMap
                 // documentation suggests that deadlocks are possible
@@ -1279,18 +1310,31 @@ impl MailboxSender for Mailbox {
                     Ok(true) => (),
                     Err(SerializedSenderError {
                         data,
-                        error,
+                        error: sender_error,
                         headers,
-                    }) => MessageEnvelope::seal(
-                        MessageMetadata {
-                            headers,
-                            sender,
-                            dest,
-                            error: metadata_error,
-                        },
-                        data,
-                    )
-                    .undeliverable(DeliveryError::Mailbox(format!("{}", error)), return_handle),
+                    }) => {
+                        let err = DeliveryError::Mailbox(format!("{}", sender_error));
+                        metrics::MAILBOX_UNDELIVERABLE_MESSAGES.add(
+                            1,
+                            hyperactor_telemetry::kv_pairs!(
+                                "actor_id" => sender.to_string(),
+                                "dest_actor_id" => dest.0.to_string(),
+                                "message_type" => data.typename().unwrap_or("unknown"),
+                                "reason" => err.to_string(),
+                            ),
+                        );
+
+                        MessageEnvelope::seal(
+                            MessageMetadata {
+                                headers,
+                                sender,
+                                dest,
+                                error: metadata_error,
+                            },
+                            data,
+                        )
+                        .undeliverable(err, return_handle)
+                    }
                 }
             }
         }

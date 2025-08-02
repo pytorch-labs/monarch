@@ -242,6 +242,18 @@ pub enum ChannelTransport {
     Unix,
 }
 
+impl fmt::Display for ChannelTransport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Tcp => write!(f, "tcp"),
+            Self::MetaTls => write!(f, "metatls"),
+            Self::Local => write!(f, "local"),
+            Self::Sim(transport) => write!(f, "sim({})", transport),
+            Self::Unix => write!(f, "unix"),
+        }
+    }
+}
+
 impl ChannelTransport {
     /// All known channel transports.
     pub fn all() -> [ChannelTransport; 3] {

@@ -81,8 +81,9 @@ use crate::mailbox::PanickingMailboxSender;
 use crate::mailbox::PortHandle;
 use crate::mailbox::PortReceiver;
 use crate::mailbox::Undeliverable;
-use crate::metrics::MESSAGE_HANDLER_DURATION;
-use crate::metrics::MESSAGE_QUEUE_SIZE;
+use crate::metrics::ACTOR_MESSAGE_HANDLER_DURATION;
+use crate::metrics::ACTOR_MESSAGE_QUEUE_SIZE;
+use crate::metrics::ACTOR_MESSAGES_RECEIVED;
 use crate::panic_handler;
 use crate::reference::ActorId;
 use crate::reference::Index;
@@ -1038,7 +1039,6 @@ impl<A: Actor> Instance<A> {
 
     /// Initialize and run the actor until it fails or is stopped.
     async fn run(&mut self, actor: &mut A) -> Result<(), ActorError> {
-        hyperactor_telemetry::declare_static_counter!(MESSAGES_RECEIVED, "actor.messages_received");
         tracing::debug!("entering actor loop: {}", self.self_id());
 
         self.change_status(ActorStatus::Initializing);
@@ -1053,9 +1053,9 @@ impl<A: Actor> Instance<A> {
                 hyperactor_telemetry::kv_pairs!("actor_id" => self.self_id().to_string());
             tokio::select! {
                 work = self.work_rx.recv() => {
-                    MESSAGES_RECEIVED.add(1, metric_pairs);
-                    MESSAGE_QUEUE_SIZE.add(-1, metric_pairs);
-                    let _ = MESSAGE_HANDLER_DURATION.start(metric_pairs);
+                    ACTOR_MESSAGES_RECEIVED.add(1, metric_pairs);
+                    ACTOR_MESSAGE_QUEUE_SIZE.add(-1, metric_pairs);
+                    let _ = ACTOR_MESSAGE_HANDLER_DURATION.start(metric_pairs);
                     let work = work.expect("inconsistent work queue state");
                     if let Err(err) = work.handle(actor, self).await {
                         for supervision_event in self.supervision_event_receiver.drain() {
@@ -1636,7 +1636,7 @@ impl<A: Actor> Ports<A> {
                             }
                         })
                     });
-                    MESSAGE_QUEUE_SIZE.add(
+                    ACTOR_MESSAGE_QUEUE_SIZE.add(
                         1,
                         hyperactor_telemetry::kv_pairs!("actor_id" => actor_id.clone()),
                     );
