@@ -384,9 +384,11 @@ impl PythonActorMeshRef {
 impl Drop for PythonActorMesh {
     fn drop(&mut self) {
         if let Ok(mesh) = self.inner.borrow() {
-            tracing::info!("Dropping PythonActorMesh: {}", mesh.name());
+            tracing::debug!("Dropping PythonActorMesh: {}", mesh.name());
         } else {
-            tracing::info!("Dropping stopped PythonActorMesh");
+            tracing::debug!(
+                "Dropping stopped PythonActorMesh. The underlying mesh is already stopped."
+            );
         }
         self.monitor.abort();
     }
