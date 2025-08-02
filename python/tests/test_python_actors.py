@@ -612,3 +612,8 @@ async def consume():
 
 def test_python_task_tuple() -> None:
     PythonTask.from_coroutine(consume()).block_on()
+
+def test_mesh_len():
+    proc_mesh = local_proc_mesh(gpus=12).get()
+    s = proc_mesh.spawn("sync_actor", SyncActor).get()
+    assert 12 == len(s)

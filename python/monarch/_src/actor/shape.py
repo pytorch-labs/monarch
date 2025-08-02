@@ -224,5 +224,8 @@ class MeshTrait(ABC):
     def sizes(self) -> dict[str, int]:
         return dict(zip(self._labels, self._ndslice.sizes))
 
+    def __len__(self) -> int:
+        return len(self._ndslice)
+
 
 __all__ = ["NDSlice", "Shape", "MeshTrait"]

@@ -444,9 +444,6 @@ class ValueMesh(MeshTrait, Generic[R]):
     def __iter__(self) -> Iterator[Tuple[Point, R]]:
         return iter(self.items())
 
-    def __len__(self) -> int:
-        return len(self._shape)
-
     def __repr__(self) -> str:
         return f"ValueMesh({self._shape})"
 
