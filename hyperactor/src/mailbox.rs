@@ -2107,12 +2107,38 @@ impl MailboxRouter {
         WeakMailboxRouter(Arc::downgrade(&self.entries))
     }
 
+    /// Returns a new router that will first attempt to find a route for the message
+    /// in the router's table; otherwise post the message to the provided fallback
+    /// sender.
+    pub fn fallback(&self, default: BoxedMailboxSender) -> impl MailboxSender {
+        FallbackMailboxRouter {
+            router: self.clone(),
+            default,
+        }
+    }
+
     /// Bind the provided sender to the given reference. The destination
     /// is treated as a prefix to which messages can be routed, and
     /// messages are routed to their longest matching prefix.
     pub fn bind(&self, dest: Reference, sender: impl MailboxSender + 'static) {
         let mut w = self.entries.write().unwrap();
         w.insert(dest, Arc::new(sender));
+    }
+
+    fn sender(&self, actor_id: &ActorId) -> Option<Arc<dyn MailboxSender + Send + Sync>> {
+        match self
+            .entries
+            .read()
+            .unwrap()
+            .lower_bound(Excluded(&actor_id.clone().into()))
+            .prev()
+        {
+            None => None,
+            Some((key, sender)) if key.is_prefix_of(&actor_id.clone().into()) => {
+                Some(sender.clone())
+            }
+            Some(_) => None,
+        }
     }
 }
 
@@ -2122,24 +2148,7 @@ impl MailboxSender for MailboxRouter {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        let sender = {
-            let actor_id = envelope.dest().actor_id();
-            match self
-                .entries
-                .read()
-                .unwrap()
-                .lower_bound(Excluded(&actor_id.clone().into()))
-                .prev()
-            {
-                None => None,
-                Some((key, sender)) if key.is_prefix_of(&actor_id.clone().into()) => {
-                    Some(sender.clone())
-                }
-                Some(_) => None,
-            }
-        };
-
-        match sender {
+        match self.sender(envelope.dest().actor_id()) {
             None => envelope.undeliverable(
                 DeliveryError::Unroutable(
                     "no destination found for actor in routing table".to_string(),
@@ -2147,6 +2156,25 @@ impl MailboxSender for MailboxRouter {
                 return_handle,
             ),
             Some(sender) => sender.post(envelope, return_handle),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct FallbackMailboxRouter {
+    router: MailboxRouter,
+    default: BoxedMailboxSender,
+}
+
+impl MailboxSender for FallbackMailboxRouter {
+    fn post(
+        &self,
+        envelope: MessageEnvelope,
+        return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+    ) {
+        match self.router.sender(envelope.dest().actor_id()) {
+            Some(sender) => sender.post(envelope, return_handle),
+            None => self.default.post(envelope, return_handle),
         }
     }
 }
@@ -2618,6 +2646,25 @@ mod tests {
                 .unwrap();
             assert_eq!(receiver.recv().await.unwrap(), i as u64);
         }
+
+        // Test undeliverable messages, and that it is delivered with the appropriate fallback.
+
+        let mbox4 = Mailbox::new_detached(id!(fallback[0].actor));
+
+        let (return_handle, mut return_receiver) =
+            crate::mailbox::undeliverable::new_undeliverable_port();
+        let (port, _receiver) = mbox4.open_once_port();
+        router
+            .serialize_and_send_once(port.bind(), 0, return_handle.clone())
+            .unwrap();
+        assert!(return_receiver.recv().await.is_ok());
+
+        let router = router.fallback(mbox4.clone().into_boxed());
+        let (port, receiver) = mbox4.open_once_port();
+        router
+            .serialize_and_send_once(port.bind(), 0, return_handle)
+            .unwrap();
+        assert_eq!(receiver.recv().await.unwrap(), 0);
     }
 
     #[tokio::test]
