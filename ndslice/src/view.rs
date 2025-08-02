@@ -727,6 +727,16 @@ mod test {
     }
 
     #[test]
+    fn test_extent_0d() {
+        let e = Extent::new(vec![], vec![]).unwrap();
+        assert_eq!(e.len(), 1);
+        let points: Vec<_> = e.iter().collect();
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].coords(), &[]);
+        assert_eq!(points[0].rank(), 0);
+    }
+
+    #[test]
     fn test_point_display() {
         let extent = Extent::new(vec!["x".into(), "y".into(), "z".into()], vec![4, 5, 6]).unwrap();
         let point = extent.point(vec![1, 2, 3]).unwrap();
