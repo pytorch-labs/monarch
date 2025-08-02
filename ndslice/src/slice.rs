@@ -385,15 +385,15 @@ impl Slice {
     /// Iterator over the slice's indices.
     pub fn iter(&self) -> SliceIterator {
         SliceIterator {
-            slice: self,
-            pos: CartesianIterator::new(&self.sizes),
+            slice: self.clone(),
+            pos: CartesianIterator::new(self.sizes.clone()),
         }
     }
 
     /// Iterator over sub-dimensions of the slice.
     pub fn dim_iter(&self, dims: usize) -> DimSliceIterator {
         DimSliceIterator {
-            pos: CartesianIterator::new(&self.sizes[0..dims]),
+            pos: CartesianIterator::new(self.sizes[0..dims].to_vec()),
         }
     }
 
@@ -607,7 +607,7 @@ impl Slice {
 
         // Validate that every address in the new view maps to a valid
         // coordinate in base.
-        for coord in CartesianIterator::new(new_sizes) {
+        for coord in CartesianIterator::new(new_sizes.to_vec()) {
             #[allow(clippy::identity_op)]
             let offset_in_view = 0 + coord
                 .iter()
@@ -662,20 +662,20 @@ impl std::fmt::Display for Slice {
     }
 }
 
-impl<'a> IntoIterator for &'a Slice {
+impl IntoIterator for &Slice {
     type Item = usize;
-    type IntoIter = SliceIterator<'a>;
+    type IntoIter = SliceIterator;
     fn into_iter(self) -> Self::IntoIter {
         self.iter()
     }
 }
 
-pub struct SliceIterator<'a> {
-    pub(crate) slice: &'a Slice,
-    pos: CartesianIterator<'a>,
+pub struct SliceIterator {
+    pub(crate) slice: Slice,
+    pos: CartesianIterator,
 }
 
-impl<'a> Iterator for SliceIterator<'a> {
+impl Iterator for SliceIterator {
     type Item = usize;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -694,11 +694,11 @@ impl<'a> Iterator for SliceIterator<'a> {
 ///
 /// Coordinates are yielded in row-major order (last dimension varies
 /// fastest).
-pub struct DimSliceIterator<'a> {
-    pos: CartesianIterator<'a>,
+pub struct DimSliceIterator {
+    pos: CartesianIterator,
 }
 
-impl<'a> Iterator for DimSliceIterator<'a> {
+impl Iterator for DimSliceIterator {
     type Item = Vec<usize>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -712,25 +712,25 @@ impl<'a> Iterator for DimSliceIterator<'a> {
 /// `dims`, where each coordinate lies in `[0..dims[i])`.
 /// # Example
 /// ```ignore
-/// let iter = CartesianIterator::new(&[2, 3]);
+/// let iter = CartesianIterator::new(vec![2, 3]);
 /// let coords: Vec<_> = iter.collect();
 /// assert_eq!(coords, vec![
 ///     vec![0, 0], vec![0, 1], vec![0, 2],
 ///     vec![1, 0], vec![1, 1], vec![1, 2],
 /// ]);
 /// ```
-pub(crate) struct CartesianIterator<'a> {
-    dims: &'a [usize],
+pub(crate) struct CartesianIterator {
+    dims: Vec<usize>,
     index: usize,
 }
 
-impl<'a> CartesianIterator<'a> {
-    pub(crate) fn new(dims: &'a [usize]) -> Self {
+impl CartesianIterator {
+    pub(crate) fn new(dims: Vec<usize>) -> Self {
         CartesianIterator { dims, index: 0 }
     }
 }
 
-impl<'a> Iterator for CartesianIterator<'a> {
+impl Iterator for CartesianIterator {
     type Item = Vec<usize>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -804,7 +804,7 @@ mod tests {
     #[test]
     fn test_cartesian_iterator() {
         let dims = vec![2, 2, 2];
-        let iter = CartesianIterator::new(&dims);
+        let iter = CartesianIterator::new(dims);
         let products: Vec<Vec<usize>> = iter.collect();
         assert_eq!(
             products,
