@@ -175,7 +175,7 @@ impl Extent {
     pub fn iter(&self) -> ExtentIterator {
         ExtentIterator {
             extent: self,
-            pos: CartesianIterator::new(&self.sizes()),
+            pos: CartesianIterator::new(self.sizes().to_vec()),
         }
     }
 }
@@ -196,7 +196,7 @@ impl std::fmt::Display for Extent {
 /// An iterator for points in an extent.
 pub struct ExtentIterator<'a> {
     extent: &'a Extent,
-    pos: CartesianIterator<'a>,
+    pos: CartesianIterator,
 }
 
 impl<'a> Iterator for ExtentIterator<'a> {
@@ -411,12 +411,12 @@ impl View {
 }
 
 /// The iterator over views.
-pub struct ViewIterator<'a> {
-    extent: Extent,         // Note that `extent` and...
-    pos: SliceIterator<'a>, // ... `pos` share the same `Slice`.
+pub struct ViewIterator {
+    extent: Extent,     // Note that `extent` and...
+    pos: SliceIterator, // ... `pos` share the same `Slice`.
 }
 
-impl<'a> Iterator for ViewIterator<'a> {
+impl Iterator for ViewIterator {
     type Item = (Point, usize);
 
     fn next(&mut self) -> Option<Self::Item> {
