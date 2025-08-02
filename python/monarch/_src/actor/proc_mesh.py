@@ -41,7 +41,13 @@ from monarch._rust_bindings.monarch_hyperactor.proc_mesh import (
 )
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape, Slice
-from monarch._src.actor.actor_mesh import _Actor, _ActorMeshRefImpl, Actor, ActorMeshRef
+from monarch._src.actor.actor_mesh import (
+    _Actor,
+    _ActorMeshRefImpl,
+    Actor,
+    ActorMeshRef,
+    MonarchContext,
+)
 
 from monarch._src.actor.allocator import (
     AllocateMixin,
@@ -318,7 +324,7 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
         service = ActorMeshRef(
             Class,
             _ActorMeshRefImpl.from_hyperactor_mesh(pm.client, actor_mesh, self),
-            pm.client,
+            MonarchContext.current_mailbox(),
         )
         # useful to have this separate, because eventually we can reconstitute ActorMeshRef objects across pickling by
         # doing `ActorMeshRef(Class, actor_handle)` but not calling _create.

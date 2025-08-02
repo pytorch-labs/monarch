@@ -43,7 +43,7 @@ from monarch._rust_bindings.monarch_hyperactor.proc import (  # @manual=//monarc
     ActorId,
 )
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
-from monarch._src.actor.actor_mesh import ActorEndpoint, Port, PortTuple
+from monarch._src.actor.actor_mesh import ActorEndpoint, Channel, Port
 from monarch._src.actor.endpoint import Selection
 from monarch._src.actor.shape import NDSlice
 from monarch.common import device_mesh, messages, stream
@@ -156,7 +156,7 @@ class MeshClient(Client):
         defs: Tuple["Tensor", ...],
         uses: Tuple["Tensor", ...],
     ) -> "OldFuture":  # the OldFuture is a lie
-        sender, receiver = PortTuple.create(self._mesh_controller._mailbox, once=True)
+        sender, receiver = Channel.open(once=True)
 
         ident = self.new_node(defs, uses, cast("OldFuture", sender))
         process = mesh._process(shard)
@@ -192,7 +192,7 @@ class MeshClient(Client):
         atexit.unregister(self._atexit)
         self._shutdown = True
 
-        sender, receiver = PortTuple.create(self._mesh_controller._mailbox, once=True)
+        sender, receiver = Channel.open(once=True)
         assert sender._port_ref is not None
         self._mesh_controller.sync_at_exit(sender._port_ref.port_id)
         receiver.recv().get(timeout=60)

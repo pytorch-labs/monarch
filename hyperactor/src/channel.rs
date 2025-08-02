@@ -563,6 +563,18 @@ pub async fn serve<M: RemoteMessage>(
     .map(|(addr, inner)| (addr, ChannelRx { inner }))
 }
 
+/// Serve on the local address. The server is turned down
+/// when the returned Rx is dropped.
+pub fn serve_local<M: RemoteMessage>() -> (ChannelAddr, ChannelRx<M>) {
+    let (port, rx) = local::serve::<M>();
+    (
+        ChannelAddr::Local(port),
+        ChannelRx {
+            inner: ChannelRxKind::Local(rx),
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::assert_matches::assert_matches;

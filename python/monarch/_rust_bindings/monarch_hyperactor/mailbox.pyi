@@ -137,7 +137,8 @@ class Mailbox:
     """
     A mailbox from that can receive messages.
     """
-
+    @staticmethod
+    def root_client_mailbox() -> "Mailbox": ...
     def open_port(self) -> tuple[PortHandle, PortReceiver]:
         """Open a port to receive `PythonMessage` messages."""
         ...
