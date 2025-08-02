@@ -11,6 +11,7 @@ import asyncio
 import inspect
 import logging
 import os
+import tempfile
 from datetime import datetime, timedelta
 from typing import Any, Callable, Mapping, Optional, Union
 
@@ -19,6 +20,7 @@ from monarch.tools.components.hyperactor import DEFAULT_NAME
 from monarch.tools.config import (  # @manual=//monarch/python/monarch/tools/config/meta:defaults
     Config,
     defaults,
+    EmptyWorkspaceOption,
 )
 from monarch.tools.mesh_spec import mesh_spec_from_metadata, ServerSpec
 from torchx.runner import Runner  # @manual=//torchx/runner:lib_core
@@ -126,7 +128,25 @@ def create(
     with torchx_runner() as runner:
         appdef: AppDef = AppDef(name, config.appdef.roles, config.appdef.metadata)
 
-        info = runner.dryrun(appdef, scheduler, cfg, config.workspace)
+        empty_workspace = None
+        workspace: str | None = None
+        if config.workspace == EmptyWorkspaceOption.NO_WORKSPACE:
+            # create a temp dir and assign the location as str to config.workspace
+            # delete the temp dir by end of the function
+            empty_workspace = tempfile.mkdtemp()
+            workspace = empty_workspace
+        elif config.workspace == EmptyWorkspaceOption.USE_PROVIDED_IMAGE:
+            # when workspace is none, no local package will be created
+            workspace = None
+            logger.info("no conda pack to build; using provided image")
+        else:
+            # when workspace is a str, a local package will be created
+            assert isinstance(
+                config.workspace, str
+            ), f"unexpected type {type(config.workspace)}"
+            workspace = config.workspace
+
+        info = runner.dryrun(appdef, scheduler, cfg, workspace)
 
         info_json_fmt = AppDryRunInfo(
             info.request,
@@ -136,11 +156,15 @@ def create(
         info_json_fmt._cfg = info._cfg
         info_json_fmt._scheduler = info._scheduler
 
-        if config.dryrun:
-            return info_json_fmt
-        else:
-            server_handle = runner.schedule(info)
-            return server_handle
+        try:
+            if config.dryrun:
+                return info_json_fmt
+            else:
+                server_handle = runner.schedule(info)
+                return server_handle
+        finally:
+            if empty_workspace:
+                os.rmdir(empty_workspace)
 
 
 def info(server_handle: str) -> Optional[ServerSpec]:

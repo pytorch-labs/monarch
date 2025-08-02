@@ -9,18 +9,20 @@
 import asyncio
 import unittest
 from datetime import timedelta
+from typing import Mapping, Optional
 from unittest import mock
 from unittest.mock import MagicMock
 
 from monarch.tools import commands
-from monarch.tools.commands import component_args_from_cli, server_ready
+from monarch.tools.commands import component_args_from_cli, server_ready, torchx_runner
 
 from monarch.tools.config import (  # @manual=//monarch/python/monarch/tools/config/meta:defaults
     Config,
     defaults,
+    EmptyWorkspaceOption,
 )
 from monarch.tools.mesh_spec import MeshSpec, ServerSpec
-from torchx.specs import AppDef, AppDryRunInfo, AppState, AppStatus, Role
+from torchx.specs import AppDef, AppDryRunInfo, AppState, AppStatus, CfgVal, Role
 
 CMD_INFO = "monarch.tools.commands.info"
 CMD_CREATE = "monarch.tools.commands.create"
@@ -60,6 +62,56 @@ class TestCommands(unittest.TestCase):
 
         mock_schedule.assert_called_once()
         self.assertEqual(server_handle, "slurm:///test_job_id")
+
+    @mock.patch(
+        "torchx.schedulers.slurm_scheduler.SlurmScheduler.schedule",
+        return_value="test_job_id",
+    )
+    def test_create_empty_workspace(self, mock_schedule: mock.MagicMock) -> None:
+        scheduler = "slurm"
+        config = defaults.config(scheduler)
+        config.appdef = defaults.component_fn(scheduler)()
+
+        appdef: AppDef = AppDef("myjob", config.appdef.roles, config.appdef.metadata)
+        dryrun_info: AppDryRunInfo = torchx_runner().dryrun(appdef, scheduler)
+
+        def non_empty_workspace_dryrun(
+            self: object,
+            app: AppDef,
+            scheduler: str,
+            cfg: Optional[Mapping[str, CfgVal]] = None,
+            workspace: Optional[str] = None,
+            parent_run_id: Optional[str] = None,
+        ) -> AppDryRunInfo:
+            # Assert on workspace parameter
+            assert workspace is not None, "Workspace should not be None"
+            return dryrun_info
+
+        with mock.patch(
+            "monarch.tools.commands.Runner.dryrun", non_empty_workspace_dryrun
+        ):
+            # no workspace
+            config.workspace = EmptyWorkspaceOption.NO_WORKSPACE
+            server_handle = commands.create(config)
+            self.assertEqual(server_handle, "slurm:///test_job_id")
+
+        def empty_workspace_dryrun(
+            self: object,
+            app: AppDef,
+            scheduler: str,
+            cfg: Optional[Mapping[str, CfgVal]] = None,
+            workspace: Optional[str] = None,
+            parent_run_id: Optional[str] = None,
+        ) -> AppDryRunInfo:
+            # Assert on workspace parameter
+            assert workspace is None, "Workspace should be None"
+            return dryrun_info
+
+        with mock.patch("monarch.tools.commands.Runner.dryrun", empty_workspace_dryrun):
+            # workspace from image
+            config.workspace = EmptyWorkspaceOption.USE_PROVIDED_IMAGE
+            server_handle = commands.create(config)
+            self.assertEqual(server_handle, "slurm:///test_job_id")
 
     @mock.patch("monarch.tools.commands.Runner.cancel")
     def test_kill(self, mock_cancel: mock.MagicMock) -> None:
