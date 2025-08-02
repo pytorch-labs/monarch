@@ -603,15 +603,15 @@ pub(crate) mod test_util {
 
     #[async_trait]
     impl Handler<Echo> for ProxyActor {
-        async fn handle(
-            &mut self,
-            _cx: &Context<Self>,
-            message: Echo,
-        ) -> Result<(), anyhow::Error> {
+        async fn handle(&mut self, cx: &Context<Self>, message: Echo) -> Result<(), anyhow::Error> {
             let actor = self.actor_mesh.get(0).unwrap();
 
-            // Have the remote mesh reply directly to the client.
-            actor.send(self.proc_mesh.client(), message).unwrap();
+            // For now, we reply directly to the client.
+            // We will support directly wiring up the meshes later.
+            let (tx, mut rx) = cx.open_port();
+
+            actor.send(cx, Echo(message.0, tx.bind()))?;
+            message.1.send(cx, rx.recv().await.unwrap())?;
 
             Ok(())
         }
@@ -651,13 +651,13 @@ mod tests {
             use super::*;
             use super::test_util::*;
 
-            #[ignore] // Remove in D79478197.
             #[tokio::test]
             async fn test_proxy_mesh() {
                 use super::test_util::*;
                 use $crate::alloc::AllocSpec;
                 use $crate::alloc::Allocator;
 
+                hyperactor_telemetry::initialize_logging(hyperactor::clock::ClockKind::default());
 
                 use ndslice::shape;
 

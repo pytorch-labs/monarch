@@ -71,7 +71,7 @@ use std::sync::OnceLock;
 /// This is definitely a "good enough for now" solution; in the future,
 /// we'll likely have some form of truly global registration for meshes,
 /// also benefitting tooling, etc.
-fn global_router() -> &'static MailboxRouter {
+pub(crate) fn global_router() -> &'static MailboxRouter {
     static GLOBAL_ROUTER: OnceLock<MailboxRouter> = OnceLock::new();
     GLOBAL_ROUTER.get_or_init(MailboxRouter::new)
 }
