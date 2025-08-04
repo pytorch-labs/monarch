@@ -26,6 +26,8 @@ use hyperactor::RemoteMessage;
 use hyperactor::Unbind;
 use hyperactor::WorldId;
 use hyperactor::actor::RemoteActor;
+use hyperactor::attrs::Attrs;
+use hyperactor::attrs::declare_attrs;
 use hyperactor::cap;
 use hyperactor::mailbox::MailboxSenderError;
 use hyperactor::mailbox::PortReceiver;
@@ -56,6 +58,13 @@ use crate::reference::ActorMeshId;
 use crate::reference::ActorMeshRef;
 use crate::reference::ProcMeshId;
 
+declare_attrs! {
+    /// Which mesh this message was cast to. Used for undeliverable message
+    /// handling, where the CastMessageEnvelope is serialized, and its content
+    /// cannot be inspected.
+    pub attr CAST_ACTOR_MESH_ID: ActorMeshId;
+}
+
 /// Common implementation for `ActorMesh`s and `ActorMeshRef`s to cast
 /// an `M`-typed message
 #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `CastError`.
@@ -78,22 +87,25 @@ where
     ));
 
     let message = CastMessageEnvelope::new::<A, M>(
-        actor_mesh_id,
+        actor_mesh_id.clone(),
         sender.clone(),
         root_mesh_shape.clone(),
         message,
     )?;
-
-    comm_actor_ref.send(
-        caps,
-        CastMessage {
-            dest: Uslice {
-                slice: root_mesh_shape.slice().clone(),
-                selection: selection_of_root,
-            },
-            message,
+    let cast_message = CastMessage {
+        dest: Uslice {
+            slice: root_mesh_shape.slice().clone(),
+            selection: selection_of_root,
         },
-    )?;
+        message,
+    };
+
+    let mut headers = Attrs::new();
+    headers.set(CAST_ACTOR_MESH_ID, actor_mesh_id);
+
+    comm_actor_ref
+        .port()
+        .send_with_headers(caps, headers, cast_message)?;
 
     Ok(())
 }
@@ -629,6 +641,7 @@ mod tests {
     use hyperactor::ProcId;
     use hyperactor::WorldId;
     use hyperactor::attrs::Attrs;
+    use timed_test::async_timed_test;
 
     use super::*;
     use crate::proc_mesh::ProcEvent;
@@ -888,7 +901,7 @@ mod tests {
                         && hops.is_empty());
             }
 
-            #[timed_test::async_timed_test(timeout_secs = 60)]
+            #[async_timed_test(timeout_secs = 60)]
             async fn test_actor_mesh_cast() {
                 // Verify a full broadcast in the mesh. Send a message
                 // to every actor and check each actor receives it.
@@ -1199,10 +1212,70 @@ mod tests {
 
         use crate::alloc::process::ProcessAllocator;
 
+        fn process_allocator() -> ProcessAllocator {
+            ProcessAllocator::new(Command::new(
+                buck_resources::get("monarch/hyperactor_mesh/bootstrap").unwrap(),
+            ))
+        }
+
         #[cfg(fbcode_build)] // we use an external binary, produced by buck
-        actor_mesh_test_suite!(ProcessAllocator::new(Command::new(
-            buck_resources::get("monarch/hyperactor_mesh/bootstrap").unwrap()
-        )));
+        actor_mesh_test_suite!(process_allocator());
+
+        // Set this test only for `mod process` because it leverages CODEC_MAX_FRAME_LENGTH
+        // to trigger the timeout error, and CODEC_MAX_FRAME_LENGTH only applies
+        // to NetTx/NetRx.
+        #[cfg(fbcode_build)]
+        #[async_timed_test(timeout_secs = 60)]
+        async fn test_fail_sending_to_comm_actor_during_cast() {
+            let max_frame_length = 1000 * 1000 * 1000;
+            // Use temporary config for this test
+            let config = hyperactor::config::global::lock();
+            // Set to 1 sec because we want to timeout fast.
+            let _guard1 = config.override_key(
+                hyperactor::config::MESSAGE_DELIVERY_TIMEOUT,
+                Duration::from_secs(1),
+            );
+            let _guard2 =
+                config.override_key(hyperactor::config::CODEC_MAX_FRAME_LENGTH, max_frame_length);
+
+            // One rank is enough for this test, because the timeout failure
+            // occurred in the `client->1st comm actor` channel, and thus will
+            // not be sent further to the rest of the network.
+            let shape = shape! {replica = 1 };
+            let alloc = process_allocator()
+                .allocate(AllocSpec {
+                    shape,
+                    constraints: Default::default(),
+                })
+                .await
+                .unwrap();
+
+            let mut proc_mesh = ProcMesh::allocate(alloc).await.unwrap();
+            let mut proc_events = proc_mesh.events().unwrap();
+            let mut actor_mesh: RootActorMesh<TestActor> =
+                { proc_mesh.spawn("echo", &()).await.unwrap() };
+            let (reply_handle, _reply_receiver) = actor_mesh.open_port();
+            let payload = "a".repeat(max_frame_length + 1);
+            // Since the payload size is larger than the max frame length,
+            // the message will fail to send.
+            assert!(payload.len() > max_frame_length);
+            actor_mesh
+                .cast(sel!(*), Echo(payload, reply_handle.bind()))
+                .unwrap();
+
+            // The undeliverable message will be turned into a proc event.
+            // Part of proc event's handling logic will forward the event
+            // to the mesh's event.
+            {
+                let event = proc_events.next().await.unwrap();
+                assert_matches!(event, ProcEvent::Crashed(_, _),);
+            }
+            {
+                let mut actor_mesh_events = actor_mesh.events().unwrap();
+                let event = actor_mesh_events.next().await.unwrap();
+                assert_eq!(event.actor_id.name(), &actor_mesh.name);
+            }
+        }
     }
 
     mod sim {

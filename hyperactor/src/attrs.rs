@@ -511,7 +511,7 @@ macro_rules! const_ascii_lowercase {
 /// declare_attrs! {
 ///     /// Documentation for the key (default visibility).
 ///     attr KEY_NAME: Type = default_value;
-///     
+///
 ///     /// Another key (default value is optional)
 ///     pub attr ANOTHER_KEY: AnotherType;
 /// }

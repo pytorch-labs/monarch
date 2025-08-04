@@ -145,6 +145,7 @@ pub fn supervise_undeliverable_messages(
                         "message not delivered: {}",
                         envelope
                     )),
+                    message_headers: Some(envelope.headers().clone()),
                 })
                 .is_err()
             {
