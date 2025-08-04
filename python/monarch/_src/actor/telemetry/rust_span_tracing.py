@@ -20,9 +20,7 @@ from monarch._rust_bindings.monarch_hyperactor.telemetry import (
 from opentelemetry import (  # @manual=fbsource//third-party/pypi/opentelemetry-api:opentelemetry-api
     trace,
 )
-from opentelemetry.trace import Tracer
 from opentelemetry.trace.status import Status, StatusCode
-from pyre_extensions import override
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -32,7 +30,6 @@ class SpanWrapper(trace.Span):
         super().__init__()
         self._span: PySpan | None = PySpan(name)
 
-    @override
     def end(self, end_time: Optional[int] = None) -> None:
         # since PySpan is not sendable, we need to make sure it is deallocated on this thread so it doesn't log warnings.
         s = self._span
@@ -118,7 +115,6 @@ class RustTracer(trace.Tracer):
 
 
 class RustTracerProvider(trace.TracerProvider):
-    @override
     def get_tracer(
         self,
         instrumenting_module_name: str,
@@ -128,32 +124,3 @@ class RustTracerProvider(trace.TracerProvider):
         **kwargs: object,
     ) -> trace.Tracer:
         return RustTracer()
-
-
-def get_monarch_tracer() -> Tracer:
-    """
-    Creates and returns a Monarch python tracer that logs to the Rust telemetry system.
-
-    Returns:
-        Tracer: A configured OpenTelemetry tracer for Monarch.
-
-    Usage:
-        tracer = get_monarch_tracer()
-        with tracer.start_as_current_span("span_name") as span:
-            # code here
-    """
-    install()
-    return trace.get_tracer("monarch.python.tracer")
-
-
-_INSTALLED = False
-
-
-def install() -> None:
-    global _INSTALLED
-    if _INSTALLED:
-        return
-
-    provider = RustTracerProvider()
-    trace.set_tracer_provider(provider)
-    _INSTALLED = True

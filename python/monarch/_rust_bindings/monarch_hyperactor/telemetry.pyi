@@ -103,3 +103,60 @@ class PySpan:
         Exit the span.
         """
         ...
+
+class PyCounter:
+    def __init__(self, name: str) -> None:
+        """
+        Create a new PyCounter.
+
+        Args:
+        - name (str): The name of the counter metric.
+        """
+        ...
+
+    def add(self, value: int) -> None:
+        """
+        Add a value to the counter.
+
+        Args:
+        - value (int): The value to add to the counter (must be non-negative).
+        """
+        ...
+
+class PyHistogram:
+    def __init__(self, name: str) -> None:
+        """
+        Create a new PyHistogram.
+
+        Args:
+        - name (str): The name of the histogram metric.
+        """
+        ...
+
+    def record(self, value: float) -> None:
+        """
+        Record a value in the histogram.
+
+        Args:
+        - value (float): The value to record in the histogram.
+        """
+        ...
+
+class PyUpDownCounter:
+    def __init__(self, name: str) -> None:
+        """
+        Create a new PyUpDownCounter.
+
+        Args:
+        - name (str): The name of the up-down counter metric.
+        """
+        ...
+
+    def add(self, value: int) -> None:
+        """
+        Add a value to the up-down counter.
+
+        Args:
+        - value (int): The value to add to the counter (can be positive or negative).
+        """
+        ...

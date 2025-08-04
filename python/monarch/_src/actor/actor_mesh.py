@@ -65,6 +65,7 @@ from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.shape import Point as HyPoint, Shape
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
 from monarch._rust_bindings.monarch_hyperactor.telemetry import enter_span, exit_span
+
 from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator
 from monarch._src.actor.endpoint import (
     Endpoint,
@@ -82,7 +83,10 @@ from monarch._src.actor.pickle import flatten, unflatten
 from monarch._src.actor.shape import MeshTrait, NDSlice
 from monarch._src.actor.sync_state import fake_sync_state
 
+from monarch._src.actor.telemetry import METER
+
 from monarch._src.actor.tensor_engine_shim import actor_rref, actor_send
+
 
 if TYPE_CHECKING:
     from monarch._src.actor.proc_mesh import ProcMesh
@@ -614,6 +618,8 @@ singleton_shape = Shape([], NDSlice(offset=0, sizes=[], strides=[]))
 #  we need to signal to the consumer of the PythonTask object that the thread really isn't in an async context.
 # We do this by blanking out the running event loop during the call to the synchronous actor function.
 
+MESSAGES_HANDLED = METER.create_counter("py_mesages_handled")
+
 
 class _Actor:
     """
@@ -646,6 +652,7 @@ class _Actor:
         local_state: Iterable[Any],
         port: "PortProtocol",
     ) -> None:
+        MESSAGES_HANDLED.add(1)
         # response_port can be None. If so, then sending to port will drop the response,
         # and raise any exceptions to the caller.
         try:
