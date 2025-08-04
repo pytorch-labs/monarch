@@ -6,14 +6,14 @@
 
 # pyre-unsafe
 
-import asyncio
 import pickle
-from typing import Any, Iterable, List
+from typing import Any, Callable, Coroutine, Iterable, List, TYPE_CHECKING
 
 import monarch
 import pytest
 
 from monarch._rust_bindings.monarch_hyperactor.actor import (
+    MethodSpecifier,
     PanicFlag,
     PythonMessage,
     PythonMessageKind,
@@ -28,16 +28,30 @@ from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monar
     AllocSpec,
 )
 
+if TYPE_CHECKING:
+    from monarch._rust_bindings.monarch_hyperactor.actor import PortProtocol
+
 from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox, PortReceiver
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
+from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 from monarch._rust_bindings.monarch_hyperactor.selection import Selection
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape
+
+
+def run_on_tokio(
+    fn: Callable[[], Coroutine[Any, Any, None]],
+) -> Callable[[], None]:
+    """
+    Wrapper for function that use the internal tokio event loop
+    APIs and need to run on that event loop.
+    """
+    return lambda: PythonTask.from_coroutine(fn()).block_on()
 
 
 async def allocate() -> ProcMesh:
     spec = AllocSpec(AllocConstraints(), replicas=3, hosts=8, gpus=8)
     allocator = monarch.LocalAllocator()
-    alloc = await allocator.allocate(spec)
+    alloc = await allocator.allocate_nonblocking(spec)
     proc_mesh = await ProcMesh.allocate_nonblocking(alloc)
     return proc_mesh
 
@@ -48,40 +62,37 @@ class MyActor:
         mailbox: Mailbox,
         rank: int,
         shape: Shape,
-        message: PythonMessage,
+        method: MethodSpecifier,
+        message: bytes,
         panic_flag: PanicFlag,
-        local_state: Iterable[Any] | None = None,
+        local_state: Iterable[Any],
+        response_port: "PortProtocol[Any]",
     ) -> None:
         assert rank is not None
-
-        # Extract response_port from the message kind
-        call_method = message.kind
-        assert isinstance(call_method, PythonMessageKind.CallMethod)
-        assert call_method.response_port is not None
-
-        reply_port = call_method.response_port
-        reply_port.send(
-            mailbox,
-            PythonMessage(
-                PythonMessageKind.Result(rank), pickle.dumps(f"rank: {rank}")
-            ),
-        )
+        response_port.send(f"rank: {rank}")
 
 
 # TODO - re-enable after resolving T232206970
 @pytest.mark.oss_skip
+@pytest.mark.timeout(30)
 async def test_bind_and_pickling() -> None:
-    proc_mesh = await allocate()
-    actor_mesh = await proc_mesh.spawn_nonblocking("test", MyActor)
-    with pytest.raises(NotImplementedError, match="use bind()"):
-        pickle.dumps(actor_mesh)
+    @run_on_tokio
+    async def run() -> None:
+        proc_mesh = await allocate()
+        actor_mesh = await proc_mesh.spawn_nonblocking("test", MyActor)
+        with pytest.raises(NotImplementedError, match="use bind()"):
+            pickle.dumps(actor_mesh)
 
-    actor_mesh_ref = actor_mesh.bind()
-    assert actor_mesh_ref.shape == actor_mesh.shape
-    obj = pickle.dumps(actor_mesh_ref)
-    unpickled = pickle.loads(obj)
-    assert repr(actor_mesh_ref) == repr(unpickled)
-    assert actor_mesh_ref.shape == unpickled.shape
+        actor_mesh_ref = actor_mesh.bind()
+        assert actor_mesh_ref.shape == actor_mesh.shape
+        obj = pickle.dumps(actor_mesh_ref)
+        unpickled = pickle.loads(obj)
+        assert repr(actor_mesh_ref) == repr(unpickled)
+        assert actor_mesh_ref.shape == unpickled.shape
+
+        await proc_mesh.stop_nonblocking()
+
+    run()
 
 
 async def verify_cast(
@@ -94,7 +105,8 @@ async def verify_cast(
     port_ref = handle.bind()
 
     message = PythonMessage(
-        PythonMessageKind.CallMethod("echo", port_ref), pickle.dumps("ping")
+        PythonMessageKind.CallMethod(MethodSpecifier.ReturnsResponse("echo"), port_ref),
+        pickle.dumps("ping"),
     )
     sel = Selection.from_string("*")
     if isinstance(actor_mesh, PythonActorMesh):
@@ -104,7 +116,7 @@ async def verify_cast(
 
     rcv_ranks = []
     for _ in range(len(cast_ranks)):
-        message = await receiver.recv_task().into_future()
+        message = await receiver.recv_task()
         result_kind = message.kind
         assert isinstance(result_kind, PythonMessageKind.Result)
         rank = result_kind.rank
@@ -113,27 +125,39 @@ async def verify_cast(
     rcv_ranks.sort()
     assert rcv_ranks == cast_ranks
     # verify no more messages are received
-    with pytest.raises(asyncio.exceptions.TimeoutError):
-        await asyncio.wait_for(receiver.recv_task().into_future(), timeout=1)
+    with pytest.raises(TimeoutError):
+        await receiver.recv_task().with_timeout(1)
 
 
 # TODO - re-enable after resolving T232206970
 @pytest.mark.oss_skip
 @pytest.mark.timeout(30)
 async def test_cast_handle() -> None:
-    proc_mesh = await allocate()
-    actor_mesh = await proc_mesh.spawn_nonblocking("test", MyActor)
-    await verify_cast(actor_mesh, proc_mesh.client, list(range(3 * 8 * 8)))
+    @run_on_tokio
+    async def run() -> None:
+        proc_mesh = await allocate()
+        actor_mesh = await proc_mesh.spawn_nonblocking("test", MyActor)
+        await verify_cast(actor_mesh, proc_mesh.client, list(range(3 * 8 * 8)))
+
+        await proc_mesh.stop_nonblocking()
+
+    run()
 
 
 # TODO - re-enable after resolving T232206970
 @pytest.mark.oss_skip
 @pytest.mark.timeout(30)
 async def test_cast_ref() -> None:
-    proc_mesh = await allocate()
-    actor_mesh = await proc_mesh.spawn_nonblocking("test", MyActor)
-    actor_mesh_ref = actor_mesh.bind()
-    await verify_cast(actor_mesh_ref, proc_mesh.client, list(range(3 * 8 * 8)))
+    @run_on_tokio
+    async def run() -> None:
+        proc_mesh = await allocate()
+        actor_mesh = await proc_mesh.spawn_nonblocking("test", MyActor)
+        actor_mesh_ref = actor_mesh.bind()
+        await verify_cast(actor_mesh_ref, proc_mesh.client, list(range(3 * 8 * 8)))
+
+        await proc_mesh.stop_nonblocking()
+
+    run()
 
 
 async def verify_slice(
@@ -197,16 +221,28 @@ async def verify_slice(
 @pytest.mark.oss_skip
 @pytest.mark.timeout(30)
 async def test_slice_actor_mesh_handle() -> None:
-    proc_mesh = await allocate()
-    actor_mesh = await proc_mesh.spawn_nonblocking("test", MyActor)
-    await verify_slice(actor_mesh, proc_mesh.client)
+    @run_on_tokio
+    async def run() -> None:
+        proc_mesh = await allocate()
+        actor_mesh = await proc_mesh.spawn_nonblocking("test", MyActor)
+        await verify_slice(actor_mesh, proc_mesh.client)
+
+        await proc_mesh.stop_nonblocking()
+
+    run()
 
 
 # TODO - re-enable after resolving T232206970
 @pytest.mark.oss_skip
 @pytest.mark.timeout(30)
 async def test_slice_actor_mesh_ref() -> None:
-    proc_mesh = await allocate()
-    actor_mesh = await proc_mesh.spawn_nonblocking("test", MyActor)
-    actor_mesh_ref = actor_mesh.bind()
-    await verify_slice(actor_mesh_ref, proc_mesh.client)
+    @run_on_tokio
+    async def run() -> None:
+        proc_mesh = await allocate()
+        actor_mesh = await proc_mesh.spawn_nonblocking("test", MyActor)
+        actor_mesh_ref = actor_mesh.bind()
+        await verify_slice(actor_mesh_ref, proc_mesh.client)
+
+        await proc_mesh.stop_nonblocking()
+
+    run()
