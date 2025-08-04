@@ -131,7 +131,11 @@ impl MeshAgent {
         proc_id: ProcId,
     ) -> Result<(Proc, ActorHandle<Self>), anyhow::Error> {
         let sender = ReconfigurableMailboxSender::new();
-        let proc = Proc::new(proc_id, BoxedMailboxSender::new(sender.clone()));
+        let proc = Proc::new(proc_id.clone(), BoxedMailboxSender::new(sender.clone()));
+
+        // Wire up this proc to the global router so that any meshes managed by
+        // this process can reach actors in this proc.
+        super::global_router().bind(proc_id.into(), proc.clone());
 
         let agent = MeshAgent {
             proc: proc.clone(),
@@ -200,8 +204,12 @@ impl MeshAgentMessageHandler for MeshAgent {
         // occur from configuration failures. Though we should instead report these directly
         // for better ergonomics in the allocator.
         self.supervisor = Some(supervisor);
+
+        // Wire up the local proc to the global (process) router. This ensures that child
+        // meshes are reachable from any actor created by this mesh.
         let client = MailboxClient::new(channel::dial(forwarder)?);
-        let router = DialMailboxRouter::new_with_default(client.into_boxed());
+        let default = super::global_router().fallback(client.into_boxed());
+        let router = DialMailboxRouter::new_with_default(default.into_boxed());
         for (proc_id, addr) in address_book {
             router.bind(proc_id.into(), addr);
         }
