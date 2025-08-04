@@ -68,6 +68,7 @@ class Indirect(Actor):
         return await c.value.choose()
 
 
+@pytest.mark.timeout(60)
 async def test_choose():
     proc = await local_proc_mesh(gpus=2)
     v = await proc.spawn("counter", Counter, 3)
@@ -88,6 +89,7 @@ async def test_choose():
     await proc.stop()
 
 
+@pytest.mark.timeout(60)
 async def test_stream():
     proc = await local_proc_mesh(gpus=2)
     v = await proc.spawn("counter2", Counter, 3)
@@ -110,6 +112,7 @@ class From(Actor):
         return [await x for x in to.whoami.stream()]
 
 
+@pytest.mark.timeout(60)
 async def test_mesh_passed_to_mesh():
     proc = await local_proc_mesh(gpus=2)
     f = await proc.spawn("from", From)
@@ -121,6 +124,7 @@ async def test_mesh_passed_to_mesh():
     await proc.stop()
 
 
+@pytest.mark.timeout(60)
 async def test_mesh_passed_to_mesh_on_different_proc_mesh():
     proc = await local_proc_mesh(gpus=2)
     proc2 = await local_proc_mesh(gpus=2)
@@ -134,6 +138,7 @@ async def test_mesh_passed_to_mesh_on_different_proc_mesh():
     await proc2.stop()
 
 
+@pytest.mark.timeout(60)
 async def test_actor_slicing():
     proc = await local_proc_mesh(gpus=2)
     proc2 = await local_proc_mesh(gpus=2)
@@ -152,6 +157,7 @@ async def test_actor_slicing():
     await proc2.stop()
 
 
+@pytest.mark.timeout(60)
 async def test_aggregate():
     proc = await local_proc_mesh(gpus=2)
     counter = await proc.spawn("counter", Counter, 1)
@@ -169,6 +175,7 @@ class RunIt(Actor):
         return fn()
 
 
+@pytest.mark.timeout(60)
 async def test_rank_size():
     proc = await local_proc_mesh(gpus=2)
     r = await proc.spawn("runit", RunIt)
@@ -187,6 +194,7 @@ class SyncActor(Actor):
         return a_counter.value.choose().get()
 
 
+@pytest.mark.timeout(60)
 async def test_sync_actor():
     proc = await local_proc_mesh(gpus=2)
     a = await proc.spawn("actor", SyncActor)
@@ -197,6 +205,7 @@ async def test_sync_actor():
     await proc.stop()
 
 
+@pytest.mark.timeout(60)
 async def test_sync_actor_sync_client() -> None:
     proc = local_proc_mesh(gpus=2)
     a = proc.spawn("actor", SyncActor).get()
@@ -207,6 +216,7 @@ async def test_sync_actor_sync_client() -> None:
     await proc.stop()
 
 
+@pytest.mark.timeout(60)
 async def test_proc_mesh_size() -> None:
     proc = local_proc_mesh(gpus=2)
     assert 2 == proc.size("gpus")
@@ -215,6 +225,7 @@ async def test_proc_mesh_size() -> None:
     await proc.stop()
 
 
+@pytest.mark.timeout(60)
 async def test_rank_size_sync() -> None:
     proc = local_proc_mesh(gpus=2)
     r = proc.spawn("runit", RunIt).get()
@@ -226,6 +237,7 @@ async def test_rank_size_sync() -> None:
     await proc.stop()
 
 
+@pytest.mark.timeout(60)
 async def test_accumulate_sync() -> None:
     proc = local_proc_mesh(gpus=2)
     counter = proc.spawn("counter", Counter, 1).get()
@@ -243,6 +255,7 @@ class CastToCounter(Actor):
         return list(c.value.call().get())
 
 
+@pytest.mark.timeout(60)
 async def test_value_mesh() -> None:
     proc = local_proc_mesh(gpus=2)
     counter = proc.spawn("counter", Counter, 0).get()
@@ -257,6 +270,7 @@ async def test_value_mesh() -> None:
     await proc.stop()
 
 
+@pytest.mark.timeout(60)
 def test_rust_binding_modules_correct() -> None:
     import monarch._rust_bindings as bindings
 
@@ -273,6 +287,7 @@ def test_rust_binding_modules_correct() -> None:
     check(bindings, "monarch._rust_bindings")
 
 
+@pytest.mark.timeout(60)
 def test_proc_mesh_liveness() -> None:
     mesh = proc_mesh(gpus=2)
     counter = mesh.spawn("counter", Counter, 1).get()
@@ -307,6 +322,7 @@ class TLSActor(Actor):
         return self.local.value
 
 
+@pytest.mark.timeout(60)
 async def test_actor_tls() -> None:
     """Test that thread-local state is respected."""
     pm = proc_mesh(gpus=1)
@@ -338,6 +354,7 @@ class TLSActorFullSync(Actor):
         return self.local.value
 
 
+@pytest.mark.timeout(60)
 async def test_actor_tls_full_sync() -> None:
     """Test that thread-local state is respected."""
     pm = proc_mesh(gpus=1)
@@ -495,6 +512,7 @@ class Printer(Actor):
         sys.stderr.flush()
 
 
+@pytest.mark.timeout(60)
 async def test_actor_log_streaming() -> None:
     # Save original file descriptors
     original_stdout_fd = os.dup(1)  # stdout
@@ -643,6 +661,7 @@ async def test_actor_log_streaming() -> None:
             pass
 
 
+@pytest.mark.timeout(60)
 async def test_logging_option_defaults() -> None:
     # Save original file descriptors
     original_stdout_fd = os.dup(1)  # stdout
@@ -732,6 +751,7 @@ class SendAlot(Actor):
             port.send(i)
 
 
+@pytest.mark.timeout(60)
 async def test_port_as_argument():
     proc_mesh = local_proc_mesh(gpus=1)
     s = proc_mesh.spawn("send_alot", SendAlot).get()
@@ -788,6 +808,7 @@ class PortedActor(Actor):
         port.send(3 + b)
 
 
+@pytest.mark.timeout(60)
 async def test_ported_actor():
     proc_mesh = local_proc_mesh(gpus=1).get()
     a = proc_mesh.spawn("port_actor", PortedActor).get()
@@ -805,5 +826,6 @@ async def consume():
     assert r == (7, 2, 3)
 
 
+@pytest.mark.timeout(60)
 def test_python_task_tuple() -> None:
     PythonTask.from_coroutine(consume()).block_on()
