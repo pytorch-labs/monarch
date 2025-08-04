@@ -143,10 +143,10 @@ impl<A: RemoteActor> ActorMeshRef<A> {
             None => actor_mesh_cast::<A, M>(
                 caps,
                 self.mesh_id.clone(),
-                &self.root,
                 caps.mailbox().actor_id(),
                 &self.comm_actor_ref,
                 selection,
+                &self.root,
                 message,
             ),
         }
