@@ -210,6 +210,7 @@ impl MeshAgentMessageHandler for MeshAgent {
         let client = MailboxClient::new(channel::dial(forwarder)?);
         let default = super::global_router().fallback(client.into_boxed());
         let router = DialMailboxRouter::new_with_default(default.into_boxed());
+        // let router = DialMailboxRouter::new_with_default(client.into_boxed());
         for (proc_id, addr) in address_book {
             router.bind(proc_id.into(), addr);
         }
