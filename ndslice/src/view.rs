@@ -14,6 +14,7 @@ use serde::Serialize;
 use thiserror::Error;
 
 use crate::Range;
+use crate::Shape;
 use crate::Slice;
 use crate::SliceIterator;
 use crate::slice::CartesianIterator;
@@ -548,6 +549,7 @@ macro_rules! extent {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::shape;
 
     #[test]
     fn test_points_basic() {
@@ -737,5 +739,49 @@ mod test {
         let empty_extent = Extent::new(vec![], vec![]).unwrap();
         let empty_point = empty_extent.point(vec![]).unwrap();
         assert_eq!(format!("{}", empty_point), "");
+    }
+
+    #[test]
+    fn test_relative_point() {
+        // Given a rank in the root shape, return the corresponding point in the
+        // provided shape, which is a view of the root shape.
+        pub fn relative_point(rank_on_root_mesh: usize, shape: &Shape) -> anyhow::Result<Point> {
+            let coords = shape.slice().coordinates(rank_on_root_mesh)?;
+            let extent = Extent::new(shape.labels().to_vec(), shape.slice().sizes().to_vec())?;
+            Ok(extent.point(coords)?)
+        }
+
+        let root_shape = shape! { replicas = 4, hosts = 4, gpus = 4 };
+        // rows are `hosts`, cols are gpus
+        // replicas = 0
+        //     0,    1,  2,    3,
+        //     (4),  5,  (6),  7,
+        //     8,    9,  10,   11,
+        //     (12), 13, (14), 15,
+        // replicas = 3, which is [replicas=0] + 48
+        //     48,   49, 50,   51,
+        //     (52), 53, (54), 55,
+        //     56,   57, 58,   59,
+        //     (60), 61, (62), 63,
+        let sliced_shape = root_shape
+            .select("replicas", crate::Range(0, Some(4), 3))
+            .unwrap()
+            .select("hosts", crate::Range(1, Some(4), 2))
+            .unwrap()
+            .select("gpus", crate::Range(0, Some(4), 2))
+            .unwrap();
+        let ranks_on_root_mesh = &[4, 6, 12, 14, 52, 54, 60, 62];
+        assert_eq!(
+            sliced_shape.slice().iter().collect::<Vec<_>>(),
+            ranks_on_root_mesh,
+        );
+
+        let ranks_on_sliced_mesh = ranks_on_root_mesh
+            .iter()
+            .map(|&r| relative_point(r, &sliced_shape).unwrap().rank());
+        assert_eq!(
+            ranks_on_sliced_mesh.collect::<Vec<_>>(),
+            vec![0, 1, 2, 3, 4, 5, 6, 7]
+        );
     }
 }
