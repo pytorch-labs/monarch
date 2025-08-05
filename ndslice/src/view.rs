@@ -101,19 +101,14 @@ impl Extent {
         self.labels().iter().position(|l| l == label)
     }
 
-    /// Returns the number of dimensions in this extent.
-    pub fn num_dim(&self) -> usize {
-        self.labels().len()
-    }
-
     /// Creates a `Point` in this extent with the given coordinates.
     ///
     /// Returns an error if the coordinate dimensionality does not
     /// match.
     pub fn point(&self, coords: Vec<usize>) -> Result<Point, PointError> {
-        if coords.len() != self.num_dim() {
+        if coords.len() != self.len() {
             return Err(PointError::DimMismatch {
-                expected: self.num_dim(),
+                expected: self.len(),
                 actual: coords.len(),
             });
         }
@@ -128,7 +123,7 @@ impl Extent {
 
     /// Returns the point corresponding to the provided rank in this extent.
     pub fn point_of_rank(&self, mut rank: usize) -> Result<Point, PointError> {
-        if rank >= self.len() {
+        if rank >= self.num_ranks() {
             return Err(PointError::OutOfRange {
                 size: self.len(),
                 rank,
@@ -136,7 +131,7 @@ impl Extent {
         }
 
         let mut stride: usize = self.sizes().iter().product();
-        let mut coords = vec![0; self.num_dim()];
+        let mut coords = vec![0; self.len()];
         for (i, size) in self.sizes().iter().enumerate() {
             stride /= size;
             coords[i] = rank / stride;
@@ -149,14 +144,19 @@ impl Extent {
         })
     }
 
-    /// The total size of the extent.
+    /// The number of dimensions in the extent.
     pub fn len(&self) -> usize {
-        self.sizes().iter().product()
+        self.sizes().len()
     }
 
-    /// Whether the extent is empty.
+    /// Whether the extent has zero dimensionbs.
     pub fn is_empty(&self) -> bool {
-        self.sizes().iter().all(|&s| s == 0)
+        self.sizes().is_empty()
+    }
+
+    /// The number of ranks in the extent.
+    pub fn num_ranks(&self) -> usize {
+        self.sizes().iter().product()
     }
 
     /// Convert this extent into its labels and sizes.
@@ -620,7 +620,7 @@ mod test {
         let _p1 = extent.point(vec![1, 2, 3]).unwrap();
         let _p2 = vec![1, 2, 3].in_(&extent).unwrap();
 
-        assert_eq!(extent.len(), 4 * 5 * 6);
+        assert_eq!(extent.num_ranks(), 4 * 5 * 6);
 
         let p3 = extent.point_of_rank(0).unwrap();
         assert_eq!(p3.coords(), &[0, 0, 0]);
