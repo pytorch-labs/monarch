@@ -232,7 +232,7 @@ impl Shape {
 /// `[2, 2, 8]` shape.
 pub struct SelectIterator<'a> {
     shape: &'a Shape,
-    iter: DimSliceIterator<'a>,
+    iter: DimSliceIterator,
 }
 
 impl<'a> Iterator for SelectIterator<'a> {

@@ -55,7 +55,7 @@ pub trait Mesh {
 /// An iterator over the nodes of a mesh.
 pub struct MeshIter<'a, M: Mesh + ?Sized> {
     mesh: &'a M,
-    slice_iter: SliceIterator<'a>,
+    slice_iter: SliceIterator,
 }
 
 impl<M: Mesh> Iterator for MeshIter<'_, M> {
