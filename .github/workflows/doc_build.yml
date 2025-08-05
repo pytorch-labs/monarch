@@ -13,50 +13,151 @@ concurrency:
 jobs:
   build:
     name: Build Documentation
-    uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
-    with:
-      timeout: 120
-      runner: linux.g5.4xlarge.nvidia.gpu
-      submodules: recursive
-      script: |
-        # Source common setup functions
-        source scripts/common-setup.sh
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
 
-        # Setup build environment (conda + system deps + rust + build deps)
-        setup_build_environment "3.10"
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          architecture: x64
 
-        # Install documentation dependencies
-        pip install -r docs/requirements.txt
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt, clippy
 
-        # Set environment variables for full build with CUDA support
-        export USE_CUDA=1
-        export USE_TENSOR_ENGINE=1
-        export RUSTFLAGS="-Zthreads=16"
-        export _GLIBCXX_USE_CXX11_ABI=1
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libunwind-dev clang-dev
 
-        # Install CUDA and NCCL dependencies for documentation generation
-        dnf install -y cuda-toolkit-12-0 cuda-12-0 libnccl-devel
+      - name: Setup mock CUDA environment for documentation
+        run: |
+          # Create mock CUDA environment to satisfy build requirements
+          sudo mkdir -p /usr/local/cuda-12.0/{bin,include,lib64}
+          sudo ln -sf /usr/local/cuda-12.0 /usr/local/cuda
 
-        # Generate Rust API documentation for all crates in the workspace
-        # This will include CUDA-dependent crates like nccl-sys, cuda-sys, etc.
-        cargo +nightly doc --workspace --no-deps --document-private-items
+          # Create minimal CUDA headers for documentation generation
+          sudo tee /usr/local/cuda/include/cuda.h > /dev/null << 'EOF'
+          #ifndef __CUDA_H__
+          #define __CUDA_H__
+          #define __host__
+          #define __device__
+          #define __global__
+          #define __forceinline__
+          #define __shared__
+          #define __constant__
+          typedef int cudaError_t;
+          typedef void* cudaStream_t;
+          typedef void* cudaEvent_t;
+          typedef void* CUdeviceptr;
+          typedef int CUresult;
+          typedef void* CUcontext;
+          typedef void* CUdevice;
+          enum { cudaSuccess = 0, CUDA_SUCCESS = 0 };
+          #endif
+          EOF
 
-        # Create an index.html file in the target/doc directory to serve as the main entry point
-        echo '<meta http-equiv="refresh" content="0; url=hyperactor/index.html">' > target/doc/index.html
+          sudo tee /usr/local/cuda/include/cuda_runtime.h > /dev/null << 'EOF'
+          #ifndef __CUDA_RUNTIME_H__
+          #define __CUDA_RUNTIME_H__
+          #include "cuda.h"
+          #endif
+          EOF
 
-        # Ensure the target/doc directory exists in the expected location for Sphinx
-        mkdir -p docs/source/target
-        cp -r target/doc docs/source/target/
+          sudo tee /usr/local/cuda/include/driver_types.h > /dev/null << 'EOF'
+          #ifndef __DRIVER_TYPES_H__
+          #define __DRIVER_TYPES_H__
+          #include "cuda.h"
+          #endif
+          EOF
 
-        # Build Sphinx documentation
-        cd docs
-        make html
+          # Create mock nvcc
+          sudo tee /usr/local/cuda/bin/nvcc > /dev/null << 'EOF'
+          #!/bin/bash
+          echo "NVCC mock for documentation generation"
+          exit 0
+          EOF
+          sudo chmod +x /usr/local/cuda/bin/nvcc
 
-        # Move the built documentation to the artifact directory
-        mkdir -p "${RUNNER_ARTIFACT_DIR}/docs"
-        cp -r build/html/* "${RUNNER_ARTIFACT_DIR}/docs/"
+          # Set environment variables
+          echo "CUDA_HOME=/usr/local/cuda" >> $GITHUB_ENV
+          echo "CUDA_PATH=/usr/local/cuda" >> $GITHUB_ENV
+          echo "PATH=/usr/local/cuda/bin:$PATH" >> $GITHUB_ENV
+          echo "LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH" >> $GITHUB_ENV
 
-      upload-artifact: monarch-docs-${{ github.sha }}
+      - name: Setup mock NCCL environment
+        run: |
+          # Create mock NCCL environment
+          sudo mkdir -p /usr/local/include /usr/local/lib
+
+          # Create minimal nccl.h
+          sudo tee /usr/local/include/nccl.h > /dev/null << 'EOF'
+          #ifndef __NCCL_H__
+          #define __NCCL_H__
+          #include <cuda.h>
+          typedef enum { ncclSuccess = 0 } ncclResult_t;
+          typedef struct ncclComm* ncclComm_t;
+          typedef enum { ncclFloat32 = 0 } ncclDataType_t;
+          typedef enum { ncclSum = 0 } ncclRedOp_t;
+          typedef enum { ncclInPlace = 0 } ncclScalarResidence_t;
+          typedef struct { char internal[128]; } ncclUniqueId;
+          typedef struct ncclConfig* ncclConfig_t;
+          typedef struct ncclSimInfo* ncclSimInfo_t;
+          #define NCCL_SPLIT_NOCOLOR (-1)
+          #define NCCL_MAJOR 2
+          #define NCCL_MINOR 18
+          #define NCCL_PATCH 0
+          #endif
+          EOF
+
+          # Create mock libnccl.so
+          sudo touch /usr/local/lib/libnccl.so
+          sudo touch /usr/local/lib/libnccl.so.2
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r build-requirements.txt
+          pip install -r docs/requirements.txt
+
+      - name: Generate Rust API Documentation
+        run: |
+          # Set environment variables for documentation build
+          export RUSTFLAGS="-Zthreads=16"
+          export _GLIBCXX_USE_CXX11_ABI=1
+          export USE_CUDA=1
+          export USE_TENSOR_ENGINE=1
+          export CUDA_HOME=/usr/local/cuda
+          export CUDA_PATH=/usr/local/cuda
+
+          # Generate documentation for all crates in the workspace
+          # This will include CUDA-dependent crates with mock environment
+          cargo doc --workspace --no-deps --document-private-items
+
+          # Create an index.html file in the target/doc directory to serve as the main entry point
+          echo '<meta http-equiv="refresh" content="0; url=hyperactor/index.html">' > target/doc/index.html
+
+          # Ensure the target/doc directory exists in the expected location for Sphinx
+          mkdir -p docs/source/target
+          cp -r target/doc docs/source/target/
+
+      - name: Build Sphinx Docs
+        working-directory: docs
+        run: |
+          make html
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/build/html
 
   deploy:
     needs: build
@@ -69,20 +170,6 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
-      - name: Download artifact
-        uses: actions/download-artifact@v3
-        with:
-          name: monarch-docs-${{ github.sha }}
-          path: docs
-
-      - name: Setup Pages
-        uses: actions/configure-pages@v4
-
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: docs
-
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
