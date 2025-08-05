@@ -32,7 +32,6 @@ use hyperactor::channel::TxStatus;
 use hyperactor::clock;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
-use hyperactor::config;
 use hyperactor::mailbox::DialMailboxRouter;
 use hyperactor::mailbox::MailboxServer;
 use hyperactor::mailbox::monitored_return_handle;
@@ -59,6 +58,8 @@ use crate::alloc::AllocatorError;
 use crate::alloc::ProcState;
 use crate::alloc::ProcStopReason;
 use crate::alloc::ProcessAllocator;
+use crate::config;
+use crate::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL;
 
 /// Control messages sent from remote process allocator to local allocator.
 #[derive(Debug, Clone, Serialize, Deserialize, Named)]
@@ -407,7 +408,7 @@ impl RemoteProcessAllocator {
                         }
                     }
                 }
-                _ = RealClock.sleep(config::global::get(config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL)) => {
+                _ = RealClock.sleep(crate::config::global::get(REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL)) => {
                     tracing::trace!("sending heartbeat");
                     tx.post(RemoteProcessProcStateMessage::HeartBeat);
                 }
@@ -1208,9 +1209,9 @@ mod test {
 
     #[timed_test::async_timed_test(timeout_secs = 5)]
     async fn test_simple() {
-        let config = hyperactor::config::global::lock();
+        let config = crate::config::global::lock();
         let _guard = config.override_key(
-            hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
+            REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
             Duration::from_millis(100),
         );
         hyperactor_telemetry::initialize_logging(ClockKind::default());
@@ -1350,9 +1351,9 @@ mod test {
 
     #[timed_test::async_timed_test(timeout_secs = 15)]
     async fn test_normal_stop() {
-        let config = hyperactor::config::global::lock();
+        let config = crate::config::global::lock();
         let _guard = config.override_key(
-            hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
+            REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
             Duration::from_millis(100),
         );
         hyperactor_telemetry::initialize_logging(ClockKind::default());
@@ -1428,9 +1429,9 @@ mod test {
 
     #[timed_test::async_timed_test(timeout_secs = 15)]
     async fn test_realloc() {
-        let config = hyperactor::config::global::lock();
+        let config = crate::config::global::lock();
         let _guard = config.override_key(
-            hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
+            REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
             Duration::from_millis(100),
         );
         hyperactor_telemetry::initialize_logging(ClockKind::default());
@@ -1554,7 +1555,7 @@ mod test {
             Duration::from_secs(1),
         );
         let _guard2 = config.override_key(
-            hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
+            REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
             Duration::from_millis(100),
         );
 
@@ -1640,10 +1641,8 @@ mod test {
     #[timed_test::async_timed_test(timeout_secs = 15)]
     async fn test_inner_alloc_failure() {
         let config = hyperactor::config::global::lock();
-        let _guard = config.override_key(
-            hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
-            Duration::from_secs(60),
-        );
+        let _guard =
+            config.override_key(REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL, Duration::from_secs(60));
         hyperactor_telemetry::initialize_logging(ClockKind::default());
         let serve_addr = ChannelAddr::any(ChannelTransport::Unix);
         let bootstrap_addr = ChannelAddr::any(ChannelTransport::Unix);
@@ -1727,6 +1726,7 @@ mod test {
 mod test_alloc {
     use std::os::unix::process::ExitStatusExt;
 
+    use REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL;
     use hyperactor::clock::ClockKind;
     use hyperactor::config;
     use ndslice::shape;
@@ -1745,7 +1745,7 @@ mod test_alloc {
             Duration::from_secs(1),
         );
         let _guard2 = config.override_key(
-            hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
+            REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
             Duration::from_millis(100),
         );
         hyperactor_telemetry::initialize_logging(ClockKind::default());
@@ -1870,7 +1870,7 @@ mod test_alloc {
             Duration::from_secs(1),
         );
         let _guard2 = config.override_key(
-            hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
+            REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
             Duration::from_millis(100),
         );
         hyperactor_telemetry::initialize_logging(ClockKind::default());
@@ -1946,7 +1946,7 @@ mod test_alloc {
         tracing::info!("aborting task1 allocator");
         task1_allocator_handle.abort();
         RealClock
-            .sleep(config::global::get(config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL) * 2)
+            .sleep(crate::config::global::get(REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL) * 2)
             .await;
         for _ in 0..spec.shape.slice().len() / 2 {
             let proc_state = alloc.next().await.unwrap();
@@ -1970,7 +1970,7 @@ mod test_alloc {
         tracing::info!("aborting task2 allocator");
         task2_allocator_handle.abort();
         RealClock
-            .sleep(config::global::get(config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL) * 2)
+            .sleep(config::global::get(REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL) * 2)
             .await;
         for _ in 0..spec.shape.slice().len() / 2 {
             let proc_state = alloc.next().await.unwrap();
@@ -1998,7 +1998,7 @@ mod test_alloc {
         }
         let config = hyperactor::config::global::lock();
         let _guard = config.override_key(
-            hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
+            REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
             Duration::from_millis(100),
         );
         hyperactor_telemetry::initialize_logging(ClockKind::default());
