@@ -38,6 +38,13 @@ class PythonActorMeshRef:
         """
         ...
 
+    def new_with_shape(self, shape: Shape) -> PythonActorMeshRef:
+        """
+        Return a new mesh ref with the given sliced shape. If the provided shape
+        is not a valid slice of the current shape, an exception will be raised.
+        """
+        ...
+
     @property
     def shape(self) -> Shape:
         """
@@ -74,6 +81,13 @@ class PythonActorMesh:
         Arguments:
         - `kwargs`: argument name is the label, and argument value is how to
           slice the mesh along the dimension of that label.
+        """
+        ...
+
+    def new_with_shape(self, shape: Shape) -> PythonActorMeshRef:
+        """
+        Return a new mesh ref with the given sliced shape. If the provided shape
+        is not a valid slice of the current shape, an exception will be raised.
         """
         ...
 
