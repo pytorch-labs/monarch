@@ -46,13 +46,14 @@ jobs:
       - name: Generate Rust API Documentation
         run: |
           # Set environment variables for CPU-only build
-          export USE_CUDA=0
-          export USE_TENSOR_ENGINE=0
           export RUSTFLAGS="-Zthreads=16"
           export _GLIBCXX_USE_CXX11_ABI=1
+          export USE_CUDA=1
+          export USE_TENSOR_ENGINE=1
 
           # Generate documentation for specific crates that don't depend on CUDA
-          cargo doc --no-deps -p hyperactor -p hyperactor_macros -p hyperactor_multiprocess -p hyperactor_mesh -p hyperactor_mesh_macros
+          cargo doc --workspace --no-deps --document-private-items
+          #cargo doc --no-deps -p hyperactor -p hyperactor_macros -p hyperactor_multiprocess -p hyperactor_mesh -p hyperactor_mesh_macros
 
           # Create an index.html file in the target/doc directory to serve as the main entry point
           # echo '<meta http-equiv="refresh" content="0; url=hyperactor/index.html">' > target/doc/index.html
