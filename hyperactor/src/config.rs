@@ -167,6 +167,16 @@ pub mod global {
         static MUTEX: LazyLock<std::sync::Mutex<()>> = LazyLock::new(|| std::sync::Mutex::new(()));
         ConfigLock {
             _guard: MUTEX.lock().unwrap(),
+            config: CONFIG.clone(),
+        }
+    }
+
+    /// Create a new ConfigLock with a specific config.
+    pub fn new(config: Arc<RwLock<Attrs>>) -> ConfigLock {
+        static MUTEX: LazyLock<std::sync::Mutex<()>> = LazyLock::new(|| std::sync::Mutex::new(()));
+        ConfigLock {
+            _guard: MUTEX.lock().unwrap(),
+            config,
         }
     }
 
@@ -222,6 +232,7 @@ pub mod global {
     /// this ConfigLock, ensuring proper synchronization.
     pub struct ConfigLock {
         _guard: std::sync::MutexGuard<'static, ()>,
+        config: Arc<RwLock<Attrs>>,
     }
 
     impl ConfigLock {
@@ -243,7 +254,7 @@ pub mod global {
             value: T,
         ) -> ConfigValueGuard<'a, T> {
             let orig = {
-                let mut config = CONFIG.write().unwrap();
+                let mut config = self.config.write().unwrap();
                 let orig = config.take_value(key);
                 config.set(key, value);
                 orig
@@ -252,6 +263,7 @@ pub mod global {
             ConfigValueGuard {
                 key,
                 orig,
+                config: self.config.clone(),
                 _phantom: PhantomData,
             }
         }
@@ -261,13 +273,14 @@ pub mod global {
     pub struct ConfigValueGuard<'a, T: 'static> {
         key: crate::attrs::Key<T>,
         orig: Option<Box<dyn crate::attrs::SerializableValue>>,
+        config: Arc<RwLock<Attrs>>,
         // This is here so we can hold onto a 'a lifetime.
         _phantom: PhantomData<&'a ()>,
     }
 
     impl<T: 'static> Drop for ConfigValueGuard<'_, T> {
         fn drop(&mut self) {
-            let mut config = CONFIG.write().unwrap();
+            let mut config = self.config.write().unwrap();
             if let Some(orig) = self.orig.take() {
                 config.restore_value(self.key, orig);
             } else {
