@@ -27,9 +27,9 @@ use hyperactor_mesh::alloc::AllocSpec;
 use hyperactor_mesh::alloc::Allocator;
 use hyperactor_mesh::alloc::LocalAllocator;
 use hyperactor_mesh::comm::multicast::CastInfo;
+use hyperactor_mesh::extent;
 use hyperactor_mesh::selection::dsl::all;
 use hyperactor_mesh::selection::dsl::true_;
-use hyperactor_mesh::shape;
 use ndslice::selection::selection_from;
 use serde::Deserialize;
 use serde::Serialize;
@@ -228,7 +228,7 @@ async fn main() -> Result<ExitCode> {
     let group_size = 5;
     let alloc = LocalAllocator
         .allocate(AllocSpec {
-            shape: shape! {replica = group_size},
+            extent: extent! {replica = group_size},
             constraints: Default::default(),
         })
         .await?;

@@ -37,6 +37,7 @@ pub use comm::CommActor;
 pub use dashmap;
 pub use hyperactor_mesh_macros::sel;
 pub use mesh::Mesh;
+pub use ndslice::extent;
 pub use ndslice::sel_from_shape;
 pub use ndslice::selection;
 pub use ndslice::shape;

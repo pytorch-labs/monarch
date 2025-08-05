@@ -206,7 +206,8 @@ mod tests {
     use hyperactor::PortRef;
     use hyperactor::Unbind;
     use hyperactor_mesh_macros::sel;
-    use ndslice::shape;
+    use ndslice::Extent;
+    use ndslice::extent;
 
     use super::*;
     use crate::Mesh;
@@ -217,8 +218,8 @@ mod tests {
     use crate::alloc::Allocator;
     use crate::alloc::LocalAllocator;
 
-    fn shape() -> Shape {
-        shape! { replica = 4 }
+    fn extent() -> Extent {
+        extent!(replica = 4)
     }
 
     #[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
@@ -276,14 +277,14 @@ mod tests {
     async fn test_inter_mesh_ping_pong() {
         let alloc_ping = LocalAllocator
             .allocate(AllocSpec {
-                shape: shape(),
+                extent: extent(),
                 constraints: Default::default(),
             })
             .await
             .unwrap();
         let alloc_pong = LocalAllocator
             .allocate(AllocSpec {
-                shape: shape(),
+                extent: extent(),
                 constraints: Default::default(),
             })
             .await

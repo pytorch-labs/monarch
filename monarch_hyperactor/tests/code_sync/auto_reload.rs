@@ -17,7 +17,7 @@ use hyperactor_mesh::proc_mesh::ProcMesh;
 use monarch_hyperactor::code_sync::auto_reload::AutoReloadActor;
 use monarch_hyperactor::code_sync::auto_reload::AutoReloadMessage;
 use monarch_hyperactor::code_sync::auto_reload::AutoReloadParams;
-use ndslice::shape;
+use ndslice::extent;
 use pyo3::ffi::c_str;
 use pyo3::prelude::*;
 use tempfile::TempDir;
@@ -45,7 +45,7 @@ CONSTANT = "initial_constant"
     // Set up a single AutoReloadActor
     let alloc = LocalAllocator
         .allocate(AllocSpec {
-            shape: shape! { replica = 1 },
+            extent: extent! { replica = 1 },
             constraints: Default::default(),
         })
         .await?;

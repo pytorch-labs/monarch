@@ -39,7 +39,10 @@ use hyperactor::mailbox::monitored_return_handle;
 use hyperactor::reference::Reference;
 use hyperactor::serde_json;
 use mockall::automock;
-use ndslice::Shape;
+use ndslice::View;
+use ndslice::ViewExt;
+use ndslice::view::Extent;
+use ndslice::view::Point;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::io::AsyncWriteExt;
@@ -65,9 +68,8 @@ use crate::alloc::ProcessAllocator;
 pub enum RemoteProcessAllocatorMessage {
     /// Create allocation with given spec and send updates to bootstrap_addr.
     Allocate {
-        /// Allocation spec. Shape is a slice of the original shape with
-        /// correct rank offset.
-        spec: AllocSpec,
+        /// The view of a larger allocation for which this remote allocator is responsible.
+        view: View,
         /// Bootstrap address to be used for sending updates.
         bootstrap_addr: ChannelAddr,
         /// Ordered list of hosts in this allocation. Can be used to
@@ -86,7 +88,7 @@ pub enum RemoteProcessAllocatorMessage {
 #[derive(Debug, Clone, Serialize, Deserialize, Named)]
 pub enum RemoteProcessProcStateMessage {
     /// Allocation successful and Update, Done messages will follow.
-    Allocated { world_id: WorldId, shape: Shape },
+    Allocated { world_id: WorldId, view: View },
     /// ProcState updates.
     Update(ProcState),
     /// Underlying Alloc is done.
@@ -192,15 +194,20 @@ impl RemoteProcessAllocator {
                 msg = rx.recv() => {
                     match msg {
                         Ok(RemoteProcessAllocatorMessage::Allocate {
-                            spec,
+                            view,
                             bootstrap_addr,
                             hosts,
                         }) => {
-                            tracing::info!("received allocation request: {:?}", spec);
-
+                            tracing::info!("received allocation request for view: {}", view);
                             ensure_previous_alloc_stopped(&mut active_allocation).await;
-
                             tracing::info!("allocating...");
+
+                            // Create the corresponding local allocation spec.
+                            let spec = AllocSpec {
+                                extent: view.extent(),
+                                constraints: Default::default(),
+                            };
+
                             match process_allocator.allocate(spec.clone()).await {
                                 Ok(alloc) => {
                                     let cancel_token = CancellationToken::new();
@@ -208,6 +215,7 @@ impl RemoteProcessAllocator {
                                         cancel_token: cancel_token.clone(),
                                         handle: tokio::spawn(Self::handle_allocation_request(
                                             Box::new(alloc) as Box<dyn Alloc + Send + Sync>,
+                                            view,
                                             bootstrap_addr,
                                             hosts,
                                             cancel_token,
@@ -257,6 +265,7 @@ impl RemoteProcessAllocator {
 
     async fn handle_allocation_request(
         alloc: Box<dyn Alloc + Send + Sync>,
+        view: View,
         bootstrap_addr: ChannelAddr,
         hosts: Vec<String>,
         cancel_token: CancellationToken,
@@ -305,8 +314,15 @@ impl RemoteProcessAllocator {
             }
         }
 
-        Self::handle_allocation_loop(alloc, bootstrap_addr, router, forwarder_addr, cancel_token)
-            .await;
+        Self::handle_allocation_loop(
+            alloc,
+            view,
+            bootstrap_addr,
+            router,
+            forwarder_addr,
+            cancel_token,
+        )
+        .await;
 
         mailbox_handle.stop("alloc stopped");
         if let Err(e) = mailbox_handle.await {
@@ -316,6 +332,7 @@ impl RemoteProcessAllocator {
 
     async fn handle_allocation_loop(
         mut alloc: Box<dyn Alloc + Send + Sync>,
+        view: View,
         bootstrap_addr: ChannelAddr,
         router: DialMailboxRouter,
         forward_addr: ChannelAddr,
@@ -332,7 +349,7 @@ impl RemoteProcessAllocator {
         if let Err(e) = tx
             .send(RemoteProcessProcStateMessage::Allocated {
                 world_id: alloc.world_id().clone(),
-                shape: alloc.shape().clone(),
+                view,
             })
             .await
         {
@@ -536,7 +553,7 @@ pub struct RemoteProcessAlloc {
     failed: bool,
     hosts_by_offset: HashMap<usize, HostId>,
     host_states: HostStates,
-    world_shapes: HashMap<WorldId, Shape>,
+    world_offsets: HashMap<WorldId, usize>,
     event_queue: VecDeque<ProcState>,
     comm_watcher_tx: UnboundedSender<HostId>,
     comm_watcher_rx: UnboundedReceiver<HostId>,
@@ -598,7 +615,7 @@ impl RemoteProcessAlloc {
             transport,
             remote_allocator_port,
             initializer: Box::new(initializer),
-            world_shapes: HashMap::new(),
+            world_offsets: HashMap::new(),
             ordered_hosts: Vec::new(),
             hosts_by_offset: HashMap::new(),
             host_states: HostStates::new(host_addresses),
@@ -691,19 +708,18 @@ impl RemoteProcessAlloc {
         let hostnames: Vec<_> = hosts.iter().map(|e| e.hostname.clone()).collect();
         tracing::info!("obtained {} hosts for this allocation", hostnames.len());
 
-        // disrtibuted procs based on most minor dimension
-        for (host_index, host_shape) in (self
-            .spec
-            .shape
-            .select_iter(self.spec.shape.labels().len() - 1)
-            .context(format!(
-                "failed to do select iterator for shape {}",
-                self.spec.shape
-            ))?)
-        .enumerate()
-        {
-            let host = &hosts[host_index];
-            tracing::debug!("allocating: {} for host: {}", host_shape, host.id);
+        // We require at least a dimension for hosts, and one for sub-host (e.g., GPUs)
+        anyhow::ensure!(
+            self.spec.extent.len() >= 2,
+            "invalid extent: {}, expected at least 2 dimensions",
+            self.spec.extent
+        );
+
+        // We group by the innermost dimension of the extent.
+        let split_dim = &self.spec.extent.labels()[self.spec.extent.len() - 1];
+        for (i, view) in self.spec.extent.group_by(split_dim)?.enumerate() {
+            let host = &hosts[i];
+            tracing::debug!("allocating: {} for host: {}", view, host.id);
 
             let remote_addr = match self.transport {
                 ChannelTransport::MetaTls => {
@@ -723,6 +739,8 @@ impl RemoteProcessAlloc {
                 }
             };
 
+            let offset = offset_of_view(&view).unwrap();
+
             tracing::debug!("dialing remote: {} for host {}", remote_addr, host.id);
             let remote_addr = remote_addr.parse::<ChannelAddr>()?;
             let tx = channel::dial(remote_addr.clone())
@@ -732,15 +750,11 @@ impl RemoteProcessAlloc {
                     remote_addr, host.id
                 ))?;
             tx.post(RemoteProcessAllocatorMessage::Allocate {
+                view,
                 bootstrap_addr: self.bootstrap_addr.clone(),
-                spec: AllocSpec {
-                    shape: host_shape.clone(),
-                    constraints: self.spec.constraints.clone(),
-                },
                 hosts: hostnames.clone(),
             });
 
-            let offset = host_shape.slice().offset();
             self.hosts_by_offset.insert(offset, host.id.clone());
             self.host_states.insert(
                 host.id.clone(),
@@ -758,22 +772,15 @@ impl RemoteProcessAlloc {
         }
 
         self.ordered_hosts = hosts;
-
         self.start_comm_watcher().await;
-
         self.started = true;
 
         Ok(())
     }
 
     fn host_id_for_world_id(&self, world_id: &WorldId) -> Option<HostId> {
-        if let Some(shape) = self.world_shapes.get(world_id) {
-            if let Some(host_id) = self.hosts_by_offset.get(&shape.slice().offset()) {
-                return Some(host_id.clone());
-            }
-        }
-
-        None
+        let offset = self.world_offsets.get(world_id)?;
+        self.hosts_by_offset.get(offset).cloned()
     }
 
     fn host_state_for_world_id(
@@ -823,36 +830,18 @@ impl RemoteProcessAlloc {
     }
 
     // Reproject proc world coords to global shape coords.
-    fn project_proc_into_global_shape(
+    fn project_proc_into_global_extent(
         &self,
         proc_id: &ProcId,
-        coords: &[usize],
-    ) -> Result<Vec<usize>, anyhow::Error> {
+        point: &Point,
+    ) -> Result<Point, anyhow::Error> {
         let world_id = proc_id.world_id();
-        match self.world_shapes.get(world_id) {
-            Some(shape) => {
-                let world_location = match shape.slice().location(coords) {
-                    Ok(world_location) => world_location,
-                    Err(e) => anyhow::bail!(
-                        "failed to get world location for coords: {:?}, world shape: {}: {}",
-                        coords,
-                        shape,
-                        e
-                    ),
-                };
+        let offset = self
+            .world_offsets
+            .get(world_id)
+            .ok_or_else(|| anyhow::anyhow!("could not find offset for world id: {}", world_id))?;
 
-                match self.spec.shape.slice().coordinates(world_location) {
-                    Ok(coords) => Ok(coords),
-                    Err(e) => anyhow::bail!(
-                        "failed to get coordinates for location: {}, shape: {}: {}",
-                        world_location,
-                        self.spec.shape,
-                        e
-                    ),
-                }
-            }
-            None => anyhow::bail!("failed to find shape for world id: {}", world_id),
-        }
+        Ok(self.spec.extent.point_of_rank(offset + point.rank())?)
     }
 
     // Cleanup a comm-failed host information by its ID.
@@ -873,7 +862,7 @@ impl RemoteProcessAlloc {
         self.ordered_hosts.retain(|host| host.id != host_id);
         self.hosts_by_offset.remove(&state.offset);
         if let Some(world_id) = state.world_id {
-            self.world_shapes.remove(&world_id);
+            self.world_offsets.remove(&world_id);
         }
         let proc_ids = state.active_procs.iter().cloned().collect();
 
@@ -910,28 +899,47 @@ impl Alloc for RemoteProcessAlloc {
                     msg = self.rx.recv() => {
                         tracing::debug!("got ProcState message from allocator: {:?}", msg);
                         match msg {
-                            Ok(RemoteProcessProcStateMessage::Allocated{world_id, shape}) => {
+                            Ok(RemoteProcessProcStateMessage::Allocated { world_id, view }) => {
+                                let Some(offset) = offset_of_view(&view) else {
+                                    tracing::error!(
+                                        "allocated {}: cannot derive offset from allocated view: {}",
+                                        world_id,
+                                        view
+                                    );
+                                    continue;
+                                };
                                 tracing::info!("received allocated world id: {}", world_id);
-                                match self.hosts_by_offset.get(&shape.slice().offset()) {
+                                match self.hosts_by_offset.get(&offset) {
                                     Some(host_id) => {
                                         // update state
                                         match self.host_states.get_mut(host_id) {
                                             Some(state) => {
                                                 state.world_id = Some(world_id.clone());
-                                                if let Some(old_entry) = self.world_shapes.insert(world_id.clone(), shape) {
+                                                if let Some(old_entry) = self.world_offsets.insert(world_id.clone(), offset) {
                                                     // should never happen
-                                                    tracing::warn!("got allocated for duplicate world id: {} with known shape: {}", world_id, old_entry);
+                                                    tracing::warn!(
+                                                        "got allocated for duplicate world id: {} with known offset: {}",
+                                                        world_id,
+                                                        old_entry
+                                                    );
                                                 }
                                             }
                                             None => {
                                                 // should never happen
-                                                tracing::error!("got allocated for host ID: {} with no known state", host_id);
+                                                tracing::error!(
+                                                    "got allocated for host ID: {} with no known state",
+                                                    host_id
+                                                );
                                             }
                                         }
                                     }
                                     None => {
                                         // should never happen
-                                        tracing::error!("got allocated for unknown world: {}, shape: {}", world_id, shape);
+                                        tracing::error!(
+                                            "got allocated for unknown world: {}, view: {}",
+                                            world_id,
+                                            view
+                                        );
                                     }
                                 }
                             }
@@ -981,9 +989,9 @@ impl Alloc for RemoteProcessAlloc {
                                 } else {
                                     tracing::error!("received done for unknown world id: {}", world_id);
                                 }
-                                if self.world_shapes.remove(&world_id).is_none() {
+                                if self.world_offsets.remove(&world_id).is_none() {
                                     tracing::error!("received done for unknown world id: {}", world_id);
-                                } else if self.world_shapes.is_empty() {
+                                } else if self.world_offsets.is_empty() {
                                     self.running = false;
                                     break None;
                                 }
@@ -1052,14 +1060,14 @@ impl Alloc for RemoteProcessAlloc {
             break match update {
                 Some(ProcState::Created {
                     proc_id,
-                    coords,
+                    point,
                     pid,
-                }) => match self.project_proc_into_global_shape(&proc_id, &coords) {
-                    Ok(global_coords) => {
-                        tracing::debug!("reprojected coords: {:?} -> {:?}", coords, global_coords);
+                }) => match self.project_proc_into_global_extent(&proc_id, &point) {
+                    Ok(global_point) => {
+                        tracing::debug!("reprojected coords: {} -> {}", point, global_point);
                         Some(ProcState::Created {
                             proc_id,
-                            coords: global_coords,
+                            point: global_point,
                             pid,
                         })
                     }
@@ -1083,8 +1091,8 @@ impl Alloc for RemoteProcessAlloc {
         }
     }
 
-    fn shape(&self) -> &Shape {
-        &self.spec.shape
+    fn extent(&self) -> &Extent {
+        &self.spec.extent
     }
 
     fn world_id(&self) -> &WorldId {
@@ -1113,6 +1121,14 @@ impl Drop for RemoteProcessAlloc {
     }
 }
 
+/// Computes the offset of the given view for allocation purposes.
+/// The offset is the first rank in the view. Because we have grouped
+/// this from an extent, we know these are contiguous.
+fn offset_of_view(view: &View) -> Option<usize> {
+    let (_point, offset) = view.iter().next()?;
+    Some(offset)
+}
+
 #[cfg(test)]
 mod test {
     use std::assert_matches::assert_matches;
@@ -1121,7 +1137,7 @@ mod test {
     use hyperactor::channel::ChannelRx;
     use hyperactor::clock::ClockKind;
     use hyperactor::id;
-    use ndslice::shape;
+    use ndslice::extent;
     use tokio::sync::oneshot;
 
     use super::*;
@@ -1168,21 +1184,19 @@ mod test {
         }
     }
 
-    fn set_procstate_expectations(alloc: &mut MockAlloc, shape: Shape) {
-        let alloc_len = shape.slice().len();
-        alloc.expect_shape().return_const(shape.clone());
-        for i in 0..alloc_len {
+    fn set_procstate_expectations(alloc: &mut MockAlloc, extent: Extent) {
+        alloc.expect_extent().return_const(extent.clone());
+        for (i, point) in extent.points().enumerate() {
             let proc_id = format!("test[{}]", i).parse().unwrap();
-            let coords = shape.slice().coordinates(i).unwrap();
             alloc.expect_next().times(1).return_once(|| {
                 Some(ProcState::Created {
                     proc_id,
-                    coords,
+                    point,
                     pid: 0,
                 })
             });
         }
-        for i in 0..alloc_len {
+        for i in 0..extent.num_ranks() {
             let proc_id = format!("test[{}]", i).parse().unwrap();
             let mesh_agent = ActorRef::<MeshAgent>::attest(
                 format!("test[{}].mesh_agent[{}]", i, i).parse().unwrap(),
@@ -1195,7 +1209,7 @@ mod test {
                 })
             });
         }
-        for i in 0..alloc_len {
+        for i in 0..extent.num_ranks() {
             let proc_id = format!("test[{}]", i).parse().unwrap();
             alloc.expect_next().times(1).return_once(|| {
                 Some(ProcState::Stopped {
@@ -1218,26 +1232,21 @@ mod test {
         let bootstrap_addr = ChannelAddr::any(ChannelTransport::Unix);
         let (_, mut rx) = channel::serve(bootstrap_addr.clone()).await.unwrap();
 
-        let spec = AllocSpec {
-            shape: shape!(host = 1, gpu = 2),
-            constraints: Default::default(),
-        };
+        let extent = extent!(host = 1, gpu = 2);
         let tx = channel::dial(serve_addr.clone()).unwrap();
-
-        let alloc_len = spec.shape.slice().len();
 
         let world_id: WorldId = id!(test_world_id);
         let mut alloc = MockAlloc::new();
         alloc.expect_world_id().return_const(world_id.clone());
-        alloc.expect_shape().return_const(spec.shape.clone());
+        alloc.expect_extent().return_const(extent.clone());
 
-        set_procstate_expectations(&mut alloc, spec.shape.clone());
+        set_procstate_expectations(&mut alloc, extent.clone());
 
         // final none
         alloc.expect_next().return_const(None);
 
         let mut allocator = MockAllocator::new();
-        let total_messages = alloc_len * 3 + 1;
+        let total_messages = extent.num_ranks() * 3 + 1;
         let mock_wrapper = MockAllocWrapper::new_block_next(
             alloc,
             // block after create, running, stopped and done.
@@ -1259,7 +1268,7 @@ mod test {
         });
 
         tx.send(RemoteProcessAllocatorMessage::Allocate {
-            spec: spec.clone(),
+            view: extent.clone().into(),
             bootstrap_addr,
             hosts: vec![],
         })
@@ -1268,33 +1277,34 @@ mod test {
 
         // Allocated
         let m = rx.recv().await.unwrap();
-        assert!(
-            matches!(m, RemoteProcessProcStateMessage::Allocated {world_id, shape} if world_id == world_id && shape == spec.shape)
+        assert_matches!(
+            m, RemoteProcessProcStateMessage::Allocated { world_id, view }
+                if world_id == world_id && extent == view.extent()
         );
 
         // All Created events
-        let mut i: usize = 0;
-        while i < alloc_len {
+        let mut rank: usize = 0;
+        while rank < extent.num_ranks() {
             let m = rx.recv().await.unwrap();
             match m {
                 RemoteProcessProcStateMessage::Update(ProcState::Created {
                     proc_id,
-                    coords,
+                    point,
                     ..
                 }) => {
-                    let expected_proc_id = format!("test[{}]", i).parse().unwrap();
-                    let expected_coords = spec.shape.slice().coordinates(i).unwrap();
+                    let expected_proc_id = format!("test[{}]", rank).parse().unwrap();
+                    let expected_point = extent.point_of_rank(rank).unwrap();
                     assert_eq!(proc_id, expected_proc_id);
-                    assert_eq!(coords, expected_coords);
-                    i += 1;
+                    assert_eq!(point, expected_point);
+                    rank += 1;
                 }
                 RemoteProcessProcStateMessage::HeartBeat => {}
                 _ => panic!("unexpected message: {:?}", m),
             }
         }
         // All Running events
-        let mut i: usize = 0;
-        while i < alloc_len {
+        let mut rank: usize = 0;
+        while rank < extent.num_ranks() {
             let m = rx.recv().await.unwrap();
             match m {
                 RemoteProcessProcStateMessage::Update(ProcState::Running {
@@ -1302,30 +1312,32 @@ mod test {
                     mesh_agent,
                     addr: _,
                 }) => {
-                    let expected_proc_id = format!("test[{}]", i).parse().unwrap();
+                    let expected_proc_id = format!("test[{}]", rank).parse().unwrap();
                     let expected_mesh_agent = ActorRef::<MeshAgent>::attest(
-                        format!("test[{}].mesh_agent[{}]", i, i).parse().unwrap(),
+                        format!("test[{}].mesh_agent[{}]", rank, rank)
+                            .parse()
+                            .unwrap(),
                     );
                     assert_eq!(proc_id, expected_proc_id);
                     assert_eq!(mesh_agent, expected_mesh_agent);
-                    i += 1;
+                    rank += 1;
                 }
                 RemoteProcessProcStateMessage::HeartBeat => {}
                 _ => panic!("unexpected message: {:?}", m),
             }
         }
         // All Stopped events
-        let mut i: usize = 0;
-        while i < alloc_len {
+        let mut rank: usize = 0;
+        while rank < extent.num_ranks() {
             let m = rx.recv().await.unwrap();
             match m {
                 RemoteProcessProcStateMessage::Update(ProcState::Stopped {
                     proc_id,
                     reason: ProcStopReason::Unknown,
                 }) => {
-                    let expected_proc_id = format!("test[{}]", i).parse().unwrap();
+                    let expected_proc_id = format!("test[{}]", rank).parse().unwrap();
                     assert_eq!(proc_id, expected_proc_id);
-                    i += 1;
+                    rank += 1;
                 }
                 RemoteProcessProcStateMessage::HeartBeat => {}
                 _ => panic!("unexpected message: {:?}", m),
@@ -1360,25 +1372,20 @@ mod test {
         let bootstrap_addr = ChannelAddr::any(ChannelTransport::Unix);
         let (_, mut rx) = channel::serve(bootstrap_addr.clone()).await.unwrap();
 
-        let spec = AllocSpec {
-            shape: shape!(host = 1, gpu = 2),
-            constraints: Default::default(),
-        };
+        let extent = extent!(host = 1, gpu = 2);
         let tx = channel::dial(serve_addr.clone()).unwrap();
-
-        let alloc_len = spec.shape.slice().len();
 
         let world_id: WorldId = id!(test_world_id);
         let mut alloc = MockAllocWrapper::new_block_next(
             MockAlloc::new(),
             // block after all created, all running
-            alloc_len * 2,
+            extent.num_ranks() * 2,
         );
         let next_tx = alloc.notify_tx();
         alloc.alloc.expect_world_id().return_const(world_id.clone());
-        alloc.alloc.expect_shape().return_const(spec.shape.clone());
+        alloc.alloc.expect_extent().return_const(extent.clone());
 
-        set_procstate_expectations(&mut alloc.alloc, spec.shape.clone());
+        set_procstate_expectations(&mut alloc.alloc, extent.clone());
 
         alloc.alloc.expect_next().return_const(None);
         alloc.alloc.expect_stop().times(1).return_once(|| Ok(()));
@@ -1400,7 +1407,7 @@ mod test {
         });
 
         tx.send(RemoteProcessAllocatorMessage::Allocate {
-            spec: spec.clone(),
+            view: extent.clone().into(),
             bootstrap_addr,
             hosts: vec![],
         })
@@ -1409,10 +1416,14 @@ mod test {
 
         // Allocated
         let m = rx.recv().await.unwrap();
-        assert_matches!(m, RemoteProcessProcStateMessage::Allocated {world_id, shape} if world_id == world_id && shape == spec.shape);
+        assert_matches!(
+            m,
+            RemoteProcessProcStateMessage::Allocated { world_id, view }
+            if world_id == world_id && view.extent() == extent
+        );
 
-        read_all_created(&mut rx, alloc_len).await;
-        read_all_running(&mut rx, alloc_len).await;
+        read_all_created(&mut rx, extent.num_ranks()).await;
+        read_all_running(&mut rx, extent.num_ranks()).await;
 
         // allocation finished. now we stop it.
         tracing::info!("stopping allocation");
@@ -1420,7 +1431,7 @@ mod test {
         // receive all stops
         next_tx.send(()).unwrap();
 
-        read_all_stopped(&mut rx, alloc_len).await;
+        read_all_stopped(&mut rx, extent.num_ranks()).await;
 
         remote_allocator.terminate();
         handle.await.unwrap().unwrap();
@@ -1438,43 +1449,39 @@ mod test {
         let bootstrap_addr = ChannelAddr::any(ChannelTransport::Unix);
         let (_, mut rx) = channel::serve(bootstrap_addr.clone()).await.unwrap();
 
-        let spec = AllocSpec {
-            shape: shape!(host = 1, gpu = 2),
-            constraints: Default::default(),
-        };
-        let tx = channel::dial(serve_addr.clone()).unwrap();
+        let extent = extent!(host = 1, gpu = 2);
 
-        let alloc_len = spec.shape.slice().len();
+        let tx = channel::dial(serve_addr.clone()).unwrap();
 
         let world_id: WorldId = id!(test_world_id);
         let mut alloc1 = MockAllocWrapper::new_block_next(
             MockAlloc::new(),
             // block after all created, all running
-            alloc_len * 2,
+            extent.num_ranks() * 2,
         );
         let next_tx1 = alloc1.notify_tx();
         alloc1
             .alloc
             .expect_world_id()
             .return_const(world_id.clone());
-        alloc1.alloc.expect_shape().return_const(spec.shape.clone());
+        alloc1.alloc.expect_extent().return_const(extent.clone());
 
-        set_procstate_expectations(&mut alloc1.alloc, spec.shape.clone());
+        set_procstate_expectations(&mut alloc1.alloc, extent.clone());
         alloc1.alloc.expect_next().return_const(None);
         alloc1.alloc.expect_stop().times(1).return_once(|| Ok(()));
         // second allocation
         let mut alloc2 = MockAllocWrapper::new_block_next(
             MockAlloc::new(),
             // block after all created, all running
-            alloc_len * 2,
+            extent.num_ranks() * 2,
         );
         let next_tx2 = alloc2.notify_tx();
         alloc2
             .alloc
             .expect_world_id()
             .return_const(world_id.clone());
-        alloc2.alloc.expect_shape().return_const(spec.shape.clone());
-        set_procstate_expectations(&mut alloc2.alloc, spec.shape.clone());
+        alloc2.alloc.expect_extent().return_const(extent.clone());
+        set_procstate_expectations(&mut alloc2.alloc, extent.clone());
         alloc2.alloc.expect_next().return_const(None);
         alloc2.alloc.expect_stop().times(1).return_once(|| Ok(()));
 
@@ -1500,7 +1507,7 @@ mod test {
         });
 
         tx.send(RemoteProcessAllocatorMessage::Allocate {
-            spec: spec.clone(),
+            view: extent.clone().into(),
             bootstrap_addr: bootstrap_addr.clone(),
             hosts: vec![],
         })
@@ -1509,14 +1516,18 @@ mod test {
 
         // Allocated
         let m = rx.recv().await.unwrap();
-        assert_matches!(m, RemoteProcessProcStateMessage::Allocated {world_id, shape} if world_id == world_id && shape == spec.shape);
+        assert_matches!(
+            m,
+            RemoteProcessProcStateMessage::Allocated { world_id, view }
+            if world_id == world_id && extent == view.extent()
+        );
 
-        read_all_created(&mut rx, alloc_len).await;
-        read_all_running(&mut rx, alloc_len).await;
+        read_all_created(&mut rx, extent.num_ranks()).await;
+        read_all_running(&mut rx, extent.num_ranks()).await;
 
         // allocation finished now we request a new one
         tx.send(RemoteProcessAllocatorMessage::Allocate {
-            spec: spec.clone(),
+            view: extent.clone().into(),
             bootstrap_addr,
             hosts: vec![],
         })
@@ -1525,21 +1536,25 @@ mod test {
         // unblock next for the first allocation
         next_tx1.send(()).unwrap();
         // we expect a stop(), then Stopped proc states, then a new Allocated
-        read_all_stopped(&mut rx, alloc_len).await;
+        read_all_stopped(&mut rx, extent.num_ranks()).await;
         let m = rx.recv().await.unwrap();
         assert_matches!(m, RemoteProcessProcStateMessage::Done(_));
         let m = rx.recv().await.unwrap();
-        assert_matches!(m, RemoteProcessProcStateMessage::Allocated {world_id, shape} if world_id == world_id && shape == spec.shape);
+        assert_matches!(
+            m,
+            RemoteProcessProcStateMessage::Allocated { world_id, view }
+            if world_id == world_id && extent == view.extent()
+        );
         // ProcStates for the new allocation
-        read_all_created(&mut rx, alloc_len).await;
-        read_all_running(&mut rx, alloc_len).await;
+        read_all_created(&mut rx, extent.num_ranks()).await;
+        read_all_running(&mut rx, extent.num_ranks()).await;
         // finally stop
         tracing::info!("stopping allocation");
         tx.send(RemoteProcessAllocatorMessage::Stop).await.unwrap();
         // receive all stops
         next_tx2.send(()).unwrap();
 
-        read_all_stopped(&mut rx, alloc_len).await;
+        read_all_stopped(&mut rx, extent.num_ranks()).await;
 
         remote_allocator.terminate();
         handle.await.unwrap().unwrap();
@@ -1563,25 +1578,21 @@ mod test {
         let bootstrap_addr = ChannelAddr::any(ChannelTransport::Unix);
         let (_, mut rx) = channel::serve(bootstrap_addr.clone()).await.unwrap();
 
-        let spec = AllocSpec {
-            shape: shape!(host = 1, gpu = 2),
-            constraints: Default::default(),
-        };
-        let tx = channel::dial(serve_addr.clone()).unwrap();
+        let extent = extent!(host = 1, gpu = 2);
 
-        let alloc_len = spec.shape.slice().len();
+        let tx = channel::dial(serve_addr.clone()).unwrap();
 
         let world_id: WorldId = id!(test_world_id);
         let mut alloc = MockAllocWrapper::new_block_next(
             MockAlloc::new(),
             // block after all created, all running
-            alloc_len * 2,
+            extent.num_ranks() * 2,
         );
         let next_tx = alloc.notify_tx();
         alloc.alloc.expect_world_id().return_const(world_id.clone());
-        alloc.alloc.expect_shape().return_const(spec.shape.clone());
+        alloc.alloc.expect_extent().return_const(extent.clone());
 
-        set_procstate_expectations(&mut alloc.alloc, spec.shape.clone());
+        set_procstate_expectations(&mut alloc.alloc, extent.clone());
 
         alloc.alloc.expect_next().return_const(None);
         // we expect a stop due to the failure
@@ -1609,7 +1620,7 @@ mod test {
         });
 
         tx.send(RemoteProcessAllocatorMessage::Allocate {
-            spec: spec.clone(),
+            view: extent.clone().into(),
             bootstrap_addr,
             hosts: vec![],
         })
@@ -1618,10 +1629,14 @@ mod test {
 
         // Allocated
         let m = rx.recv().await.unwrap();
-        assert_matches!(m, RemoteProcessProcStateMessage::Allocated {world_id, shape} if world_id == world_id && shape == spec.shape);
+        assert_matches!(
+            m,
+            RemoteProcessProcStateMessage::Allocated { world_id, view }
+            if world_id == world_id && view.extent() == extent
+        );
 
-        read_all_created(&mut rx, alloc_len).await;
-        read_all_running(&mut rx, alloc_len).await;
+        read_all_created(&mut rx, extent.num_ranks()).await;
+        read_all_running(&mut rx, extent.num_ranks()).await;
 
         // allocation finished. terminate connection.
         tracing::info!("closing upstream");
@@ -1649,10 +1664,8 @@ mod test {
         let bootstrap_addr = ChannelAddr::any(ChannelTransport::Unix);
         let (_, mut rx) = channel::serve(bootstrap_addr.clone()).await.unwrap();
 
-        let spec = AllocSpec {
-            shape: shape!(host = 1, gpu = 2),
-            constraints: Default::default(),
-        };
+        let extent = extent!(host = 1, gpu = 2);
+
         let tx = channel::dial(serve_addr.clone()).unwrap();
 
         let test_world_id: WorldId = id!(test_world_id);
@@ -1666,7 +1679,7 @@ mod test {
             .alloc
             .expect_world_id()
             .return_const(test_world_id.clone());
-        alloc.alloc.expect_shape().return_const(spec.shape.clone());
+        alloc.alloc.expect_extent().return_const(extent.clone());
         alloc
             .alloc
             .expect_next()
@@ -1696,7 +1709,7 @@ mod test {
         });
 
         tx.send(RemoteProcessAllocatorMessage::Allocate {
-            spec: spec.clone(),
+            view: extent.clone().into(),
             bootstrap_addr,
             hosts: vec![],
         })
@@ -1705,7 +1718,11 @@ mod test {
 
         // Allocated
         let m = rx.recv().await.unwrap();
-        assert_matches!(m, RemoteProcessProcStateMessage::Allocated {world_id, shape} if world_id == test_world_id && shape == spec.shape);
+        assert_matches!(
+            m,
+            RemoteProcessProcStateMessage::Allocated { world_id, view }
+            if world_id == test_world_id && view.extent() == extent
+        );
         // Failed
         let m = rx.recv().await.unwrap();
         assert_matches!(m, RemoteProcessProcStateMessage::Update(ProcState::Failed {world_id, description}) if world_id == test_world_id && description == "test");
@@ -1729,7 +1746,7 @@ mod test_alloc {
 
     use hyperactor::clock::ClockKind;
     use hyperactor::config;
-    use ndslice::shape;
+    use ndslice::extent;
     use nix::sys::signal;
     use nix::unistd::Pid;
     use timed_test::async_timed_test;
@@ -1751,7 +1768,7 @@ mod test_alloc {
         hyperactor_telemetry::initialize_logging(ClockKind::default());
 
         let spec = AllocSpec {
-            shape: shape!(host = 2, gpu = 2),
+            extent: extent!(host = 2, gpu = 2),
             constraints: Default::default(),
         };
         let world_id = WorldId("test_world_id".to_string());
@@ -1801,17 +1818,14 @@ mod test_alloc {
             .unwrap();
         let mut procs = HashSet::new();
         let mut started_procs = HashSet::new();
-        let mut proc_coords = HashSet::new();
-        let alloc_len = spec.shape.slice().len();
-        for _ in 0..alloc_len * 2 {
+        let mut proc_points = HashSet::new();
+        for _ in 0..spec.extent.num_ranks() * 2 {
             let proc_state = alloc.next().await.unwrap();
             tracing::debug!("test got message: {:?}", proc_state);
             match proc_state {
-                ProcState::Created {
-                    proc_id, coords, ..
-                } => {
+                ProcState::Created { proc_id, point, .. } => {
                     procs.insert(proc_id);
-                    proc_coords.insert(coords);
+                    proc_points.insert(point);
                 }
                 ProcState::Running { proc_id, .. } => {
                     assert!(procs.contains(&proc_id));
@@ -1822,22 +1836,22 @@ mod test_alloc {
         }
         assert_eq!(procs, started_procs);
         // ensure coords coverage
-        for rank in 0..spec.shape.slice().len() {
-            let coords = spec.shape.slice().coordinates(rank).unwrap();
-            assert!(proc_coords.contains(&coords));
-        }
+        assert!(
+            spec.extent
+                .points()
+                .all(|point| proc_points.contains(&point))
+        );
 
         // ensure no more pending items
         let timeout = hyperactor::clock::RealClock.now() + std::time::Duration::from_millis(1000);
         tokio::select! {
-            _ = hyperactor::clock::RealClock
-            .sleep_until(timeout) => {},
+            _ = hyperactor::clock::RealClock.sleep_until(timeout) => {},
             _ = alloc.next() => panic!("expected no more items"),
         }
 
         // stop the allocation
         alloc.stop().await.unwrap();
-        for _ in 0..spec.shape.slice().len() {
+        for _ in 0..spec.extent.num_ranks() {
             let proc_state = alloc.next().await.unwrap();
             tracing::info!("test received next proc_state: {:?}", proc_state);
             match proc_state {
@@ -1876,7 +1890,7 @@ mod test_alloc {
         hyperactor_telemetry::initialize_logging(ClockKind::default());
 
         let spec = AllocSpec {
-            shape: shape!(host = 2, gpu = 2),
+            extent: extent!(host = 2, gpu = 2),
             constraints: Default::default(),
         };
         let world_id = WorldId("test_world_id".to_string());
@@ -1926,8 +1940,7 @@ mod test_alloc {
         let mut alloc = RemoteProcessAlloc::new(spec.clone(), world_id, transport, 0, initializer)
             .await
             .unwrap();
-        let alloc_len = spec.shape.slice().len();
-        for _ in 0..alloc_len * 2 {
+        for _ in 0..spec.extent.num_ranks() * 2 {
             match alloc.next().await {
                 Some(ProcState::Created { .. }) | Some(ProcState::Running { .. }) => {}
                 _ => panic!("expected Created or Running"),
@@ -1948,7 +1961,7 @@ mod test_alloc {
         RealClock
             .sleep(config::global::get(config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL) * 2)
             .await;
-        for _ in 0..spec.shape.slice().len() / 2 {
+        for _ in 0..spec.extent.num_ranks() / 2 {
             let proc_state = alloc.next().await.unwrap();
             tracing::info!("test received next proc_state: {:?}", proc_state);
             match proc_state {
@@ -1972,7 +1985,7 @@ mod test_alloc {
         RealClock
             .sleep(config::global::get(config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL) * 2)
             .await;
-        for _ in 0..spec.shape.slice().len() / 2 {
+        for _ in 0..spec.extent.num_ranks() / 2 {
             let proc_state = alloc.next().await.unwrap();
             tracing::info!("test received next proc_state: {:?}", proc_state);
             match proc_state {
@@ -2004,7 +2017,7 @@ mod test_alloc {
         hyperactor_telemetry::initialize_logging(ClockKind::default());
 
         let spec = AllocSpec {
-            shape: shape!(host = 2, gpu = 2),
+            extent: extent!(host = 2, gpu = 2),
             constraints: Default::default(),
         };
         let world_id = WorldId("test_world_id".to_string());
@@ -2054,19 +2067,16 @@ mod test_alloc {
             .unwrap();
         let mut procs = HashSet::new();
         let mut started_procs = HashSet::new();
-        let mut proc_coords = HashSet::new();
+        let mut proc_points = HashSet::new();
         let mut failed = 0;
-        let alloc_len = spec.shape.slice().len();
         // task 1 procs + 1 failed event for task 2
-        for _ in 0..alloc_len + 1 {
+        for _ in 0..spec.extent.num_ranks() + 1 {
             let proc_state = alloc.next().await.unwrap();
             tracing::debug!("test got message: {:?}", proc_state);
             match proc_state {
-                ProcState::Created {
-                    proc_id, coords, ..
-                } => {
+                ProcState::Created { proc_id, point, .. } => {
                     procs.insert(proc_id);
-                    proc_coords.insert(coords);
+                    proc_points.insert(point);
                 }
                 ProcState::Running { proc_id, .. } => {
                     assert!(procs.contains(&proc_id));
@@ -2081,9 +2091,9 @@ mod test_alloc {
         assert_eq!(procs, started_procs);
         assert_eq!(failed, 1);
         // ensure coords coverage for task 1
-        for rank in 0..spec.shape.slice().len() / 2 {
-            let coords = spec.shape.slice().coordinates(rank).unwrap();
-            assert!(proc_coords.contains(&coords));
+        for rank in 0..spec.extent.num_ranks() / 2 {
+            let point = spec.extent.point_of_rank(rank).unwrap();
+            assert!(proc_points.contains(&point));
         }
 
         // ensure no more pending items
@@ -2096,7 +2106,7 @@ mod test_alloc {
 
         // stop the allocation
         alloc.stop().await.unwrap();
-        for _ in 0..spec.shape.slice().len() / 2 {
+        for _ in 0..spec.extent.num_ranks() / 2 {
             let proc_state = alloc.next().await.unwrap();
             tracing::info!("test received next proc_state: {:?}", proc_state);
             match proc_state {

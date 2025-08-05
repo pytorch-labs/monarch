@@ -16,7 +16,7 @@ use hyperactor_mesh::alloc::AllocSpec;
 use hyperactor_mesh::alloc::Allocator;
 use hyperactor_mesh::alloc::ProcState;
 use hyperactor_mesh::alloc::ProcessAllocator;
-use ndslice::shape;
+use ndslice::extent;
 use tokio::process::Command;
 
 fn emit_proc_state(state: &ProcState) {
@@ -44,7 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create an allocation with 4 child processes
     let mut alloc = allocator
         .allocate(AllocSpec {
-            shape: shape! { replica = 4 },
+            extent: extent! { replica = 4 },
             constraints: AllocConstraints::default(),
         })
         .await?;

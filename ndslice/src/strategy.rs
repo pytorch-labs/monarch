@@ -653,7 +653,7 @@ mod tests {
       #[test]
       fn rank_is_injective(extent in gen_extent(1..=4, 8)) {
         let mut seen = HashSet::new();
-        for point in extent.iter() {
+        for point in extent.points() {
           let rank = point.rank();
           prop_assert!(
             seen.insert(rank),
@@ -675,7 +675,7 @@ mod tests {
       #[test]
       fn rank_is_monotonic(extent in gen_extent(1..=4, 8)) {
         let mut last_rank = None;
-        for point in extent.iter() {
+        for point in extent.points() {
           let rank = point.rank();
           if let Some(prev) = last_rank {
             prop_assert!(prev < rank, "Rank not monotonic: {} >= {}", prev, rank);
@@ -694,8 +694,8 @@ mod tests {
     proptest! {
       #[test]
       fn rank_bounds(extent in gen_extent(1..=4, 8)) {
-        let len = extent.len();
-        for point in extent.iter() {
+        let len = extent.num_ranks();
+        for point in extent.points() {
           let rank = point.rank();
           prop_assert!(rank < len, "Rank {} out of bounds for extent of size {}", rank, len);
         }
@@ -714,7 +714,7 @@ mod tests {
     proptest! {
         #[test]
         fn rank_point_trip(extent in gen_extent(1..=4, 8)) {
-            for r in 0..extent.len() {
+            for r in 0..extent.num_ranks() {
                 let point = extent.point_of_rank(r).unwrap();
                 prop_assert_eq!(
                     point.rank(),

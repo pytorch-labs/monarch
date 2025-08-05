@@ -87,7 +87,7 @@ pub mod test_utils {
     use hyperactor_mesh::alloc::AllocSpec;
     use hyperactor_mesh::alloc::Allocator;
     use hyperactor_mesh::alloc::LocalAllocator;
-    use ndslice::shape;
+    use ndslice::extent;
 
     use crate::IbverbsConfig;
     use crate::PollTarget;
@@ -332,7 +332,7 @@ pub mod test_utils {
 
             let alloc_1 = LocalAllocator
                 .allocate(AllocSpec {
-                    shape: shape! { proc = 1 },
+                    extent: extent! { proc = 1 },
                     constraints: Default::default(),
                 })
                 .await
@@ -344,7 +344,7 @@ pub mod test_utils {
 
             let alloc_2 = LocalAllocator
                 .allocate(AllocSpec {
-                    shape: shape! { proc = 1 },
+                    extent: extent! { proc = 1 },
                     constraints: Default::default(),
                 })
                 .await
@@ -372,7 +372,6 @@ pub mod test_utils {
 
                     let mut dptr: cuda_sys::CUdeviceptr = std::mem::zeroed();
                     let mut handle: cuda_sys::CUmemGenericAllocationHandle = std::mem::zeroed();
-                    let /*mut*/ padded_size: usize;
 
                     let mut device: cuda_sys::CUdevice = std::mem::zeroed();
                     cu_check!(cuda_sys::cuDeviceGet(&mut device, device_str.1));
@@ -397,7 +396,7 @@ pub mod test_utils {
                     ));
 
                     // ensure our size is aligned
-                    padded_size = ((buffer_size - 1) / granularity + 1) * granularity;
+                    let /*mut*/ padded_size: usize = ((buffer_size - 1) / granularity + 1) * granularity;
                     assert!(padded_size == buffer_size);
 
                     cu_check!(cuda_sys::cuMemCreate(

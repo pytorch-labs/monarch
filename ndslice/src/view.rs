@@ -14,7 +14,6 @@ use serde::Serialize;
 use thiserror::Error;
 
 use crate::Range;
-use crate::Shape;
 use crate::Slice;
 use crate::SliceIterator;
 use crate::slice::CartesianIterator;
@@ -172,9 +171,17 @@ impl Extent {
         Slice::new_row_major(self.sizes())
     }
 
+    /// Iterate over this extens labels and sizes.
+    pub fn iter(&self) -> impl Iterator<Item = (String, usize)> + use<'_> {
+        self.labels()
+            .iter()
+            .zip(self.sizes().iter())
+            .map(|(l, s)| (l.clone(), *s))
+    }
+
     /// Iterate points in this extent.
-    pub fn iter(&self) -> ExtentIterator {
-        ExtentIterator {
+    pub fn points(&self) -> ExtentPointsIterator {
+        ExtentPointsIterator {
             extent: self,
             pos: CartesianIterator::new(self.sizes().to_vec()),
         }
@@ -195,12 +202,12 @@ impl std::fmt::Display for Extent {
 }
 
 /// An iterator for points in an extent.
-pub struct ExtentIterator<'a> {
+pub struct ExtentPointsIterator<'a> {
     extent: &'a Extent,
     pos: CartesianIterator,
 }
 
-impl<'a> Iterator for ExtentIterator<'a> {
+impl<'a> Iterator for ExtentPointsIterator<'a> {
     type Item = Point;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -411,6 +418,19 @@ impl View {
     }
 }
 
+impl std::fmt::Display for View {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let n = self.labels.len();
+        for i in 0..n {
+            write!(f, "{}={}", self.labels[i], self.slice.sizes()[i])?;
+            if i != n - 1 {
+                write!(f, ",")?;
+            }
+        }
+        Ok(())
+    }
+}
+
 /// The iterator over views.
 pub struct ViewIterator {
     extent: Extent,     // Note that `extent` and...
@@ -459,6 +479,17 @@ impl Viewable for Extent {
 
     fn slice(&self) -> Slice {
         self.to_slice()
+    }
+}
+
+// We would make this impl<T: Viewable> From<T> for View,
+// except this conflicts with the blanket impl for From<&T> for View.
+impl From<Extent> for View {
+    fn from(extent: Extent) -> Self {
+        View {
+            labels: extent.labels().to_vec(),
+            slice: extent.slice(),
+        }
     }
 }
 
@@ -612,6 +643,7 @@ macro_rules! extent {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::Shape;
     use crate::shape;
 
     #[test]
@@ -641,8 +673,8 @@ mod test {
         assert_eq!(p6[1], 0);
         assert_eq!(p6[2], 1);
 
-        assert_eq!(extent.iter().collect::<Vec<_>>().len(), 4 * 5 * 6);
-        for (rank, point) in extent.iter().enumerate() {
+        assert_eq!(extent.points().collect::<Vec<_>>().len(), 4 * 5 * 6);
+        for (rank, point) in extent.points().enumerate() {
             let &[x, y, z] = &**point.coords() else {
                 panic!("invalid coords");
             };
@@ -784,6 +816,19 @@ mod test {
     }
 
     #[test]
+    fn test_extent_basic() {
+        let extent = extent!(x = 10, y = 5, z = 1);
+        assert_eq!(
+            extent.iter().collect::<Vec<_>>(),
+            vec![
+                ("x".to_string(), 10),
+                ("y".to_string(), 5),
+                ("z".to_string(), 1)
+            ]
+        );
+    }
+
+    #[test]
     fn test_extent_display() {
         let extent = Extent::new(vec!["x".into(), "y".into(), "z".into()], vec![4, 5, 6]).unwrap();
         assert_eq!(format!("{}", extent), "x=4,y=5,z=6");
@@ -795,8 +840,8 @@ mod test {
     #[test]
     fn test_extent_0d() {
         let e = Extent::new(vec![], vec![]).unwrap();
-        assert_eq!(e.len(), 1);
-        let points: Vec<_> = e.iter().collect();
+        assert_eq!(e.num_ranks(), 1);
+        let points: Vec<_> = e.points().collect();
         assert_eq!(points.len(), 1);
         assert_eq!(points[0].coords(), &[]);
         assert_eq!(points[0].rank(), 0);

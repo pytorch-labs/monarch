@@ -79,8 +79,8 @@ use monarch_rdma::IbverbsConfig;
 use monarch_rdma::RdmaBuffer;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
+use ndslice::extent;
 use ndslice::selection;
-use ndslice::shape;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::process::Command;
@@ -474,7 +474,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
     let ps_proc_mesh = ProcMesh::allocate(
         alloc
             .allocate(AllocSpec {
-                shape: shape! {replica=1, host=1, gpu=1},
+                extent: extent! {replica=1, host=1, gpu=1},
                 constraints: Default::default(),
             })
             .await?,
@@ -500,7 +500,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
     let worker_proc_mesh = ProcMesh::allocate(
         alloc
             .allocate(AllocSpec {
-                shape: shape! {replica=1, host=1, gpu=num_workers},
+                extent: extent! {replica=1, host=1, gpu=num_workers},
                 constraints: Default::default(),
             })
             .await?,

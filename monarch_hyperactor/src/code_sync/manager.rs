@@ -91,7 +91,7 @@ impl WorkspaceShape {
         Ok(new_shape)
     }
 
-    /// Return a new shape that containts all ranks that share the same workspace with the given "owning" rank.
+    /// Return a new shape that contains all ranks that share the same workspace with the given "owning" rank.
     ///
     /// # Errors
     ///
@@ -367,6 +367,7 @@ mod tests {
     use hyperactor_mesh::alloc::Allocator;
     use hyperactor_mesh::alloc::local::LocalAllocator;
     use hyperactor_mesh::proc_mesh::ProcMesh;
+    use ndslice::extent;
     use ndslice::shape;
     use tempfile::TempDir;
     use tokio::fs;
@@ -455,7 +456,7 @@ mod tests {
         // Set up actor mesh with CodeSyncManager actors
         let alloc = LocalAllocator
             .allocate(AllocSpec {
-                shape: shape! { replica = 2 },
+                extent: extent! { replica = 2 },
                 constraints: Default::default(),
             })
             .await?;

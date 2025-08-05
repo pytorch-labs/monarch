@@ -14,7 +14,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use dashmap::DashMap;
-use dashmap::DashSet;
 use futures::future::join_all;
 use hyperactor::Actor;
 use hyperactor::ActorId;
@@ -138,16 +137,14 @@ impl ProcMesh {
         while !running.is_full() {
             let Some(state) = alloc.next().await else {
                 // Alloc finished before it was fully allocated.
-                return Err(AllocatorError::Incomplete(shape));
+                return Err(AllocatorError::Incomplete(alloc.extent().clone()));
             };
 
             match state {
-                ProcState::Created {
-                    proc_id, coords, ..
-                } => {
+                ProcState::Created { proc_id, point, .. } => {
                     let rank = shape
                         .slice()
-                        .location(&coords)
+                        .location(point.coords())
                         .map_err(|err| AllocatorError::Other(err.into()))?;
                     if let Some(old_proc_id) = proc_ids.insert(rank, proc_id.clone()) {
                         tracing::warn!("rank {rank} reassigned from {old_proc_id} to {proc_id}");
@@ -781,7 +778,7 @@ mod tests {
     use std::assert_matches::assert_matches;
 
     use hyperactor::actor::ActorStatus;
-    use ndslice::shape;
+    use ndslice::extent;
 
     use super::*;
     use crate::actor_mesh::ActorMesh;
@@ -796,7 +793,7 @@ mod tests {
     async fn test_basic() {
         let alloc = LocalAllocator
             .allocate(AllocSpec {
-                shape: shape! { replica = 4 },
+                extent: extent!(replica = 4),
                 constraints: Default::default(),
             })
             .await
@@ -812,7 +809,7 @@ mod tests {
     async fn test_propagate_lifecycle_events() {
         let alloc = LocalAllocator
             .allocate(AllocSpec {
-                shape: shape! { replica = 4 },
+                extent: extent!(replica = 4),
                 constraints: Default::default(),
             })
             .await
@@ -845,7 +842,7 @@ mod tests {
 
         let alloc = LocalAllocator
             .allocate(AllocSpec {
-                shape: shape! { replica = 2  },
+                extent: extent!(replica = 2),
                 constraints: Default::default(),
             })
             .await
@@ -894,7 +891,7 @@ mod tests {
     async fn test_spawn_twice() {
         let alloc = LocalAllocator
             .allocate(AllocSpec {
-                shape: shape! { replica = 1  },
+                extent: extent!(replica = 1),
                 constraints: Default::default(),
             })
             .await

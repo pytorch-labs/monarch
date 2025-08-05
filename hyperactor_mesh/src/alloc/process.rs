@@ -30,7 +30,7 @@ use hyperactor::channel::Tx;
 use hyperactor::channel::TxStatus;
 use hyperactor::sync::flag;
 use hyperactor::sync::monitor;
-use ndslice::Shape;
+use ndslice::view::Extent;
 use nix::sys::signal;
 use nix::unistd::Pid;
 use tokio::io;
@@ -89,7 +89,6 @@ impl Allocator for ProcessAllocator {
             .map_err(anyhow::Error::from)?;
 
         let name = ShortUuid::generate();
-        let n = spec.shape.slice().len();
         Ok(ProcessAlloc {
             name: name.clone(),
             world_id: WorldId(name.to_string()),
@@ -98,7 +97,7 @@ impl Allocator for ProcessAllocator {
             rx,
             index: 0,
             active: HashMap::new(),
-            ranks: Ranks::new(n),
+            ranks: Ranks::new(spec.extent.num_ranks()),
             cmd: Arc::clone(&self.cmd),
             children: JoinSet::new(),
             running: true,
@@ -350,7 +349,7 @@ impl ProcessAlloc {
 
     #[hyperactor::instrument_infallible]
     async fn maybe_spawn(&mut self) -> Option<ProcState> {
-        if self.active.len() >= self.spec.shape.slice().len() {
+        if self.active.len() >= self.spec.extent.num_ranks() {
             return None;
         }
         let mut cmd = self.cmd.lock().await;
@@ -393,11 +392,10 @@ impl ProcessAlloc {
                         self.children.spawn(async move { (index, monitor.await) });
                         self.active.insert(index, handle);
                         // Adjust for shape slice offset for non-zero shapes (sub-shapes).
-                        let rank = rank + self.spec.shape.slice().offset();
-                        let coords = self.spec.shape.slice().coordinates(rank).unwrap();
+                        let point = self.spec.extent.point_of_rank(rank).unwrap();
                         Some(ProcState::Created {
                             proc_id,
-                            coords,
+                            point,
                             pid,
                         })
                     }
@@ -490,8 +488,8 @@ impl Alloc for ProcessAlloc {
         }
     }
 
-    fn shape(&self) -> &Shape {
-        &self.spec.shape
+    fn extent(&self) -> &Extent {
+        &self.spec.extent
     }
 
     fn world_id(&self) -> &WorldId {
@@ -543,7 +541,7 @@ mod tests {
 
         let mut alloc = allocator
             .allocate(AllocSpec {
-                shape: ndslice::shape! { replica = 1 },
+                extent: ndslice::extent!(replica = 1),
                 constraints: Default::default(),
             })
             .await

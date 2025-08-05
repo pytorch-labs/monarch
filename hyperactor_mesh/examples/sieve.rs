@@ -27,7 +27,7 @@ use hyperactor_mesh::ProcMesh;
 use hyperactor_mesh::alloc::AllocSpec;
 use hyperactor_mesh::alloc::Allocator;
 use hyperactor_mesh::alloc::LocalAllocator;
-use hyperactor_mesh::shape;
+use hyperactor_mesh::extent;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -106,7 +106,7 @@ impl Actor for SieveActor {
 async fn main() -> Result<ExitCode> {
     let alloc = LocalAllocator
         .allocate(AllocSpec {
-            shape: shape! { replica = 1 },
+            extent: extent! { replica = 1 },
             constraints: Default::default(),
         })
         .await?;

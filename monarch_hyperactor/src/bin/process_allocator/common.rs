@@ -74,7 +74,7 @@ mod tests {
     use hyperactor_mesh::alloc;
     use hyperactor_mesh::alloc::Alloc;
     use hyperactor_mesh::alloc::remoteprocess;
-    use ndslice::shape;
+    use ndslice::extent;
 
     use super::*;
 
@@ -115,7 +115,7 @@ mod tests {
 
         let spec = alloc::AllocSpec {
             // NOTE: x cannot be more than 1 since we created a single process-allocator server instance!
-            shape: shape! { x=1, y=4 },
+            extent: extent! { x=1, y=4 },
             constraints: Default::default(),
         };
 
@@ -140,7 +140,7 @@ mod tests {
         .unwrap();
 
         // make sure we accounted for `world_size` number of Created and Stopped proc states
-        let world_size = spec.shape.slice().iter().count();
+        let world_size = spec.extent.num_ranks();
         let mut created_ranks: HashSet<usize> = HashSet::new();
         let mut stopped_ranks: HashSet<usize> = HashSet::new();
 
@@ -181,7 +181,7 @@ mod tests {
 
         let spec = alloc::AllocSpec {
             // NOTE: x cannot be more than 1 since we created a single process-allocator server instance!
-            shape: shape! { x=1, y=4 },
+            extent: extent! { x=1, y=4 },
             constraints: Default::default(),
         };
 
@@ -239,7 +239,7 @@ mod tests {
 
         let spec = alloc::AllocSpec {
             // NOTE: x cannot be more than 1 since we created a single process-allocator server instance!
-            shape: shape! { x=1, y=4 },
+            extent: extent! { x=1, y=4 },
             constraints: Default::default(),
         };
 
@@ -318,7 +318,7 @@ mod tests {
 
         let spec = alloc::AllocSpec {
             // NOTE: x cannot be more than 1 since we created a single process-allocator server instance!
-            shape: shape! { x=1, y=4 },
+            extent: extent! { x=1, y=4 },
             constraints: Default::default(),
         };
 
@@ -346,7 +346,7 @@ mod tests {
         // Ensure the process starts. Since the command is "sleep", it should
         // start without stopping.
         // make sure we accounted for `world_size` number of Created and Stopped proc states
-        let world_size = spec.shape.slice().iter().count();
+        let world_size = spec.extent.num_ranks();
         let mut created_ranks: HashSet<usize> = HashSet::new();
 
         while created_ranks.len() < world_size {

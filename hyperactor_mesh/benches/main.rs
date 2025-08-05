@@ -18,9 +18,9 @@ use hyperactor_mesh::actor_mesh::RootActorMesh;
 use hyperactor_mesh::alloc::AllocSpec;
 use hyperactor_mesh::alloc::Allocator;
 use hyperactor_mesh::alloc::LocalAllocator;
+use hyperactor_mesh::extent;
 use hyperactor_mesh::selection::dsl::all;
 use hyperactor_mesh::selection::dsl::true_;
-use hyperactor_mesh::shape;
 
 mod bench_actor;
 use bench_actor::BenchActor;
@@ -39,10 +39,9 @@ fn bench_actor_scaling(c: &mut Criterion) {
         group.bench_function(BenchmarkId::from_parameter(host_count), |b| {
             let mut b = b.to_async(Runtime::new().unwrap());
             b.iter_custom(|iters| async move {
-                let shape = shape! {  hosts=host_count, gpus=8 };
                 let alloc = LocalAllocator
                     .allocate(AllocSpec {
-                        shape: shape.clone(),
+                        extent: extent!(hosts = host_count, gpus = 8),
                         constraints: Default::default(),
                     })
                     .await

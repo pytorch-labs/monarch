@@ -439,7 +439,7 @@ mod tests {
     use hyperactor_mesh::alloc::Allocator;
     use hyperactor_mesh::alloc::local::LocalAllocator;
     use hyperactor_mesh::proc_mesh::ProcMesh;
-    use ndslice::shape;
+    use ndslice::extent;
     use tempfile::TempDir;
     use tokio::fs;
     use tokio::net::TcpListener;
@@ -480,7 +480,7 @@ mod tests {
         // Set up actor mesh with 2 RsyncActors
         let alloc = LocalAllocator
             .allocate(AllocSpec {
-                shape: shape! { replica = 1 },
+                extent: extent! { replica = 1 },
                 constraints: Default::default(),
             })
             .await?;

@@ -30,6 +30,9 @@ pub use local::LocalAllocator;
 use mockall::predicate::*;
 use mockall::*;
 use ndslice::Shape;
+use ndslice::Slice;
+use ndslice::view::Extent;
+use ndslice::view::Point;
 pub use process::ProcessAlloc;
 pub use process::ProcessAllocator;
 use serde::Deserialize;
@@ -42,11 +45,11 @@ use crate::proc_mesh::mesh_agent::MeshAgent;
 #[derive(Debug, thiserror::Error)]
 pub enum AllocatorError {
     #[error("incomplete allocation; expected: {0}")]
-    Incomplete(Shape),
+    Incomplete(Extent),
 
     /// The requested shape is too large for the allocator.
-    #[error("not enough resources; requested: {requested:?}, available: {available:?}")]
-    NotEnoughResources { requested: Shape, available: Shape },
+    #[error("not enough resources; requested: {requested}, available: {available}")]
+    NotEnoughResources { requested: Extent, available: usize },
 
     /// An uncategorized error from an underlying system.
     #[error(transparent)]
@@ -64,11 +67,11 @@ pub struct AllocConstraints {
 /// A specification (desired state) of an alloc.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AllocSpec {
-    /// The requested shape of the alloc.
+    /// The requested extent of the alloc.
     // We currently assume that this shape is dense.
     // This should be validated, or even enforced by
     // way of types.
-    pub shape: Shape,
+    pub extent: Extent,
     /// Constraints on the allocation.
     pub constraints: AllocConstraints,
 }
@@ -95,8 +98,8 @@ pub enum ProcState {
     Created {
         /// The proc's id.
         proc_id: ProcId,
-        /// Its assigned coordinates (in the alloc's shape).
-        coords: Vec<usize>,
+        /// Its assigned point (in the alloc's extent).
+        point: Point,
         /// The system process ID of the created child process.
         pid: u32,
     },
@@ -135,20 +138,10 @@ impl fmt::Display for ProcState {
         match self {
             ProcState::Created {
                 proc_id,
-                coords,
+                point,
                 pid,
             } => {
-                write!(
-                    f,
-                    "{}: created at ({}) with PID {}",
-                    proc_id,
-                    coords
-                        .iter()
-                        .map(|c| c.to_string())
-                        .collect::<Vec<_>>()
-                        .join(","),
-                    pid
-                )
+                write!(f, "{}: created at ({}) with PID {}", proc_id, point, pid)
             }
             ProcState::Running { proc_id, addr, .. } => {
                 write!(f, "{}: running at {}", proc_id, addr)
@@ -215,7 +208,13 @@ pub trait Alloc {
     async fn next(&mut self) -> Option<ProcState>;
 
     /// The shape of the alloc.
-    fn shape(&self) -> &Shape;
+    fn extent(&self) -> &Extent;
+
+    /// The shape of the alloc. (Deprecated.)
+    fn shape(&self) -> Shape {
+        let slice = Slice::new_row_major(self.extent().sizes());
+        Shape::new(self.extent().labels().to_vec(), slice).unwrap()
+    }
 
     /// The world id of this alloc, uniquely identifying the alloc.
     /// Note: This will be removed in favor of a different naming scheme,
@@ -347,8 +346,8 @@ pub mod test_utils {
             self.alloc.next().await
         }
 
-        fn shape(&self) -> &Shape {
-            self.alloc.shape()
+        fn extent(&self) -> &Extent {
+            self.alloc.extent()
         }
 
         fn world_id(&self) -> &WorldId {
@@ -383,7 +382,7 @@ pub(crate) mod testing {
     use hyperactor::mailbox::UndeliverableMailboxSender;
     use hyperactor::proc::Proc;
     use hyperactor::reference::Reference;
-    use ndslice::shape;
+    use ndslice::extent;
     use tokio::process::Command;
 
     use super::*;
@@ -403,9 +402,10 @@ pub(crate) mod testing {
     }
 
     pub(crate) async fn test_allocator_basic(mut allocator: impl Allocator) {
+        let extent = extent!(replica = 4);
         let mut alloc = allocator
             .allocate(AllocSpec {
-                shape: shape! { replica = 4 },
+                extent: extent.clone(),
                 constraints: Default::default(),
             })
             .await
@@ -417,10 +417,8 @@ pub(crate) mod testing {
         let mut running = HashSet::new();
         while running.len() != 4 {
             match alloc.next().await.unwrap() {
-                ProcState::Created {
-                    proc_id, coords, ..
-                } => {
-                    procs.insert(proc_id, coords);
+                ProcState::Created { proc_id, point, .. } => {
+                    procs.insert(proc_id, point);
                 }
                 ProcState::Running { proc_id, .. } => {
                     assert!(procs.contains_key(&proc_id));
@@ -431,10 +429,10 @@ pub(crate) mod testing {
             }
         }
 
-        // We should have complete coverage of all coordinates.
-        let coords: HashSet<_> = procs.values().collect();
+        // We should have complete coverage of all points.
+        let points: HashSet<_> = procs.values().collect();
         for x in 0..4 {
-            assert!(coords.contains(&vec![x]));
+            assert!(points.contains(&extent.point(vec![x]).unwrap()));
         }
 
         // Every proc should belong to the same "world" (alloc).
@@ -552,7 +550,7 @@ pub(crate) mod testing {
         let mut allocator = ProcessAllocator::new(command);
         let mut alloc = allocator
             .allocate(AllocSpec {
-                shape: shape! { replica = 1 },
+                extent: extent! { replica = 1 },
                 constraints: Default::default(),
             })
             .await
@@ -565,10 +563,8 @@ pub(crate) mod testing {
         let (router, client, client_proc, router_addr) = spawn_proc(alloc.transport()).await;
         while running.is_empty() {
             match alloc.next().await.unwrap() {
-                ProcState::Created {
-                    proc_id, coords, ..
-                } => {
-                    procs.insert(proc_id, coords);
+                ProcState::Created { proc_id, point, .. } => {
+                    procs.insert(proc_id, point);
                 }
                 ProcState::Running {
                     proc_id,

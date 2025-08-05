@@ -23,7 +23,7 @@ use hyperactor::channel::ChannelTransport;
 use hyperactor::mailbox::MailboxServer;
 use hyperactor::mailbox::MailboxServerHandle;
 use hyperactor::proc::Proc;
-use ndslice::Shape;
+use ndslice::view::Extent;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 
@@ -86,7 +86,7 @@ impl LocalAlloc {
     pub(crate) fn new_with_transport(spec: AllocSpec, transport: ChannelTransport) -> Self {
         let name = ShortUuid::generate();
         let (todo_tx, todo_rx) = mpsc::unbounded_channel();
-        for rank in 0..spec.shape.slice().len() {
+        for rank in 0..spec.extent.num_ranks() {
             todo_tx.send(Action::Start(rank)).unwrap();
         }
         Self {
@@ -130,7 +130,7 @@ impl LocalAlloc {
     }
 
     pub(crate) fn size(&self) -> usize {
-        self.spec.shape.slice().len()
+        self.spec.extent.num_ranks()
     }
 }
 
@@ -198,18 +198,16 @@ impl Alloc for LocalAlloc {
                         },
                     );
 
-                    // Adjust for shape slice offset for non-zero shapes (sub-shapes).
-                    let rank = rank + self.spec.shape.slice().offset();
-                    let coords = match self.spec.shape.slice().coordinates(rank) {
-                        Ok(coords) => coords,
+                    let point = match self.spec.extent.point_of_rank(rank) {
+                        Ok(point) => point,
                         Err(err) => {
-                            tracing::error!("failed to get coords for rank {}: {}", rank, err);
+                            tracing::error!("failed to get point for rank {}: {}", rank, err);
                             return None;
                         }
                     };
                     let created = ProcState::Created {
                         proc_id: proc_id.clone(),
-                        coords,
+                        point,
                         pid: std::process::id(),
                     };
                     self.queue.push_back(ProcState::Running {
@@ -246,8 +244,8 @@ impl Alloc for LocalAlloc {
         event
     }
 
-    fn shape(&self) -> &Shape {
-        &self.spec.shape
+    fn extent(&self) -> &Extent {
+        &self.spec.extent
     }
 
     fn world_id(&self) -> &WorldId {

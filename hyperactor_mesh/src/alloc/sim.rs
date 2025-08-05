@@ -16,7 +16,7 @@ use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::mailbox::MailboxServerHandle;
 use hyperactor::proc::Proc;
-use ndslice::Shape;
+use ndslice::view::Extent;
 
 use super::ProcStopReason;
 use crate::alloc::Alloc;
@@ -93,8 +93,8 @@ impl Alloc for SimAlloc {
         self.inner.next().await
     }
 
-    fn shape(&self) -> &Shape {
-        self.inner.shape()
+    fn extent(&self) -> &Extent {
+        self.inner.extent()
     }
 
     fn world_id(&self) -> &WorldId {

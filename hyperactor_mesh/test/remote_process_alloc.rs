@@ -22,7 +22,7 @@ use hyperactor_mesh::alloc::ProcState;
 use hyperactor_mesh::alloc::remoteprocess::MockRemoteProcessAllocInitializer;
 use hyperactor_mesh::alloc::remoteprocess::RemoteProcessAlloc;
 use hyperactor_mesh::alloc::remoteprocess::RemoteProcessAllocHost;
-use hyperactor_mesh::shape;
+use hyperactor_mesh::extent;
 
 // Spawn 2 proc_meshes each with 2 hosts
 #[derive(Parser, Debug)]
@@ -89,7 +89,7 @@ async fn main() {
 
         let mut alloc = RemoteProcessAlloc::new(
             AllocSpec {
-                shape: shape!(host = hosts_per_proc_mesh, gpu = 1),
+                extent: extent!(host = hosts_per_proc_mesh, gpu = 1),
                 constraints: Default::default(),
             },
             WorldId("test_world_id".to_string()),
