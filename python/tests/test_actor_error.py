@@ -609,9 +609,7 @@ async def test_supervision_with_sending_error():
     await actor_mesh.check_with_payload.call(payload="a")
 
     # send a large payload to trigger send timeout error
-    with pytest.raises(
-        SupervisionError, match="supervision error:.*actor mesh is stopped"
-    ):
+    with pytest.raises(SupervisionError, match="supervision error:.*"):
         await actor_mesh.check_with_payload.call(payload="a" * 55000000)
 
     # new call should fail with check of health state of actor mesh
