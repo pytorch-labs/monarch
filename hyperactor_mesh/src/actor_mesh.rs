@@ -76,6 +76,8 @@ pub(crate) fn actor_mesh_cast<A, M>(
     selection_of_root: Selection,
     root_mesh_shape: &Shape,
     message: M,
+    // None means cast to root mesh.
+    cast_mesh_shape: Option<&Shape>,
 ) -> Result<(), CastError>
 where
     A: RemoteActor + RemoteHandles<IndexedErasedUnbound<M>>,
@@ -89,10 +91,13 @@ where
     let message = CastMessageEnvelope::new::<A, M>(
         actor_mesh_id.clone(),
         sender.clone(),
-        root_mesh_shape.clone(),
+        cast_mesh_shape.unwrap_or(root_mesh_shape).clone(),
         message,
     )?;
     let cast_message = CastMessage {
+        // Note: `dest` is on the root mesh' shape, which could be different
+        // from the cast mesh's shape if the cast is on a view, e.g. a sliced
+        // mesh.
         dest: Uslice {
             slice: root_mesh_shape.slice().clone(),
             selection: selection_of_root,
@@ -148,6 +153,7 @@ where
         sel_of_root,
         root_mesh_shape,
         message,
+        Some(sliced_shape),
     )
 }
 
@@ -173,6 +179,7 @@ pub trait ActorMesh: Mesh<Id = ActorMeshId> {
             selection,                            // the selected actors
             self.shape(),                         // root mesh shape
             message,                              // the message
+            None,                                 // cast mesh shape
         )
     }
 
@@ -419,7 +426,7 @@ impl<A: RemoteActor> ActorMesh for SlicedActorMesh<'_, A> {
             /*sel_of_sliced=*/ &sel,
             /*message=*/ message,
             /*sliced_shape=*/ self.shape(),
-            /*base_shape=*/ self.0.shape(),
+            /*roo_mesh_shape=*/ self.0.shape(),
         )
     }
 }

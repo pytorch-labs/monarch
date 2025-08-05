@@ -21,6 +21,7 @@ use hyperactor::message::Castable;
 use hyperactor::message::ErasedUnbound;
 use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::reference::ActorId;
+use ndslice::Extent;
 use ndslice::Shape;
 use ndslice::Slice;
 use ndslice::selection::Selection;
@@ -120,6 +121,39 @@ impl CastMessageEnvelope {
         &self.shape
     }
 
+    /// Given a rank in the root shape, return the corresponding point in the
+    /// provided shape, which is a view of the root shape.
+    pub(crate) fn relative_rank(&self, rank_on_root_mesh: usize) -> anyhow::Result<usize> {
+        let shape = self.shape();
+        let coords = shape.slice().coordinates(rank_on_root_mesh).map_err(|e| {
+            anyhow::anyhow!(
+                "fail to calculate coords for root rank {} due to error: {}; shape is {:?}",
+                rank_on_root_mesh,
+                e,
+                shape,
+            )
+        })?;
+        let extent =
+            Extent::new(shape.labels().to_vec(), shape.slice().sizes().to_vec()).map_err(|e| {
+                anyhow::anyhow!(
+                    "fail to calculate extent for root rank {} due to error: {}; shape is {}",
+                    rank_on_root_mesh,
+                    e,
+                    shape,
+                )
+            })?;
+        let point = extent.point(coords).map_err(|e| {
+            anyhow::anyhow!(
+                "fail to calculate point for root rank {} due to error: {}; extent is {}, shape is {}",
+                rank_on_root_mesh,
+                e,
+                extent,
+                shape,
+            )
+        })?;
+        Ok(point.rank())
+    }
+
     /// The unique key used to indicate the stream to which to deliver this message.
     /// Concretely, the comm actors along the path should use this key to manage
     /// sequence numbers and reorder buffers.
@@ -203,9 +237,14 @@ declare_attrs! {
     pub attr CAST_ORIGINATING_SENDER: ActorId;
 }
 
-pub fn set_cast_info_on_headers(headers: &mut Attrs, rank: usize, shape: Shape, sender: ActorId) {
-    headers.set(CAST_RANK, rank);
-    headers.set(CAST_SHAPE, shape);
+pub fn set_cast_info_on_headers(
+    headers: &mut Attrs,
+    cast_rank: usize,
+    cast_shape: Shape,
+    sender: ActorId,
+) {
+    headers.set(CAST_RANK, cast_rank);
+    headers.set(CAST_SHAPE, cast_shape);
     headers.set(CAST_ORIGINATING_SENDER, sender);
 }
 

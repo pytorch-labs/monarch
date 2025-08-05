@@ -249,11 +249,14 @@ impl CommActor {
 
         // Deliver message here, if necessary.
         if deliver_here {
+            let rank_on_root_mesh = mode.self_rank(cx.self_id());
+            let cast_rank = message.relative_rank(rank_on_root_mesh)?;
+            let cast_shape = message.shape();
             let mut headers = cx.headers().clone();
             set_cast_info_on_headers(
                 &mut headers,
-                mode.self_rank(cx.self_id()),
-                message.shape().clone(),
+                cast_rank,
+                cast_shape.clone(),
                 message.sender().clone(),
             );
             cx.post(
