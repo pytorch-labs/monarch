@@ -491,7 +491,7 @@ pub trait ViewExt: Viewable {
     /// ```
     fn range<R: Into<Range>>(&self, dim: &str, range: R) -> Result<View, ViewError>;
 
-    /// Partition the view on `dim`. The returned iterator enumerates all partitions
+    /// Group by view on `dim`. The returned iterator enumerates all groups
     /// as views in the extent of `dim` to the last dimension of the view.
     ///
     /// ## Examples
@@ -503,9 +503,9 @@ pub trait ViewExt: Viewable {
     /// let ext = extent!(zone = 4, host = 2, gpu = 8);
     ///
     /// // We generate one view for each zone.
-    /// assert_eq!(ext.partition("host").unwrap().count(), 4);
+    /// assert_eq!(ext.group_by("host").unwrap().count(), 4);
     ///
-    /// let mut parts = ext.partition("host").unwrap();
+    /// let mut parts = ext.group_by("host").unwrap();
     ///
     /// let zone0 = parts.next().unwrap();
     /// let mut zone0_points = zone0.iter();
@@ -526,7 +526,7 @@ pub trait ViewExt: Viewable {
     ///     (extent!(host = 2, gpu = 8).point(vec![0, 0]).unwrap(), 16)
     /// );
     /// ```
-    fn partition(&self, dim: &str) -> Result<impl Iterator<Item = View>, ViewError>;
+    fn group_by(&self, dim: &str) -> Result<impl Iterator<Item = View>, ViewError>;
 }
 
 impl<T: Viewable> ViewExt for T {
@@ -558,7 +558,7 @@ impl<T: Viewable> ViewExt for T {
         })
     }
 
-    fn partition(&self, dim: &str) -> Result<impl Iterator<Item = View>, ViewError> {
+    fn group_by(&self, dim: &str) -> Result<impl Iterator<Item = View>, ViewError> {
         let dim = self
             .labels()
             .iter()
@@ -853,10 +853,10 @@ mod test {
     fn test_iter_subviews() {
         let extent = extent!(zone = 4, host = 4, gpu = 8);
 
-        assert_eq!(extent.partition("gpu").unwrap().count(), 16);
-        assert_eq!(extent.partition("zone").unwrap().count(), 1);
+        assert_eq!(extent.group_by("gpu").unwrap().count(), 16);
+        assert_eq!(extent.group_by("zone").unwrap().count(), 1);
 
-        let mut parts = extent.partition("gpu").unwrap();
+        let mut parts = extent.group_by("gpu").unwrap();
         assert_view!(
             parts.next().unwrap(),
             extent!(gpu = 8),
