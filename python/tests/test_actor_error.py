@@ -34,6 +34,24 @@ class ExceptionActorSync(Actor):
         raise Exception("This is a test exception")
 
 
+class NestedExceptionActor(Actor):
+    @endpoint
+    async def raise_exception_with_context(self) -> None:
+        try:
+            raise Exception("Inner exception")
+        except Exception:
+            # Don't use from here to set __context__ instead of __cause__
+            raise Exception("Outer exception")
+
+    @endpoint
+    async def raise_exception_with_cause(self) -> None:
+        try:
+            raise Exception("Inner exception")
+        except Exception as e:
+            # Use from here to set __cause__ instead of __context__
+            raise Exception("Outer exception") from e
+
+
 class BrokenPickleClass:
     """A class that can be configured to raise exceptions during pickling/unpickling."""
 
@@ -114,6 +132,41 @@ def test_actor_exception_sync(mesh, actor_class, num_procs):
             exception_actor.raise_exception.call_one().get()
         else:
             exception_actor.raise_exception.call().get()
+
+
+@pytest.mark.parametrize(
+    "mesh",
+    [local_proc_mesh, proc_mesh],
+    ids=["local_proc_mesh", "distributed_proc_mesh"],
+)
+async def test_actor_error_message(mesh):
+    """
+    Test that exceptions raised in actor endpoints capture nested exceptions.
+    """
+    proc = mesh(gpus=2)
+    exception_actor = await proc.spawn("exception_actor", NestedExceptionActor)
+
+    with pytest.raises(ActorError) as exc_info:
+        await exception_actor.raise_exception_with_cause.call()
+
+    # Make sure both exception messages are present in the message.
+    assert "Inner exception" in str(exc_info.value)
+    assert "Outer exception" in str(exc_info.value)
+    # Make sure the "cause" is set.
+    assert "The above exception was the direct cause of the following exception" in str(
+        exc_info.value
+    )
+
+    with pytest.raises(ActorError) as exc_info:
+        await exception_actor.raise_exception_with_context.call()
+
+    # Make sure both exception messages are present in the message.
+    assert "Inner exception" in str(exc_info.value)
+    assert "Outer exception" in str(exc_info.value)
+    # Make sure the "cause" is set.
+    assert "During handling of the above exception, another exception occurred" in str(
+        exc_info.value
+    )
 
 
 '''

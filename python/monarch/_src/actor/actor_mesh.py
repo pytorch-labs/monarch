@@ -16,10 +16,9 @@ import random
 import traceback
 
 from dataclasses import dataclass
-from traceback import extract_tb, StackSummary
+from traceback import TracebackException
 from typing import (
     Any,
-    AsyncGenerator,
     Awaitable,
     Callable,
     cast,
@@ -32,7 +31,6 @@ from typing import (
     Iterator,
     List,
     Literal,
-    NamedTuple,
     Optional,
     overload,
     ParamSpec,
@@ -902,16 +900,25 @@ class ActorError(Exception):
         message: str = "A remote actor call has failed.",
     ) -> None:
         self.exception = exception
-        self.actor_mesh_ref_frames: StackSummary = extract_tb(exception.__traceback__)
+        # Need to stringify the exception early, because the PyPI package
+        # exceptiongroup may monkeypatch the "TracebackException" class for python
+        # versions < 3.11. If it gets unpickled in a different scope without
+        # using that monkeypatch, it'll have an exception in "format()".
+        # Store the traceback string instead which shouldn't change between machines.
+        actor_mesh_ref_tb = TracebackException.from_exception(exception).format()
+        # Replace any traceback lines to indicate it's a remote call traceback.
+        actor_mesh_ref_tb = (
+            s.replace(
+                "Traceback (most recent call last):",
+                "Traceback of where the remote call failed (most recent call last):",
+            )
+            for s in actor_mesh_ref_tb
+        )
+        self.exception_formatted = "".join(actor_mesh_ref_tb)
         self.message = message
 
     def __str__(self) -> str:
-        exe = str(self.exception)
-        actor_mesh_ref_tb = "".join(traceback.format_list(self.actor_mesh_ref_frames))
-        return (
-            f"{self.message}\n"
-            f"Traceback of where the remote call failed (most recent call last):\n{actor_mesh_ref_tb}{type(self.exception).__name__}: {exe}"
-        )
+        return f"{self.message}\n {self.exception_formatted}"
 
 
 def current_actor_name() -> str:
