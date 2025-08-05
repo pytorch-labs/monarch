@@ -127,7 +127,6 @@ mod tests {
             }])
         });
 
-        let heartbeat = std::time::Duration::from_millis(100);
         let world_id = WorldId("__unused__".to_string());
 
         let mut alloc = remoteprocess::RemoteProcessAlloc::new(
@@ -135,7 +134,6 @@ mod tests {
             world_id,
             ChannelTransport::Unix,
             0,
-            heartbeat,
             initializer,
         )
         .await
@@ -195,7 +193,6 @@ mod tests {
             }])
         });
 
-        let heartbeat = std::time::Duration::from_millis(100);
         let world_id = WorldId("__unused__".to_string());
 
         // Wait at least as long as the timeout before sending any messages.
@@ -207,7 +204,6 @@ mod tests {
             world_id.clone(),
             ChannelTransport::Unix,
             0,
-            heartbeat,
             initializer,
         )
         .await
@@ -257,7 +253,6 @@ mod tests {
             .expect_initialize_alloc()
             .return_once(move || Ok(vec![alloc_host_clone]));
 
-        let heartbeat = std::time::Duration::from_millis(100);
         let world_id = WorldId("__unused__".to_string());
 
         // Attempt to allocate, it should succeed because a timeout happens before
@@ -266,7 +261,6 @@ mod tests {
             world_id.clone(),
             ChannelTransport::Unix,
             0,
-            heartbeat,
             initializer,
         )
         .await
@@ -289,7 +283,6 @@ mod tests {
             world_id.clone(),
             ChannelTransport::Unix,
             0,
-            heartbeat,
             initializer,
         )
         .await
@@ -338,7 +331,6 @@ mod tests {
             .expect_initialize_alloc()
             .return_once(move || Ok(vec![alloc_host]));
 
-        let heartbeat = std::time::Duration::from_millis(100);
         let world_id = WorldId("__unused__".to_string());
 
         // Attempt to allocate, it should succeed because a timeout happens before
@@ -347,7 +339,6 @@ mod tests {
             world_id.clone(),
             ChannelTransport::Unix,
             0,
-            heartbeat,
             initializer,
         )
         .await

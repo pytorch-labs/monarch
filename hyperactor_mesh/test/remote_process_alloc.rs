@@ -95,7 +95,6 @@ async fn main() {
             WorldId("test_world_id".to_string()),
             ChannelTransport::Unix,
             0,
-            Duration::from_millis(100),
             initializer,
         )
         .await

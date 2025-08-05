@@ -10,7 +10,6 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::time::Duration;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
@@ -389,7 +388,6 @@ impl RemoteProcessAllocInitializer for PyRemoteProcessAllocInitializer {
 pub struct PyRemoteAllocator {
     world_id: String,
     initializer: Py<PyAny>,
-    heartbeat_interval: Duration,
 }
 
 impl Clone for PyRemoteAllocator {
@@ -397,7 +395,6 @@ impl Clone for PyRemoteAllocator {
         Self {
             world_id: self.world_id.clone(),
             initializer: Python::with_gil(|py| Py::clone_ref(&self.initializer, py)),
-            heartbeat_interval: self.heartbeat_interval.clone(),
         }
     }
 }
@@ -423,7 +420,6 @@ impl Allocator for PyRemoteAllocator {
             WorldId(self.world_id.clone()),
             transport,
             port,
-            self.heartbeat_interval,
             initializer,
         )
         .await?;
@@ -437,17 +433,11 @@ impl PyRemoteAllocator {
     #[pyo3(signature = (
         world_id,
         initializer,
-        heartbeat_interval = Duration::from_secs(5),
     ))]
-    fn new(
-        world_id: String,
-        initializer: Py<PyAny>,
-        heartbeat_interval: Duration,
-    ) -> PyResult<Self> {
+    fn new(world_id: String, initializer: Py<PyAny>) -> PyResult<Self> {
         Ok(Self {
             world_id,
             initializer,
-            heartbeat_interval,
         })
     }
 

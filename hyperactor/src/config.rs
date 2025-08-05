@@ -46,6 +46,9 @@ declare_attrs! {
 
     /// Timeout used by proc mesh for stopping an actor.
     pub attr STOP_ACTOR_TIMEOUT: Duration = Duration::from_secs(1);
+
+    /// Heartbeat interval for remote allocator
+    pub attr REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 }
 
 /// Load configuration from environment variables
@@ -87,6 +90,13 @@ pub fn from_env() -> Attrs {
         }
     }
 
+    // Load remote allocator heartbeat interval
+    if let Ok(val) = env::var("HYPERACTOR_REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL_SECS") {
+        if let Ok(parsed) = val.parse::<u64>() {
+            config[REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL] = Duration::from_secs(parsed);
+        }
+    }
+
     config
 }
 
@@ -121,6 +131,9 @@ pub fn merge(config: &mut Attrs, other: &Attrs) {
     }
     if other.contains_key(SPLIT_MAX_BUFFER_SIZE) {
         config[SPLIT_MAX_BUFFER_SIZE] = other[SPLIT_MAX_BUFFER_SIZE];
+    }
+    if other.contains_key(REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL) {
+        config[REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL] = other[REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL];
     }
 }
 
@@ -292,6 +305,10 @@ mod tests {
         );
         assert_eq!(config[MESSAGE_ACK_EVERY_N_MESSAGES], 1000);
         assert_eq!(config[SPLIT_MAX_BUFFER_SIZE], 5);
+        assert_eq!(
+            config[REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL],
+            Duration::from_secs(5)
+        );
     }
 
     #[test]
