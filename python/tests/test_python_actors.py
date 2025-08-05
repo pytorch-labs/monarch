@@ -612,41 +612,42 @@ async def test_actor_log_streaming() -> None:
         # Has a leading context so we can distinguish between streamed log and
         # the log directly printed by the child processes as they share the same stdout/stderr
         assert not re.search(
-            r"processes.*no print streaming", stdout_content
+            r"similar log lines.*no print streaming", stdout_content
         ), stdout_content
         assert not re.search(
-            r"processes.*no print streaming", stderr_content
+            r"similar log lines.*no print streaming", stderr_content
         ), stderr_content
         assert not re.search(
-            r"processes.*no log streaming", stdout_content
+            r"similar log lines.*no log streaming", stdout_content
         ), stdout_content
         assert not re.search(
-            r"processes.*no log streaming", stderr_content
+            r"similar log lines.*no log streaming", stderr_content
         ), stderr_content
         assert not re.search(
-            r"processes.*no log streaming due to level mismatch", stdout_content
+            r"similar log lines.*no log streaming due to level mismatch", stdout_content
         ), stdout_content
         assert not re.search(
-            r"processes.*no log streaming due to level mismatch", stderr_content
+            r"similar log lines.*no log streaming due to level mismatch", stderr_content
         ), stderr_content
 
         assert re.search(
-            r"processes.*has print streaming", stdout_content
+            r"similar log lines.*has print streaming", stdout_content
         ), stdout_content
         assert not re.search(
-            r"processes.*has print streaming", stderr_content
+            r"similar log lines.*has print streaming", stderr_content
         ), stderr_content
         assert re.search(
-            r"processes.*has print streaming too", stdout_content
+            r"similar log lines.*has print streaming too", stdout_content
         ), stdout_content
         assert not re.search(
-            r"processes.*has print streaming too", stderr_content
+            r"similar log lines.*has print streaming too", stderr_content
         ), stderr_content
         assert not re.search(
-            r"processes.*log streaming as level matched", stdout_content
+            r"similar log lines.*log streaming as level matched", stdout_content
         ), stdout_content
         assert re.search(
-            r"processes.*log streaming as level matched", stderr_content
+            r"similar log lines.*log streaming as level matched",
+            stderr_content,
         ), stderr_content
 
     finally:
@@ -723,14 +724,18 @@ async def test_logging_option_defaults() -> None:
         os.unlink(stderr_path)
 
         # Assertions on the captured output
-        assert re.search(r"processes.*print streaming", stdout_content), stdout_content
+        assert re.search(
+            r"similar log lines.*print streaming", stdout_content
+        ), stdout_content
         assert not re.search(
-            r"processes.*print streaming", stderr_content
+            r"similar log lines.*print streaming", stderr_content
         ), stderr_content
         assert not re.search(
-            r"processes.*log streaming", stdout_content
+            r"similar log lines.*log streaming", stdout_content
         ), stdout_content
-        assert re.search(r"processes.*log streaming", stderr_content), stderr_content
+        assert re.search(
+            r"similar log lines.*log streaming", stderr_content
+        ), stderr_content
 
     finally:
         # Ensure file descriptors are restored even if something goes wrong
