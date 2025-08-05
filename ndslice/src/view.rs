@@ -490,6 +490,43 @@ pub trait ViewExt: Viewable {
     /// );
     /// ```
     fn range<R: Into<Range>>(&self, dim: &str, range: R) -> Result<View, ViewError>;
+
+    /// Partition the view on `dim`. The returned iterator enumerates all partitions
+    /// as views in the extent of `dim` to the last dimension of the view.
+    ///
+    /// ## Examples
+    ///
+    /// ```
+    /// use ndslice::ViewExt;
+    /// use ndslice::extent;
+    ///
+    /// let ext = extent!(zone = 4, host = 2, gpu = 8);
+    ///
+    /// // We generate one view for each zone.
+    /// assert_eq!(ext.partition("host").unwrap().count(), 4);
+    ///
+    /// let mut parts = ext.partition("host").unwrap();
+    ///
+    /// let zone0 = parts.next().unwrap();
+    /// let mut zone0_points = zone0.iter();
+    /// assert_eq!(zone0.extent(), extent!(host = 2, gpu = 8));
+    /// assert_eq!(
+    ///     zone0_points.next().unwrap(),
+    ///     (extent!(host = 2, gpu = 8).point(vec![0, 0]).unwrap(), 0)
+    /// );
+    /// assert_eq!(
+    ///     zone0_points.next().unwrap(),
+    ///     (extent!(host = 2, gpu = 8).point(vec![0, 1]).unwrap(), 1)
+    /// );
+    ///
+    /// let zone1 = parts.next().unwrap();
+    /// assert_eq!(zone1.extent(), extent!(host = 2, gpu = 8));
+    /// assert_eq!(
+    ///     zone1.iter().next().unwrap(),
+    ///     (extent!(host = 2, gpu = 8).point(vec![0, 0]).unwrap(), 16)
+    /// );
+    /// ```
+    fn partition(&self, dim: &str) -> Result<impl Iterator<Item = View>, ViewError>;
 }
 
 impl<T: Viewable> ViewExt for T {
@@ -519,6 +556,32 @@ impl<T: Viewable> ViewExt for T {
             labels: self.labels().clone(),
             slice,
         })
+    }
+
+    fn partition(&self, dim: &str) -> Result<impl Iterator<Item = View>, ViewError> {
+        let dim = self
+            .labels()
+            .iter()
+            .position(|l| dim == l)
+            .ok_or_else(|| ViewError::InvalidDim(dim.to_string()))?;
+
+        let (offset, sizes, strides) = self.slice().into_inner();
+        let mut ranks = Slice::new(offset, sizes[..dim].to_vec(), strides[..dim].to_vec())
+            .unwrap()
+            .iter();
+
+        let labels = self.labels()[dim..].to_vec();
+        let sizes = sizes[dim..].to_vec();
+        let strides = strides[dim..].to_vec();
+
+        Ok(std::iter::from_fn(move || {
+            let rank = ranks.next()?;
+            let slice = Slice::new(rank, sizes.clone(), strides.clone()).unwrap();
+            Some(View {
+                labels: labels.clone(),
+                slice,
+            })
+        }))
     }
 }
 
@@ -590,9 +653,10 @@ mod test {
 
     macro_rules! assert_view {
         ($view:expr, $extent:expr,  $( $($coord:expr),+ => $rank:expr );* $(;)?) => {
-            assert_eq!($view.extent(), $extent);
+            let view = $view;
+            assert_eq!(view.extent(), $extent);
             let expected: Vec<_> = vec![$(($extent.point(vec![$($coord),+]).unwrap(), $rank)),*];
-            let actual: Vec<_> = $view.iter().collect();
+            let actual: Vec<_> = view.iter().collect();
             assert_eq!(actual, expected);
         };
     }
@@ -782,6 +846,40 @@ mod test {
         assert_eq!(
             ranks_on_sliced_mesh.collect::<Vec<_>>(),
             vec![0, 1, 2, 3, 4, 5, 6, 7]
+        );
+    }
+
+    #[test]
+    fn test_iter_subviews() {
+        let extent = extent!(zone = 4, host = 4, gpu = 8);
+
+        assert_eq!(extent.partition("gpu").unwrap().count(), 16);
+        assert_eq!(extent.partition("zone").unwrap().count(), 1);
+
+        let mut parts = extent.partition("gpu").unwrap();
+        assert_view!(
+            parts.next().unwrap(),
+            extent!(gpu = 8),
+            0 => 0;
+            1 => 1;
+            2 => 2;
+            3 => 3;
+            4 => 4;
+            5 => 5;
+            6 => 6;
+            7 => 7;
+        );
+        assert_view!(
+            parts.next().unwrap(),
+            extent!(gpu = 8),
+            0 => 8;
+            1 => 9;
+            2 => 10;
+            3 => 11;
+            4 => 12;
+            5 => 13;
+            6 => 14;
+            7 => 15;
         );
     }
 }
