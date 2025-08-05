@@ -23,6 +23,7 @@ use ndslice::Range;
 use ndslice::Selection;
 use ndslice::Shape;
 use ndslice::ShapeError;
+use ndslice::selection::ReifyView;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -158,6 +159,25 @@ impl<A: RemoteActor> ActorMeshRef<A> {
             mesh_id: self.mesh_id.clone(),
             root: self.root.clone(),
             sliced: Some(sliced),
+            comm_actor_ref: self.comm_actor_ref.clone(),
+            phantom: PhantomData,
+        })
+    }
+
+    pub fn new_with_shape(&self, new_shape: Shape) -> anyhow::Result<Self> {
+        let base_slice = self.shape().slice();
+        base_slice.reify_view(new_shape.slice()).map_err(|e| {
+            anyhow::anyhow!(
+                "failed to reify the new shape into the base shape; this \
+                normally means the new shape is not a valid slice of the base \
+                error is: {e:?}"
+            )
+        })?;
+
+        Ok(Self {
+            mesh_id: self.mesh_id.clone(),
+            root: self.root.clone(),
+            sliced: Some(new_shape),
             comm_actor_ref: self.comm_actor_ref.clone(),
             phantom: PhantomData,
         })

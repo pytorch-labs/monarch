@@ -224,6 +224,10 @@ impl PythonActorMesh {
         self.bind()?.slice(kwargs)
     }
 
+    fn new_with_shape(&self, shape: PyShape) -> PyResult<PythonActorMeshRef> {
+        self.bind()?.new_with_shape(shape)
+    }
+
     #[getter]
     pub fn client(&self) -> PyMailbox {
         self.client.clone()
@@ -353,6 +357,14 @@ impl PythonActorMeshRef {
             })?;
         }
 
+        Ok(Self { inner: sliced })
+    }
+
+    fn new_with_shape(&self, shape: PyShape) -> PyResult<PythonActorMeshRef> {
+        let sliced = self
+            .inner
+            .new_with_shape(shape.get_inner().clone())
+            .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
         Ok(Self { inner: sliced })
     }
 
