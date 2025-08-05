@@ -13,64 +13,50 @@ concurrency:
 jobs:
   build:
     name: Build Documentation
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          submodules: recursive
+    uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+    with:
+      timeout: 120
+      runner: linux.g5.4xlarge.nvidia.gpu
+      submodules: recursive
+      script: |
+        # Source common setup functions
+        source scripts/common-setup.sh
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-          architecture: x64
+        # Setup build environment (conda + system deps + rust + build deps)
+        setup_build_environment "3.10"
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: rustfmt, clippy
+        # Install documentation dependencies
+        pip install -r docs/requirements.txt
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libunwind-dev
+        # Set environment variables for full build with CUDA support
+        export USE_CUDA=1
+        export USE_TENSOR_ENGINE=1
+        export RUSTFLAGS="-Zthreads=16"
+        export _GLIBCXX_USE_CXX11_ABI=1
 
-      - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r build-requirements.txt
-          pip install -r docs/requirements.txt
+        # Install CUDA and NCCL dependencies for documentation generation
+        dnf install -y cuda-toolkit-12-0 cuda-12-0 libnccl-devel
 
-      - name: Generate Rust API Documentation
-        run: |
-          # Set environment variables for CPU-only build
-          export RUSTFLAGS="-Zthreads=16"
-          export _GLIBCXX_USE_CXX11_ABI=1
-          export USE_CUDA=1
-          export USE_TENSOR_ENGINE=1
+        # Generate Rust API documentation for all crates in the workspace
+        # This will include CUDA-dependent crates like nccl-sys, cuda-sys, etc.
+        cargo +nightly doc --workspace --no-deps --document-private-items
 
-          # Generate documentation for specific crates that don't depend on CUDA
-          cargo doc --workspace --no-deps --document-private-items
-          #cargo doc --no-deps -p hyperactor -p hyperactor_macros -p hyperactor_multiprocess -p hyperactor_mesh -p hyperactor_mesh_macros
+        # Create an index.html file in the target/doc directory to serve as the main entry point
+        echo '<meta http-equiv="refresh" content="0; url=hyperactor/index.html">' > target/doc/index.html
 
-          # Create an index.html file in the target/doc directory to serve as the main entry point
-          # echo '<meta http-equiv="refresh" content="0; url=hyperactor/index.html">' > target/doc/index.html
+        # Ensure the target/doc directory exists in the expected location for Sphinx
+        mkdir -p docs/source/target
+        cp -r target/doc docs/source/target/
 
-          # Ensure the target/doc directory exists in the expected location for Sphinx
-          mkdir -p docs/source/target
-          cp -r target/doc docs/source/target/
+        # Build Sphinx documentation
+        cd docs
+        make html
 
-      - name: Build Sphinx Docs
-        working-directory: docs
-        run: |
-          make html
+        # Move the built documentation to the artifact directory
+        mkdir -p "${RUNNER_ARTIFACT_DIR}/docs"
+        cp -r build/html/* "${RUNNER_ARTIFACT_DIR}/docs/"
 
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: docs/build/html
+      upload-artifact: monarch-docs-${{ github.sha }}
 
   deploy:
     needs: build
@@ -83,6 +69,20 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: monarch-docs-${{ github.sha }}
+          path: docs
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
