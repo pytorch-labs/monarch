@@ -41,7 +41,7 @@ from monarch._rust_bindings.monarch_hyperactor.proc_mesh import (
 )
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape, Slice
-from monarch._src.actor.actor_mesh import _Actor, _ActorMeshRefImpl, Actor, ActorMeshRef
+from monarch._src.actor.actor_mesh import _Actor, Actor, ActorMesh
 
 from monarch._src.actor.allocator import (
     AllocateMixin,
@@ -61,7 +61,6 @@ from monarch._src.actor.debugger import (
     DebugClient,
     DebugManager,
 )
-
 from monarch._src.actor.device_utils import _local_device_count
 
 from monarch._src.actor.endpoint import endpoint
@@ -315,14 +314,14 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
                 f"{Class} must subclass monarch.service.Actor to spawn it."
             )
         actor_mesh = await pm.spawn_nonblocking(name, _Actor)
-        service = ActorMeshRef(
+        service = ActorMesh.create(
             Class,
-            _ActorMeshRefImpl.from_hyperactor_mesh(pm.client, actor_mesh, self),
+            actor_mesh,
             pm.client,
+            self,
+            *args,
+            **kwargs,
         )
-        # useful to have this separate, because eventually we can reconstitute ActorMeshRef objects across pickling by
-        # doing `ActorMeshRef(Class, actor_handle)` but not calling _create.
-        service._create(args, kwargs)
         return cast(T, service)
 
     @property

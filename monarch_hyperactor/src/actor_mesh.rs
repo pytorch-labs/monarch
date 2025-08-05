@@ -119,9 +119,9 @@ impl PythonActorMesh {
     }
 
     fn try_inner(&self) -> PyResult<SharedCellRef<RootActorMesh<'static, PythonActor>>> {
-        self.inner
-            .borrow()
-            .map_err(|_| PyRuntimeError::new_err("`PythonActorMesh` has already been stopped"))
+        self.inner.borrow().map_err(|_| {
+            SupervisionError::new_err("`PythonActorMesh` has already been stopped".to_string())
+        })
     }
 
     fn pickling_err(&self) -> PyErr {
@@ -144,13 +144,13 @@ impl PythonActorMesh {
         match &*unhealthy_event {
             Unhealthy::SoFarSoGood => (),
             Unhealthy::Crashed(event) => {
-                return Err(PyRuntimeError::new_err(format!(
+                return Err(SupervisionError::new_err(format!(
                     "actor mesh is unhealthy with reason: {:?}",
                     event
                 )));
             }
             Unhealthy::StreamClosed => {
-                return Err(PyRuntimeError::new_err(
+                return Err(SupervisionError::new_err(
                     "actor mesh is stopped due to proc mesh shutdown".to_string(),
                 ));
             }
