@@ -13,289 +13,58 @@ concurrency:
 jobs:
   build:
     name: Build Documentation
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          submodules: recursive
+    uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+    with:
+      timeout: 60
+      runner: linux.g5.4xlarge.nvidia.gpu
+      gpu-arch-type: "cuda"
+      gpu-arch-version: "12.6"
+      submodules: recursive
+      script: |
+        # Source common setup functions
+        source scripts/common-setup.sh
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-          architecture: x64
+        # Setup build environment with Python 3.10
+        setup_build_environment 3.10
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: rustfmt, clippy
+        # Install documentation dependencies
+        pip install -r docs/requirements.txt
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libunwind-dev clang libclang-dev
+        # Set environment variables for documentation build with CUDA support
+        export RUSTFLAGS="-Zthreads=16"
+        export _GLIBCXX_USE_CXX11_ABI=1
+        export USE_CUDA=1
+        export USE_TENSOR_ENGINE=1
 
-      - name: Setup mock CUDA environment for documentation
-        run: |
-          # Create comprehensive mock CUDA environment to satisfy build requirements
-          # Based on CUDA 12.6 setup from test-cuda.yml
-          sudo mkdir -p /usr/local/cuda-12.6/{bin,include,lib64,nvvm/libdevice}
-          sudo ln -sf /usr/local/cuda-12.6 /usr/local/cuda
+        # Generate documentation for all crates in the workspace
+        # This will include CUDA-dependent crates (cuda-sys, nccl-sys, torch-sys-cuda)
+        echo "Building documentation for all workspace crates including CUDA-dependent ones..."
+        cargo doc --workspace --no-deps --document-private-items --features cuda
 
-          # Create comprehensive CUDA headers for documentation generation
-          sudo tee /usr/local/cuda/include/cuda.h > /dev/null << 'EOF'
-          #ifndef __CUDA_H__
-          #define __CUDA_H__
-          #define __host__
-          #define __device__
-          #define __global__
-          #define __forceinline__
-          #define __shared__
-          #define __constant__
-          #define __restrict__
-          #define __launch_bounds__(...)
+        # Verify that CUDA-related crates were documented
+        echo "Checking for CUDA-related documentation..."
+        ls -la target/doc/ | grep -E "(cuda_sys|nccl_sys|torch_sys_cuda)" || echo "CUDA crate docs may not be present"
 
-          typedef int cudaError_t;
-          typedef void* cudaStream_t;
-          typedef void* cudaEvent_t;
-          typedef unsigned long long CUdeviceptr;
-          typedef int CUresult;
-          typedef void* CUcontext;
-          typedef int CUdevice;
-          typedef void* CUmodule;
-          typedef void* CUfunction;
-          typedef void* CUarray;
-          typedef void* CUtexref;
-          typedef void* CUsurfref;
-          typedef void* CUgraphicsResource;
-          typedef void* CUevent;
-          typedef void* CUstream;
-          typedef void* CUmemoryPool;
+        # Create an index.html file in the target/doc directory to serve as the main entry point
+        echo '<meta http-equiv="refresh" content="0; url=hyperactor/index.html">' > target/doc/index.html
 
-          typedef struct {
-              size_t width;
-              size_t height;
-              size_t depth;
-          } cudaExtent;
+        # Ensure the target/doc directory exists in the expected location for Sphinx
+        mkdir -p docs/source/target
+        cp -r target/doc docs/source/target/
 
-          typedef struct {
-              int x, y, z;
-          } cudaPos;
+        # List all generated documentation for verification
+        echo "Generated documentation for the following crates:"
+        ls -1 target/doc/ | grep -v "\.html\|\.css\|\.js\|static" | sort
 
-          typedef struct {
-              void *ptr;
-              size_t pitch;
-              size_t xsize;
-              size_t ysize;
-          } cudaPitchedPtr;
+        # Build Sphinx documentation
+        cd docs
+        make html
 
-          enum cudaMemcpyKind {
-              cudaMemcpyHostToHost = 0,
-              cudaMemcpyHostToDevice = 1,
-              cudaMemcpyDeviceToHost = 2,
-              cudaMemcpyDeviceToDevice = 3,
-              cudaMemcpyDefault = 4
-          };
+        # Create artifact directory and copy built docs
+        mkdir -p ${RUNNER_ARTIFACT_DIR}/docs
+        cp -r build/html/* ${RUNNER_ARTIFACT_DIR}/docs/
 
-          enum {
-              cudaSuccess = 0,
-              CUDA_SUCCESS = 0,
-              cudaErrorInvalidValue = 1,
-              cudaErrorMemoryAllocation = 2
-          };
-
-          // Mock function declarations
-          cudaError_t cudaMalloc(void** devPtr, size_t size);
-          cudaError_t cudaFree(void* devPtr);
-          cudaError_t cudaMemcpy(void* dst, const void* src, size_t count, enum cudaMemcpyKind kind);
-          cudaError_t cudaDeviceSynchronize(void);
-          cudaError_t cudaGetLastError(void);
-          const char* cudaGetErrorString(cudaError_t error);
-
-          #endif
-          EOF
-
-          sudo tee /usr/local/cuda/include/cuda_runtime.h > /dev/null << 'EOF'
-          #ifndef __CUDA_RUNTIME_H__
-          #define __CUDA_RUNTIME_H__
-          #include "cuda.h"
-          #include "driver_types.h"
-          #include "cuda_runtime_api.h"
-          #endif
-          EOF
-
-          sudo tee /usr/local/cuda/include/cuda_runtime_api.h > /dev/null << 'EOF'
-          #ifndef __CUDA_RUNTIME_API_H__
-          #define __CUDA_RUNTIME_API_H__
-          #include "cuda.h"
-          #endif
-          EOF
-
-          sudo tee /usr/local/cuda/include/driver_types.h > /dev/null << 'EOF'
-          #ifndef __DRIVER_TYPES_H__
-          #define __DRIVER_TYPES_H__
-          #include "cuda.h"
-          #endif
-          EOF
-
-          sudo tee /usr/local/cuda/include/curand.h > /dev/null << 'EOF'
-          #ifndef __CURAND_H__
-          #define __CURAND_H__
-          typedef void* curandGenerator_t;
-          typedef enum { CURAND_RNG_PSEUDO_DEFAULT = 100 } curandRngType_t;
-          typedef enum { CURAND_STATUS_SUCCESS = 0 } curandStatus_t;
-          #endif
-          EOF
-
-          sudo tee /usr/local/cuda/include/cublas_v2.h > /dev/null << 'EOF'
-          #ifndef __CUBLAS_V2_H__
-          #define __CUBLAS_V2_H__
-          typedef void* cublasHandle_t;
-          typedef enum { CUBLAS_STATUS_SUCCESS = 0 } cublasStatus_t;
-          typedef enum { CUBLAS_OP_N = 0, CUBLAS_OP_T = 1 } cublasOperation_t;
-          #endif
-          EOF
-
-          sudo tee /usr/local/cuda/include/cufft.h > /dev/null << 'EOF'
-          #ifndef __CUFFT_H__
-          #define __CUFFT_H__
-          typedef int cufftHandle;
-          typedef enum { CUFFT_SUCCESS = 0 } cufftResult;
-          typedef enum { CUFFT_R2C = 0x2a, CUFFT_C2R = 0x2c } cufftType;
-          #endif
-          EOF
-
-          # Create mock nvcc with more comprehensive behavior
-          sudo tee /usr/local/cuda/bin/nvcc > /dev/null << 'EOF'
-          #!/bin/bash
-          # Mock nvcc for documentation generation
-          case "$1" in
-              --version)
-                  echo "nvcc: NVIDIA (R) Cuda compiler driver"
-                  echo "Copyright (c) 2005-2023 NVIDIA Corporation"
-                  echo "Built on Mock_Documentation_Build"
-                  echo "Cuda compilation tools, release 12.6, V12.6.0"
-                  echo "Build cuda_12.6.r12.6/compiler.mock_documentation"
-                  ;;
-              -V)
-                  echo "nvcc: NVIDIA (R) Cuda compiler driver"
-                  echo "Copyright (c) 2005-2023 NVIDIA Corporation"
-                  echo "Built on Mock_Documentation_Build"
-                  echo "Cuda compilation tools, release 12.6, V12.6.0"
-                  echo "Build cuda_12.6.r12.6/compiler.mock_documentation"
-                  ;;
-              *)
-                  echo "Mock nvcc: $*" >&2
-                  exit 0
-                  ;;
-          esac
-          EOF
-          sudo chmod +x /usr/local/cuda/bin/nvcc
-
-          # Create mock libdevice for NVVM
-          sudo touch /usr/local/cuda/nvvm/libdevice/libdevice.10.bc
-
-          # Create mock libraries
-          sudo touch /usr/local/cuda/lib64/libcudart.so
-          sudo touch /usr/local/cuda/lib64/libcublas.so
-          sudo touch /usr/local/cuda/lib64/libcurand.so
-          sudo touch /usr/local/cuda/lib64/libcufft.so
-
-          # Set comprehensive environment variables
-          echo "CUDA_HOME=/usr/local/cuda" >> $GITHUB_ENV
-          echo "CUDA_PATH=/usr/local/cuda" >> $GITHUB_ENV
-          echo "CUDA_ROOT=/usr/local/cuda" >> $GITHUB_ENV
-          echo "PATH=/usr/local/cuda/bin:$PATH" >> $GITHUB_ENV
-          echo "LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH" >> $GITHUB_ENV
-          echo "LIBRARY_PATH=/usr/local/cuda/lib64:$LIBRARY_PATH" >> $GITHUB_ENV
-          echo "CPATH=/usr/local/cuda/include:$CPATH" >> $GITHUB_ENV
-
-      - name: Setup mock NCCL environment
-        run: |
-          # Create mock NCCL environment
-          sudo mkdir -p /usr/local/include /usr/local/lib
-
-          # Create minimal nccl.h
-          sudo tee /usr/local/include/nccl.h > /dev/null << 'EOF'
-          #ifndef __NCCL_H__
-          #define __NCCL_H__
-          #include <cuda.h>
-          typedef enum { ncclSuccess = 0 } ncclResult_t;
-          typedef struct ncclComm* ncclComm_t;
-          typedef enum { ncclFloat32 = 0 } ncclDataType_t;
-          typedef enum { ncclSum = 0 } ncclRedOp_t;
-          typedef enum { ncclInPlace = 0 } ncclScalarResidence_t;
-          typedef struct { char internal[128]; } ncclUniqueId;
-          typedef struct ncclConfig* ncclConfig_t;
-          typedef struct ncclSimInfo* ncclSimInfo_t;
-          #define NCCL_SPLIT_NOCOLOR (-1)
-          #define NCCL_MAJOR 2
-          #define NCCL_MINOR 18
-          #define NCCL_PATCH 0
-          #endif
-          EOF
-
-          # Create mock libnccl.so
-          sudo touch /usr/local/lib/libnccl.so
-          sudo touch /usr/local/lib/libnccl.so.2
-
-          # Set NCCL environment variables
-          echo "NCCL_ROOT_DIR=/usr/local" >> $GITHUB_ENV
-          echo "NCCL_LIB_DIR=/usr/local/lib" >> $GITHUB_ENV
-          echo "NCCL_INCLUDE_DIR=/usr/local/include" >> $GITHUB_ENV
-
-      - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r build-requirements.txt
-          pip install -r docs/requirements.txt
-
-      - name: Generate Rust API Documentation
-        run: |
-          # Set environment variables for documentation build
-          export RUSTFLAGS="-Zthreads=16"
-          export _GLIBCXX_USE_CXX11_ABI=1
-          export USE_CUDA=1
-          export USE_TENSOR_ENGINE=1
-          export CUDA_HOME=/usr/local/cuda
-          export CUDA_PATH=/usr/local/cuda
-          export CUDA_ROOT=/usr/local/cuda
-          export NCCL_ROOT_DIR=/usr/local
-          export NCCL_LIB_DIR=/usr/local/lib
-          export NCCL_INCLUDE_DIR=/usr/local/include
-
-          # Generate documentation for all crates in the workspace
-          # This will include CUDA-dependent crates (cuda-sys, nccl-sys, torch-sys-cuda) with mock environment
-          echo "Building documentation for all workspace crates including CUDA-dependent ones..."
-          cargo doc --workspace --no-deps --document-private-items --features cuda
-
-          # Verify that CUDA-related crates were documented
-          echo "Checking for CUDA-related documentation..."
-          ls -la target/doc/ | grep -E "(cuda_sys|nccl_sys|torch_sys_cuda)" || echo "CUDA crate docs may not be present"
-
-          # Create an index.html file in the target/doc directory to serve as the main entry point
-          echo '<meta http-equiv="refresh" content="0; url=hyperactor/index.html">' > target/doc/index.html
-
-          # Ensure the target/doc directory exists in the expected location for Sphinx
-          mkdir -p docs/source/target
-          cp -r target/doc docs/source/target/
-
-          # List all generated documentation for verification
-          echo "Generated documentation for the following crates:"
-          ls -1 target/doc/ | grep -v "\.html\|\.css\|\.js\|static" | sort
-
-      - name: Build Sphinx Docs
-        working-directory: docs
-        run: |
-          make html
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: docs/build/html
+      upload-artifact: docs
 
   deploy:
     needs: build
@@ -308,6 +77,17 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
+      - name: Download documentation artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docs
+          path: docs
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
