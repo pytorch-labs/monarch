@@ -164,6 +164,7 @@ pub fn supervise_undeliverable_messages(
                         envelope
                     )),
                     message_headers: Some(envelope.headers().clone()),
+                    caused_by: None,
                 })
                 .is_err()
             {

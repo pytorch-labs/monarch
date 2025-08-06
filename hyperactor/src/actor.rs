@@ -135,6 +135,17 @@ pub trait Actor: Sized + Send + Debug + 'static {
     }
 }
 
+/// An actor that does nothing. It is used to represent "client only" actors,
+/// returned by [`Proc::instance`].
+#[async_trait]
+impl Actor for () {
+    type Params = ();
+
+    async fn new(params: Self::Params) -> Result<Self, anyhow::Error> {
+        Ok(params)
+    }
+}
+
 /// A Handler allows an actor to handle a specific message type.
 #[async_trait]
 pub trait Handler<M>: Actor {
@@ -249,8 +260,8 @@ where
 /// with the ID of the actor being served.
 #[derive(Debug)]
 pub struct ActorError {
-    actor_id: ActorId,
-    kind: ActorErrorKind,
+    pub(crate) actor_id: ActorId,
+    pub(crate) kind: ActorErrorKind,
 }
 
 /// The kinds of actor serving errors.
@@ -288,6 +299,10 @@ pub enum ActorErrorKind {
     /// The actor's state could not be determined.
     #[error("actor is in an indeterminate state")]
     IndeterminateState,
+
+    /// An actor supervision event was not handled.
+    #[error("supervision: {0}")]
+    UnhandledSupervisionEvent(#[from] ActorSupervisionEvent),
 
     /// A special kind of error that allows us to clone errors: we can keep the
     /// error string, but we lose the error structure.
@@ -338,6 +353,15 @@ impl From<MailboxSenderError> for ActorError {
     }
 }
 
+impl From<ActorSupervisionEvent> for ActorError {
+    fn from(inner: ActorSupervisionEvent) -> Self {
+        Self::new(
+            inner.actor_id.clone(),
+            ActorErrorKind::UnhandledSupervisionEvent(inner),
+        )
+    }
+}
+
 /// A collection of signals to control the behavior of the actor.
 /// Signals are internal runtime control plane messages and should not be
 /// sent outside of the runtime.
@@ -354,6 +378,16 @@ pub enum Signal {
 
     /// The direct child with the given PID was stopped.
     ChildStopped(Index),
+}
+
+impl fmt::Display for Signal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Signal::DrainAndStop => write!(f, "DrainAndStop"),
+            Signal::Stop => write!(f, "Stop"),
+            Signal::ChildStopped(index) => write!(f, "ChildStopped({})", index),
+        }
+    }
 }
 
 /// The runtime status of an actor.
@@ -390,7 +424,7 @@ pub enum ActorStatus {
 
 impl ActorStatus {
     /// Tells whether the status is a terminal state.
-    fn is_terminal(&self) -> bool {
+    pub(crate) fn is_terminal(&self) -> bool {
         matches!(self, Self::Stopped | Self::Failed(_))
     }
 
