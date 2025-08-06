@@ -460,7 +460,7 @@ impl Proc {
             actor_type = std::any::type_name::<A>(),
             actor_id = actor_id.to_string(),
         );
-        let instance = Instance::new(self.clone(), actor_id.clone(), None);
+        let instance = Instance::new(self.clone(), actor_id.clone(), false, None);
         let actor = A::new(params).await?;
         // Add this actor to the proc's actor ledger. We do not actively remove
         // inactive actors from ledger, because the actor's state can be inferred
@@ -470,6 +470,28 @@ impl Proc {
             .insert(actor_id.clone(), instance.cell.downgrade())?;
 
         instance.start(actor).await
+    }
+
+    /// Create and return an actor instance and its corresponding handle. This allows actors to be
+    /// "inverted": the caller can use the returned [`Instance`] to send and receive messages,
+    /// launch child actors, etc. The actor itself does not handle any messages, and supervision events
+    /// are always forwarded to the proc. Otherwise the instance acts as a normal actor, and can be
+    /// referenced and stopped.
+    pub fn instance(&self, name: &str) -> Result<(Instance<()>, ActorHandle<()>), anyhow::Error> {
+        let actor_id = self.allocate_root_id(name)?;
+        let _ = tracing::debug_span!(
+            "actor_instance",
+            actor_name = name,
+            actor_type = std::any::type_name::<()>(),
+            actor_id = actor_id.to_string(),
+        );
+
+        let instance = Instance::new(self.clone(), actor_id.clone(), true, None);
+        let handle = ActorHandle::new(instance.cell.clone(), instance.ports.clone());
+
+        instance.change_status(ActorStatus::Client);
+
+        Ok((instance, handle))
     }
 
     /// Spawn a child actor from the provided parent on this proc. The parent actor
@@ -483,7 +505,7 @@ impl Proc {
         params: A::Params,
     ) -> Result<ActorHandle<A>, anyhow::Error> {
         let actor_id = self.allocate_child_id(parent.actor_id())?;
-        let instance = Instance::new(self.clone(), actor_id, Some(parent.clone()));
+        let instance = Instance::new(self.clone(), actor_id, false, Some(parent.clone()));
         let actor = A::new(params).await?;
         instance.start(actor).await
     }
@@ -773,13 +795,8 @@ pub struct Instance<A: Actor> {
     /// The mailbox associated with the actor.
     mailbox: Mailbox,
 
-    /// The actor's signal receiver. This is used to
-    /// receive signals sent to the actor.
-    signal_receiver: PortReceiver<Signal>,
-
-    /// The actor's supervision event receiver. This is used to receive supervision
-    /// event from the parent.
-    supervision_event_receiver: PortReceiver<ActorSupervisionEvent>,
+    /// Receivers for the actor loop, if available.
+    actor_loop_receivers: Option<(PortReceiver<Signal>, PortReceiver<ActorSupervisionEvent>)>,
 
     ports: Arc<Ports<A>>,
 
@@ -797,19 +814,17 @@ pub struct Instance<A: Actor> {
 
 impl<A: Actor> Instance<A> {
     /// Create a new actor instance in Created state.
-    pub(crate) fn new(proc: Proc, actor_id: ActorId, parent: Option<InstanceCell>) -> Self {
+    pub(crate) fn new(
+        proc: Proc,
+        actor_id: ActorId,
+        detached: bool,
+        parent: Option<InstanceCell>,
+    ) -> Self {
         // Set up messaging
         let mailbox = Mailbox::new(actor_id.clone(), BoxedMailboxSender::new(proc.downgrade()));
         let (work_tx, work_rx) = mpsc::unbounded_channel();
-
         let ports: Arc<Ports<A>> = Arc::new(Ports::new(mailbox.clone(), work_tx));
-        let (signal_port, signal_receiver) = ports.open_message_port().unwrap();
-
         proc.state().proc_muxer.bind_mailbox(mailbox.clone());
-
-        // Supervision event port is used locally in the proc
-        let (supervision_port, supervision_event_receiver) = mailbox.open_port();
-
         let (status_tx, status_rx) = watch::channel(ActorStatus::Created);
 
         let actor_type = match TypeInfo::of::<A>() {
@@ -818,12 +833,24 @@ impl<A: Actor> Instance<A> {
         };
         let ais = actor_id.to_string();
 
+        let actor_loop_ports = if detached {
+            None
+        } else {
+            let (signal_port, signal_receiver) = ports.open_message_port().unwrap();
+            let (supervision_port, supervision_receiver) = mailbox.open_port();
+            Some((
+                (signal_port, supervision_port),
+                (signal_receiver, supervision_receiver),
+            ))
+        };
+
+        let (actor_loop, actor_loop_receivers) = actor_loop_ports.unzip();
+
         let cell = InstanceCell::new(
             actor_id,
             actor_type,
             proc.clone(),
-            signal_port,
-            supervision_port,
+            actor_loop,
             status_rx,
             parent,
             ports.clone(),
@@ -834,8 +861,7 @@ impl<A: Actor> Instance<A> {
             proc,
             cell,
             mailbox,
-            signal_receiver,
-            supervision_event_receiver,
+            actor_loop_receivers,
             ports,
             work_rx,
             status_tx,
@@ -934,7 +960,9 @@ impl<A: Actor> Instance<A> {
     }
 
     async fn serve(mut self, mut actor: A) {
-        let result = self.run_actor_tree(&mut actor).await;
+        let actor_loop_receivers = self.actor_loop_receivers.take().unwrap();
+
+        let result = self.run_actor_tree(&mut actor, actor_loop_receivers).await;
 
         let actor_status = match result {
             Ok(_) => ActorStatus::Stopped,
@@ -978,13 +1006,20 @@ impl<A: Actor> Instance<A> {
 
     /// Runs the actor, and manages its supervision tree. When the function returns,
     /// the whole tree rooted at this actor has stopped.
-    async fn run_actor_tree(&mut self, actor: &mut A) -> Result<(), ActorError> {
+    async fn run_actor_tree(
+        &mut self,
+        actor: &mut A,
+        mut actor_loop_receivers: (PortReceiver<Signal>, PortReceiver<ActorSupervisionEvent>),
+    ) -> Result<(), ActorError> {
         // It is okay to catch all panics here, because we are in a tokio task,
         // and tokio will catch the panic anyway:
         // https://docs.rs/tokio/latest/tokio/task/struct.JoinError.html#method.is_panic
         // What we do here is just to catch it early so we can handle it.
 
-        let result = match AssertUnwindSafe(self.run(actor)).catch_unwind().await {
+        let result = match AssertUnwindSafe(self.run(actor, &mut actor_loop_receivers))
+            .catch_unwind()
+            .await
+        {
             Ok(result) => result,
             Err(err) => {
                 // This is only the error message. Backtrace is not included.
@@ -1027,8 +1062,9 @@ impl<A: Actor> Instance<A> {
             self.cell.unlink(&child);
         }
 
+        let (mut signal_receiver, _) = actor_loop_receivers;
         while self.cell.child_count() > 0 {
-            match self.signal_receiver.recv().await? {
+            match signal_receiver.recv().await? {
                 Signal::ChildStopped(pid) => {
                     assert!(self.cell.get_child(pid).is_none());
                 }
@@ -1040,8 +1076,14 @@ impl<A: Actor> Instance<A> {
     }
 
     /// Initialize and run the actor until it fails or is stopped.
-    async fn run(&mut self, actor: &mut A) -> Result<(), ActorError> {
+    async fn run(
+        &mut self,
+        actor: &mut A,
+        actor_loop_receivers: &mut (PortReceiver<Signal>, PortReceiver<ActorSupervisionEvent>),
+    ) -> Result<(), ActorError> {
         tracing::debug!("entering actor loop: {}", self.self_id());
+
+        let (signal_receiver, supervision_event_receiver) = actor_loop_receivers;
 
         self.change_status(ActorStatus::Initializing);
         actor
@@ -1060,13 +1102,13 @@ impl<A: Actor> Instance<A> {
                     let _ = ACTOR_MESSAGE_HANDLER_DURATION.start(metric_pairs);
                     let work = work.expect("inconsistent work queue state");
                     if let Err(err) = work.handle(actor, self).await {
-                        for supervision_event in self.supervision_event_receiver.drain() {
+                        for supervision_event in supervision_event_receiver.drain() {
                             self.handle_supervision_event(actor, supervision_event).await;
                         }
                         return Err(ActorError::new(self.self_id().clone(), ActorErrorKind::Processing(err)));
                     }
                 }
-                signal = self.signal_receiver.recv() => {
+                signal = signal_receiver.recv() => {
                     let signal = signal.map_err(ActorError::from);
                     tracing::debug!("Received signal {signal:?}");
                     match signal? {
@@ -1079,7 +1121,7 @@ impl<A: Actor> Instance<A> {
                         },
                     }
                 }
-                Ok(supervision_event) = self.supervision_event_receiver.recv() => {
+                Ok(supervision_event) = supervision_event_receiver.recv() => {
                     self.handle_supervision_event(actor, supervision_event).await;
                 }
             }
@@ -1201,6 +1243,19 @@ impl<A: Actor> Instance<A> {
     /// The owning proc.
     pub fn proc(&self) -> &Proc {
         &self.proc
+    }
+}
+
+impl<A: Actor> Drop for Instance<A> {
+    fn drop(&mut self) {
+        self.status_tx.send_if_modified(|status| {
+            if status.is_terminal() {
+                false
+            } else {
+                *status = ActorStatus::Stopped;
+                true
+            }
+        });
     }
 }
 
@@ -1339,13 +1394,8 @@ struct InstanceState {
     /// The proc in which the actor is running.
     proc: Proc,
 
-    /// The actor's signal port. This is used to send
-    /// signals to the actor.
-    signal: PortHandle<Signal>,
-
-    /// The actor's supervision port. This is used to send
-    /// supervision event to the actor (usually by its children).
-    supervision_port: PortHandle<ActorSupervisionEvent>,
+    /// Control port handles to the actor loop, if one is running.
+    actor_loop: Option<(PortHandle<Signal>, PortHandle<ActorSupervisionEvent>)>,
 
     /// An observer that stores the current status of the actor.
     status: watch::Receiver<ActorStatus>,
@@ -1397,8 +1447,7 @@ impl InstanceCell {
         actor_id: ActorId,
         actor_type: ActorType,
         proc: Proc,
-        signal: PortHandle<Signal>,
-        supervision_port: PortHandle<ActorSupervisionEvent>,
+        actor_loop: Option<(PortHandle<Signal>, PortHandle<ActorSupervisionEvent>)>,
         status: watch::Receiver<ActorStatus>,
         parent: Option<InstanceCell>,
         ports: Arc<dyn Any + Send + Sync>,
@@ -1409,8 +1458,7 @@ impl InstanceCell {
                 actor_id: actor_id.clone(),
                 actor_type,
                 proc: proc.clone(),
-                signal,
-                supervision_port,
+                actor_loop,
                 status,
                 parent: parent.map_or_else(WeakInstanceCell::new, |cell| cell.downgrade()),
                 children: DashMap::new(),
@@ -1455,7 +1503,16 @@ impl InstanceCell {
     /// Send a signal to the actor.
     #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ActorError`.
     pub fn signal(&self, signal: Signal) -> Result<(), ActorError> {
-        self.inner.signal.send(signal).map_err(ActorError::from)
+        if let Some((signal_port, _)) = &self.inner.actor_loop {
+            signal_port.send(signal).map_err(ActorError::from)
+        } else {
+            tracing::warn!(
+                "{}: attempted to send signal {} to detached actor",
+                self.inner.actor_id,
+                signal
+            );
+            Ok(())
+        }
     }
 
     /// Used by this actor's children to send a supervision event to this actor.
@@ -1467,14 +1524,25 @@ impl InstanceCell {
     /// cannot be delivered upstream. It is the upstream's responsibility to
     /// detect and handle crashes.
     pub fn send_supervision_event_or_crash(&self, event: ActorSupervisionEvent) {
-        if let Err(err) = self.inner.supervision_port.send(event) {
-            tracing::error!(
-                "{}: failed to send supervision event to actor: {:?}. Crash the process.",
-                self.actor_id(),
-                err
-            );
-
-            std::process::exit(1);
+        match &self.inner.actor_loop {
+            Some((_, supervision_port)) => {
+                if let Err(err) = supervision_port.send(event) {
+                    tracing::error!(
+                        "{}: failed to send supervision event to actor: {:?}. Crash the process.",
+                        self.actor_id(),
+                        err
+                    );
+                    std::process::exit(1);
+                }
+            }
+            None => {
+                tracing::error!(
+                    "{}: failed: {}: cannot send supervision event to detached actor: crashing",
+                    self.actor_id(),
+                    event,
+                );
+                std::process::exit(1);
+            }
         }
     }
 
@@ -1721,6 +1789,7 @@ mod tests {
     use crate::HandleClient;
     use crate::Handler;
     use crate::OncePortRef;
+    use crate::PortRef;
     use crate::clock::RealClock;
     use crate::test_utils::proc_supervison::ProcSupervisionCoordinator;
     use crate::test_utils::process_assertion::assert_termination;
@@ -2535,6 +2604,55 @@ mod tests {
             reported_event.event().map(|e| e.actor_id.clone()),
             Some(root_2_1.actor_id().clone())
         );
+    }
+
+    #[tokio::test]
+    async fn test_instance() {
+        #[derive(Debug)]
+        struct TestActor;
+
+        #[async_trait]
+        impl Actor for TestActor {
+            type Params = ();
+
+            async fn new(param: ()) -> Result<Self, anyhow::Error> {
+                Ok(Self)
+            }
+        }
+
+        #[async_trait]
+        impl Handler<(String, PortRef<String>)> for TestActor {
+            async fn handle(
+                &mut self,
+                cx: &crate::Context<Self>,
+                (message, port): (String, PortRef<String>),
+            ) -> anyhow::Result<()> {
+                port.send(cx, message)?;
+                Ok(())
+            }
+        }
+
+        let proc = Proc::local();
+
+        let (instance, handle) = proc.instance("my_test_actor").unwrap();
+
+        let child_actor = TestActor::spawn(&instance, ()).await.unwrap();
+
+        let (port, mut receiver) = instance.open_port();
+        child_actor
+            .send(("hello".to_string(), port.bind()))
+            .unwrap();
+
+        let message = receiver.recv().await.unwrap();
+        assert_eq!(message, "hello");
+
+        child_actor.drain_and_stop().unwrap();
+        child_actor.await;
+
+        assert_eq!(*handle.status().borrow(), ActorStatus::Client);
+        drop(instance);
+        assert_eq!(*handle.status().borrow(), ActorStatus::Stopped);
+        handle.await;
     }
 
     #[tokio::test]
