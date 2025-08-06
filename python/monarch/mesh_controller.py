@@ -4,6 +4,8 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-unsafe
+
 import atexit
 import logging
 import os
@@ -292,7 +294,7 @@ def _cast_call_method_indirect(
         ),
         args_kwargs_tuple,
     )
-    endpoint._actor_mesh.cast(actor_msg, selection)
+    endpoint._actor_mesh.cast(actor_msg, selection, endpoint._mailbox)
     return broker_id
 
 
@@ -317,7 +319,7 @@ def actor_send(
         # mutates
         checker.check_permission(())
     selected_device_mesh = (
-        endpoint._actor_mesh._proc_mesh and endpoint._actor_mesh._proc_mesh._device_mesh
+        endpoint._actor_mesh.proc_mesh and endpoint._actor_mesh.proc_mesh._device_mesh
     )
     if selected_device_mesh is not checker.mesh:
         raise ValueError(

@@ -15,13 +15,7 @@ from dataclasses import dataclass
 from typing import cast, Dict, Generator, List, Optional, Tuple, Union
 
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
-from monarch._src.actor.actor_mesh import (
-    _ActorMeshRefImpl,
-    Actor,
-    ActorMeshRef,
-    DebugContext,
-    MonarchContext,
-)
+from monarch._src.actor.actor_mesh import Actor, ActorMesh, DebugContext, MonarchContext
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.pdb_wrapper import DebuggerWrite, PdbWrapper
 from monarch._src.actor.sync_state import fake_sync_state
@@ -576,14 +570,9 @@ class DebugManager(Actor):
         ctx = MonarchContext.get()
         return cast(
             DebugManager,
-            ActorMeshRef(
+            ActorMesh.from_actor_id(
                 DebugManager,
-                _ActorMeshRefImpl.from_actor_id(
-                    ctx.mailbox,
-                    ActorId.from_string(
-                        f"{ctx.proc_id}.{_DEBUG_MANAGER_ACTOR_NAME}[0]"
-                    ),
-                ),
+                ActorId.from_string(f"{ctx.proc_id}.{_DEBUG_MANAGER_ACTOR_NAME}[0]"),
                 ctx.mailbox,
             ),
         )

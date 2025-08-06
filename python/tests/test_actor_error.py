@@ -4,6 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-unsafe
 
 import importlib.resources
 import os
@@ -524,7 +525,7 @@ async def test_actor_mesh_supervision_handling(mesh):
         await e.fail_with_supervision_error.call_one()
 
     # new call should fail with check of health state of actor mesh
-    with pytest.raises(SupervisionError, match="actor mesh is not in a healthy state"):
+    with pytest.raises(SupervisionError, match="actor mesh is unhealthy with reason"):
         await e.check.call()
 
     # should not be able to spawn actors anymore as proc mesh is unhealthy
@@ -591,7 +592,7 @@ async def test_actor_mesh_supervision_handling_chained_error(mesh):
         await intermediate_actor.forward_error.call()
 
     # calling success endpoint should fail with ActorError, but with supervision msg.
-    with pytest.raises(ActorError, match="actor mesh is not in a healthy state"):
+    with pytest.raises(ActorError, match="actor mesh is unhealthy with reason"):
         await intermediate_actor.forward_success.call()
 
     # healthy actor should still be working
@@ -624,7 +625,7 @@ async def test_base_exception_handling(mesh, method_name):
         await method.call_one()
 
     # Subsequent calls should fail with a health state error
-    with pytest.raises(SupervisionError, match="actor mesh is not in a healthy state"):
+    with pytest.raises(RuntimeError, match="actor mesh is unhealthy with reason"):
         await error_actor.check.call()
 
 
@@ -640,7 +641,9 @@ async def test_supervision_with_proc_mesh_stopped(mesh):
     await proc.stop()
 
     # new call should fail with check of health state of actor mesh
-    with pytest.raises(SupervisionError, match="actor mesh is not in a healthy state"):
+    with pytest.raises(
+        SupervisionError, match="actor mesh is stopped due to proc mesh shutdown"
+    ):
         await actor_mesh.check.call()
 
     # proc mesh cannot spawn new actors anymore
@@ -666,7 +669,7 @@ async def test_supervision_with_sending_error():
         await actor_mesh.check_with_payload.call(payload="a" * 55000000)
 
     # new call should fail with check of health state of actor mesh
-    with pytest.raises(SupervisionError, match="actor mesh is not in a healthy state"):
+    with pytest.raises(SupervisionError, match="actor mesh is unhealthy with reason:"):
         await actor_mesh.check.call()
-    with pytest.raises(SupervisionError, match="actor mesh is not in a healthy state"):
+    with pytest.raises(SupervisionError, match="actor mesh is unhealthy with reason:"):
         await actor_mesh.check_with_payload.call(payload="a")

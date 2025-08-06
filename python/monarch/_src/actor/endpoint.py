@@ -11,7 +11,6 @@ from abc import ABC, abstractmethod
 from operator import mul
 from typing import (
     Any,
-    AsyncGenerator,
     Awaitable,
     Callable,
     cast,
@@ -36,9 +35,9 @@ from monarch._src.actor.tensor_engine_shim import _cached_propagation, fake_call
 
 if TYPE_CHECKING:
     from monarch._src.actor.actor_mesh import (
-        ActorMeshRef,
+        ActorMesh,
+        HyOncePortReceiver,
         HyPortReceiver,
-        OncePortReceiver,
         Port,
         PortReceiver,
         ValueMesh,
@@ -102,7 +101,7 @@ class Endpoint(ABC, Generic[P, R]):
         """
         pass
 
-    def _supervise(self, r: "HyPortReceiver | OncePortReceiver") -> Any:
+    def _supervise(self, r: "HyPortReceiver | HyOncePortReceiver") -> Any:
         return r
 
     # the following are all 'adverbs' or different ways to handle the
@@ -259,12 +258,12 @@ class EndpointProperty(Generic[P, R]):
 
 class NotAnEndpoint:
     """
-    Used as the dynamic value of functions on an ActorMeshRef that were not marked as endpoints.
+    Used as the dynamic value of functions on an ActorMesh that were not marked as endpoints.
     This is used both to give a better error message (since we cannot prevent the type system from thinking they are methods),
     and to provide the oppurtunity for someone to do endpoint(x.foo) on something that wasn't marked as an endpoint.
     """
 
-    def __init__(self, ref: "ActorMeshRef", name: str):
+    def __init__(self, ref: "ActorMesh", name: str):
         self._ref = ref
         self._name = name
 

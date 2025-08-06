@@ -23,7 +23,7 @@ import pytest
 import torch
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 
-from monarch._src.actor.actor_mesh import ActorMeshRef, Channel, Port
+from monarch._src.actor.actor_mesh import ActorMesh, Channel, Port
 
 from monarch.actor import (
     Accumulator,
@@ -755,10 +755,10 @@ class TestActorMeshStop(unittest.IsolatedAsyncioTestCase):
         am_2 = await pm.spawn("printer2", Printer)
         await am_1.print.call("hello 1")
         await am_1.log.call("hello 2")
-        await cast(ActorMeshRef, am_1).stop()
+        await cast(ActorMesh, am_1).stop()
 
         with self.assertRaisesRegex(
-            RuntimeError, expected_regex="`ActorMesh` has been stopped"
+            RuntimeError, expected_regex="`PythonActorMesh` has already been stopped"
         ):
             await am_1.print.call("hello 1")
 
