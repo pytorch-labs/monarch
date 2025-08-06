@@ -8,6 +8,7 @@
 
 //! Messages used in supervision.
 
+use std::fmt;
 use std::fmt::Debug;
 
 use derivative::Derivative;
@@ -31,4 +32,16 @@ pub struct ActorSupervisionEvent {
     /// If this event is associated with a message, the message headers.
     #[derivative(PartialEq = "ignore")]
     pub message_headers: Option<Attrs>,
+}
+
+impl fmt::Display for ActorSupervisionEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.actor_id, self.actor_status)?;
+        if let Some(message_headers) = &self.message_headers {
+            let headers = serde_json::to_string(&message_headers)
+                .expect("could not serialize message headers");
+            write!(f, " headers: {}", headers)?;
+        }
+        Ok(())
+    }
 }

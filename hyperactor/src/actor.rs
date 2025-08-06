@@ -135,6 +135,17 @@ pub trait Actor: Sized + Send + Debug + 'static {
     }
 }
 
+/// An actor that does nothing. It is used to represent "client only" actors,
+/// returned by [`Proc::instance`].
+#[async_trait]
+impl Actor for () {
+    type Params = ();
+
+    async fn new(params: Self::Params) -> Result<Self, anyhow::Error> {
+        Ok(params)
+    }
+}
+
 /// A Handler allows an actor to handle a specific message type.
 #[async_trait]
 pub trait Handler<M>: Actor {
@@ -356,6 +367,16 @@ pub enum Signal {
     ChildStopped(Index),
 }
 
+impl fmt::Display for Signal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Signal::DrainAndStop => write!(f, "DrainAndStop"),
+            Signal::Stop => write!(f, "Stop"),
+            Signal::ChildStopped(index) => write!(f, "ChildStopped({})", index),
+        }
+    }
+}
+
 /// The runtime status of an actor.
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Named)]
 pub enum ActorStatus {
@@ -390,7 +411,7 @@ pub enum ActorStatus {
 
 impl ActorStatus {
     /// Tells whether the status is a terminal state.
-    fn is_terminal(&self) -> bool {
+    pub(crate) fn is_terminal(&self) -> bool {
         matches!(self, Self::Stopped | Self::Failed(_))
     }
 
