@@ -65,7 +65,7 @@ use ndslice::Selection;
 use ndslice::Shape;
 use ndslice::Slice;
 use ndslice::reshape::Limit;
-use ndslice::reshape::ReshapeSliceExt;
+use ndslice::reshape::ReshapeShapeExt;
 use ndslice::selection::dsl;
 use ndslice::shape::Range;
 use serde::Deserialize;
@@ -425,6 +425,14 @@ impl ControllerMessageHandler for ControllerActor {
             }),
         };
 
+        let slice = Slice::new(0usize, vec![self.world_size], vec![1])?;
+        // Use a made-up label to create a fake shape. This shape is used by
+        // comm actor to determine the cast rank. Cast rank is not used by
+        // DeviceMesh, but we still need a shape there to make the logic happy.
+        let made_up_shape = Shape::new(vec!["fake_in_controller".to_string()], slice.clone())?
+            .reshape(Limit::from(CASTING_FANOUT_SIZE))
+            .shape;
+
         let message = CastMessageEnvelope::from_serialized(
             ActorMeshId(
                 ProcMeshId(self.worker_gang_ref.gang_id().world_id().to_string()),
@@ -439,14 +447,9 @@ impl ControllerMessageHandler for ControllerActor {
                     .name()
                     .to_string(),
             ),
-            // Not reflective of the actual shape, but this is never actually used.
-            Shape::unity(),
+            made_up_shape,
             message,
         );
-
-        let slice = Slice::new(0usize, vec![self.world_size], vec![1])
-            .unwrap()
-            .reshape_with_limit(Limit::from(CASTING_FANOUT_SIZE));
 
         self.comm_actor_ref.send(
             cx,

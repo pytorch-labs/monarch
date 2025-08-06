@@ -148,6 +148,7 @@ impl<A: RemoteActor> ActorMeshRef<A> {
                 &self.comm_actor_ref,
                 selection,
                 &self.root,
+                &self.root,
                 message,
             ),
         }

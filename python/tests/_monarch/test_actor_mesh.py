@@ -7,7 +7,7 @@
 # pyre-unsafe
 
 import pickle
-from typing import Any, Callable, Coroutine, Iterable, List, TYPE_CHECKING
+from typing import Any, Callable, cast, Coroutine, Iterable, List, TYPE_CHECKING
 
 import monarch
 import pytest
@@ -57,6 +57,12 @@ async def allocate() -> ProcMesh:
 
 
 class MyActor:
+    def __init__(self) -> None:
+        #  Note: for the same actor, its rank on the root mesh could be different
+        # from its rank on the mesh it is cast to. This is because the cast
+        # mesh could be a sliced mesh.
+        self._rank_on_root_mesh: int = -1
+
     async def handle(
         self,
         mailbox: Mailbox,
@@ -68,8 +74,21 @@ class MyActor:
         local_state: Iterable[Any],
         response_port: "PortProtocol[Any]",
     ) -> None:
-        assert rank is not None
-        response_port.send(f"rank: {rank}")
+        match method:
+            case MethodSpecifier.Init():
+                # Since this actor is spawn from the root proc mesh, the rank
+                # passed from init should be the rank on the root mesh.
+                self._rank_on_root_mesh = rank
+                response_port.send(None)
+                return None
+            case MethodSpecifier.ReturnsResponse(name=_):
+                response_port.send(self._rank_on_root_mesh)
+                return None
+            case MethodSpecifier.ExplicitPort(name=_):
+                response_port.exception(
+                    NotImplementedError("ExplicitPort is not supported yet")
+                )
+                return None
 
 
 # TODO - re-enable after resolving T232206970
@@ -95,35 +114,70 @@ async def test_bind_and_pickling() -> None:
     run()
 
 
-async def verify_cast(
-    actor_mesh: PythonActorMesh | PythonActorMeshRef,
-    mailbox: Mailbox,
-    cast_ranks: List[int],
-) -> None:
+async def spawn_actor_mesh(proc_mesh: ProcMesh) -> PythonActorMesh:
+    actor_mesh = await proc_mesh.spawn_nonblocking("test", MyActor)
+    # init actors to record their root ranks
     receiver: PortReceiver
-    handle, receiver = mailbox.open_port()
+    handle, receiver = proc_mesh.client.open_port()
     port_ref = handle.bind()
 
     message = PythonMessage(
-        PythonMessageKind.CallMethod(MethodSpecifier.ReturnsResponse("echo"), port_ref),
-        pickle.dumps("ping"),
+        PythonMessageKind.CallMethod(MethodSpecifier.Init(), port_ref),
+        pickle.dumps(None),
     )
-    sel = Selection.from_string("*")
+    actor_mesh.cast(Selection.all(), message)
+    # wait for init to complete
+    for _ in range(len(actor_mesh.shape.ndslice)):
+        await receiver.recv_task()
+
+    return actor_mesh
+
+
+async def cast_to_call(
+    actor_mesh: PythonActorMesh | PythonActorMeshRef,
+    mailbox: Mailbox,
+    message: PythonMessage,
+) -> None:
+    sel = Selection.all()
     if isinstance(actor_mesh, PythonActorMesh):
         actor_mesh.cast(sel, message)
     elif isinstance(actor_mesh, PythonActorMeshRef):
         actor_mesh.cast(mailbox, sel, message)
 
+
+async def verify_cast_to_call(
+    actor_mesh: PythonActorMesh | PythonActorMeshRef,
+    mailbox: Mailbox,
+    root_ranks: List[int],
+) -> None:
+    receiver: PortReceiver
+    handle, receiver = mailbox.open_port()
+    port_ref = handle.bind()
+
+    # Now send the real message
+    message = PythonMessage(
+        PythonMessageKind.CallMethod(MethodSpecifier.ReturnsResponse("echo"), port_ref),
+        pickle.dumps("ping"),
+    )
+    await cast_to_call(actor_mesh, mailbox, message)
+
     rcv_ranks = []
-    for _ in range(len(cast_ranks)):
+    for _ in range(len(root_ranks)):
         message = await receiver.recv_task()
         result_kind = message.kind
         assert isinstance(result_kind, PythonMessageKind.Result)
-        rank = result_kind.rank
-        assert rank is not None
-        rcv_ranks.append(rank)
-    rcv_ranks.sort()
-    assert rcv_ranks == cast_ranks
+        cast_rank = result_kind.rank
+        assert cast_rank is not None
+        root_rank = cast(int, pickle.loads(message.message))
+        rcv_ranks.append((cast_rank, root_rank))
+    rcv_ranks.sort(key=lambda pair: pair[0])
+    recv_cast_ranks, recv_root_ranks = zip(*rcv_ranks)
+    assert recv_root_ranks == tuple(
+        root_ranks
+    ), f"recv_root_ranks={recv_root_ranks}, root_ranks={tuple(root_ranks)}"
+    assert recv_cast_ranks == tuple(
+        range(len(root_ranks))
+    ), f"recv_cast_ranks={recv_cast_ranks}, root_ranks={tuple(root_ranks)}"
     # verify no more messages are received
     with pytest.raises(TimeoutError):
         await receiver.recv_task().with_timeout(1)
@@ -136,8 +190,8 @@ async def test_cast_handle() -> None:
     @run_on_tokio
     async def run() -> None:
         proc_mesh = await allocate()
-        actor_mesh = await proc_mesh.spawn_nonblocking("test", MyActor)
-        await verify_cast(actor_mesh, proc_mesh.client, list(range(3 * 8 * 8)))
+        actor_mesh = await spawn_actor_mesh(proc_mesh)
+        await verify_cast_to_call(actor_mesh, proc_mesh.client, list(range(3 * 8 * 8)))
 
         await proc_mesh.stop_nonblocking()
 
@@ -151,9 +205,11 @@ async def test_cast_ref() -> None:
     @run_on_tokio
     async def run() -> None:
         proc_mesh = await allocate()
-        actor_mesh = await proc_mesh.spawn_nonblocking("test", MyActor)
+        actor_mesh = await spawn_actor_mesh(proc_mesh)
         actor_mesh_ref = actor_mesh.bind()
-        await verify_cast(actor_mesh_ref, proc_mesh.client, list(range(3 * 8 * 8)))
+        await verify_cast_to_call(
+            actor_mesh_ref, proc_mesh.client, list(range(3 * 8 * 8))
+        )
 
         await proc_mesh.stop_nonblocking()
 
@@ -184,7 +240,7 @@ async def verify_slice(
     assert (
         sliced_shape.ranks() == replica_0_ranks + replica_1_ranks
     ), f"left is {sliced_shape.ranks()}"
-    await verify_cast(sliced_mesh, mailbox, sliced_shape.ranks())
+    await verify_cast_to_call(sliced_mesh, mailbox, sliced_shape.ranks())
 
     assert sliced_shape.labels == ["replicas", "hosts", "gpus"]
     assert sliced_shape.ndslice.sizes == [2, 4, 3]
@@ -224,7 +280,8 @@ async def test_slice_actor_mesh_handle() -> None:
     @run_on_tokio
     async def run() -> None:
         proc_mesh = await allocate()
-        actor_mesh = await proc_mesh.spawn_nonblocking("test", MyActor)
+        actor_mesh = await spawn_actor_mesh(proc_mesh)
+
         await verify_slice(actor_mesh, proc_mesh.client)
 
         await proc_mesh.stop_nonblocking()
@@ -239,7 +296,8 @@ async def test_slice_actor_mesh_ref() -> None:
     @run_on_tokio
     async def run() -> None:
         proc_mesh = await allocate()
-        actor_mesh = await proc_mesh.spawn_nonblocking("test", MyActor)
+        actor_mesh = await spawn_actor_mesh(proc_mesh)
+
         actor_mesh_ref = actor_mesh.bind()
         await verify_slice(actor_mesh_ref, proc_mesh.client)
 
