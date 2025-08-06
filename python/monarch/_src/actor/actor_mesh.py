@@ -227,6 +227,10 @@ class _PythonActorMeshAdapter(ActorMeshProtocol):
     """
 
     def __init__(self, inner: PythonActorMesh, proc_mesh: "ProcMesh") -> None:
+        if _use_standin_mesh():
+            raise ValueError(
+                "_PythonActorMeshAdapter should only be used when USE_STANDIN_ACTOR_MESH is not set"
+            )
         self._inner = inner
         self._proc_mesh = proc_mesh
 
@@ -276,6 +280,10 @@ class _PythonActorMeshRefAdapter(ActorMeshProtocol):
         inner: PythonActorMeshRef,
         proc_mesh: "Optional[ProcMesh]",
     ) -> None:
+        if _use_standin_mesh():
+            raise ValueError(
+                "_PythonActorMeshRefAdapter should only be used when USE_STANDIN_ACTOR_MESH is not set"
+            )
         self._inner = inner
         self._proc_mesh = proc_mesh
 
