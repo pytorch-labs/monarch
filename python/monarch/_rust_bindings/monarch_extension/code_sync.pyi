@@ -39,12 +39,33 @@ class WorkspaceShape:
     @staticmethod
     def exclusive() -> "WorkspaceShape": ...
 
+class CodeSyncMethod:
+    """
+    Python binding for the Rust CodeSyncMethod enum.
+    """
+
+    Rsync: CodeSyncMethod
+    CondaSync: CodeSyncMethod
+
 @final
 class RemoteWorkspace:
     """
     Python binding for the Rust RemoteWorkspace struct.
     """
     def __init__(self, location: WorkspaceLocation, shape: WorkspaceShape) -> None: ...
+
+@final
+class WorkspaceConfig:
+    """
+    Python binding for the Rust WorkspaceConfig struct.
+    """
+    def __init__(
+        self,
+        *,
+        local: Path,
+        remote: RemoteWorkspace,
+        method: CodeSyncMethod = ...,
+    ) -> None: ...
 
 @final
 class CodeSyncMeshClient:
@@ -65,6 +86,6 @@ class CodeSyncMeshClient:
     async def sync_workspaces(
         self,
         *,
-        workspaces: list[tuple[str, RemoteWorkspace]],
+        workspaces: list[WorkspaceConfig],
         auto_reload: bool = False,
     ) -> None: ...

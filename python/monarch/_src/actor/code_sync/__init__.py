@@ -6,7 +6,9 @@
 
 from monarch._rust_bindings.monarch_extension.code_sync import (  # noqa: F401
     CodeSyncMeshClient,
+    CodeSyncMethod,
     RemoteWorkspace,
+    WorkspaceConfig,
     WorkspaceLocation,
     WorkspaceShape,
 )

@@ -7,6 +7,7 @@
  */
 
 pub mod auto_reload;
+pub mod conda_sync;
 pub mod manager;
 pub mod rsync;
 mod workspace;
