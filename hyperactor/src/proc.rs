@@ -964,13 +964,30 @@ impl<A: Actor> Instance<A> {
 
         let result = self.run_actor_tree(&mut actor, actor_loop_receivers).await;
 
-        let actor_status = match result {
-            Ok(_) => ActorStatus::Stopped,
-            Err(err) => ActorStatus::Failed(err.to_string()),
+        let (actor_status, event) = match result {
+            Ok(_) => (ActorStatus::Stopped, None),
+            Err(ActorError {
+                kind: ActorErrorKind::UnhandledSupervisionEvent(event),
+                ..
+            }) => (event.actor_status.clone(), Some(event)),
+            Err(err) => (
+                ActorStatus::Failed(err.to_string()),
+                Some(ActorSupervisionEvent {
+                    actor_id: self.cell.actor_id().clone(),
+                    actor_status: ActorStatus::Failed(err.to_string()),
+                    message_headers: None,
+                    caused_by: None,
+                }),
+            ),
         };
 
-        let result = self.cell.maybe_unlink_parent();
-        if let Some(parent) = result {
+        if let Some(parent) = self.cell.maybe_unlink_parent() {
+            if let Some(event) = event {
+                // Parent exists, failure should be propagated to the parent.
+                parent.send_supervision_event_or_crash(event);
+            }
+            // TODO: we should get rid of this signal, and use *only* supervision events for
+            // the purpose of conveying lifecycle changes
             if let Err(err) = parent.signal(Signal::ChildStopped(self.cell.pid())) {
                 tracing::error!(
                     "{}: failed to send stop message to parent pid {}: {:?}",
@@ -979,26 +996,14 @@ impl<A: Actor> Instance<A> {
                     err
                 );
             }
-            if actor_status.is_failed() {
-                // Parent exists, failure should be propagated to the parent.
-                parent.send_supervision_event_or_crash(ActorSupervisionEvent {
-                    actor_id: self.cell.actor_id().clone(),
-                    actor_status: actor_status.clone(),
-                    message_headers: None,
-                });
-            }
         } else {
             // Failure happened to the root actor or orphaned child actors.
             // In either case, the failure should be propagated to proc.
             //
             // Note that orphaned actor is unexpected and would only happen if
             // there is a bug.
-            if actor_status.is_failed() {
-                self.proc.handle_supervision_event(ActorSupervisionEvent {
-                    actor_id: self.cell.actor_id().clone(),
-                    actor_status: actor_status.clone(),
-                    message_headers: None,
-                })
+            if let Some(event) = event {
+                self.proc.handle_supervision_event(event);
             }
         }
         self.change_status(actor_status);
@@ -1103,7 +1108,7 @@ impl<A: Actor> Instance<A> {
                     let work = work.expect("inconsistent work queue state");
                     if let Err(err) = work.handle(actor, self).await {
                         for supervision_event in supervision_event_receiver.drain() {
-                            self.handle_supervision_event(actor, supervision_event).await;
+                            self.handle_supervision_event(actor, supervision_event).await?;
                         }
                         return Err(ActorError::new(self.self_id().clone(), ActorErrorKind::Processing(err)));
                     }
@@ -1122,7 +1127,7 @@ impl<A: Actor> Instance<A> {
                     }
                 }
                 Ok(supervision_event) = supervision_event_receiver.recv() => {
-                    self.handle_supervision_event(actor, supervision_event).await;
+                    self.handle_supervision_event(actor, supervision_event).await?;
                 }
             }
             self.cell
@@ -1154,24 +1159,41 @@ impl<A: Actor> Instance<A> {
         &self,
         actor: &mut A,
         supervision_event: ActorSupervisionEvent,
-    ) {
+    ) -> Result<(), ActorError> {
         // Handle the supervision event with the current actor.
-        if let Ok(false) = actor
+        match actor
             .handle_supervision_event(self, &supervision_event)
             .await
         {
-            // The supervision event wasn't handled by this actor, try to bubble it up.
-            let result = self.cell.get_parent_cell();
-            if let Some(parent) = result {
-                parent.send_supervision_event_or_crash(supervision_event);
-            } else {
-                // Reaching here means the actor is either a root actor, or an orphaned
-                // child actor (i.e. the parent actor was dropped unexpectedly). In either
-                // case, the supervision event should be sent to proc.
-                //
-                // Note that orphaned actor is unexpected and would only happen if there
-                // is a bug.
-                self.proc.handle_supervision_event(supervision_event);
+            Ok(true) => {
+                // The supervision event was handled by this actor, nothing more to do.
+                Ok(())
+            }
+            Ok(false) => {
+                // The supervision event wasn't handled by this actor, chain it and bubble it up.
+                let supervision_event = ActorSupervisionEvent {
+                    actor_id: self.self_id().clone(),
+                    actor_status: ActorStatus::Failed(
+                        "did not handle supervision event".to_string(),
+                    ),
+                    message_headers: None,
+                    caused_by: Some(Box::new(supervision_event)),
+                };
+                Err(supervision_event.into())
+            }
+            Err(err) => {
+                // The actor failed to handle the supervision event, it should die.
+                // Create a new supervision event for this failure and propagate it.
+                let supervision_event = ActorSupervisionEvent {
+                    actor_id: self.self_id().clone(),
+                    actor_status: ActorStatus::Failed(format!(
+                        "failed to handle supervision event: {}",
+                        err
+                    )),
+                    message_headers: None,
+                    caused_by: Some(Box::new(supervision_event)),
+                };
+                Err(supervision_event.into())
             }
         }
     }
@@ -2174,12 +2196,12 @@ mod tests {
 
         // TODO: should we provide finer-grained stop reasons, e.g., to indicate it was
         // stopped by a parent failure?
-        assert_matches!(root_2_1.await, ActorStatus::Stopped);
-
-        for actor in [root_1, root] {
-            // The other actors were unaffected.
-            assert_matches!(*actor.status().borrow(), ActorStatus::Idle);
-        }
+        assert_eq!(
+            root.await,
+            ActorStatus::Failed("did not handle supervision event".to_string())
+        );
+        assert_eq!(root_2_1.await, ActorStatus::Stopped);
+        assert_eq!(root_1.await, ActorStatus::Stopped);
     }
 
     #[tokio::test]
@@ -2602,7 +2624,7 @@ mod tests {
         assert!(!root_2_1_state.load(Ordering::SeqCst));
         assert_eq!(
             reported_event.event().map(|e| e.actor_id.clone()),
-            Some(root_2_1.actor_id().clone())
+            Some(root.actor_id().clone())
         );
     }
 
@@ -2615,7 +2637,7 @@ mod tests {
         impl Actor for TestActor {
             type Params = ();
 
-            async fn new(param: ()) -> Result<Self, anyhow::Error> {
+            async fn new(_param: ()) -> Result<Self, anyhow::Error> {
                 Ok(Self)
             }
         }
@@ -2653,6 +2675,109 @@ mod tests {
         drop(instance);
         assert_eq!(*handle.status().borrow(), ActorStatus::Stopped);
         handle.await;
+    }
+
+    #[tokio::test]
+    async fn test_supervision_event_handler_propagates() {
+        #[derive(Debug)]
+        struct FailingSupervisionActor;
+
+        #[async_trait]
+        impl Actor for FailingSupervisionActor {
+            type Params = ();
+
+            async fn new(_: ()) -> Result<Self, anyhow::Error> {
+                Ok(Self)
+            }
+
+            async fn handle_supervision_event(
+                &mut self,
+                _this: &Instance<Self>,
+                _event: &ActorSupervisionEvent,
+            ) -> Result<bool, anyhow::Error> {
+                anyhow::bail!("failed to handle supervision event!")
+            }
+        }
+
+        #[async_trait]
+        impl Handler<String> for FailingSupervisionActor {
+            async fn handle(
+                &mut self,
+                _cx: &crate::Context<Self>,
+                message: String,
+            ) -> anyhow::Result<()> {
+                Err(anyhow::anyhow!(message))
+            }
+        }
+
+        #[derive(Debug)]
+        struct ParentActor(tokio::sync::mpsc::UnboundedSender<ActorSupervisionEvent>);
+
+        #[async_trait]
+        impl Actor for ParentActor {
+            type Params = tokio::sync::mpsc::UnboundedSender<ActorSupervisionEvent>;
+
+            async fn new(
+                supervision_events: tokio::sync::mpsc::UnboundedSender<ActorSupervisionEvent>,
+            ) -> Result<Self, anyhow::Error> {
+                Ok(Self(supervision_events))
+            }
+
+            async fn handle_supervision_event(
+                &mut self,
+                _this: &Instance<Self>,
+                event: &ActorSupervisionEvent,
+            ) -> Result<bool, anyhow::Error> {
+                self.0.send(event.clone()).unwrap();
+                Ok(true)
+            }
+        }
+
+        let proc = Proc::local();
+
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let parent = proc.spawn::<ParentActor>("parent", event_tx).await.unwrap();
+        let child = proc
+            .spawn_child::<FailingSupervisionActor>(parent.cell().clone(), ())
+            .await
+            .unwrap();
+        let grandchild = proc
+            .spawn_child::<FailingSupervisionActor>(child.cell().clone(), ())
+            .await
+            .unwrap();
+
+        let child_actor_id = child.actor_id().clone();
+        let grandchild_actor_id = grandchild.actor_id().clone();
+
+        // Grandchild fails, triggering failure up the tree, finally receiving
+        // the event at the root.
+        grandchild.send("trigger failure".to_string()).unwrap();
+
+        assert!(grandchild.await.is_failed());
+        assert!(child.await.is_failed());
+
+        assert_eq!(
+            event_rx.recv().await.unwrap(),
+            ActorSupervisionEvent {
+                actor_id: child_actor_id,
+                actor_status: ActorStatus::Failed(
+                    "failed to handle supervision event: failed to handle supervision event!"
+                        .to_string()
+                ),
+                message_headers: None,
+                caused_by: Some(Box::new(ActorSupervisionEvent {
+                    actor_id: grandchild_actor_id,
+                    actor_status: ActorStatus::Failed(
+                        "serving local[0].parent[2]: processing error: trigger failure".to_string()
+                    ),
+                    message_headers: None,
+                    caused_by: None,
+                })),
+            }
+        );
+
+        assert!(event_rx.try_recv().is_err());
     }
 
     #[tokio::test]

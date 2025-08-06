@@ -593,6 +593,7 @@ impl ProcEvents {
                             actor_id: proc_id.actor_id("any", 0),
                             actor_status: ActorStatus::Failed(format!("proc {} is stopped", proc_id)),
                             message_headers: None,
+                            caused_by: None,
                         };
                         if entry.value().send(event).is_err() {
                             tracing::warn!("unable to transmit supervision event to actor {}", entry.key());

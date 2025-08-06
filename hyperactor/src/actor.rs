@@ -260,8 +260,8 @@ where
 /// with the ID of the actor being served.
 #[derive(Debug)]
 pub struct ActorError {
-    actor_id: ActorId,
-    kind: ActorErrorKind,
+    pub(crate) actor_id: ActorId,
+    pub(crate) kind: ActorErrorKind,
 }
 
 /// The kinds of actor serving errors.
@@ -299,6 +299,10 @@ pub enum ActorErrorKind {
     /// The actor's state could not be determined.
     #[error("actor is in an indeterminate state")]
     IndeterminateState,
+
+    /// An actor supervision event was not handled.
+    #[error("supervision: {0}")]
+    UnhandledSupervisionEvent(#[from] ActorSupervisionEvent),
 
     /// A special kind of error that allows us to clone errors: we can keep the
     /// error string, but we lose the error structure.
@@ -345,6 +349,15 @@ impl From<MailboxSenderError> for ActorError {
         Self::new(
             inner.location().actor_id().clone(),
             ActorErrorKind::from(inner),
+        )
+    }
+}
+
+impl From<ActorSupervisionEvent> for ActorError {
+    fn from(inner: ActorSupervisionEvent) -> Self {
+        Self::new(
+            inner.actor_id.clone(),
+            ActorErrorKind::UnhandledSupervisionEvent(inner),
         )
     }
 }

@@ -32,7 +32,11 @@ pub struct ActorSupervisionEvent {
     /// If this event is associated with a message, the message headers.
     #[derivative(PartialEq = "ignore")]
     pub message_headers: Option<Attrs>,
+    /// Optional supervision event that caused this event, for recursive propagation.
+    pub caused_by: Option<Box<ActorSupervisionEvent>>,
 }
+
+impl std::error::Error for ActorSupervisionEvent {}
 
 impl fmt::Display for ActorSupervisionEvent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

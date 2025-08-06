@@ -45,7 +45,7 @@ impl ProcSupervisionCoordinator {
         let coordinator = proc
             .spawn::<ProcSupervisionCoordinator>("coordinator", state.clone())
             .await?;
-        proc.set_supervision_coordinator(coordinator.port::<ActorSupervisionEvent>())?;
+        proc.set_supervision_coordinator(coordinator.port())?;
         Ok(state)
     }
 }
