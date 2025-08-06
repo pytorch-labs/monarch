@@ -265,6 +265,7 @@ async def get_or_create(
     name: str,
     config: Config,
     check_interval: timedelta = _5_SECONDS,
+    force_restart: bool = False,
 ) -> ServerSpec:
     """Waits for the server based on identity `name` in the scheduler specified in the `config`
     to be ready (e.g. RUNNING). If the server is not found then this function creates one
@@ -286,6 +287,7 @@ async def get_or_create(
         name: the name of the server (job) to get or create
         config: configs used to create the job if one does not exist
         check_interval: how often to poll the status of the job when waiting for it to be ready
+        force_restart: if True kills and re-creates the job even if one exists
 
     Returns: A `ServerSpec` containing information about either the existing or the newly
         created server.
@@ -322,6 +324,12 @@ async def get_or_create(
         return server_info
     else:
         print(f"{CYAN}Found existing job `{server_handle}` ready to serve.{ENDC}")
+
+        if force_restart:
+            print(f"{CYAN}force_restart=True, restarting `{server_handle}`{ENDC}")
+            kill(server_handle)
+            server_info = await get_or_create(name, config, check_interval)
+
         return server_info
 
 
