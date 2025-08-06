@@ -233,6 +233,9 @@ impl RemoteProcessAllocator {
 
                             ensure_previous_alloc_stopped(&mut active_allocation).await;
                         }
+                        // Hearbeat message is discarded immediately after being received, sender (client)
+                        // relies on channel ack to know if the receiver (remote process allocator) is
+                        // still alive. No state needs to be updated.
                         Ok(RemoteProcessAllocatorMessage::HeartBeat) => {}
                         Err(e) => {
                             tracing::error!("upstream channel error: {}", e);
@@ -996,6 +999,9 @@ impl Alloc for RemoteProcessAlloc {
                                     break None;
                                 }
                             }
+                            // Hearbeat message is discarded immediately after being received, sender (remote
+                            // process allocator) relies on channel ack to know if the receiver (client) is
+                            // still alive. No state needs to be updated.
                             Ok(RemoteProcessProcStateMessage::HeartBeat) => {}
                             Err(e) => {
                                 break Some(ProcState::Failed {world_id: self.world_id.clone(), description: format!("error receiving events: {}", e)});
