@@ -36,14 +36,17 @@ pub struct BenchMessage {
         BenchMessage { cast = true },
     ],
 )]
-pub struct BenchActor {}
+pub struct BenchActor {
+    processing_time: Duration,
+}
 
 #[async_trait]
 impl Actor for BenchActor {
-    type Params = ();
-
-    async fn new(_: Self::Params) -> Result<Self, anyhow::Error> {
-        Ok(Self {})
+    type Params = Duration;
+    async fn new(params: Duration) -> Result<Self, anyhow::Error> {
+        Ok(Self {
+            processing_time: params,
+        })
     }
 }
 
@@ -55,7 +58,7 @@ impl Handler<BenchMessage> for BenchActor {
         msg: BenchMessage,
     ) -> Result<(), anyhow::Error> {
         hyperactor::clock::ClockKind::default()
-            .sleep(Duration::from_millis(100))
+            .sleep(self.processing_time.clone())
             .await;
 
         let _ = msg.reply.send(ctx, msg.step);
