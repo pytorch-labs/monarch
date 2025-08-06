@@ -42,7 +42,7 @@ bincode = "1.3.3"
 bitmaps = "3.2.1"
 buck-resources = "1"
 chrono = { version = "0.4.41", features = ["clock", "serde", "std"], default-features = false }
-clap = { version = "4.5.41", features = ["derive", "env", "string", "unicode", "wrap_help"] }
+clap = { version = "4.5.42", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 criterion = { version = "0.5.1", features = ["async_tokio", "csv_output"] }
 dashmap = { version = "5.5.3", features = ["rayon", "serde"] }
 enum-as-inner = "0.6.0"
