@@ -32,7 +32,7 @@ use tokio::runtime::Runtime;
 // Benchmark how long does it take to process 1KB message on 1, 10, 100, 1K hosts with 8 GPUs each
 fn bench_actor_scaling(c: &mut Criterion) {
     let mut group = c.benchmark_group("actor_scaling");
-    let host_counts = vec![1, 10, 100, 1000];
+    let host_counts = vec![1, 10, 100];
     let message_size = 1024; // Fixed message size (1KB)
     group.sample_size(10);
     group.sampling_mode(criterion::SamplingMode::Flat);
@@ -49,7 +49,7 @@ fn bench_actor_scaling(c: &mut Criterion) {
                     .await
                     .unwrap();
 
-                let proc_mesh = ProcMesh::allocate(alloc).await.unwrap();
+                let mut proc_mesh = ProcMesh::allocate(alloc).await.unwrap();
                 let actor_mesh: RootActorMesh<BenchActor> = proc_mesh
                     .spawn("bench", &(Duration::from_millis(0)))
                     .await
@@ -79,7 +79,15 @@ fn bench_actor_scaling(c: &mut Criterion) {
                     }
                 }
 
-                start.elapsed()
+                let elapsed = start.elapsed();
+                proc_mesh
+                    .events()
+                    .unwrap()
+                    .into_alloc()
+                    .stop_and_wait()
+                    .await
+                    .expect("Failed to stop allocator");
+                elapsed
             });
         });
     }
@@ -131,7 +139,7 @@ fn bench_actor_mesh_message_sizes(c: &mut Criterion) {
                             .await
                             .unwrap();
 
-                        let proc_mesh = ProcMesh::allocate(alloc).await.unwrap();
+                        let mut proc_mesh = ProcMesh::allocate(alloc).await.unwrap();
                         let actor_mesh: RootActorMesh<BenchActor> = proc_mesh
                             .spawn("bench", &(Duration::from_millis(0)))
                             .await
@@ -161,8 +169,15 @@ fn bench_actor_mesh_message_sizes(c: &mut Criterion) {
                                 msg_rcv += 1;
                             }
                         }
-
-                        start.elapsed()
+                        let elapsed = start.elapsed();
+                        proc_mesh
+                            .events()
+                            .unwrap()
+                            .into_alloc()
+                            .stop_and_wait()
+                            .await
+                            .expect("Failed to stop allocator");
+                        elapsed
                     });
                 },
             );
