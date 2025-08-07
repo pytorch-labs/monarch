@@ -92,6 +92,12 @@ impl LoggingMeshClient {
     }
 }
 
+impl Drop for LoggingMeshClient {
+    fn drop(&mut self) {
+        let _ = self.client_actor.drain_and_stop().unwrap();
+    }
+}
+
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<LoggingMeshClient>()?;
     Ok(())

@@ -12,6 +12,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::RwLock;
 use std::task::Context as TaskContext;
 use std::task::Poll;
 use std::time::Duration;
@@ -592,7 +593,7 @@ impl Actor for LogForwardActor {
         Ok(Self {
             rx,
             logging_client_ref,
-            stream_to_client: false,
+            stream_to_client: true,
         })
     }
 
@@ -668,6 +669,30 @@ pub struct LogClientActor {
     /// The watch sender for the aggregation window in seconds
     aggregate_window_tx: watch::Sender<u64>,
     should_aggregate: bool,
+    // Store aggregators directly in the actor for access in Drop
+    aggregators: Arc<RwLock<HashMap<OutputTarget, Aggregator>>>,
+}
+
+impl LogClientActor {
+    fn print_aggregators(aggregators: &RwLock<HashMap<OutputTarget, Aggregator>>) {
+        let mut aggregators_guard = aggregators.write().unwrap();
+        for (output_target, aggregator) in aggregators_guard.iter_mut() {
+            if aggregator.is_empty() {
+                continue;
+            }
+            match output_target {
+                OutputTarget::Stdout => {
+                    println!("{}", aggregator);
+                }
+                OutputTarget::Stderr => {
+                    eprintln!("{}", aggregator);
+                }
+            }
+
+            // Reset the aggregator
+            aggregator.reset();
+        }
+    }
 }
 
 #[async_trait]
@@ -683,26 +708,42 @@ impl Actor for LogClientActor {
         let (aggregate_window_tx, aggregate_window_rx) =
             watch::channel(DEFAULT_AGGREGATE_WINDOW_SEC);
 
+        // Initialize aggregators
+        let mut aggregators = HashMap::new();
+        aggregators.insert(OutputTarget::Stderr, Aggregator::new());
+        aggregators.insert(OutputTarget::Stdout, Aggregator::new());
+        let aggregators = Arc::new(RwLock::new(aggregators));
+
+        // Clone aggregators for the aggregator task
+        let aggregators_for_task = Arc::clone(&aggregators);
+
         // Start the loggregator
-        let aggregator_handle =
-            { tokio::spawn(async move { start_aggregator(log_rx, aggregate_window_rx).await }) };
+        let aggregator_handle = tokio::spawn(async move {
+            start_aggregator(log_rx, aggregate_window_rx, aggregators_for_task).await
+        });
 
         Ok(Self {
             log_tx,
             aggregator_handle,
             aggregate_window_tx,
-            should_aggregate: false,
+            should_aggregate: true,
+            aggregators,
         })
+    }
+}
+
+impl Drop for LogClientActor {
+    fn drop(&mut self) {
+        // Flush the remaining logs before shutting down
+        Self::print_aggregators(&self.aggregators);
     }
 }
 
 async fn start_aggregator(
     mut log_rx: mpsc::Receiver<(OutputTarget, String)>,
     mut interval_sec_rx: watch::Receiver<u64>,
+    aggregators: Arc<RwLock<HashMap<OutputTarget, Aggregator>>>,
 ) -> anyhow::Result<()> {
-    let mut aggregators = HashMap::new();
-    aggregators.insert(OutputTarget::Stderr, Aggregator::new());
-    aggregators.insert(OutputTarget::Stdout, Aggregator::new());
     let mut interval =
         tokio::time::interval(tokio::time::Duration::from_secs(*interval_sec_rx.borrow()));
 
@@ -711,7 +752,8 @@ async fn start_aggregator(
         tokio::select! {
             // Process incoming log messages
             Some((output_target, log_line)) = log_rx.recv() => {
-                if let Some(aggregator) = aggregators.get_mut(&output_target) {
+                let mut aggregators_guard = aggregators.write().unwrap();
+                if let Some(aggregator) = aggregators_guard.get_mut(&output_target) {
                     if let Err(e) = aggregator.add_line(&log_line) {
                         tracing::error!("error adding log line: {}", e);
                     }
@@ -726,24 +768,14 @@ async fn start_aggregator(
 
             // Every interval tick, print and reset the aggregator
             _ = interval.tick() => {
-                for (output_target, aggregator) in aggregators.iter_mut() {
-                    if aggregator.is_empty() {
-                        continue;
-                    }
-                    if output_target == &OutputTarget::Stdout {
-                        println!("{}", aggregator);
-                    } else {
-                        eprintln!("{}", aggregator);
-                    }
-
-                    // Reset the aggregator
-                    aggregator.reset();
-                }
+                LogClientActor::print_aggregators(&aggregators);
             }
 
             // Exit if the channel is closed
             else => {
                 tracing::error!("log channel closed, exiting aggregator");
+                // Print final aggregated logs before shutting down
+                LogClientActor::print_aggregators(&aggregators);
                 break;
             }
         }
