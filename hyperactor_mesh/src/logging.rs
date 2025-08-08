@@ -560,7 +560,7 @@ impl Actor for LogForwardActor {
         let log_channel: ChannelAddr = match std::env::var(BOOTSTRAP_LOG_CHANNEL) {
             Ok(channel) => channel.parse()?,
             Err(err) => {
-                tracing::error!(
+                tracing::debug!(
                     "log forwarder actor failed to read env var {}: {}",
                     BOOTSTRAP_LOG_CHANNEL,
                     err
