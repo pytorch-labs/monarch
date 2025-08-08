@@ -22,9 +22,19 @@ use tracing::Event;
 use tracing::Subscriber;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::Layer;
+use tracing_subscriber::Registry;
 use tracing_subscriber::filter::Targets;
 use tracing_subscriber::prelude::*;
+use tracing_subscriber::reload;
 
+pub type SqliteReloadHandle = reload::Handle<Option<SqliteLayer>, Registry>;
+
+lazy_static! {
+    // Reload handle allows us to include a no-op layer during init, but load
+    // the layer dynamically during tests.
+    static ref RELOAD_HANDLE: Mutex<Option<SqliteReloadHandle>> =
+        Mutex::new(None);
+}
 pub trait TableDef {
     fn name(&self) -> &'static str;
     fn columns(&self) -> &'static [&'static str];
@@ -196,7 +206,15 @@ macro_rules! insert_event {
 impl SqliteLayer {
     pub fn new() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
+        Self::setup_connection(conn)
+    }
 
+    pub fn new_with_file(db_path: &str) -> Result<Self> {
+        let conn = Connection::open(db_path)?;
+        Self::setup_connection(conn)
+    }
+
+    fn setup_connection(conn: Connection) -> Result<Self> {
         for table in ALL_TABLES.iter() {
             conn.execute(&table.create_table_stmt, [])?;
         }
@@ -294,21 +312,47 @@ fn print_table(conn: &Connection, table_name: &str) -> Result<()> {
     Ok(())
 }
 
+fn init_tracing_subscriber(layer: SqliteLayer) {
+    let handle = RELOAD_HANDLE.lock().unwrap();
+    if let Some(reload_handle) = handle.as_ref() {
+        reload_handle.reload(layer);
+    } else {
+        tracing_subscriber::registry().with(layer).init();
+    }
+}
+
+// === API ===
+
+// Creates a new reload handler and no-op layer for initialization
+pub fn get_reloadable_sqlite_layer() -> Result<reload::Layer<Option<SqliteLayer>, Registry>> {
+    let (layer, reload_handle) = reload::Layer::new(None);
+    let mut handle = RELOAD_HANDLE.lock().unwrap();
+    *handle = Some(reload_handle);
+    Ok(layer)
+}
+
+// Creates a new sqlite connection and initializes the tracing subscriber with it
+// or reloads the layer if a handle exists
 pub fn with_tracing_db() -> Arc<Mutex<Connection>> {
     let layer = SqliteLayer::new().unwrap();
     let conn = layer.connection();
-
-    let layer = layer.with_filter(
-        Targets::new()
-            .with_default(LevelFilter::TRACE)
-            .with_targets(vec![
-                ("tokio", LevelFilter::OFF),
-                ("opentelemetry", LevelFilter::OFF),
-                ("runtime", LevelFilter::OFF),
-            ]),
-    );
-    tracing_subscriber::registry().with(layer).init();
+    init_tracing_subscriber(layer);
     conn
+}
+
+// Like with_tracing_db, but uses a db file instead of in-memory
+pub fn with_tracing_db_file() -> Result<String> {
+    let temp_dir = std::env::temp_dir();
+    let file_name = format!("hyperactor_trace_{}.db", std::process::id());
+    let db_path = temp_dir.join(file_name);
+
+    let db_path_str = db_path.into_os_string().into_string().unwrap();
+
+    // Use the new SqliteLayer constructor
+    let layer = SqliteLayer::new_with_file(&db_path_str)?;
+    init_tracing_subscriber(layer);
+
+    Ok(db_path_str)
 }
 
 #[cfg(test)]
