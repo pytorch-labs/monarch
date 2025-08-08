@@ -521,11 +521,14 @@ async def test_actor_mesh_supervision_handling(mesh):
     await e.check.call()
 
     # existing call should fail with supervision error
-    with pytest.raises(SupervisionError, match="supervision error:"):
+    with pytest.raises(
+        SupervisionError,
+        match=".*Actor .* exited because of the following reason",
+    ):
         await e.fail_with_supervision_error.call_one()
 
     # new call should fail with check of health state of actor mesh
-    with pytest.raises(SupervisionError, match="actor mesh is unhealthy with reason"):
+    with pytest.raises(SupervisionError, match="Actor .* is unhealthy with reason"):
         await e.check.call()
 
     # should not be able to spawn actors anymore as proc mesh is unhealthy
@@ -588,11 +591,14 @@ async def test_actor_mesh_supervision_handling_chained_error(mesh):
     # in a chain of client -> Intermediate -> ErrorActor, a supervision error
     # happening in ErrorActor will be captured by Intermediate and re-raised
     # as an application error (ActorError).
-    with pytest.raises(ActorError, match="supervision error:"):
+    with pytest.raises(
+        ActorError,
+        match=".*Actor .* exited because of the following reason",
+    ):
         await intermediate_actor.forward_error.call()
 
     # calling success endpoint should fail with ActorError, but with supervision msg.
-    with pytest.raises(ActorError, match="actor mesh is unhealthy with reason"):
+    with pytest.raises(ActorError, match="Actor .* is unhealthy with reason"):
         await intermediate_actor.forward_success.call()
 
     # healthy actor should still be working
@@ -621,11 +627,14 @@ async def test_base_exception_handling(mesh, method_name):
     method = getattr(error_actor, method_name)
 
     # The call should raise a SupervisionError
-    with pytest.raises(SupervisionError, match="supervision error:"):
+    with pytest.raises(
+        SupervisionError,
+        match=".*Actor .* exited because of the following reason",
+    ):
         await method.call_one()
 
     # Subsequent calls should fail with a health state error
-    with pytest.raises(RuntimeError, match="actor mesh is unhealthy with reason"):
+    with pytest.raises(RuntimeError, match="Actor .* is unhealthy with reason"):
         await error_actor.check.call()
 
 
@@ -665,11 +674,14 @@ async def test_supervision_with_sending_error():
     await actor_mesh.check_with_payload.call(payload="a")
 
     # send a large payload to trigger send timeout error
-    with pytest.raises(SupervisionError, match="supervision error:.*"):
+    with pytest.raises(
+        SupervisionError,
+        match=".*Actor .* exited because of the following reason",
+    ):
         await actor_mesh.check_with_payload.call(payload="a" * 55000000)
 
     # new call should fail with check of health state of actor mesh
-    with pytest.raises(SupervisionError, match="actor mesh is unhealthy with reason:"):
+    with pytest.raises(SupervisionError, match="Actor .* is unhealthy with reason"):
         await actor_mesh.check.call()
-    with pytest.raises(SupervisionError, match="actor mesh is unhealthy with reason:"):
+    with pytest.raises(SupervisionError, match="Actor .* is unhealthy with reason"):
         await actor_mesh.check_with_payload.call(payload="a")

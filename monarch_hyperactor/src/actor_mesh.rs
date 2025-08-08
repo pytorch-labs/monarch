@@ -136,8 +136,8 @@ impl PythonActorMesh {
             Unhealthy::SoFarSoGood => (),
             Unhealthy::Crashed(event) => {
                 return Err(SupervisionError::new_err(format!(
-                    "actor mesh is unhealthy with reason: {:?}",
-                    event
+                    "Actor {:?} is unhealthy with reason: {}",
+                    event.actor_id, event.actor_status
                 )));
             }
             Unhealthy::StreamClosed => {
@@ -199,8 +199,8 @@ impl PythonActorMesh {
                 },
             };
             Ok(PyErr::new::<SupervisionError, _>(format!(
-                "supervision error: {:?}",
-                event
+                "Actor {:?} exited because of the following reason: {}",
+                event.actor_id, event.actor_status
             )))
         })
     }
