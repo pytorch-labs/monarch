@@ -26,6 +26,7 @@ pub const DISABLE_OTEL_METRICS: &str = "DISABLE_OTEL_METRICS";
 /// Set to "1" to disable the recorder output.
 pub const DISABLE_RECORDER_TRACING: &str = "DISABLE_RECORDER_TRACING";
 
+pub mod in_memory_reader;
 #[cfg(fbcode_build)]
 mod meta;
 mod otel;
@@ -298,11 +299,7 @@ macro_rules! declare_static_counter {
         #[doc = "a global counter named: "]
         #[doc = $key]
         pub static $name: std::sync::LazyLock<opentelemetry::metrics::Counter<u64>> =
-            std::sync::LazyLock::new(|| {
-                hyperactor_telemetry::meter(module_path!())
-                    .u64_counter($key)
-                    .build()
-            });
+            std::sync::LazyLock::new(|| $crate::meter(module_path!()).u64_counter($key).build());
     };
 }
 
@@ -334,7 +331,7 @@ macro_rules! declare_static_up_down_counter {
         #[doc = $key]
         pub static $name: std::sync::LazyLock<opentelemetry::metrics::UpDownCounter<i64>> =
             std::sync::LazyLock::new(|| {
-                hyperactor_telemetry::meter(module_path!())
+                $crate::meter(module_path!())
                     .i64_up_down_counter($key)
                     .build()
             });
@@ -368,11 +365,7 @@ macro_rules! declare_static_gauge {
         #[doc = "a global gauge named: "]
         #[doc = $key]
         pub static $name: std::sync::LazyLock<opentelemetry::metrics::Gauge<f64>> =
-            std::sync::LazyLock::new(|| {
-                hyperactor_telemetry::meter(module_path!())
-                    .f64_gauge($key)
-                    .build()
-            });
+            std::sync::LazyLock::new(|| $crate::meter(module_path!()).f64_gauge($key).build());
     };
 }
 /// Create a thread safe static observable gauge that can be set to a specific value based on the provided callback.
@@ -399,7 +392,7 @@ macro_rules! declare_observable_gauge {
         #[doc = $key]
         pub static $name: std::sync::LazyLock<opentelemetry::metrics::ObservableGauge<f64>> =
             std::sync::LazyLock::new(|| {
-                hyperactor_telemetry::meter(module_path!())
+                $crate::meter(module_path!())
                     .f64_observable_gauge($key)
                     .with_callback($cb)
                     .build()
