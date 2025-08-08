@@ -14,6 +14,8 @@ import os
 from datetime import datetime, timedelta
 from typing import Any, Callable, Mapping, Optional, Union
 
+from monarch.tools.colors import CYAN, ENDC
+
 from monarch.tools.components.hyperactor import DEFAULT_NAME
 
 from monarch.tools.config import (  # @manual=//monarch/python/monarch/tools/config/meta:defaults
@@ -263,6 +265,7 @@ async def get_or_create(
     name: str,
     config: Config,
     check_interval: timedelta = _5_SECONDS,
+    force_restart: bool = False,
 ) -> ServerSpec:
     """Waits for the server based on identity `name` in the scheduler specified in the `config`
     to be ready (e.g. RUNNING). If the server is not found then this function creates one
@@ -279,6 +282,12 @@ async def get_or_create(
 
         server_handle = get_or_create(name="my_job_name", config)
         server_info = info(server_handle)
+
+    Args:
+        name: the name of the server (job) to get or create
+        config: configs used to create the job if one does not exist
+        check_interval: how often to poll the status of the job when waiting for it to be ready
+        force_restart: if True kills and re-creates the job even if one exists
 
     Returns: A `ServerSpec` containing information about either the existing or the newly
         created server.
@@ -311,10 +320,16 @@ async def get_or_create(
                 f"the new server `{new_server_handle}` has {server_info.state}"
             )
 
-        print(f"\x1b[36mNew job `{new_server_handle}` is ready to serve. \x1b[0m")
+        print(f"{CYAN}New job `{new_server_handle}` is ready to serve.{ENDC}")
         return server_info
     else:
-        print(f"\x1b[36mFound existing job `{server_handle}` ready to serve. \x1b[0m")
+        print(f"{CYAN}Found existing job `{server_handle}` ready to serve.{ENDC}")
+
+        if force_restart:
+            print(f"{CYAN}force_restart=True, restarting `{server_handle}`{ENDC}")
+            kill(server_handle)
+            server_info = await get_or_create(name, config, check_interval)
+
         return server_info
 
 
