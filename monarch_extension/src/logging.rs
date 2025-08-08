@@ -94,7 +94,13 @@ impl LoggingMeshClient {
 
 impl Drop for LoggingMeshClient {
     fn drop(&mut self) {
-        let _ = self.client_actor.drain_and_stop().unwrap();
+        match self.client_actor.drain_and_stop() {
+            Ok(_) => {}
+            Err(e) => {
+                // it is ok as during shutdown, the channel might already be closed
+                tracing::debug!("error draining logging client actor during shutdown: {}", e);
+            }
+        }
     }
 }
 
