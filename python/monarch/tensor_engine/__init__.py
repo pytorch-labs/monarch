@@ -14,10 +14,13 @@ from monarch._src.tensor_engine.rdma import (
     RDMAReadTransferWarning,
     RDMAWriteTransferWarning,
 )
+from monarch._src.tensor_engine.tcp import TCPBuffer, TCPManager
 
 __all__ = [
     "is_available",
     "RDMABuffer",
     "RDMAReadTransferWarning",
     "RDMAWriteTransferWarning",
+    "TCPBuffer",
+    "TCPManager",
 ]

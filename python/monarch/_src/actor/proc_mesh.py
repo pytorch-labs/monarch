@@ -78,6 +78,9 @@ try:
         _RdmaManager,
     )
 
+    # type: ignore[import]
+    from monarch._src.tensor_engine.tcp import TCPManager  # @manual
+
     # type: ignore[16]
     HAS_TENSOR_ENGINE = torch.cuda.is_available()
 except ImportError:
@@ -132,6 +135,9 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
         self._slice = False
         # type: ignore[21]
         self._rdma_manager: Optional["_RdmaManager"] = None
+        # type: ignore[21]
+        self._tcp_manager: Optional["TCPManager"] = None
+
         self._debug_manager: Optional[DebugManager] = None
         self._code_sync_client: Optional[CodeSyncMeshClient] = None
         self._logging_mesh_client: Optional[LoggingMeshClient] = None
@@ -182,12 +188,20 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
             else None
         )
 
+        _tcp_manager = (
+            # type: ignore[16]
+            await self._spawn_nonblocking_on(proc_mesh, "tcp_manager", TCPManager)
+            if HAS_TENSOR_ENGINE
+            else None
+        )
+
         _debug_manager = await self._spawn_nonblocking_on(
             proc_mesh, _DEBUG_MANAGER_ACTOR_NAME, DebugManager, await _debug_client()
         )
 
         self._debug_manager = _debug_manager
         self._rdma_manager = _rdma_manager
+        self._tcp_manager = _tcp_manager
 
         if setup is not None:
             # If the user has passed the setup lambda, we need to call
