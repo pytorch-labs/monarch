@@ -8,11 +8,11 @@
 
 import asyncio
 import logging
-import os
 import sys
 import threading
 import warnings
 from contextlib import AbstractContextManager
+from pathlib import Path
 
 from typing import (
     Any,
@@ -52,7 +52,9 @@ from monarch._src.actor.allocator import (
 )
 from monarch._src.actor.code_sync import (
     CodeSyncMeshClient,
+    CodeSyncMethod,
     RemoteWorkspace,
+    WorkspaceConfig,
     WorkspaceLocation,
     WorkspaceShape,
 )
@@ -66,6 +68,8 @@ from monarch._src.actor.device_utils import _local_device_count
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.future import DeprecatedNotAFuture, Future
 from monarch._src.actor.shape import MeshTrait
+from monarch.tools.config import Workspace
+from monarch.tools.utils import conda as conda_utils
 
 HAS_TENSOR_ENGINE = False
 try:
@@ -352,25 +356,53 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
     def rank_tensors(self) -> Dict[str, "Tensor"]:
         return self._device_mesh.ranks
 
-    async def sync_workspace(self, auto_reload: bool = False) -> None:
+    async def sync_workspace(
+        self,
+        workspace: Workspace = None,
+        conda: bool = False,
+        auto_reload: bool = False,
+    ) -> None:
         if self._code_sync_client is None:
             self._code_sync_client = CodeSyncMeshClient.spawn_blocking(
                 proc_mesh=await self._proc_mesh_for_asyncio_fixme,
             )
+
         # TODO(agallagher): We need some way to configure and pass this
         # in -- right now we're assuming the `gpu` dimension, which isn't
         # correct.
         # The workspace shape (i.e. only perform one rsync per host).
         assert set(self._shape.labels).issubset({"gpus", "hosts"})
+
+        workspaces = []
+        if workspace is not None:
+            workspaces.append(
+                WorkspaceConfig(
+                    local=Path(workspace),
+                    remote=RemoteWorkspace(
+                        location=WorkspaceLocation.FromEnvVar("WORKSPACE_DIR"),
+                        shape=WorkspaceShape.shared("gpus"),
+                    ),
+                    method=CodeSyncMethod.Rsync,
+                ),
+            )
+
+        # If `conda` is set, also sync the currently activated conda env.
+        conda_prefix = conda_utils.active_env_dir()
+        if conda and conda_prefix is not None:
+            workspaces.append(
+                WorkspaceConfig(
+                    local=Path(conda_prefix),
+                    remote=RemoteWorkspace(
+                        location=WorkspaceLocation.FromEnvVar("CONDA_PREFIX"),
+                        shape=WorkspaceShape.shared("gpus"),
+                    ),
+                    method=CodeSyncMethod.CondaSync,
+                ),
+            )
+
         assert self._code_sync_client is not None
-        await self._code_sync_client.sync_workspace(
-            # TODO(agallagher): Is there a better way to infer/set the local
-            # workspace dir, rather than use PWD?
-            local=os.getcwd(),
-            remote=RemoteWorkspace(
-                location=WorkspaceLocation.FromEnvVar("WORKSPACE_DIR"),
-                shape=WorkspaceShape.shared("gpus"),
-            ),
+        await self._code_sync_client.sync_workspaces(
+            workspaces=workspaces,
             auto_reload=auto_reload,
         )
 

@@ -6,10 +6,9 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-pub mod auto_reload;
-pub mod conda_sync;
-pub mod manager;
-pub mod rsync;
-mod workspace;
+#![feature(once_cell_try)]
 
-pub use workspace::WorkspaceLocation;
+pub mod diff;
+pub mod hash_utils;
+pub mod pack_meta;
+pub mod sync;

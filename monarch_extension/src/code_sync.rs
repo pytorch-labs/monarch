@@ -12,13 +12,13 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use futures::TryFutureExt;
-use futures::future::try_join_all;
 use hyperactor_mesh::Mesh;
 use hyperactor_mesh::RootActorMesh;
 use hyperactor_mesh::shared_cell::SharedCell;
 use monarch_hyperactor::code_sync::WorkspaceLocation;
 use monarch_hyperactor::code_sync::manager::CodeSyncManager;
 use monarch_hyperactor::code_sync::manager::CodeSyncManagerParams;
+use monarch_hyperactor::code_sync::manager::CodeSyncMethod;
 use monarch_hyperactor::code_sync::manager::WorkspaceConfig;
 use monarch_hyperactor::code_sync::manager::WorkspaceShape;
 use monarch_hyperactor::code_sync::manager::code_sync_mesh;
@@ -120,6 +120,44 @@ impl RemoteWorkspace {
 
 #[pyclass(
     frozen,
+    name = "CodeSyncMethod",
+    module = "monarch._rust_bindings.monarch_extension.code_sync"
+)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+enum PyCodeSyncMethod {
+    Rsync,
+    CondaSync,
+}
+
+impl From<PyCodeSyncMethod> for CodeSyncMethod {
+    fn from(method: PyCodeSyncMethod) -> CodeSyncMethod {
+        match method {
+            PyCodeSyncMethod::Rsync => CodeSyncMethod::Rsync,
+            PyCodeSyncMethod::CondaSync => CodeSyncMethod::CondaSync,
+        }
+    }
+}
+
+#[pymethods]
+impl PyCodeSyncMethod {
+    #[staticmethod]
+    fn from_bytes(bytes: &Bound<'_, PyBytes>) -> PyResult<Self> {
+        bincode::deserialize(bytes.as_bytes())
+            .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))
+    }
+
+    fn __reduce__<'py>(
+        slf: &Bound<'py, Self>,
+    ) -> PyResult<(Bound<'py, PyAny>, (Bound<'py, PyBytes>,))> {
+        let bytes = bincode::serialize(&*slf.borrow())
+            .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
+        let py_bytes = PyBytes::new(slf.py(), &bytes);
+        Ok((slf.as_any().getattr("from_bytes")?, (py_bytes,)))
+    }
+}
+
+#[pyclass(
+    frozen,
     name = "WorkspaceConfig",
     module = "monarch._rust_bindings.monarch_extension.code_sync"
 )]
@@ -127,14 +165,19 @@ impl RemoteWorkspace {
 struct PyWorkspaceConfig {
     local: PathBuf,
     remote: RemoteWorkspace,
+    method: PyCodeSyncMethod,
 }
 
 #[pymethods]
 impl PyWorkspaceConfig {
     #[new]
-    #[pyo3(signature = (*, local, remote))]
-    fn new(local: PathBuf, remote: RemoteWorkspace) -> Self {
-        Self { local, remote }
+    #[pyo3(signature = (*, local, remote, method = PyCodeSyncMethod::Rsync))]
+    fn new(local: PathBuf, remote: RemoteWorkspace, method: PyCodeSyncMethod) -> Self {
+        Self {
+            local,
+            remote,
+            method,
+        }
     }
 }
 
@@ -152,6 +195,7 @@ impl CodeSyncMeshClient {
         actor_mesh: SharedCell<RootActorMesh<'static, CodeSyncManager>>,
         local: PathBuf,
         remote: RemoteWorkspace,
+        method: CodeSyncMethod,
         auto_reload: bool,
     ) -> Result<()> {
         let actor_mesh = actor_mesh.borrow()?;
@@ -164,7 +208,9 @@ impl CodeSyncMeshClient {
             location: remote.location.into(),
             shape,
         };
-        code_sync_mesh(&actor_mesh, local, remote, auto_reload).await?;
+        code_sync_mesh(&actor_mesh, local, remote, method, auto_reload)
+            .await
+            .map_err(|err| PyRuntimeError::new_err(format!("{:#?}", err)))?;
         Ok(())
     }
 }
@@ -183,12 +229,13 @@ impl CodeSyncMeshClient {
         })?
     }
 
-    #[pyo3(signature = (*, local, remote, auto_reload = false))]
+    #[pyo3(signature = (*, local, remote, method = PyCodeSyncMethod::Rsync, auto_reload = false))]
     fn sync_workspace<'py>(
         &self,
         py: Python<'py>,
         local: PathBuf,
         remote: RemoteWorkspace,
+        method: PyCodeSyncMethod,
         auto_reload: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         monarch_hyperactor::runtime::future_into_py(
@@ -197,6 +244,7 @@ impl CodeSyncMeshClient {
                 self.actor_mesh.clone(),
                 local,
                 remote,
+                method.into(),
                 auto_reload,
             )
             .err_into(),
@@ -213,14 +261,19 @@ impl CodeSyncMeshClient {
         let actor_mesh = self.actor_mesh.clone();
         monarch_hyperactor::runtime::future_into_py(
             py,
-            try_join_all(workspaces.into_iter().map(|workspace| {
-                CodeSyncMeshClient::sync_workspace_(
-                    actor_mesh.clone(),
-                    workspace.local,
-                    workspace.remote,
-                    auto_reload,
-                )
-            }))
+            async move {
+                for workspace in workspaces.into_iter() {
+                    CodeSyncMeshClient::sync_workspace_(
+                        actor_mesh.clone(),
+                        workspace.local,
+                        workspace.remote,
+                        workspace.method.into(),
+                        auto_reload,
+                    )
+                    .await?
+                }
+                anyhow::Ok(())
+            }
             .err_into(),
         )
     }
@@ -228,6 +281,7 @@ impl CodeSyncMeshClient {
 
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<CodeSyncMeshClient>()?;
+    module.add_class::<PyCodeSyncMethod>()?;
     module.add_class::<PyWorkspaceConfig>()?;
     module.add_class::<PyWorkspaceLocation>()?;
     module.add_class::<PyWorkspaceShape>()?;

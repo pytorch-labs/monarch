@@ -6,7 +6,7 @@
 
 # pyre-strict
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from torchx.specs import Role
 
@@ -24,6 +24,14 @@ class UnnamedAppDef:
     metadata: Dict[str, str] = field(default_factory=dict)
 
 
+# TODO: provide a proper Workspace class to support
+#  - multiple workspaces
+#  - empty workspaces
+#  - no workspace
+#  - experimental directories
+Workspace = str | None
+
+
 @dataclass
 class Config:
     """
@@ -32,6 +40,6 @@ class Config:
 
     scheduler: str = NOT_SET
     scheduler_args: dict[str, Any] = field(default_factory=dict)
-    workspace: Optional[str] = None
+    workspace: Workspace = None
     dryrun: bool = False
     appdef: UnnamedAppDef = field(default_factory=UnnamedAppDef)
