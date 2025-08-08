@@ -58,6 +58,7 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     OncePortRef,
     PortReceiver as HyPortReceiver,
     PortRef,
+    UndeliverableMessageEnvelope,
 )
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 
@@ -969,6 +970,17 @@ class _Actor:
                 pdb_wrapper.post_mortem(exc_tb)
                 self._maybe_exit_debugger(do_continue=False)
 
+    def _handle_undeliverable_message(
+        self, message: UndeliverableMessageEnvelope
+    ) -> None:
+        handle_undeliverable = getattr(
+            self.instance, "_handle_undeliverable_message", None
+        )
+        if handle_undeliverable is not None:
+            handle_undeliverable(message)
+        else:
+            raise RuntimeError(f"a message was undeliverable and returned: {message}")
+
 
 def _is_mailbox(x: object) -> bool:
     if hasattr(x, "__monarch_ref__"):
@@ -1010,6 +1022,11 @@ class Actor(MeshTrait):
         raise NotImplementedError(
             "actor implementations are not meshes, but we can't convince the typechecker of it..."
         )
+
+    def _handle_undeliverable_message(
+        self, message: UndeliverableMessageEnvelope
+    ) -> None:
+        raise RuntimeError(f"a message was undeliverable and returned: {message}")
 
 
 class ActorMesh(MeshTrait, Generic[T]):
