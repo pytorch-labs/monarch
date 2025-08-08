@@ -16,5 +16,8 @@ async fn main() {
         .finish();
     tracing::subscriber::set_global_default(subscriber).expect("failed to set subscriber");
 
+    // Load hyperactor and mesh settings from env into global config.
+    hyperactor_mesh::config::init_global_from_env();
+
     hyperactor_mesh::bootstrap_or_die().await;
 }
