@@ -101,6 +101,14 @@ class RDMABuffer:
 
         Returns an ActorFuture that can be awaited or called with .get() for blocking operation.
         """
+        try:
+            MonarchContext.get()
+        except LookupError:
+            raise RuntimeError(
+                "RDMABuffer.read_into() can only be called from within a Monarch actor context. "
+                "Make sure you're calling this from within an actor method."
+            )
+
         _assert_tensor_is_1d_contiguous_uint8(dst)
         dst_gpu = None
         if dst.device.type != "cpu":
@@ -148,6 +156,14 @@ class RDMABuffer:
 
         Returns an ActorFuture that can be awaited or called with .get() for blocking operation.
         """
+        try:
+            MonarchContext.get()
+        except LookupError:
+            raise RuntimeError(
+                "RDMABuffer.write_from() can only be called from within a Monarch actor context. "
+                "Make sure you're calling this from within an actor method."
+            )
+
         _assert_tensor_is_1d_contiguous_uint8(src)
         src_gpu = None
         if src.device.type != "cpu":
