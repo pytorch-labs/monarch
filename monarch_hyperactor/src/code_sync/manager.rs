@@ -332,6 +332,7 @@ pub async fn code_sync_mesh(
         async move {
             let (result_tx, result_rx) = mailbox.open_port::<Result<(), String>>();
             actor_mesh.cast(
+                mailbox,
                 sel!(*),
                 CodeSyncMessage::Sync {
                     method: Method::Rsync {

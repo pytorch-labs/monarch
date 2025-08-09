@@ -204,6 +204,7 @@ where
         if self.is_chopstick_available(chopstick) {
             self.grant_chopstick(chopstick, rank);
             self.philosophers.cast(
+                self.philosophers.proc_mesh().client(),
                 selection_from(self.philosophers.shape(), &[("replica", rank..rank + 1)])?,
                 PhilosopherMessage::GrantChopstick(chopstick),
             )?
@@ -241,6 +242,7 @@ async fn main() -> Result<ExitCode> {
     let (dining_message_handle, mut dining_message_rx) = proc_mesh.client().open_port();
     actor_mesh
         .cast(
+            proc_mesh.client(),
             all(true_()),
             PhilosopherMessage::Start(dining_message_handle.bind()),
         )

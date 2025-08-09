@@ -316,7 +316,8 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
         service = ActorMesh._create(
             Class,
             actor_mesh,
-            MonarchContext.current_mailbox(),
+            MonarchContext.get().mailbox,
+            self._shape,
             self,
             *args,
             **kwargs,

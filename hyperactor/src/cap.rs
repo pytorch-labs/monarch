@@ -37,6 +37,7 @@ impl<T: sealed::CanResolveActorRef> CanResolveActorRef for T {}
 pub(crate) mod sealed {
     use async_trait::async_trait;
 
+    use crate::ActorId;
     use crate::ActorRef;
     use crate::PortId;
     use crate::accum::ReducerSpec;
@@ -49,6 +50,7 @@ pub(crate) mod sealed {
 
     pub trait CanSend: Send + Sync {
         fn post(&self, dest: PortId, headers: Attrs, data: Serialized);
+        fn actor_id(&self) -> &ActorId;
     }
 
     pub trait CanOpenPort: Send + Sync {

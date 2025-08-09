@@ -410,6 +410,7 @@ where
         async move {
             let (result_tx, result_rx) = mailbox.open_port::<Result<RsyncResult, String>>();
             actor_mesh.cast(
+                mailbox,
                 sel!(*),
                 RsyncMessage {
                     connect: rsync_conns_tx.bind(),

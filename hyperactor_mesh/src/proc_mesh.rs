@@ -851,6 +851,7 @@ mod tests {
 
         actors
             .cast(
+                mesh.client(),
                 sel_from_shape!(actors.shape(), replica = 0),
                 Error("failmonkey".to_string()),
             )

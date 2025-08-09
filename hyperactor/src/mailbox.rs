@@ -1439,10 +1439,16 @@ impl cap::sealed::CanSend for Mailbox {
         let envelope = MessageEnvelope::new(self.actor_id().clone(), dest, data, headers);
         MailboxSender::post(self, envelope, return_handle);
     }
+    fn actor_id(&self) -> &ActorId {
+        self.actor_id()
+    }
 }
 impl cap::sealed::CanSend for &Mailbox {
     fn post(&self, dest: PortId, headers: Attrs, data: Serialized) {
         cap::sealed::CanSend::post(*self, dest, headers, data)
+    }
+    fn actor_id(&self) -> &ActorId {
+        (**self).actor_id()
     }
 }
 
