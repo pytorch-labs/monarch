@@ -29,6 +29,7 @@ from typing import (
 )
 
 from monarch._rust_bindings.monarch_extension.logging import LoggingMeshClient
+from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
 from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monarch/monarch_extension:monarch_extension
     Alloc,
     AllocConstraints,
@@ -163,9 +164,10 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
         proc_mesh_: "Shared[HyProcMesh]",
         setup: Callable[[], None] | None = None,
     ) -> "HyProcMesh":
-        proc_mesh = await proc_mesh_
         # WARNING: it is unsafe to await self._proc_mesh here
         # because self._proc_mesh is the result of this function itself!
+
+        proc_mesh = await proc_mesh_
 
         self._logging_mesh_client = await LoggingMeshClient.spawn(proc_mesh=proc_mesh)
         self._logging_mesh_client.set_mode(
@@ -182,23 +184,18 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
             else None
         )
 
-        _debug_manager = await self._spawn_nonblocking_on(
-            proc_mesh, _DEBUG_MANAGER_ACTOR_NAME, DebugManager, await _debug_client()
-        )
-
-        self._debug_manager = _debug_manager
         self._rdma_manager = _rdma_manager
 
         if setup is not None:
             # If the user has passed the setup lambda, we need to call
             # it here before any of the other actors are spawned so that
             # the environment variables are set up before cuda init.
-            setup_actor = await self._spawn_nonblocking_on(
-                proc_mesh, "setup", SetupActor, setup
+            setup_actor = self._spawn_nonblocking_on(
+                proc_mesh_, "setup", SetupActor, setup
             )
             await setup_actor.setup.call()
 
-        return proc_mesh
+        return await proc_mesh_
 
     @property
     def _ndslice(self) -> Slice:
@@ -218,10 +215,10 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
         pm._slice = True
         return pm
 
-    def spawn(self, name: str, Class: Type[T], *args: Any, **kwargs: Any) -> Future[T]:
+    def spawn(self, name: str, Class: Type[T], *args: Any, **kwargs: Any) -> T:
         if self._slice:
             raise NotImplementedError("NYI: spawn on slice of a proc mesh.")
-        return Future(coro=self._spawn_nonblocking(name, Class, *args, **kwargs))
+        return self._spawn_nonblocking(name, Class, *args, **kwargs)
 
     @property
     async def _proc_mesh_for_asyncio_fixme(self) -> HyProcMesh:
@@ -290,6 +287,14 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
 
         if _init_manager_actors:
             pm._init_manager_actors(setup)
+            # we do this here rather than in _init_manager_actors
+            # because serializing debug_client() requires waiting on
+            # its actor to spawn which would block the tokio event loop inside
+            # _init_manager_actors
+            pm._debug_manager = pm.spawn(
+                _DEBUG_MANAGER_ACTOR_NAME, DebugManager, debug_client()
+            )
+
         return pm
 
     def __repr__(self) -> str:
@@ -298,21 +303,28 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
     def __str__(self) -> str:
         return str(self._proc_mesh)
 
-    async def _spawn_nonblocking(
+    def _spawn_nonblocking(
         self, name: str, Class: Type[T], *args: Any, **kwargs: Any
     ) -> T:
-        return await self._spawn_nonblocking_on(
-            await self._proc_mesh, name, Class, *args, **kwargs
-        )
+        return self._spawn_nonblocking_on(self._proc_mesh, name, Class, *args, **kwargs)
 
-    async def _spawn_nonblocking_on(
-        self, pm: HyProcMesh, name: str, Class: Type[T], *args: Any, **kwargs: Any
+    def _spawn_nonblocking_on(
+        self,
+        pm: "Shared[HyProcMesh]",
+        name: str,
+        Class: Type[T],
+        *args: Any,
+        **kwargs: Any,
     ) -> T:
         if not issubclass(Class, Actor):
             raise ValueError(
                 f"{Class} must subclass monarch.service.Actor to spawn it."
             )
-        actor_mesh = await pm.spawn_nonblocking(name, _Actor)
+
+        async def task() -> "PythonActorMesh":
+            return await (await pm).spawn_nonblocking(name, _Actor)
+
+        actor_mesh = PythonTask.from_coroutine(task())
         service = ActorMesh._create(
             Class,
             actor_mesh,
@@ -513,7 +525,7 @@ def proc_mesh(
 
 _debug_client_init = threading.Lock()
 _debug_proc_mesh: Optional["ProcMesh"] = None
-_debug_client_mesh: "Optional[Shared[DebugClient]]" = None
+_debug_client_mesh: "Optional[DebugClient]" = None
 
 
 # Lazy init so that the debug client and proc does not produce logs when it isn't used.
@@ -521,21 +533,13 @@ _debug_client_mesh: "Optional[Shared[DebugClient]]" = None
 # try to init resulting in duplicates. The critical region is not blocking: it spawns
 # a separate task to do the init, asigns the Shared[Client] from that task to the global
 # and releases the lock.
-def _debug_client() -> "Shared[DebugClient]":
+def debug_client() -> "DebugClient":
     global _debug_client_mesh, _debug_proc_mesh
-
-    async def create() -> DebugClient:
-        _debug_proc_mesh = _proc_mesh_from_allocator(
-            gpus=1, hosts=1, allocator=LocalAllocator(), _init_manager_actors=False
-        )
-        return await _debug_proc_mesh._spawn_nonblocking("debug_client", DebugClient)
-
     with _debug_client_init:
         if _debug_client_mesh is None:
-            _debug_client_mesh = PythonTask.from_coroutine(create()).spawn()
+            _debug_proc_mesh = _proc_mesh_from_allocator(
+                gpus=1, hosts=1, allocator=LocalAllocator(), _init_manager_actors=False
+            )
+            _debug_client_mesh = _debug_proc_mesh.spawn("debug_client", DebugClient)
 
     return _debug_client_mesh
-
-
-def debug_client() -> DebugClient:
-    return Future(coro=_debug_client().task()).get()

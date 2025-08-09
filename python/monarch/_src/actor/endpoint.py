@@ -155,28 +155,24 @@ class Endpoint(ABC, Generic[P, R]):
 
         return Future(coro=process())
 
-    def _stream(
+    def stream(
         self, *args: P.args, **kwargs: P.kwargs
-    ) -> Generator[Coroutine[Any, Any, R], None, None]:
+    ) -> Generator[Future[R], None, None]:
         """
         Broadcasts to all actors and yields their responses as a stream / generator.
 
         This enables processing results from multiple actors incrementally as
         they become available. Returns an async generator of response values.
         """
-
         p, r = self._port()
-        # pyre-ignore
+        # type: ignore
         extent = self._send(args, kwargs, port=p)
-        for _ in range(extent.nelements):
-            # pyre-ignore
-            yield r._recv()
 
-    def stream(
-        self, *args: P.args, **kwargs: P.kwargs
-    ) -> Generator[Future[R], None, None]:
-        for coro in self._stream(*args, **kwargs):
-            yield Future(coro=coro)
+        def _stream():
+            for _ in range(extent.nelements):
+                yield r.recv()
+
+        return _stream()
 
     def broadcast(self, *args: P.args, **kwargs: P.kwargs) -> None:
         """

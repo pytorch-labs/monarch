@@ -149,8 +149,13 @@ fn send_result(
 
 #[pymethods]
 impl PyPythonTask {
-    fn block_on(&mut self, py: Python<'_>) -> PyResult<PyObject> {
-        signal_safe_block_on(py, self.take_task()?)?
+    fn block_on(mut slf: PyRefMut<PyPythonTask>, py: Python<'_>) -> PyResult<PyObject> {
+        let task = slf.take_task()?;
+        // mutable references to python objects must be dropped before calling
+        // signal_safe_block_on. It will release the GIL, and any other thread
+        // trying to access slf will throw.
+        drop(slf);
+        signal_safe_block_on(py, task)?
     }
 
     fn spawn(&mut self) -> PyResult<PyShared> {
@@ -293,9 +298,13 @@ impl PyShared {
         let task = self.task()?;
         Ok(PythonTaskAwaitIterator::new(task.into_py_any(py)?))
     }
-    pub fn block_on(&mut self, py: Python<'_>) -> PyResult<PyObject> {
-        let mut task = self.task()?;
-        task.block_on(py)
+    pub fn block_on(mut slf: PyRefMut<PyShared>, py: Python<'_>) -> PyResult<PyObject> {
+        let task = slf.task()?.take_task()?;
+        // mutable references to python objects must be dropped before calling
+        // signal_safe_block_on. It will release the GIL, and any other thread
+        // trying to access slf will throw.
+        drop(slf);
+        signal_safe_block_on(py, task)?
     }
 }
 

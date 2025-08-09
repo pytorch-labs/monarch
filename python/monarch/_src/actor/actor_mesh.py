@@ -15,6 +15,7 @@ import logging
 import os
 import random
 import traceback
+from abc import ABC, abstractmethod
 
 from dataclasses import dataclass
 from traceback import TracebackException
@@ -24,7 +25,6 @@ from typing import (
     Callable,
     cast,
     Concatenate,
-    Coroutine,
     Dict,
     Generator,
     Generic,
@@ -35,7 +35,6 @@ from typing import (
     Optional,
     overload,
     ParamSpec,
-    Protocol,
     Tuple,
     Type,
     TYPE_CHECKING,
@@ -48,6 +47,7 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessage,
     PythonMessageKind,
 )
+
 from monarch._rust_bindings.monarch_hyperactor.actor_mesh import (
     PythonActorMesh,
     PythonActorMeshRef,
@@ -59,13 +59,13 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     PortReceiver as HyPortReceiver,
     PortRef,
 )
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
-
-if TYPE_CHECKING:
-    from monarch._rust_bindings.monarch_hyperactor.actor import PortProtocol
-    from monarch._rust_bindings.monarch_hyperactor.mailbox import PortReceiverBase
 
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
+from monarch._rust_bindings.monarch_hyperactor.pytokio import (
+    is_tokio_thread,
+    PythonTask,
+    Shared,
+)
 from monarch._rust_bindings.monarch_hyperactor.selection import Selection as HySelection
 from monarch._rust_bindings.monarch_hyperactor.shape import Point as HyPoint, Shape
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
@@ -80,7 +80,7 @@ from monarch._src.actor.endpoint import (
     Propagator,
     Selection,
 )
-from monarch._src.actor.future import Future
+from monarch._src.actor.future import DeprecatedNotAFuture, Future
 from monarch._src.actor.pdb_wrapper import PdbWrapper
 
 from monarch._src.actor.pickle import flatten, unflatten
@@ -95,7 +95,11 @@ from typing_extensions import Self
 
 
 if TYPE_CHECKING:
+    from monarch._rust_bindings.monarch_hyperactor.actor import PortProtocol
+    from monarch._rust_bindings.monarch_hyperactor.mailbox import PortReceiverBase
     from monarch._src.actor.proc_mesh import ProcMesh
+
+CallMethod = PythonMessageKind.CallMethod
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -121,6 +125,7 @@ class MonarchContext:
     mailbox: Mailbox
     proc_id: str
     point: Point
+    send_queue: Tuple[Optional["Shared[Any]"], int]
 
     @staticmethod
     def get() -> "MonarchContext":
@@ -128,7 +133,7 @@ class MonarchContext:
         if c is None:
             mb = Mailbox.root_client_mailbox()
             proc_id = mb.actor_id.proc_id
-            c = MonarchContext(mb, proc_id, Point(0, singleton_shape))
+            c = MonarchContext(mb, proc_id, Point(0, singleton_shape), (None, 0))
             _context.set(c)
         return c
 
@@ -184,15 +189,12 @@ def _use_standin_mesh() -> bool:
     return bool(os.getenv("USE_STANDIN_ACTOR_MESH", default=False))
 
 
-class ActorMeshProtocol(Protocol):
+class ActorMeshProtocol(ABC):
     """
     Protocol defining the common interface for actor mesh, mesh ref and _ActorMeshRefImpl.
-
-    Note: We do not want to use ABC because _ActorMeshRefImpl already inherits
-    from MeshTrait and we want to avoid multiple inheritance, especially when
-    _ActorMeshRefImpl will be deleted soon.
     """
 
+    @abstractmethod
     def cast(
         self,
         message: PythonMessage,
@@ -200,11 +202,17 @@ class ActorMeshProtocol(Protocol):
         mailbox: Mailbox,
     ) -> None: ...
 
+    @abstractmethod
     def new_with_shape(self, shape: Shape) -> Self: ...
 
-    def supervision_event(self) -> "Optional[Shared[Exception]]": ...
+    def supervision_event(self) -> "Optional[Shared[Exception]]":
+        return None
 
-    async def stop(self) -> None: ...
+    async def stop(self) -> None:
+        raise NotImplementedError(f"stop() is not supported for {type(self)}")
+
+    async def initialized(self):
+        return None
 
 
 class _PythonActorMeshAdapter(ActorMeshProtocol):
@@ -258,10 +266,7 @@ class _PythonActorMeshRefAdapter(ActorMeshProtocol):
     also used to store unpickable states such as proc_mesh.
     """
 
-    def __init__(
-        self,
-        inner: PythonActorMeshRef,
-    ) -> None:
+    def __init__(self, inner: PythonActorMeshRef) -> None:
         if _use_standin_mesh():
             raise ValueError(
                 "_PythonActorMeshRefAdapter should only be used when USE_STANDIN_ACTOR_MESH is not set"
@@ -279,12 +284,6 @@ class _PythonActorMeshRefAdapter(ActorMeshProtocol):
     def new_with_shape(self, shape: Shape) -> "ActorMeshProtocol":
         sliced: PythonActorMeshRef = self._inner.new_with_shape(shape)
         return _PythonActorMeshRefAdapter(sliced)
-
-    def supervision_event(self) -> "Optional[Shared[Exception]]":
-        return None
-
-    async def stop(self) -> None:
-        raise NotImplementedError("PythonActorMeshRef.stop() is not supported")
 
     def __reduce_ex__(self, protocol: ...) -> Tuple[Any, Tuple[Any, ...]]:
         """
@@ -318,12 +317,6 @@ class _SingletonActorAdapator(ActorMeshProtocol):
 
     def new_with_shape(self, shape: Shape) -> "ActorMeshProtocol":
         return _SingletonActorAdapator(self._inner, self._shape)
-
-    def supervision_event(self) -> "Optional[Shared[Exception]]":
-        return None
-
-    async def stop(self) -> None:
-        raise NotImplementedError("ActorId does not support stop")
 
 
 # standin class for whatever is the serializable python object we use
@@ -467,6 +460,74 @@ class _ActorMeshRefImpl(ActorMeshProtocol):
         await self._actor_mesh.stop()
 
 
+class SharedProtocolAdapter(ActorMeshProtocol):
+    def __init__(self, inner: "Shared[ActorMeshProtocol]", supervise: bool):
+        self._inner = inner
+        self._supervise = supervise
+
+    def cast(
+        self,
+        message: PythonMessage,
+        selection: Selection,
+        mailbox: Mailbox,
+    ) -> None:
+        ctx = MonarchContext.get()
+        last, count = ctx.send_queue
+
+        async def task():
+            if last is not None:
+                await last
+            try:
+                self._inner.__await__()
+                inner = await self._inner
+                inner.cast(message, selection, mailbox)
+            except Exception as e:
+                match message.kind:
+                    case CallMethod(response_port=port) if port is not None:
+                        Port(port, mailbox, 0).exception(e)
+
+        ctx.send_queue = (PythonTask.from_coroutine(task()).spawn(), count + 1)
+
+    def new_with_shape(self, shape: Shape) -> "SharedProtocolAdapter":
+        async def task():
+            inner = await self._inner
+            return inner.new_with_shape(shape)
+
+        return SharedProtocolAdapter(PythonTask.from_coroutine(task()).spawn(), False)
+
+    def supervision_event(self) -> "Optional[Shared[Exception]]":
+        if not self._supervise:
+            return None
+
+        async def task():
+            inner = await self._inner
+            return await inner.supervision_event()
+
+        return PythonTask.from_coroutine(task()).spawn()
+
+    async def stop(self) -> None:
+        inner = await Future(coro=self._inner.task())
+        await inner.stop()
+
+    @staticmethod
+    def _restore(inner: ActorMeshProtocol) -> ActorMeshProtocol:
+        return inner
+
+    def __reduce_ex__(self, protocol):
+        # blocking here means that we cannot send messages that contain actor
+        # references from the tokio event loop
+        if is_tokio_thread():
+            raise NotImplementedError(
+                "Cannot send actor references from a coroutine on the tokio event loop."
+                "To fix this we have to either make it psosible for pickling to defer this work,"
+                "or resolve the actor id without blocking."
+            )
+        return SharedProtocolAdapter._restore, (self._inner.block_on(),)
+
+    async def initialized(self):
+        await self._inner
+
+
 class ActorEndpoint(Endpoint[P, R]):
     def __init__(
         self,
@@ -585,9 +646,7 @@ class Accumulator(Generic[P, R, A]):
         self._combine: Callable[[A, R], A] = combine
 
     def accumulate(self, *args: P.args, **kwargs: P.kwargs) -> "Future[A]":
-        gen: Generator[Coroutine[None, None, R], None, None] = self._endpoint._stream(
-            *args, **kwargs
-        )
+        gen: Generator[Future[R], None, None] = self._endpoint.stream(*args, **kwargs)
 
         async def impl() -> A:
             value = self._identity
@@ -814,18 +873,18 @@ class _Actor:
         mailbox: Mailbox,
         rank: int,
         shape: Shape,
-        method_spec: MethodSpecifier,
+        method: MethodSpecifier,
         message: bytes,
         panic_flag: PanicFlag,
         local_state: Iterable[Any],
-        port: "PortProtocol",
+        response_port: "PortProtocol[Any]",
     ) -> None:
         MESSAGES_HANDLED.add(1)
         # response_port can be None. If so, then sending to port will drop the response,
         # and raise any exceptions to the caller.
         try:
             ctx: MonarchContext = MonarchContext(
-                mailbox, mailbox.actor_id.proc_id, Point(rank, shape)
+                mailbox, mailbox.actor_id.proc_id, Point(rank, shape), (None, 0)
             )
             _context.set(ctx)
 
@@ -833,7 +892,7 @@ class _Actor:
 
             args, kwargs = unflatten(message, local_state)
 
-            match method_spec:
+            match method:
                 case MethodSpecifier.Init():
                     Class, *args = args
                     try:
@@ -843,13 +902,13 @@ class _Actor:
                             e, f"Remote actor {Class}.__init__ call failed."
                         )
                         raise e
-                    port.send(None)
+                    response_port.send(None)
                     return None
-                case MethodSpecifier.ReturnsResponse(name=method):
+                case MethodSpecifier.ReturnsResponse(name=method_name):
                     pass
-                case MethodSpecifier.ExplicitPort(name=method):
-                    args = (port, *args)
-                    port = DroppingPort()
+                case MethodSpecifier.ExplicitPort(name=method_name):
+                    args = (response_port, *args)
+                    response_port = DroppingPort()
 
             if self.instance is None:
                 # This could happen because of the following reasons. Both
@@ -862,13 +921,13 @@ class _Actor:
                 #    should never happen. It indicates either a bug in the
                 #    message delivery mechanism, or the framework accidentally
                 #    mixed the usage of cast and direct send.
-                error_message = f"Actor object is missing when executing method {method} on actor {mailbox.actor_id}."
+                error_message = f"Actor object is missing when executing method {method_name} on actor {mailbox.actor_id}."
                 if self._saved_error is not None:
                     error_message += (
                         f" This is likely due to an earlier error: {self._saved_error}"
                     )
                 raise AssertionError(error_message)
-            the_method = getattr(self.instance, method)
+            the_method = getattr(self.instance, method_name)
             if isinstance(the_method, EndpointProperty):
                 module = the_method._method.__module__
                 the_method = functools.partial(the_method._method, self.instance)
@@ -880,7 +939,7 @@ class _Actor:
                 async def instrumented():
                     enter_span(
                         module,
-                        method,
+                        method_name,
                         str(ctx.mailbox.actor_id),
                     )
                     try:
@@ -897,17 +956,17 @@ class _Actor:
 
                 result = await instrumented()
             else:
-                enter_span(module, method, str(ctx.mailbox.actor_id))
+                enter_span(module, method_name, str(ctx.mailbox.actor_id))
                 with fake_sync_state():
                     result = the_method(*args, **kwargs)
                 self._maybe_exit_debugger()
                 exit_span()
 
-            port.send(result)
+            response_port.send(result)
         except Exception as e:
             self._post_mortem_debug(e.__traceback__)
             traceback.print_exc()
-            port.exception(ActorError(e))
+            response_port.exception(ActorError(e))
         except BaseException as e:
             self._post_mortem_debug(e.__traceback__)
             # A BaseException can be thrown in the case of a Rust panic.
@@ -962,7 +1021,7 @@ def _pickle(obj: object) -> bytes:
     return msg
 
 
-class Actor(MeshTrait):
+class Actor(MeshTrait, DeprecatedNotAFuture):
     @functools.cached_property
     def logger(cls) -> logging.Logger:
         lgr = logging.getLogger(cls.__class__.__name__)
@@ -986,8 +1045,14 @@ class Actor(MeshTrait):
             "actor implementations are not meshes, but we can't convince the typechecker of it..."
         )
 
+    @property
+    def initialized(self):
+        raise NotImplementedError(
+            "actor implementations are not meshes, but we can't convince the typechecker of it..."
+        )
 
-class ActorMesh(MeshTrait, Generic[T]):
+
+class ActorMesh(MeshTrait, Generic[T], DeprecatedNotAFuture):
     def __init__(
         self,
         Class: Type[T],
@@ -1049,7 +1114,7 @@ class ActorMesh(MeshTrait, Generic[T]):
     def _create(
         cls,
         Class: Type[T],
-        actor_mesh: PythonActorMesh,
+        actor_mesh: "PythonTask[PythonActorMesh]",
         mailbox: Mailbox,
         shape: Shape,
         proc_mesh: "ProcMesh",
@@ -1058,13 +1123,17 @@ class ActorMesh(MeshTrait, Generic[T]):
         *args: Any,
         **kwargs: Any,
     ) -> "ActorMesh[T]":
-        if _use_standin_mesh():
-            wrapper = _ActorMeshRefImpl.from_hyperactor_mesh(
-                mailbox, actor_mesh, proc_mesh
-            )
-        else:
-            wrapper = _PythonActorMeshAdapter(actor_mesh)
-        mesh = cls(Class, wrapper, mailbox, shape, proc_mesh)
+        async def task():
+            if _use_standin_mesh():
+                return _ActorMeshRefImpl.from_hyperactor_mesh(
+                    mailbox, await actor_mesh, proc_mesh
+                )
+            else:
+                return _PythonActorMeshAdapter(await actor_mesh)
+
+        shared = PythonTask.from_coroutine(task()).spawn()
+        inner = SharedProtocolAdapter(shared, True)
+        mesh = cls(Class, inner, mailbox, shape, proc_mesh)
 
         async def null_func(*_args: Iterable[Any], **_kwargs: Dict[str, Any]) -> None:
             return None
@@ -1112,6 +1181,10 @@ class ActorMesh(MeshTrait, Generic[T]):
 
     async def stop(self):
         await self._inner.stop()
+
+    @property
+    def initialized(self) -> Future[None]:
+        return Future(coro=self._inner.initialized())
 
 
 class ActorError(Exception):
