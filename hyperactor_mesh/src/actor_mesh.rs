@@ -279,7 +279,7 @@ impl<'a, A: RemoteActor> RootActorMesh<'a, A> {
     }
 
     /// Open a port on this ActorMesh.
-    pub(crate) fn open_port<M: Message>(&self) -> (PortHandle<M>, PortReceiver<M>) {
+    pub fn open_port<M: Message>(&self) -> (PortHandle<M>, PortReceiver<M>) {
         self.proc_mesh.client().open_port()
     }
 
