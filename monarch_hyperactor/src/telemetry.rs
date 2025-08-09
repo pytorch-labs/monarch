@@ -13,6 +13,7 @@ use std::cell::Cell;
 use hyperactor::clock::ClockKind;
 use hyperactor::clock::RealClock;
 use hyperactor::clock::SimClock;
+use hyperactor_telemetry::sqlite::with_tracing_db_file;
 use hyperactor_telemetry::swap_telemetry_clock;
 use opentelemetry::global;
 use opentelemetry::metrics;
@@ -65,7 +66,6 @@ pub fn forward_to_tracing(py: Python, record: PyObject) -> PyResult<()> {
     let file = record.getattr(py, "filename")?;
     let file: &str = file.extract(py)?;
     let level: i32 = record.getattr(py, "levelno")?.extract(py)?;
-
     // Map level number to level name
     match level {
         40 | 50 => {
@@ -82,6 +82,7 @@ pub fn forward_to_tracing(py: Python, record: PyObject) -> PyResult<()> {
             match traceback {
                 Some(traceback) => {
                     tracing::error!(
+                        target:"events",
                         file = file,
                         lineno = lineno,
                         stacktrace = traceback,
@@ -93,10 +94,10 @@ pub fn forward_to_tracing(py: Python, record: PyObject) -> PyResult<()> {
                 }
             }
         }
-        30 => tracing::warn!(file = file, lineno = lineno, message),
-        20 => tracing::info!(file = file, lineno = lineno, message),
-        10 => tracing::debug!(file = file, lineno = lineno, message),
-        _ => tracing::info!(file = file, lineno = lineno, message),
+        30 => tracing::warn!(target:"events", file = file, lineno = lineno, message),
+        20 => tracing::info!(target:"events", file = file, lineno = lineno, message),
+        10 => tracing::debug!(target:"events", file = file, lineno = lineno, message),
+        _ => tracing::info!(target:"events", file = file, lineno = lineno, message),
     }
     Ok(())
 }
@@ -191,6 +192,19 @@ impl PyUpDownCounter {
     }
 }
 
+/// Create a tracing database in a temporary file and return the file path
+/// This allows Python to connect to the same SQLite database using sqlite3.connect()
+#[pyfunction]
+pub fn create_tracing_db_file() -> PyResult<String> {
+    match with_tracing_db_file() {
+        Ok(db_path) => Ok(db_path),
+        Err(e) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+            "Failed to create tracing database file: {}",
+            e
+        ))),
+    }
+}
+
 #[pyclass(
     unsendable,
     subclass,
@@ -262,6 +276,13 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
         "monarch._rust_bindings.monarch_hyperactor.telemetry",
     )?;
     module.add_function(use_sim_clock_fn)?;
+
+    let create_tracing_db_file_fn = wrap_pyfunction!(create_tracing_db_file, module)?;
+    create_tracing_db_file_fn.setattr(
+        "__module__",
+        "monarch._rust_bindings.monarch_hyperactor.telemetry",
+    )?;
+    module.add_function(create_tracing_db_file_fn)?;
 
     module.add_class::<PySpan>()?;
     module.add_class::<PyCounter>()?;

@@ -88,6 +88,37 @@ def use_sim_clock() -> None:
     """
     ...
 
+def create_tracing_db_file() -> str:
+    """
+    Create a tracing database in a temporary file and return the file path.
+
+    This function creates a SQLite database file in the system temporary directory
+    with a unique name based on the process ID. The database is initialized with
+    all the necessary tables (events, messages, actor_lifecycle, actors) and the
+    custom assert() SQL function. The tracing subscriber is also initialized to
+    capture events to this database.
+
+    The returned file path can be used with Python's sqlite3.connect() to access
+    the same database from Python code, enabling analysis of distributed system
+    behavior, replica consistency checking, and custom SQL assertions.
+
+    Returns:
+    - str: The absolute path to the created SQLite database file.
+
+    Raises:
+    - RuntimeError: If the database file cannot be created or initialized.
+
+    Example:
+        >>> import sqlite3
+        >>> db_path = create_tracing_db_file()
+        >>> conn = sqlite3.connect(db_path)
+        >>> # Now you can query the tracing data from Python
+        >>> cursor = conn.cursor()
+        >>> cursor.execute("SELECT COUNT(*) FROM events")
+        >>> count = cursor.fetchone()[0]
+    """
+    ...
+
 class PySpan:
     def __init__(self, name: str) -> None:
         """
