@@ -188,6 +188,7 @@ async def test_reducer() -> None:
     port_ref = handle.bind()
 
     actor_mesh.cast(
+        proc_mesh.client,
         Selection.from_string("*"),
         PythonMessage(
             PythonMessageKind.CallMethod(

@@ -63,7 +63,9 @@ class PythonActorMesh:
         """
         ...
 
-    def cast(self, selection: Selection, message: PythonMessage) -> None:
+    def cast(
+        self, mailbox: Mailbox, selection: Selection, message: PythonMessage
+    ) -> None:
         """
         Cast a message to the selected actors in the mesh.
         """

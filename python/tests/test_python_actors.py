@@ -131,16 +131,16 @@ async def test_mesh_passed_to_mesh_on_different_proc_mesh():
 
 
 @pytest.mark.timeout(60)
-async def test_actor_slicing():
-    proc = await local_proc_mesh(gpus=2)
-    proc2 = await local_proc_mesh(gpus=2)
+def test_actor_slicing():
+    proc = local_proc_mesh(gpus=2)
+    proc2 = local_proc_mesh(gpus=2)
 
-    f = await proc.spawn("from", From)
-    t = await proc2.spawn("to", To)
+    f = proc.spawn("from", From).get()
+    t = proc2.spawn("to", To).get()
 
-    assert await t.slice(gpus=0).whoami.call() != await t.slice(gpus=1).whoami.call()
+    assert t.slice(gpus=0).whoami.call().get() != t.slice(gpus=1).whoami.call().get()
 
-    result = [y for x in f.get.stream(t.slice(gpus=0)) for y in await x]
+    result = [y for x in f.get.stream(t.slice(gpus=0)) for y in x.get()]
     assert len(result) == 2
 
     assert result[0] == result[1]

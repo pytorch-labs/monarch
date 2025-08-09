@@ -70,8 +70,11 @@ impl LoggingMeshClient {
         }
 
         let forwarder_inner_mesh = self.forwarder_mesh.borrow().map_err(anyhow::Error::msg)?;
+
+        let mailbox = forwarder_inner_mesh.proc_mesh().client();
         forwarder_inner_mesh
             .cast(
+                mailbox,
                 Selection::True,
                 LogForwardMessage::SetMode { stream_to_client },
             )
@@ -79,7 +82,11 @@ impl LoggingMeshClient {
 
         let logger_inner_mesh = self.logger_mesh.borrow().map_err(anyhow::Error::msg)?;
         logger_inner_mesh
-            .cast(Selection::True, LoggerRuntimeMessage::SetLogging { level })
+            .cast(
+                mailbox,
+                Selection::True,
+                LoggerRuntimeMessage::SetLogging { level },
+            )
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
         self.client_actor

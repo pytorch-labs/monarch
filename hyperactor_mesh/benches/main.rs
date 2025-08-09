@@ -63,6 +63,7 @@ fn bench_actor_scaling(c: &mut Criterion) {
 
                     actor_mesh
                         .cast(
+                            client,
                             all(true_()),
                             BenchMessage {
                                 step: i as usize,
@@ -154,6 +155,7 @@ fn bench_actor_mesh_message_sizes(c: &mut Criterion) {
 
                             actor_mesh
                                 .cast(
+                                    client,
                                     all(true_()),
                                     BenchMessage {
                                         step: i as usize,

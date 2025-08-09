@@ -764,10 +764,11 @@ impl Actor for MeshControllerActor {
         let workers = proc_mesh
             .spawn(&format!("tensor_engine_workers_{}", self.id), &param)
             .await?;
-        workers
-            .borrow()
-            .unwrap()
-            .cast(selection::dsl::true_(), AssignRankMessage::AssignRank())?;
+        workers.borrow().unwrap().cast(
+            this,
+            selection::dsl::true_(),
+            AssignRankMessage::AssignRank(),
+        )?;
 
         self.workers = Some(workers);
         let brokers = proc_mesh
@@ -828,7 +829,7 @@ impl Handler<ClientToControllerMessage> for MeshControllerActor {
         match message {
             ClientToControllerMessage::Send { slices, message } => {
                 let sel = self.workers().shape().slice().reify_slices(slices)?;
-                self.workers().cast(sel, message)?;
+                self.workers().cast(this, sel, message)?;
             }
             ClientToControllerMessage::Node {
                 seq,
@@ -845,6 +846,7 @@ impl Handler<ClientToControllerMessage> for MeshControllerActor {
             }
             ClientToControllerMessage::SyncAtExit { port } => {
                 self.workers().cast(
+                    this,
                     selection::dsl::true_(),
                     WorkerMessage::RequestStatus {
                         seq: self.history.seq_lower_bound,
