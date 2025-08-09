@@ -766,7 +766,9 @@ mod tests {
         };
 
         let selection = sel!(*);
-        actor_mesh.cast(selection.clone(), message).unwrap();
+        actor_mesh
+            .cast(proc_mesh.client(), selection.clone(), message)
+            .unwrap();
 
         let mut reply_tos = vec![];
         for _ in extent.points() {

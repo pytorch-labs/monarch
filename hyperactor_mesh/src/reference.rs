@@ -134,7 +134,6 @@ impl<A: RemoteActor> ActorMeshRef<A> {
             Some(sliced_shape) => cast_to_sliced_mesh::<A, M>(
                 caps,
                 self.mesh_id.clone(),
-                caps.mailbox().actor_id(),
                 &self.comm_actor_ref,
                 &selection,
                 message,
@@ -144,7 +143,6 @@ impl<A: RemoteActor> ActorMeshRef<A> {
             None => actor_mesh_cast::<A, M>(
                 caps,
                 self.mesh_id.clone(),
-                caps.mailbox().actor_id(),
                 &self.comm_actor_ref,
                 selection,
                 &self.root,

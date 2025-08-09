@@ -13,7 +13,6 @@ use std::ops::Deref;
 
 use async_trait::async_trait;
 use hyperactor::Actor;
-use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Bind;
 use hyperactor::GangId;
@@ -29,6 +28,7 @@ use hyperactor::actor::RemoteActor;
 use hyperactor::attrs::Attrs;
 use hyperactor::attrs::declare_attrs;
 use hyperactor::cap;
+use hyperactor::cap::CanSend;
 use hyperactor::mailbox::MailboxSenderError;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::message::Castable;
@@ -71,7 +71,6 @@ declare_attrs! {
 pub(crate) fn actor_mesh_cast<A, M>(
     caps: &impl cap::CanSend,
     actor_mesh_id: ActorMeshId,
-    sender: &ActorId,
     comm_actor_ref: &ActorRef<CommActor>,
     selection_of_root: Selection,
     root_mesh_shape: &Shape,
@@ -89,7 +88,7 @@ where
 
     let message = CastMessageEnvelope::new::<A, M>(
         actor_mesh_id.clone(),
-        sender.clone(),
+        caps.actor_id().clone(),
         cast_mesh_shape.clone(),
         message,
     )?;
@@ -118,7 +117,6 @@ where
 pub(crate) fn cast_to_sliced_mesh<A, M>(
     caps: &impl cap::CanSend,
     actor_mesh_id: ActorMeshId,
-    sender: &ActorId,
     comm_actor_ref: &ActorRef<CommActor>,
     sel_of_sliced: &Selection,
     message: M,
@@ -147,7 +145,6 @@ where
     actor_mesh_cast::<A, M>(
         caps,
         actor_mesh_id,
-        sender,
         comm_actor_ref,
         sel_of_root,
         root_mesh_shape,
@@ -165,20 +162,24 @@ pub trait ActorMesh: Mesh<Id = ActorMeshId> {
     /// Cast an `M`-typed message to the ranks selected by `sel` in
     /// this ActorMesh.
     #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `CastError`.
-    fn cast<M>(&self, selection: Selection, message: M) -> Result<(), CastError>
+    fn cast<M>(
+        &self,
+        sender: &impl CanSend,
+        selection: Selection,
+        message: M,
+    ) -> Result<(), CastError>
     where
         Self::Actor: RemoteHandles<IndexedErasedUnbound<M>>,
         M: Castable + RemoteMessage,
     {
         actor_mesh_cast::<Self::Actor, M>(
-            self.proc_mesh().client(),            // send capability
-            self.id(),                            // actor mesh id (destination mesh)
-            self.proc_mesh().client().actor_id(), // sender
-            self.proc_mesh().comm_actor(),        // comm actor
-            selection,                            // the selected actors
-            self.shape(),                         // root mesh shape
-            self.shape(),                         // cast mesh shape
-            message,                              // the message
+            sender,                        // send capability
+            self.id(),                     // actor mesh id (destination mesh)
+            self.proc_mesh().comm_actor(), // comm actor
+            selection,                     // the selected actors
+            self.shape(),                  // root mesh shape
+            self.shape(),                  // cast mesh shape
+            message,                       // the message
         )
     }
 
@@ -412,15 +413,14 @@ impl<A: RemoteActor> ActorMesh for SlicedActorMesh<'_, A> {
     }
 
     #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `CastError`.
-    fn cast<M>(&self, sel: Selection, message: M) -> Result<(), CastError>
+    fn cast<M>(&self, sender: &impl CanSend, sel: Selection, message: M) -> Result<(), CastError>
     where
         Self::Actor: RemoteHandles<IndexedErasedUnbound<M>>,
         M: Castable + RemoteMessage,
     {
         cast_to_sliced_mesh::<A, M>(
-            /*caps=*/ self.proc_mesh().client(),
+            /*caps=*/ sender,
             /*actor_mesh_id=*/ self.id(),
-            /*sender=*/ self.proc_mesh().client().actor_id(),
             /*comm_actor_ref*/ self.proc_mesh().comm_actor(),
             /*sel_of_sliced=*/ &sel,
             /*message=*/ message,
@@ -736,7 +736,7 @@ mod tests {
                 let actor_mesh: RootActorMesh<TestActor> = proc_mesh.spawn("echo", &()).await.unwrap();
                 let (reply_handle, mut reply_receiver) = actor_mesh.open_port();
                 actor_mesh
-                    .cast(sel!(*), Echo("Hello".to_string(), reply_handle.bind()))
+                    .cast(proc_mesh.client(), sel!(*), Echo("Hello".to_string(), reply_handle.bind()))
                     .unwrap();
                 for _ in 0..4 {
                     assert_eq!(&reply_receiver.recv().await.unwrap(), "Hello");
@@ -840,7 +840,7 @@ mod tests {
                 let dont_simulate_error = true;
                 let (reply_handle, mut reply_receiver) = actor_mesh.open_port();
                 actor_mesh
-                    .cast(sel!(*), GetRank(dont_simulate_error, reply_handle.bind()))
+                    .cast(proc_mesh.client(), sel!(*), GetRank(dont_simulate_error, reply_handle.bind()))
                     .unwrap();
                 let mut ranks = Ranks::new(actor_mesh.shape().slice().len());
                 while !ranks.is_full() {
@@ -851,6 +851,7 @@ mod tests {
                 let (reply_handle, mut reply_receiver) = actor_mesh.open_port();
                 actor_mesh
                     .cast(
+                        proc_mesh.client(),
                         sel_from_shape!(actor_mesh.shape(), replica = 0, host = 0),
                         GetRank(dont_simulate_error, reply_handle.bind()),
                     )
@@ -958,7 +959,7 @@ mod tests {
                 let params = CastTestActorParams{ forward_port: tx.bind() };
                 let actor_mesh: RootActorMesh<CastTestActor> = proc_mesh.spawn("actor", &params).await.unwrap();
 
-                actor_mesh.cast(sel!(*), CastTestMessage::Forward("abc".to_string())).unwrap();
+                actor_mesh.cast(proc_mesh.client(), sel!(*), CastTestMessage::Forward("abc".to_string())).unwrap();
 
                 for _ in 0..num_actors {
                     assert_eq!(rx.recv().await.unwrap(), CastTestMessage::Forward("abc".to_string()));
@@ -1148,7 +1149,7 @@ mod tests {
             // replying with rank.
             let (reply_handle, mut reply_receiver) = actor_mesh.open_port();
             actor_mesh
-                .cast(sel!(*), GetRank(false, reply_handle.bind()))
+                .cast(mesh.client(), sel!(*), GetRank(false, reply_handle.bind()))
                 .unwrap();
             let rank = reply_receiver.recv().await.unwrap();
             assert_eq!(rank, 0);
@@ -1162,7 +1163,7 @@ mod tests {
             // Cast the message.
             let (reply_handle, _) = actor_mesh.open_port();
             actor_mesh
-                .cast(sel!(*), GetRank(false, reply_handle.bind()))
+                .cast(mesh.client(), sel!(*), GetRank(false, reply_handle.bind()))
                 .unwrap();
 
             // The message will be returned!
@@ -1297,7 +1298,11 @@ mod tests {
             // the message will fail to send.
             assert!(payload.len() > max_frame_length);
             actor_mesh
-                .cast(sel!(*), Echo(payload, reply_handle.bind()))
+                .cast(
+                    proc_mesh.client(),
+                    sel!(*),
+                    Echo(payload, reply_handle.bind()),
+                )
                 .unwrap();
 
             // The undeliverable message will be turned into a proc event.

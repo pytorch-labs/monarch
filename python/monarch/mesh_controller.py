@@ -318,9 +318,7 @@ def actor_send(
         # TODO: move propagators into Endpoint abstraction and run the propagator to get the
         # mutates
         checker.check_permission(())
-    selected_device_mesh = (
-        endpoint._actor_mesh.proc_mesh and endpoint._actor_mesh.proc_mesh._device_mesh
-    )
+    selected_device_mesh = endpoint._proc_mesh and endpoint._proc_mesh._device_mesh
     if selected_device_mesh is not checker.mesh:
         raise ValueError(
             f"monarch Tensors sent to an actor must be located on the same process as the actor. However {checker.mesh} is not {selected_device_mesh}."

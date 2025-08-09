@@ -125,7 +125,7 @@ async def spawn_actor_mesh(proc_mesh: ProcMesh) -> PythonActorMesh:
         PythonMessageKind.CallMethod(MethodSpecifier.Init(), port_ref),
         pickle.dumps(None),
     )
-    actor_mesh.cast(Selection.all(), message)
+    actor_mesh.cast(proc_mesh.client, Selection.all(), message)
     # wait for init to complete
     for _ in range(len(actor_mesh.shape.ndslice)):
         await receiver.recv_task()
@@ -139,10 +139,7 @@ async def cast_to_call(
     message: PythonMessage,
 ) -> None:
     sel = Selection.all()
-    if isinstance(actor_mesh, PythonActorMesh):
-        actor_mesh.cast(sel, message)
-    elif isinstance(actor_mesh, PythonActorMeshRef):
-        actor_mesh.cast(mailbox, sel, message)
+    actor_mesh.cast(mailbox, sel, message)
 
 
 async def verify_cast_to_call(

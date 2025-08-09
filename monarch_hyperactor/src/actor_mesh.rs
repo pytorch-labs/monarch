@@ -126,7 +126,12 @@ impl PythonActorMesh {
 
 #[pymethods]
 impl PythonActorMesh {
-    fn cast(&self, selection: &PySelection, message: &PythonMessage) -> PyResult<()> {
+    fn cast(
+        &self,
+        mailbox: &PyMailbox,
+        selection: &PySelection,
+        message: &PythonMessage,
+    ) -> PyResult<()> {
         let unhealthy_event = self
             .unhealthy_event
             .lock()
@@ -148,7 +153,7 @@ impl PythonActorMesh {
         }
 
         self.try_inner()?
-            .cast(selection.inner().clone(), message.clone())
+            .cast(&mailbox.inner, selection.inner().clone(), message.clone())
             .map_err(|err| PyException::new_err(err.to_string()))?;
         Ok(())
     }
