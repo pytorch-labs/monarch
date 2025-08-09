@@ -98,7 +98,8 @@ pub trait Actor: Sized + Send + Debug + 'static {
     /// Actors spawned through `spawn_detached` are not attached to a supervision
     /// hierarchy, and not managed by a [`Proc`].
     async fn spawn_detached(params: Self::Params) -> Result<ActorHandle<Self>, anyhow::Error> {
-        Proc::local().spawn("anon", params).await
+        let handle = Proc::local().spawn("anon", params).await?;
+        Ok(handle)
     }
 
     /// This method is used by the runtime to spawn the actor server. It can be
@@ -116,8 +117,8 @@ pub trait Actor: Sized + Send + Debug + 'static {
     /// Handle actor supervision event. Return `Ok(true)`` if the event is handled here.
     async fn handle_supervision_event(
         &mut self,
-        _this: &Instance<Self>,
-        _event: &ActorSupervisionEvent,
+        this: &Instance<Self>,
+        event: &ActorSupervisionEvent,
     ) -> Result<bool, anyhow::Error> {
         // By default, the supervision event is not handled, caller is expected to bubble it up.
         Ok(false)

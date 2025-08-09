@@ -1315,7 +1315,13 @@ impl<A: Actor> cap::sealed::CanSplitPort for Instance<A> {
 #[async_trait]
 impl<A: Actor> cap::sealed::CanSpawn for Instance<A> {
     async fn spawn<C: Actor>(&self, params: C::Params) -> anyhow::Result<ActorHandle<C>> {
-        self.proc.spawn_child(self.cell.clone(), params).await
+        let handle = self.proc.spawn_child(self.cell.clone(), params).await.inspect_err(|err|
+            {
+                tracing::error!(target:"actor_lifecycle", name="failed_spawn", actor=std::any::type_name::<A>(), err=%err);
+            }
+        )?;
+        tracing::trace!(target:"actor_lifecycle",name="spawn", actor_id=%handle.actor_id(), actor=std::any::type_name::<A>());
+        Ok(handle)
     }
 }
 
