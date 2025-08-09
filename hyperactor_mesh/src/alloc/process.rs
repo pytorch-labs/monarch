@@ -466,6 +466,8 @@ impl Alloc for ProcessAlloc {
 
                 Some(Ok((index, mut reason))) = self.children.join_next() => {
                     let stderr_content = if let Some(Child { stdout, stderr, ..} ) = self.remove(index) {
+                        stdout.abort();
+                        stderr.abort();
                         let (_stdout, _) = stdout.join().await;
                         let (stderr_lines, _) = stderr.join().await;
                         stderr_lines.join("\n")
