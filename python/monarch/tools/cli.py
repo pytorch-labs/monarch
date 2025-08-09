@@ -21,12 +21,14 @@ from monarch.tools.commands import (
 from monarch.tools.config import (  # @manual=//monarch/python/monarch/tools/config/meta:defaults
     Config,
     defaults,
+    EmptyWorkspaceOption,
 )
 from torchx.specs.finder import get_component
 
 
 def config_from_cli_args(args: argparse.Namespace) -> Config:
-    config = defaults.config(args.scheduler, args.workspace)
+    workspace = args.workspace or EmptyWorkspaceOption.NO_WORKSPACE
+    config = defaults.config(args.scheduler, workspace)
 
     if args.scheduler_args:
         with torchx_runner() as runner:
