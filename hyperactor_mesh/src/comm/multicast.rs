@@ -254,6 +254,7 @@ pub trait CastInfo {
     /// we represent it as the only member of a 0-dimensonal cast shape,
     /// which is the same as a singleton.
     fn cast_info(&self) -> (usize, Shape);
+    fn sender(&self) -> &ActorId;
 }
 
 impl<A: Actor> CastInfo for Context<'_, A> {
@@ -264,5 +265,10 @@ impl<A: Actor> CastInfo for Context<'_, A> {
             (None, None) => (0, Shape::unity()),
             _ => panic!("Expected either both rank and shape or neither"),
         }
+    }
+    fn sender(&self) -> &ActorId {
+        self.headers()
+            .get(CAST_ORIGINATING_SENDER)
+            .expect("has sender header")
     }
 }
