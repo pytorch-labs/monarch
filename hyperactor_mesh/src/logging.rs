@@ -11,7 +11,6 @@ use std::fmt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::task::Context as TaskContext;
 use std::task::Poll;
 use std::time::Duration;
@@ -287,6 +286,10 @@ pub enum LogClientMessage {
 pub trait LogSender: Send + Sync {
     /// Send a log payload in bytes
     fn send(&mut self, target: OutputTarget, payload: Vec<u8>) -> anyhow::Result<()>;
+
+    /// Flush the log channel, ensuring all messages are delivered
+    /// Returns when the flush message has been acknowledged
+    async fn flush(&mut self) -> anyhow::Result<()>;
 }
 
 /// Represents the target output stream (stdout or stderr)
@@ -299,11 +302,10 @@ pub enum OutputTarget {
 }
 
 /// Write the log to a local unix channel so some actors can listen to it and stream the log back.
-#[derive(Clone)]
 pub struct LocalLogSender {
     hostname: String,
     pid: u32,
-    tx: Arc<ChannelTx<LogMessage>>,
+    tx: ChannelTx<LogMessage>,
     status: Receiver<TxStatus>,
 }
 
@@ -319,15 +321,17 @@ impl LocalLogSender {
         Ok(Self {
             hostname,
             pid,
-            tx: Arc::new(tx),
+            tx,
             status,
         })
     }
 }
 
+#[async_trait]
 impl LogSender for LocalLogSender {
     fn send(&mut self, target: OutputTarget, payload: Vec<u8>) -> anyhow::Result<()> {
         if TxStatus::Active == *self.status.borrow() {
+            // post does not guarantee the message to be delivered
             self.tx.post(LogMessage::Log {
                 hostname: self.hostname.clone(),
                 pid: self.pid,
@@ -335,13 +339,32 @@ impl LogSender for LocalLogSender {
                 payload: Serialized::serialize_anon(&payload)?,
             });
         } else {
-            tracing::trace!(
+            tracing::debug!(
                 "log sender {} is not active, skip sending log",
                 self.tx.addr()
             )
         }
 
         Ok(())
+    }
+
+    async fn flush(&mut self) -> anyhow::Result<()> {
+        // send will make sure message is delivered
+        if TxStatus::Active == *self.status.borrow() {
+            match self.tx.send(LogMessage::Flush {}).await {
+                Ok(()) => Ok(()),
+                Err(e) => {
+                    tracing::error!("log sender {} error sending flush message: {}", self.pid, e);
+                    Err(anyhow::anyhow!("error sending flush message: {}", e))
+                }
+            }
+        } else {
+            tracing::debug!(
+                "log sender {} is not active, skip sending flush message",
+                self.tx.addr()
+            );
+            Ok(())
+        }
     }
 }
 
@@ -412,13 +435,17 @@ pub fn create_log_writers(
     ),
     anyhow::Error,
 > {
-    let log_sender = LocalLogSender::new(log_channel, pid)?;
-
     // Create LogWriter instances for stdout and stderr using the shared log sender
-    let stdout_writer =
-        LogWriter::with_default_writer(local_rank, OutputTarget::Stdout, log_sender.clone())?;
-    let stderr_writer =
-        LogWriter::with_default_writer(local_rank, OutputTarget::Stderr, log_sender)?;
+    let stdout_writer = LogWriter::with_default_writer(
+        local_rank,
+        OutputTarget::Stdout,
+        LocalLogSender::new(log_channel.clone(), pid)?,
+    )?;
+    let stderr_writer = LogWriter::with_default_writer(
+        local_rank,
+        OutputTarget::Stderr,
+        LocalLogSender::new(log_channel, pid)?,
+    )?;
 
     Ok((Box::new(stdout_writer), Box::new(stderr_writer)))
 }
@@ -495,7 +522,34 @@ impl<T: LogSender + Unpin + 'static, S: io::AsyncWrite + Send + Unpin + 'static>
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Result<(), io::Error>> {
         let this = self.get_mut();
-        Pin::new(&mut this.std_writer).poll_flush(cx)
+
+        // First, flush the standard writer
+        match Pin::new(&mut this.std_writer).poll_flush(cx) {
+            Poll::Ready(Ok(())) => {
+                // Now send a Flush message to the other side of the channel.
+                let mut flush_future = this.log_sender.flush();
+                match flush_future.as_mut().poll(cx) {
+                    Poll::Ready(Ok(())) => {
+                        // Successfully sent the flush message
+                        Poll::Ready(Ok(()))
+                    }
+                    Poll::Ready(Err(e)) => {
+                        // Error sending the flush message
+                        tracing::error!("error sending flush message: {}", e);
+                        Poll::Ready(Err(io::Error::other(format!(
+                            "error sending flush message: {}",
+                            e
+                        ))))
+                    }
+                    Poll::Pending => {
+                        // The future is not ready yet, so we return Pending
+                        // The waker is already registered by polling the future
+                        Poll::Pending
+                    }
+                }
+            }
+            other => other, // Propagate any errors or Pending state from the std_writer flush
+        }
     }
 
     fn poll_shutdown(
@@ -964,14 +1018,19 @@ mod tests {
     // Mock implementation of LogSender for testing
     struct MockLogSender {
         log_sender: mpsc::UnboundedSender<(OutputTarget, String)>, // (output_target, content)
+        flush_called: Arc<Mutex<bool>>,                            // Track if flush was called
     }
 
     impl MockLogSender {
         fn new(log_sender: mpsc::UnboundedSender<(OutputTarget, String)>) -> Self {
-            Self { log_sender }
+            Self {
+                log_sender,
+                flush_called: Arc::new(Mutex::new(false)),
+            }
         }
     }
 
+    #[async_trait]
     impl LogSender for MockLogSender {
         fn send(&mut self, output_target: OutputTarget, payload: Vec<u8>) -> anyhow::Result<()> {
             // For testing purposes, convert to string if it's valid UTF-8
@@ -983,6 +1042,16 @@ mod tests {
             self.log_sender
                 .send((output_target, line))
                 .map_err(|e| anyhow::anyhow!("Failed to send log in test: {}", e))
+        }
+
+        async fn flush(&mut self) -> anyhow::Result<()> {
+            // Mark that flush was called
+            let mut flush_called = self.flush_called.lock().unwrap();
+            *flush_called = true;
+
+            // For testing purposes, just return Ok
+            // In a real implementation, this would wait for all messages to be delivered
+            Ok(())
         }
     }
 
@@ -1096,6 +1165,32 @@ mod tests {
         // The content should be "Hello" followed by replacement characters for invalid bytes
         assert!(content.starts_with("Hello"));
         // The rest of the content will be replacement characters, but we don't care about the exact representation
+    }
+
+    #[tokio::test]
+    async fn test_log_writer_poll_flush() {
+        // Create a channel to receive logs
+        let (log_sender, _log_receiver) = mpsc::unbounded_channel();
+
+        // Create a mock log sender that tracks flush calls
+        let mock_log_sender = MockLogSender::new(log_sender);
+        let log_sender_flush_tracker = mock_log_sender.flush_called.clone();
+
+        // Create mock writers for stdout and stderr
+        let (stdout_mock_writer, _) = MockWriter::new();
+        let stdout_writer: Box<dyn io::AsyncWrite + Send + Unpin> = Box::new(stdout_mock_writer);
+
+        // Create a log writer with the mocks
+        let mut writer = LogWriter::new(OutputTarget::Stdout, stdout_writer, mock_log_sender);
+
+        // Call flush on the writer
+        writer.flush().await.unwrap();
+
+        // Verify that log sender's flush were called
+        assert!(
+            *log_sender_flush_tracker.lock().unwrap(),
+            "LogSender's flush was not called"
+        );
     }
 
     #[test]

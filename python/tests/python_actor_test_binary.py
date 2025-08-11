@@ -40,8 +40,7 @@ async def _flush_logs() -> None:
     for _ in range(5):
         await am.print.call("has print streaming")
 
-    # Sleep a tiny so we allow the logs to stream back to the client
-    await asyncio.sleep(1)
+    await pm.stop()
 
 
 @main.command("flush-logs")
