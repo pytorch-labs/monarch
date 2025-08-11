@@ -1,9 +1,0 @@
-[book]
-authors = ["Shayne Fletcher"]
-language = "en"
-src = "src"
-title = "Hyperactor Book"
-
-[output.html]
-git-repository-url = "https://github.com/pytorch-labs/monarch"
-edit-url-template = "https://github.com/pytorch-labs/monarch/edit/main/books/hyperactor-book/src/{path}"
