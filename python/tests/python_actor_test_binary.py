@@ -8,7 +8,6 @@
 
 import asyncio
 import logging
-import sys
 
 import click
 
@@ -27,12 +26,12 @@ class Printer(Actor):
     @endpoint
     async def print(self, content: str) -> None:
         print(f"{content}", flush=True)
-        sys.stdout.flush()
-        sys.stderr.flush()
 
 
 async def _flush_logs() -> None:
-    pm = await proc_mesh(gpus=2)
+    # Create a lot of processes to stress test the logging
+    pm = await proc_mesh(gpus=32)
+
     # never flush
     await pm.logging_option(aggregate_window_sec=1000)
     am = await pm.spawn("printer", Printer)
