@@ -289,7 +289,7 @@ pub trait LogSender: Send + Sync {
 
     /// Flush the log channel, ensuring all messages are delivered
     /// Returns when the flush message has been acknowledged
-    async fn flush(&mut self) -> anyhow::Result<()>;
+    fn flush(&mut self) -> anyhow::Result<()>;
 }
 
 /// Represents the target output stream (stdout or stderr)
@@ -331,7 +331,7 @@ impl LocalLogSender {
 impl LogSender for LocalLogSender {
     fn send(&mut self, target: OutputTarget, payload: Vec<u8>) -> anyhow::Result<()> {
         if TxStatus::Active == *self.status.borrow() {
-            // post does not guarantee the message to be delivered
+            // Do not use tx.send, it will block the allocator as the child process state is unknown.
             self.tx.post(LogMessage::Log {
                 hostname: self.hostname.clone(),
                 pid: self.pid,
@@ -348,23 +348,18 @@ impl LogSender for LocalLogSender {
         Ok(())
     }
 
-    async fn flush(&mut self) -> anyhow::Result<()> {
+    fn flush(&mut self) -> anyhow::Result<()> {
         // send will make sure message is delivered
         if TxStatus::Active == *self.status.borrow() {
-            match self.tx.send(LogMessage::Flush {}).await {
-                Ok(()) => Ok(()),
-                Err(e) => {
-                    tracing::error!("log sender {} error sending flush message: {}", self.pid, e);
-                    Err(anyhow::anyhow!("error sending flush message: {}", e))
-                }
-            }
+            // Do not use tx.send, it will block the allocator as the child process state is unknown.
+            self.tx.post(LogMessage::Flush {});
         } else {
             tracing::debug!(
                 "log sender {} is not active, skip sending flush message",
                 self.tx.addr()
             );
-            Ok(())
         }
+        Ok(())
     }
 }
 
@@ -523,30 +518,12 @@ impl<T: LogSender + Unpin + 'static, S: io::AsyncWrite + Send + Unpin + 'static>
     fn poll_flush(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Result<(), io::Error>> {
         let this = self.get_mut();
 
-        // First, flush the standard writer
         match Pin::new(&mut this.std_writer).poll_flush(cx) {
             Poll::Ready(Ok(())) => {
-                // Now send a Flush message to the other side of the channel.
-                let mut flush_future = this.log_sender.flush();
-                match flush_future.as_mut().poll(cx) {
-                    Poll::Ready(Ok(())) => {
-                        // Successfully sent the flush message
-                        Poll::Ready(Ok(()))
-                    }
-                    Poll::Ready(Err(e)) => {
-                        // Error sending the flush message
-                        tracing::error!("error sending flush message: {}", e);
-                        Poll::Ready(Err(io::Error::other(format!(
-                            "error sending flush message: {}",
-                            e
-                        ))))
-                    }
-                    Poll::Pending => {
-                        // The future is not ready yet, so we return Pending
-                        // The waker is already registered by polling the future
-                        Poll::Pending
-                    }
+                if let Err(e) = this.log_sender.flush() {
+                    tracing::error!("error sending flush: {}", e);
                 }
+                Poll::Ready(Ok(()))
             }
             other => other, // Propagate any errors or Pending state from the std_writer flush
         }
@@ -1044,7 +1021,7 @@ mod tests {
                 .map_err(|e| anyhow::anyhow!("Failed to send log in test: {}", e))
         }
 
-        async fn flush(&mut self) -> anyhow::Result<()> {
+        fn flush(&mut self) -> anyhow::Result<()> {
             // Mark that flush was called
             let mut flush_called = self.flush_called.lock().unwrap();
             *flush_called = true;

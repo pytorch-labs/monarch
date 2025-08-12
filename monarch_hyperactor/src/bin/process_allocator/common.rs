@@ -52,6 +52,23 @@ pub fn main_impl(
     program: Command,
     timeout: Option<Duration>,
 ) -> tokio::task::JoinHandle<Result<(), anyhow::Error>> {
+    #[cfg(unix)]
+    fn ignore_sigpipe() {
+        // SAFETY: ignore SIGPIPE as hyperactor tx/rx channels have the following issue:
+        // When tx tries to send a message, it can either do try_post/post or send.
+        // try_post/post is async and send is sync. However, both methods do not have a way to tell the receiver's state.
+        // For try_post/post, it will send messages in the background. However, if the receiver process gets killed,
+        // try_post/post will continue sending messages leading to SIGPIPE and crash the parent process.
+        // For send, it is a sync call. It waits on the receiver to ack. However, if the receiver is dead or not started yet,
+        // the send will be blocked.
+        //
+        // TODO: We need to fix the above issues but before that, ignore SIGPIPE as a mitigation.
+        unsafe {
+            assert!(libc::signal(libc::SIGPIPE, libc::SIG_IGN) != libc::SIG_ERR);
+        }
+    }
+    ignore_sigpipe();
+
     tracing::info!("bind address is: {}", serve_address);
     tracing::info!("program to spawn on allocation request: [{:?}]", &program);
 
