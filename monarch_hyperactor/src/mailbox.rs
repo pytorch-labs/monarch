@@ -420,8 +420,36 @@ impl PythonPortReceiver {
     module = "monarch._rust_bindings.monarch_hyperactor.mailbox"
 )]
 pub(crate) struct PythonUndeliverableMessageEnvelope {
-    #[allow(dead_code)] // At this time, field `inner` isn't read.
     pub(crate) inner: Undeliverable<MessageEnvelope>,
+}
+
+#[pymethods]
+impl PythonUndeliverableMessageEnvelope {
+    fn __repr__(&self) -> String {
+        format!(
+            "UndeliverableMessageEnvelope(sender={}, dest={}, error={})",
+            self.inner.0.sender(),
+            self.inner.0.dest(),
+            self.error_msg()
+        )
+    }
+
+    fn sender(&self) -> PyActorId {
+        PyActorId {
+            inner: self.inner.0.sender().clone(),
+        }
+    }
+
+    fn dest(&self) -> PyPortId {
+        self.inner.0.dest().clone().into()
+    }
+
+    fn error_msg(&self) -> String {
+        self.inner
+            .0
+            .error()
+            .map_or("None".to_string(), |e| e.to_string())
+    }
 }
 
 #[derive(Debug)]
@@ -713,5 +741,6 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
     hyperactor_mod.add_class::<PythonOncePortHandle>()?;
     hyperactor_mod.add_class::<PythonOncePortRef>()?;
     hyperactor_mod.add_class::<PythonOncePortReceiver>()?;
+    hyperactor_mod.add_class::<PythonUndeliverableMessageEnvelope>()?;
     Ok(())
 }
