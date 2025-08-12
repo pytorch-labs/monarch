@@ -725,22 +725,194 @@ async def test_flush_logs_fast_exit() -> None:
 
     # Run the binary in a separate process and capture stdout and stderr
     cmd = [str(test_bin), "flush-logs"]
-    process = subprocess.run(cmd, capture_output=True, timeout=60, text=True)
 
-    # Check if the process ended without error
-    if process.returncode != 0:
-        raise RuntimeError(f"{cmd} ended with error code {process.returncode}. ")
+    # Stress test
+    for _ in range(20):
+        process = subprocess.run(cmd, capture_output=True, timeout=60, text=True)
 
-    # Assertions on the captured output
-    assert (
-        len(
-            re.findall(
-                r"similar.*has print streaming",
-                process.stdout,
+        # Check if the process ended without error
+        if process.returncode != 0:
+            raise RuntimeError(f"{cmd} ended with error code {process.returncode}. ")
+
+        # Assertions on the captured output, 160 = 32 procs * 5 logs per proc
+        # 32 and 5 are specified in the test_bin flush-logs.
+        assert (
+            len(
+                re.findall(
+                    r"160 similar log lines.*has print streaming",
+                    process.stdout,
+                )
             )
-        )
-        == 1
-    ), process.stdout
+            == 1
+        ), process.stdout
+
+
+@pytest.mark.timeout(60)
+async def test_flush_on_disable_aggregation() -> None:
+    """Test that logs are flushed when disabling aggregation.
+
+    This tests the corner case: "Make sure we flush whatever in the aggregators before disabling aggregation."
+    """
+    # Save original file descriptors
+    original_stdout_fd = os.dup(1)  # stdout
+
+    try:
+        # Create temporary files to capture output
+        with tempfile.NamedTemporaryFile(mode="w+", delete=False) as stdout_file:
+            stdout_path = stdout_file.name
+
+            # Redirect file descriptors to our temp files
+            os.dup2(stdout_file.fileno(), 1)
+
+            # Also redirect Python's sys.stdout
+            original_sys_stdout = sys.stdout
+            sys.stdout = stdout_file
+
+            try:
+                pm = await proc_mesh(gpus=2)
+                am = await pm.spawn("printer", Printer)
+
+                # Set a long aggregation window to ensure logs aren't flushed immediately
+                await pm.logging_option(stream_to_client=True, aggregate_window_sec=60)
+
+                # Generate some logs that will be aggregated but not flushed immediately
+                for _ in range(5):
+                    await am.print.call("aggregated log line")
+                await asyncio.sleep(1)
+
+                # Now disable aggregation - this should trigger an immediate flush
+                await pm.logging_option(
+                    stream_to_client=True, aggregate_window_sec=None
+                )
+
+                # Wait a bit to ensure logs are collected
+                await asyncio.sleep(1)
+                for _ in range(5):
+                    await am.print.call("single log line")
+
+                # Wait a bit to ensure flush completes
+                await asyncio.sleep(1)
+
+                # Flush all outputs
+                stdout_file.flush()
+                os.fsync(stdout_file.fileno())
+
+            finally:
+                # Restore Python's sys.stdout
+                sys.stdout = original_sys_stdout
+
+        # Restore original file descriptors
+        os.dup2(original_stdout_fd, 1)
+
+        # Read the captured output
+        with open(stdout_path, "r") as f:
+            stdout_content = f.read()
+
+        # Clean up temp files
+        os.unlink(stdout_path)
+
+        # Verify that logs were flushed when aggregation was disabled
+        # We should see the aggregated logs in the output
+        # 10 = 5 log lines * 2 procs
+        assert re.search(
+            r"\[10 similar log lines\].*aggregated log line", stdout_content
+        ), stdout_content
+
+        # No aggregated single log lines
+        assert not re.search(
+            r"similar log lines.*single log line", stdout_content
+        ), stdout_content
+
+        # 10 = 5 log lines * 2 procs
+        assert len(re.findall(r"single log line", stdout_content)) == 10, stdout_content
+
+    finally:
+        # Ensure file descriptors are restored even if something goes wrong
+        try:
+            os.dup2(original_stdout_fd, 1)
+            os.close(original_stdout_fd)
+        except OSError:
+            pass
+
+
+@pytest.mark.timeout(60)
+async def test_adjust_aggregation_window() -> None:
+    """Test that the flush deadline is updated when the aggregation window is adjusted.
+
+    This tests the corner case: "This can happen if the user has adjusted the aggregation window."
+    """
+    # Save original file descriptors
+    original_stdout_fd = os.dup(1)  # stdout
+
+    try:
+        # Create temporary files to capture output
+        with tempfile.NamedTemporaryFile(mode="w+", delete=False) as stdout_file:
+            stdout_path = stdout_file.name
+
+            # Redirect file descriptors to our temp files
+            os.dup2(stdout_file.fileno(), 1)
+
+            # Also redirect Python's sys.stdout
+            original_sys_stdout = sys.stdout
+            sys.stdout = stdout_file
+
+            try:
+                pm = await proc_mesh(gpus=2)
+                am = await pm.spawn("printer", Printer)
+
+                # Set a long aggregation window initially
+                await pm.logging_option(stream_to_client=True, aggregate_window_sec=100)
+
+                # Generate some logs that will be aggregated
+                for _ in range(3):
+                    await am.print.call("first batch of logs")
+                await asyncio.sleep(1)
+
+                # Now adjust to a shorter window - this should update the flush deadline
+                await pm.logging_option(stream_to_client=True, aggregate_window_sec=2)
+
+                # Generate more logs
+                for _ in range(3):
+                    await am.print.call("second batch of logs")
+
+                # Wait just enough time for the shorter window to trigger a flush
+                await asyncio.sleep(1)
+
+                # Flush all outputs
+                stdout_file.flush()
+                os.fsync(stdout_file.fileno())
+
+            finally:
+                # Restore Python's sys.stdout/stderr
+                sys.stdout = original_sys_stdout
+
+        # Restore original file descriptors
+        os.dup2(original_stdout_fd, 1)
+
+        # Read the captured output
+        with open(stdout_path, "r") as f:
+            stdout_content = f.read()
+
+        # Clean up temp files
+        os.unlink(stdout_path)
+
+        # Verify that logs were flushed when the aggregation window was adjusted
+        # We should see both batches of logs in the output
+        assert re.search(
+            r"\[6 similar log lines\].*first batch of logs", stdout_content
+        ), stdout_content
+
+        assert re.search(
+            r"similar log lines.*second batch of logs", stdout_content
+        ), stdout_content
+
+    finally:
+        # Ensure file descriptors are restored even if something goes wrong
+        try:
+            os.dup2(original_stdout_fd, 1)
+            os.close(original_stdout_fd)
+        except OSError:
+            pass
 
 
 class SendAlot(Actor):
