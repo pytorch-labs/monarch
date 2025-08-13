@@ -99,7 +99,33 @@ pub fn global_mailbox() -> Mailbox {
         .clone()
 }
 
-type ActorEventRouter = Arc<DashMap<ActorMeshName, mpsc::UnboundedSender<ActorSupervisionEvent>>>;
+#[derive(Clone, Debug)]
+pub struct ActorEventRouter {
+    inner: Arc<DashMap<ActorMeshName, Vec<mpsc::UnboundedSender<ActorSupervisionEvent>>>>,
+}
+
+impl ActorEventRouter {
+    pub fn bind(&self, name: ActorMeshName) -> mpsc::UnboundedReceiver<ActorSupervisionEvent> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.inner.entry(name).or_insert(vec![]).push(tx);
+        rx
+    }
+
+    fn new() -> Self {
+        Self {
+            inner: Arc::new(DashMap::new()),
+        }
+    }
+}
+
+impl Deref for ActorEventRouter {
+    type Target = DashMap<ActorMeshName, Vec<mpsc::UnboundedSender<ActorSupervisionEvent>>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
 /// A ProcMesh maintains a mesh of procs whose lifecycles are managed by
 /// an allocator.
 pub struct ProcMesh {
@@ -335,7 +361,7 @@ impl ProcMesh {
                 alloc: Box::new(alloc),
                 supervision_events,
             }),
-            actor_event_router: Arc::new(DashMap::new()),
+            actor_event_router: ActorEventRouter::new(),
             shape,
             ranks: proc_ids
                 .into_iter()
@@ -434,16 +460,13 @@ impl ProcMesh {
     where
         A::Params: RemoteMessage,
     {
-        let (tx, rx) = mpsc::unbounded_channel::<ActorSupervisionEvent>();
-        {
-            // Instantiate supervision routing BEFORE spawning the actor mesh.
-            self.actor_event_router.insert(actor_name.to_string(), tx);
-        }
+        let rx = self.actor_event_router.bind(actor_name.to_string());
         let root_mesh = RootActorMesh::new(
             self,
             actor_name.to_string(),
             rx,
             Self::spawn_on_procs::<A>(&self.client, self.agents(), actor_name, params).await?,
+            self.actor_event_router.clone(),
         );
         Ok(root_mesh)
     }
@@ -515,7 +538,14 @@ impl ProcMesh {
                 }
             }
         }
+        self.actor_event_router.remove(&mesh_name.to_string());
         Ok(())
+    }
+}
+
+impl Drop for ProcMesh {
+    fn drop(&mut self) {
+        self.actor_event_router.clear();
     }
 }
 
@@ -596,8 +626,10 @@ impl ProcEvents {
                             message_headers: None,
                             caused_by: None,
                         };
-                        if entry.value().send(event).is_err() {
-                            tracing::warn!("unable to transmit supervision event to actor {}", entry.key());
+                        for tx in entry.value().iter() {
+                            if tx.send(event.clone()).is_err() {
+                                tracing::warn!("unable to transmit supervision event to actor {}", entry.key());
+                            }
                         }
                     }
 
@@ -631,9 +663,11 @@ impl ProcEvents {
                     };
                     // transmit to the correct root actor mesh.
                     {
-                        if let Some(tx) = self.actor_event_router.get(actor_id.name()) {
-                            if tx.send(event).is_err() {
-                                tracing::warn!("unable to transmit supervision event to actor {}", actor_id);
+                        if let Some(txs) = self.actor_event_router.get(actor_id.name()) {
+                            for tx in txs.iter() {
+                                if tx.send(event.clone()).is_err() {
+                                    tracing::warn!("unable to transmit supervision event to actor {}", actor_id);
+                                }
                             }
                         } else {
                             tracing::warn!("received supervision event for unregistered actor {}", actor_id);
@@ -683,18 +717,16 @@ impl<D: Deref<Target = ProcMesh> + Send + Sync + 'static> SharedSpawnable for D 
     where
         A::Params: RemoteMessage,
     {
-        let (tx, rx) = mpsc::unbounded_channel::<ActorSupervisionEvent>();
-        {
-            // Instantiate supervision routing BEFORE spawning the actor mesh.
-            self.actor_event_router.insert(actor_name.to_string(), tx);
-        }
+        let rx = self.actor_event_router.bind(actor_name.to_string());
         let ranks =
             ProcMesh::spawn_on_procs::<A>(&self.client, self.agents(), actor_name, params).await?;
+        let actor_event_router = self.actor_event_router.clone();
         Ok(RootActorMesh::new_shared(
             self,
             actor_name.to_string(),
             rx,
             ranks,
+            actor_event_router,
         ))
     }
 }
