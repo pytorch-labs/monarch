@@ -13,6 +13,7 @@ use std::cell::Cell;
 use hyperactor::clock::ClockKind;
 use hyperactor::clock::RealClock;
 use hyperactor::clock::SimClock;
+use hyperactor_telemetry::opentelemetry;
 use hyperactor_telemetry::swap_telemetry_clock;
 use opentelemetry::global;
 use opentelemetry::metrics;
@@ -215,6 +216,70 @@ impl PySpan {
     }
 }
 
+/// Add to a counter with the given name and attributes
+#[pyfunction]
+pub fn add_to_counter(
+    name: String,
+    value: u64,
+    attributes: Option<Vec<(String, String)>>,
+) -> PyResult<()> {
+    let kv_pairs: Vec<opentelemetry::KeyValue> = attributes
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(k, v)| opentelemetry::KeyValue::new(k, v))
+        .collect();
+
+    println!("Added {} to counter {}", value, name);
+    let counter = hyperactor_telemetry::meter("python")
+        .u64_counter(name)
+        .build();
+
+    counter.add(value, &kv_pairs);
+    Ok(())
+}
+
+/// Add to an up/down counter with the given name and attributes
+#[pyfunction]
+pub fn add_to_up_down_counter(
+    name: String,
+    value: i64,
+    attributes: Option<Vec<(String, String)>>,
+) -> PyResult<()> {
+    let kv_pairs: Vec<opentelemetry::KeyValue> = attributes
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(k, v)| opentelemetry::KeyValue::new(k, v))
+        .collect();
+
+    let counter = hyperactor_telemetry::meter("python")
+        .i64_up_down_counter(name)
+        .build();
+
+    counter.add(value, &kv_pairs);
+    Ok(())
+}
+
+/// Record a value to a gauge with the given name and attributes
+#[pyfunction]
+pub fn add_to_gauge(
+    name: String,
+    value: f64,
+    attributes: Option<Vec<(String, String)>>,
+) -> PyResult<()> {
+    let kv_pairs: Vec<opentelemetry::KeyValue> = attributes
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(k, v)| opentelemetry::KeyValue::new(k, v))
+        .collect();
+
+    let gauge = hyperactor_telemetry::meter("python")
+        .f64_gauge(name)
+        .build();
+
+    gauge.record(value, &kv_pairs);
+    Ok(())
+}
+
 use pyo3::Bound;
 use pyo3::types::PyModule;
 
@@ -262,6 +327,27 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
         "monarch._rust_bindings.monarch_hyperactor.telemetry",
     )?;
     module.add_function(use_sim_clock_fn)?;
+
+    let add_to_counter_fn = wrap_pyfunction!(add_to_counter, module)?;
+    add_to_counter_fn.setattr(
+        "__module__",
+        "monarch._rust_bindings.monarch_hyperactor.telemetry",
+    )?;
+    module.add_function(add_to_counter_fn)?;
+
+    let add_to_up_down_counter_fn = wrap_pyfunction!(add_to_up_down_counter, module)?;
+    add_to_up_down_counter_fn.setattr(
+        "__module__",
+        "monarch._rust_bindings.monarch_hyperactor.telemetry",
+    )?;
+    module.add_function(add_to_up_down_counter_fn)?;
+
+    let add_to_gauge_fn = wrap_pyfunction!(add_to_gauge, module)?;
+    add_to_gauge_fn.setattr(
+        "__module__",
+        "monarch._rust_bindings.monarch_hyperactor.telemetry",
+    )?;
+    module.add_function(add_to_gauge_fn)?;
 
     module.add_class::<PySpan>()?;
     module.add_class::<PyCounter>()?;
