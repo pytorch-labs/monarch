@@ -101,21 +101,3 @@ We'll be adding more examples as we stabilize and polish functionality!
 ## License
 
 Monarch is BSD-3 licensed, as found in the [LICENSE](LICENSE) file.
-
-## Meta Internal
-
-### Run `pip install`
-
-For internal users, make sure activate conda before running `pip install`. For
-example, using
-
-```
-source /data/users/$USER/fbsource/genai/xlformers/dev/xl_conda.sh activate torchtitan_conda_prod:latest_conveyor_build
-```
-
-In addition, you likely need to set up the pip proxy too:
-
-```
-export http_proxy="http://fwdproxy:8080"
-export https_proxy="http://fwdproxy:8080"
-```
