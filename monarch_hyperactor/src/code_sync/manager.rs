@@ -39,11 +39,16 @@ use hyperactor_mesh::reference::ActorMeshId;
 use hyperactor_mesh::reference::ActorMeshRef;
 use hyperactor_mesh::reference::ProcMeshId;
 use hyperactor_mesh::sel;
+use lazy_errors::ErrorStash;
+use lazy_errors::TryCollectOrStash;
+use monarch_conda::sync::sender;
 use ndslice::Selection;
 use ndslice::Shape;
 use ndslice::ShapeError;
 use serde::Deserialize;
 use serde::Serialize;
+use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
 
@@ -51,6 +56,10 @@ use crate::code_sync::WorkspaceLocation;
 use crate::code_sync::auto_reload::AutoReloadActor;
 use crate::code_sync::auto_reload::AutoReloadMessage;
 use crate::code_sync::auto_reload::AutoReloadParams;
+use crate::code_sync::conda_sync::CondaSyncActor;
+use crate::code_sync::conda_sync::CondaSyncMessage;
+use crate::code_sync::conda_sync::CondaSyncParams;
+use crate::code_sync::conda_sync::CondaSyncResult;
 use crate::code_sync::rsync::RsyncActor;
 use crate::code_sync::rsync::RsyncDaemon;
 use crate::code_sync::rsync::RsyncMessage;
@@ -60,6 +69,7 @@ use crate::code_sync::rsync::RsyncResult;
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub enum Method {
     Rsync { connect: PortRef<Connect> },
+    CondaSync { connect: PortRef<Connect> },
 }
 
 /// Describe the shape of the workspace.
@@ -167,6 +177,7 @@ pub struct CodeSyncManagerParams {}
 pub struct CodeSyncManager {
     rsync: OnceCell<ActorHandle<RsyncActor>>,
     auto_reload: OnceCell<ActorHandle<AutoReloadActor>>,
+    conda_sync: OnceCell<ActorHandle<CondaSyncActor>>,
 }
 
 #[async_trait]
@@ -177,6 +188,7 @@ impl Actor for CodeSyncManager {
         Ok(Self {
             rsync: OnceCell::new(),
             auto_reload: OnceCell::new(),
+            conda_sync: OnceCell::new(),
         })
     }
 }
@@ -197,6 +209,15 @@ impl CodeSyncManager {
     ) -> Result<&'a ActorHandle<AutoReloadActor>> {
         self.auto_reload
             .get_or_try_init(AutoReloadActor::spawn(cx, AutoReloadParams {}))
+            .await
+    }
+
+    async fn get_conda_sync_actor<'a>(
+        &'a mut self,
+        cx: &Context<'a, Self>,
+    ) -> Result<&'a ActorHandle<CondaSyncActor>> {
+        self.conda_sync
+            .get_or_try_init(CondaSyncActor::spawn(cx, CondaSyncParams {}))
             .await
     }
 }
@@ -223,6 +244,20 @@ impl CodeSyncMessageHandler for CodeSyncManager {
                         result: tx.bind(),
                         workspace,
                     })?;
+                    // Observe any errors.
+                    let _ = rx.recv().await?.map_err(anyhow::Error::msg)?;
+                }
+                Method::CondaSync { connect } => {
+                    // Forward rsync connection port to the RsyncActor, which will do the actual
+                    // connection and run the client.
+                    let (tx, mut rx) = cx.open_port::<Result<CondaSyncResult, String>>();
+                    self.get_conda_sync_actor(cx)
+                        .await?
+                        .send(CondaSyncMessage {
+                            connect,
+                            result: tx.bind(),
+                            workspace,
+                        })?;
                     // Observe any errors.
                     let _ = rx.recv().await?.map_err(anyhow::Error::msg)?;
                 }
@@ -296,10 +331,17 @@ impl CodeSyncMessageHandler for CodeSyncManager {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum CodeSyncMethod {
+    Rsync,
+    CondaSync,
+}
+
 pub async fn code_sync_mesh(
     actor_mesh: &RootActorMesh<'_, CodeSyncManager>,
     local_workspace: PathBuf,
     remote_workspace: WorkspaceConfig,
+    method: CodeSyncMethod,
     auto_reload: bool,
 ) -> Result<()> {
     let mailbox = actor_mesh.proc_mesh().client();
@@ -307,27 +349,75 @@ pub async fn code_sync_mesh(
     // Create a slice of the actor mesh that only includes workspace "owners" (e.g. on multi-GPU hosts,
     // only one of the ranks on that host will participate in the code sync).
     let actor_mesh = SlicedActorMesh::new(actor_mesh, remote_workspace.shape.owners()?);
+    let shape = actor_mesh.shape().clone();
 
-    // Spawn a rsync daemon to accept incoming connections from actors.
-    let daemon = RsyncDaemon::spawn(TcpListener::bind(("::1", 0)).await?, &local_workspace).await?;
-    let daemon_addr = daemon.addr();
+    let (method, method_fut) = match method {
+        CodeSyncMethod::Rsync => {
+            // Spawn a rsync daemon to accept incoming connections from actors.
+            let daemon =
+                RsyncDaemon::spawn(TcpListener::bind(("::1", 0)).await?, &local_workspace).await?;
+            let daemon_addr = daemon.addr().clone();
+            let (rsync_conns_tx, rsync_conns_rx) = mailbox.open_port::<Connect>();
+            (
+                Method::Rsync {
+                    connect: rsync_conns_tx.bind(),
+                },
+                // This async task will process rsync connection attempts concurrently, forwarding
+                // them to the rsync daemon above.
+                async move {
+                    let res = rsync_conns_rx
+                        .take(shape.slice().len())
+                        .err_into::<anyhow::Error>()
+                        .try_for_each_concurrent(None, |connect| async move {
+                            let (mut local, mut stream) = try_join!(
+                                TcpStream::connect(daemon_addr.clone()).err_into(),
+                                accept(mailbox, mailbox.actor_id().clone(), connect),
+                            )?;
+                            tokio::io::copy_bidirectional(&mut local, &mut stream).await?;
+                            Ok(())
+                        })
+                        .await;
+                    daemon.shutdown().await?;
+                    res?;
+                    anyhow::Ok(())
+                }
+                .boxed(),
+            )
+        }
+        CodeSyncMethod::CondaSync => {
+            let (conns_tx, conns_rx) = mailbox.open_port::<Connect>();
+            (
+                Method::CondaSync {
+                    connect: conns_tx.bind(),
+                },
+                async move {
+                    conns_rx
+                        .take(shape.slice().len())
+                        .err_into::<anyhow::Error>()
+                        .try_for_each_concurrent(None, |connect| async {
+                            let (mut read, mut write) =
+                                accept(mailbox, mailbox.actor_id().clone(), connect)
+                                    .await?
+                                    .into_split();
+                            let res = sender(&local_workspace, &mut read, &mut write).await;
 
-    let (rsync_conns_tx, rsync_conns_rx) = mailbox.open_port::<Connect>();
-    let ((), ()) = try_join!(
-        // This async task will process rsync connection attempts concurrently, forwarding them to
-        // the rsync daemon above.
-        rsync_conns_rx
-            .take(actor_mesh.shape().slice().len())
-            .err_into::<anyhow::Error>()
-            .try_for_each_concurrent(None, |connect| async move {
-                let (mut local, mut stream) = try_join!(
-                    TcpStream::connect(daemon_addr.clone()).err_into(),
-                    accept(mailbox, mailbox.actor_id().clone(), connect),
-                )?;
-                tokio::io::copy_bidirectional(&mut local, &mut stream).await?;
-                Ok(())
-            })
-            .boxed(),
+                            // Shutdown our end, then read from the other end till exhaustion to avoid undeliverable
+                            // message spam.
+                            write.shutdown().await?;
+                            let mut buf = vec![];
+                            read.read_to_end(&mut buf).await?;
+
+                            res
+                        })
+                        .await
+                }
+                .boxed(),
+            )
+        }
+    };
+
+    let (res1, res2) = futures::future::join(
+        method_fut,
         // This async task will cast the code sync message to workspace owners, and process any errors.
         async move {
             let (result_tx, result_rx) = mailbox.open_port::<Result<(), String>>();
@@ -335,9 +425,7 @@ pub async fn code_sync_mesh(
                 mailbox,
                 sel!(*),
                 CodeSyncMessage::Sync {
-                    method: Method::Rsync {
-                        connect: rsync_conns_tx.bind(),
-                    },
+                    method,
                     workspace: remote_workspace.location.clone(),
                     reload: if auto_reload {
                         Some(remote_workspace.shape)
@@ -347,18 +435,30 @@ pub async fn code_sync_mesh(
                     result: result_tx.bind(),
                 },
             )?;
-            let _: Vec<()> = result_rx
+
+            // Wait for all actors to report result.
+            let results = result_rx
                 .take(actor_mesh.shape().slice().len())
-                .map(|res| res?.map_err(anyhow::Error::msg))
-                .try_collect()
+                .try_collect::<Vec<_>>()
                 .await?;
-            Ok(())
+
+            // Combine all errors into one.
+            let mut errs = ErrorStash::<_, _, anyhow::Error>::new(|| "remote failures");
+            results
+                .into_iter()
+                .map(|res| res.map_err(anyhow::Error::msg))
+                .try_collect_or_stash::<()>(&mut errs);
+            Ok(errs.into_result()?)
         },
-    )?;
+    )
+    .await;
 
-    daemon.shutdown().await?;
-
-    Ok(())
+    // Combine code sync handler and cast errors into one.
+    let mut errs = ErrorStash::<_, _, anyhow::Error>::new(|| "code sync failed");
+    [res1, res2]
+        .into_iter()
+        .try_collect_or_stash::<()>(&mut errs);
+    Ok(errs.into_result()?)
 }
 
 #[cfg(test)]
@@ -487,6 +587,7 @@ mod tests {
             &actor_mesh,
             source_workspace.path().to_path_buf(),
             remote_workspace_config.clone(),
+            CodeSyncMethod::Rsync,
             false, // no auto-reload
         )
         .await?;
