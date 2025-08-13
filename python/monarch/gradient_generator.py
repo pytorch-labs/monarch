@@ -151,14 +151,16 @@ def grad_function(fn):
 
 
 def gradient_execution_order(
-    roots: Sequence[TensorOrEdge], with_respect_to: Sequence[TensorOrEdge]
+    roots: Sequence[TensorOrEdge], with_respect_to: Sequence[Any]
 ) -> List[int]:
     """
     Returns the order in which the gradients for `with_respect_to` would become available
     if autograd were run on `roots`. This is the reverse order of each tensors
     first use in the gradient computation.
     """
-    with_respect_to = [_gradient_edge(g) for g in with_respect_to]
+    with_respect_to = [
+        (g.node, g.output_nr) for g in map(_gradient_edge, with_respect_to)
+    ]
     min_sequence_nr: Dict[Any, float] = {e: math.inf for e in with_respect_to}
 
     to_scan = [_gradient_edge(r).node for r in roots]
