@@ -502,16 +502,16 @@ impl ProcMesh {
         for (actor_id, result) in results {
             match result {
                 Ok(StopActorResult::Timeout) => {
-                    tracing::error!("timed out while stopping actor {}", actor_id);
+                    tracing::warn!("timed out while stopping actor {}", actor_id);
                 }
                 Ok(StopActorResult::NotFound) => {
-                    tracing::error!("no actor {} on proc {}", actor_id, actor_id.proc_id());
+                    tracing::warn!("no actor {} on proc {}", actor_id, actor_id.proc_id());
                 }
                 Ok(StopActorResult::Success) => {
                     tracing::info!("stopped actor {}", actor_id);
                 }
                 Err(e) => {
-                    tracing::error!("error stopping actor {}: {}", actor_id, e);
+                    tracing::warn!("error stopping actor {}: {}", actor_id, e);
                 }
             }
         }
