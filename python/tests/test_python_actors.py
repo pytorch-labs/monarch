@@ -959,12 +959,12 @@ class LsActor(Actor):
 
 
 async def test_sync_workspace() -> None:
-    pm = await proc_mesh(gpus=1)
-
     # create two workspaces: one for local and one for remote
     with tempfile.TemporaryDirectory() as workspace_src, tempfile.TemporaryDirectory() as workspace_dst, unittest.mock.patch.dict(
         os.environ, {"WORKSPACE_DIR": workspace_dst}
     ):
+        pm = await proc_mesh(gpus=1)
+
         os.environ["WORKSPACE_DIR"] = workspace_dst
         config = defaults.config("slurm", workspace_src)
         await pm.sync_workspace(
