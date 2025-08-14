@@ -54,6 +54,19 @@ class PythonActorMeshRef:
         """
         ...
 
+    def get_supervision_event(self) -> ActorSupervisionEvent | None:
+        # TODO: remove this when old casting is removed from python API
+        """
+        Returns supervision event if there is any.
+        """
+        ...
+
+    def supervision_event(self) -> PythonTask[Exception] | None:
+        """
+        Completes with an exception when there is a supervision error.
+        """
+        ...
+
 @final
 class PythonActorMesh:
     def bind(self) -> PythonActorMeshRef:

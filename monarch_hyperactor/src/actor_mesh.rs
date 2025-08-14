@@ -15,6 +15,7 @@ use hyperactor_mesh::Mesh;
 use hyperactor_mesh::RootActorMesh;
 use hyperactor_mesh::actor_mesh::ActorMesh;
 use hyperactor_mesh::actor_mesh::ActorSupervisionEvents;
+use hyperactor_mesh::proc_mesh::ActorEventRouter;
 use hyperactor_mesh::reference::ActorMeshRef;
 use hyperactor_mesh::shared_cell::SharedCell;
 use hyperactor_mesh::shared_cell::SharedCellRef;
@@ -35,6 +36,7 @@ use crate::mailbox::PyMailbox;
 use crate::proc::PyActorId;
 use crate::proc_mesh::Keepalive;
 use crate::pytokio::PyPythonTask;
+use crate::runtime::get_tokio_runtime;
 use crate::selection::PySelection;
 use crate::shape::PyShape;
 use crate::supervision::SupervisionError;
@@ -61,6 +63,7 @@ impl PythonActorMesh {
         client: PyMailbox,
         keepalive: Keepalive,
         events: ActorSupervisionEvents,
+        mesh_shape: ndslice::Shape,
     ) -> Self {
         let (user_monitor_sender, _) =
             tokio::sync::broadcast::channel::<Option<ActorSupervisionEvent>>(1);
@@ -69,6 +72,7 @@ impl PythonActorMesh {
             events,
             user_monitor_sender.clone(),
             Arc::clone(&unhealthy_event),
+            mesh_shape,
         ));
         Self {
             inner,
@@ -86,6 +90,7 @@ impl PythonActorMesh {
         mut events: ActorSupervisionEvents,
         user_sender: tokio::sync::broadcast::Sender<Option<ActorSupervisionEvent>>,
         unhealthy_event: Arc<std::sync::Mutex<Unhealthy<ActorSupervisionEvent>>>,
+        mesh_shape: ndslice::Shape,
     ) {
         loop {
             let event = events.next().await;
@@ -93,7 +98,16 @@ impl PythonActorMesh {
             let mut inner_unhealthy_event = unhealthy_event.lock().unwrap();
             match &event {
                 None => *inner_unhealthy_event = Unhealthy::StreamClosed,
-                Some(event) => *inner_unhealthy_event = Unhealthy::Crashed(event.clone()),
+                Some(event) => {
+                    // Ignore if the crashed actor is not a part of the mesh.
+                    if mesh_shape
+                        .slice()
+                        .iter()
+                        .any(|index| index == event.actor_id.rank())
+                    {
+                        *inner_unhealthy_event = Unhealthy::Crashed(event.clone())
+                    }
+                }
             }
 
             // Ignore the sender error when there is no receiver,
@@ -160,7 +174,27 @@ impl PythonActorMesh {
 
     fn bind(&self) -> PyResult<PythonActorMeshRef> {
         let mesh = self.try_inner()?;
-        Ok(PythonActorMeshRef { inner: mesh.bind() })
+        let unhealthy_event = self.unhealthy_event.clone();
+        let actor_event_router = mesh.actor_event_router().clone();
+        let monitor = get_tokio_runtime().spawn(Self::actor_mesh_monitor(
+            ActorSupervisionEvents::new(
+                actor_event_router.bind(mesh.name().to_string()),
+                mesh.id(),
+            ),
+            self.user_monitor_sender.clone(),
+            unhealthy_event.clone(),
+            mesh.shape().clone(),
+        ));
+        let mesh_monitor = Some(PythonActorMeshRefMonitor {
+            user_monitor_sender: self.user_monitor_sender.clone(),
+            monitor,
+            unhealthy_event,
+            actor_event_router,
+        });
+        Ok(PythonActorMeshRef {
+            inner: mesh.bind(),
+            mesh_monitor,
+        })
     }
 
     fn get_supervision_event(&self) -> PyResult<Option<PyActorSupervisionEvent>> {
@@ -258,6 +292,16 @@ impl PythonActorMesh {
     }
 }
 
+#[derive(Debug)]
+struct PythonActorMeshRefMonitor {
+    user_monitor_sender: tokio::sync::broadcast::Sender<Option<ActorSupervisionEvent>>,
+    /// background task listening to stream of supervision events
+    monitor: tokio::task::JoinHandle<()>,
+    /// state updated by monitor
+    unhealthy_event: Arc<std::sync::Mutex<Unhealthy<ActorSupervisionEvent>>>,
+    actor_event_router: ActorEventRouter,
+}
+
 #[pyclass(
     frozen,
     name = "PythonActorMeshRef",
@@ -266,6 +310,10 @@ impl PythonActorMesh {
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct PythonActorMeshRef {
     inner: ActorMeshRef<PythonActor>,
+    #[serde(skip)]
+    /// Monitors the mesh ref if and only if the mesh ref was created locally
+    /// We cannot monitor a mesh ref that we have received remotely
+    mesh_monitor: Option<PythonActorMeshRefMonitor>,
 }
 
 #[pymethods]
@@ -276,6 +324,12 @@ impl PythonActorMeshRef {
         selection: &PySelection,
         message: &PythonMessage,
     ) -> PyResult<()> {
+        if let Some(e) = self.get_supervision_event()? {
+            return Err(SupervisionError::new_err(format!(
+                "Actor {:?} is unhealthy with reason: {}",
+                e.actor_id, e.actor_status
+            )));
+        }
         self.inner
             .cast(&client.inner, selection.inner().clone(), message.clone())
             .map_err(|err| PyException::new_err(err.to_string()))?;
@@ -347,8 +401,91 @@ impl PythonActorMeshRef {
                 ))
             })?;
         }
+        let mesh_monitor = match &self.mesh_monitor {
+            Some(PythonActorMeshRefMonitor {
+                user_monitor_sender,
+                actor_event_router,
+                ..
+            }) => {
+                let user_monitor_sender = user_monitor_sender.clone();
+                let unhealthy_event = Arc::new(std::sync::Mutex::new(Unhealthy::SoFarSoGood));
+                let rx = actor_event_router.bind(self.inner.mesh_id().1.clone());
+                let monitor = tokio::spawn(PythonActorMesh::actor_mesh_monitor(
+                    ActorSupervisionEvents::new(rx, self.inner.mesh_id().clone()),
+                    user_monitor_sender.clone(),
+                    unhealthy_event.clone(),
+                    sliced.shape().clone(),
+                ));
+                Some(PythonActorMeshRefMonitor {
+                    unhealthy_event,
+                    monitor,
+                    user_monitor_sender,
+                    actor_event_router: actor_event_router.clone(),
+                })
+            }
+            None => None,
+        };
 
-        Ok(Self { inner: sliced })
+        Ok(Self {
+            inner: sliced,
+            mesh_monitor,
+        })
+    }
+
+    fn get_supervision_event(&self) -> PyResult<Option<PyActorSupervisionEvent>> {
+        match &self.mesh_monitor {
+            Some(PythonActorMeshRefMonitor {
+                unhealthy_event, ..
+            }) => {
+                let unhealthy_event = unhealthy_event
+                    .lock()
+                    .expect("failed to acquire unhealthy_event lock");
+
+                match &*unhealthy_event {
+                    Unhealthy::SoFarSoGood => Ok(None),
+                    Unhealthy::StreamClosed => Ok(Some(PyActorSupervisionEvent {
+                        // Dummy actor as place holder to indicate the whole mesh is stopped
+                        // TODO(albertli): remove this when pushing all supervision logic to rust.
+                        actor_id: id!(default[0].actor[0]).into(),
+                        actor_status: "actor mesh is stopped due to proc mesh shutdown".to_string(),
+                    })),
+                    Unhealthy::Crashed(event) => {
+                        Ok(Some(PyActorSupervisionEvent::from(event.clone())))
+                    }
+                }
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn supervision_event(&self) -> PyResult<Option<PyPythonTask>> {
+        match &self.mesh_monitor {
+            Some(PythonActorMeshRefMonitor {
+                user_monitor_sender,
+                ..
+            }) => {
+                let mut receiver = user_monitor_sender.subscribe();
+
+                Ok(Some(PyPythonTask::new(async move {
+                    let event = receiver.recv().await;
+                    let event = match event {
+                        Ok(Some(event)) => PyActorSupervisionEvent::from(event.clone()),
+                        Ok(None) | Err(_) => PyActorSupervisionEvent {
+                            // Dummy actor as placeholder to indicate the whole mesh is stopped
+                            // TODO(albertli): remove this when pushing all supervision logic to rust.
+                            actor_id: id!(default[0].actor[0]).into(),
+                            actor_status: "actor mesh is stopped due to proc mesh shutdown"
+                                .to_string(),
+                        },
+                    };
+                    Ok(PyErr::new::<SupervisionError, _>(format!(
+                        "supervision error: {:?}",
+                        event
+                    )))
+                })?))
+            }
+            None => Ok(None),
+        }
     }
 
     fn new_with_shape(&self, shape: PyShape) -> PyResult<PythonActorMeshRef> {
@@ -356,7 +493,56 @@ impl PythonActorMeshRef {
             .inner
             .new_with_shape(shape.get_inner().clone())
             .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
-        Ok(Self { inner: sliced })
+
+        let mesh_monitor = match &self.mesh_monitor {
+            Some(PythonActorMeshRefMonitor {
+                user_monitor_sender,
+                actor_event_router,
+                unhealthy_event,
+                ..
+            }) => {
+                let user_monitor_sender = user_monitor_sender.clone();
+                let unhealthy_event = Arc::new(std::sync::Mutex::new(
+                    match &*unhealthy_event.lock().unwrap_or_else(|e| e.into_inner()) {
+                        Unhealthy::SoFarSoGood => Unhealthy::SoFarSoGood,
+                        Unhealthy::Crashed(event) => {
+                            if sliced
+                                .shape()
+                                .slice()
+                                .iter()
+                                .any(|index| index == event.actor_id.rank())
+                            {
+                                Unhealthy::Crashed(event.clone())
+                            } else {
+                                Unhealthy::SoFarSoGood
+                            }
+                        }
+                        Unhealthy::StreamClosed => Unhealthy::StreamClosed,
+                    },
+                ));
+                let monitor = get_tokio_runtime().spawn(PythonActorMesh::actor_mesh_monitor(
+                    ActorSupervisionEvents::new(
+                        actor_event_router.bind(self.inner.mesh_id().1.clone()),
+                        self.inner.mesh_id().clone(),
+                    ),
+                    user_monitor_sender.clone(),
+                    unhealthy_event.clone(),
+                    sliced.shape().clone(),
+                ));
+                Some(PythonActorMeshRefMonitor {
+                    unhealthy_event,
+                    monitor,
+                    user_monitor_sender,
+                    actor_event_router: actor_event_router.clone(),
+                })
+            }
+            None => None,
+        };
+
+        Ok(Self {
+            inner: sliced,
+            mesh_monitor,
+        })
     }
 
     #[getter]
@@ -380,7 +566,19 @@ impl PythonActorMeshRef {
     }
 
     fn __repr__(&self) -> String {
-        format!("{:?}", self)
+        format!(
+            "PythonActorMeshRef {{ inner: {:?}, mesh_monitor: <skipped> }}",
+            self.inner
+        )
+    }
+}
+
+impl Drop for PythonActorMeshRef {
+    fn drop(&mut self) {
+        match &self.mesh_monitor {
+            Some(PythonActorMeshRefMonitor { monitor, .. }) => monitor.abort(),
+            None => {}
+        }
     }
 }
 

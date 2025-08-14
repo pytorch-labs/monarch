@@ -53,6 +53,7 @@ use crate::comm::multicast::CastMessage;
 use crate::comm::multicast::CastMessageEnvelope;
 use crate::comm::multicast::Uslice;
 use crate::metrics;
+use crate::proc_mesh::ActorEventRouter;
 use crate::proc_mesh::ProcMesh;
 use crate::reference::ActorMeshId;
 use crate::reference::ActorMeshRef;
@@ -248,6 +249,7 @@ pub struct RootActorMesh<'a, A: RemoteActor> {
     // The receiver of supervision events. It is None if it has been transferred to
     // an actor event observer.
     actor_supervision_rx: Option<mpsc::UnboundedReceiver<ActorSupervisionEvent>>,
+    actor_event_router: ActorEventRouter,
 }
 
 impl<'a, A: RemoteActor> RootActorMesh<'a, A> {
@@ -256,12 +258,14 @@ impl<'a, A: RemoteActor> RootActorMesh<'a, A> {
         name: String,
         actor_supervision_rx: mpsc::UnboundedReceiver<ActorSupervisionEvent>,
         ranks: Vec<ActorRef<A>>,
+        actor_event_router: ActorEventRouter,
     ) -> Self {
         Self {
             proc_mesh: ProcMeshRef::Borrowed(proc_mesh),
             name,
             ranks,
             actor_supervision_rx: Some(actor_supervision_rx),
+            actor_event_router,
         }
     }
 
@@ -270,11 +274,13 @@ impl<'a, A: RemoteActor> RootActorMesh<'a, A> {
         name: String,
         actor_supervision_rx: mpsc::UnboundedReceiver<ActorSupervisionEvent>,
         ranks: Vec<ActorRef<A>>,
+        actor_event_router: ActorEventRouter,
     ) -> Self {
         Self {
             proc_mesh: ProcMeshRef::Shared(Box::new(proc_mesh)),
             name,
             ranks,
+            actor_event_router,
             actor_supervision_rx: Some(actor_supervision_rx),
         }
     }
@@ -293,6 +299,10 @@ impl<'a, A: RemoteActor> RootActorMesh<'a, A> {
                 actor_supervision_rx,
                 mesh_id: self.id(),
             })
+    }
+
+    pub fn actor_event_router(&self) -> &ActorEventRouter {
+        &self.actor_event_router
     }
 }
 
@@ -314,6 +324,16 @@ impl ActorSupervisionEvents {
             );
         }
         result
+    }
+
+    pub fn new(
+        actor_supervision_rx: mpsc::UnboundedReceiver<ActorSupervisionEvent>,
+        mesh_id: ActorMeshId,
+    ) -> Self {
+        Self {
+            actor_supervision_rx,
+            mesh_id,
+        }
     }
 }
 

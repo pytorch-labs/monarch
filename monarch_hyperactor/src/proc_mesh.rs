@@ -284,11 +284,13 @@ impl PyProcMesh {
             let mailbox = proc_mesh.client().clone();
             let actor_mesh = proc_mesh.spawn(&name, &pickled_type).await?;
             let actor_events = actor_mesh.with_mut(|a| a.events()).await.unwrap().unwrap();
+            let shape = proc_mesh.shape().clone();
             Ok(PythonActorMesh::monitored(
                 actor_mesh,
                 PyMailbox { inner: mailbox },
                 keepalive,
                 actor_events,
+                shape,
             ))
         })
     }

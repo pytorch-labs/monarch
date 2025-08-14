@@ -285,6 +285,15 @@ class _PythonActorMeshRefAdapter(ActorMeshProtocol):
         sliced: PythonActorMeshRef = self._inner.new_with_shape(shape)
         return _PythonActorMeshRefAdapter(sliced)
 
+    def supervision_event(self) -> "Optional[Shared[Exception]]":
+        supervision_event = self._inner.supervision_event()
+        if supervision_event is None:
+            return None
+        return supervision_event.spawn()
+
+    async def stop(self) -> None:
+        raise NotImplementedError("PythonActorMeshRef.stop() is not supported")
+
     def __reduce_ex__(self, protocol: ...) -> Tuple[Any, Tuple[Any, ...]]:
         """
         Dropping all unpickable states.
