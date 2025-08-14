@@ -358,7 +358,9 @@ impl Handler<RsyncMessage> for RsyncActor {
         }: RsyncMessage,
     ) -> Result<(), anyhow::Error> {
         let res = async {
-            let workspace = workspace.resolve()?;
+            let workspace = workspace
+                .resolve()
+                .context("resolving workspace location")?;
             let (connect_msg, completer) = Connect::allocate(cx.self_id().clone(), cx);
             connect.send(cx, connect_msg)?;
             let (listener, mut stream) = try_join!(
