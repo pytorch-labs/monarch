@@ -6,6 +6,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::ops::Deref;
+
 use bytes::Bytes;
 use bytes::buf::Reader as BufReader;
 use bytes::buf::Writer as BufWriter;
@@ -22,11 +24,26 @@ use crate::ser;
 /// serialization implementation that is specialized for the multipart codecs in
 /// this crate, skipping copying the bytes whenever possible.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Part(Bytes);
+pub struct Part(pub(crate) Bytes);
+
+impl Part {
+    /// Consumes the part, returning its underlying byte buffer.
+    pub fn into_inner(self) -> Bytes {
+        self.0
+    }
+}
 
 impl<T: Into<Bytes>> From<T> for Part {
     fn from(bytes: T) -> Self {
         Self(bytes.into())
+    }
+}
+
+impl Deref for Part {
+    type Target = Bytes;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
