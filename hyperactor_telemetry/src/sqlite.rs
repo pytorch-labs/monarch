@@ -7,6 +7,8 @@
  */
 
 use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -20,11 +22,19 @@ use serde_json::Value as JValue;
 use serde_rusqlite::*;
 use tracing::Event;
 use tracing::Subscriber;
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::Layer;
-use tracing_subscriber::filter::Targets;
+use tracing_subscriber::Registry;
 use tracing_subscriber::prelude::*;
+use tracing_subscriber::reload;
 
+pub type SqliteReloadHandle = reload::Handle<Option<SqliteLayer>, Registry>;
+
+lazy_static! {
+    // Reload handle allows us to include a no-op layer during init, but load
+    // the layer dynamically during tests.
+    static ref RELOAD_HANDLE: Mutex<Option<SqliteReloadHandle>> =
+        Mutex::new(None);
+}
 pub trait TableDef {
     fn name(&self) -> &'static str;
     fn columns(&self) -> &'static [&'static str];
@@ -224,7 +234,15 @@ macro_rules! insert_event {
 impl SqliteLayer {
     pub fn new() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
+        Self::setup_connection(conn)
+    }
 
+    pub fn new_with_file(db_path: &str) -> Result<Self> {
+        let conn = Connection::open(db_path)?;
+        Self::setup_connection(conn)
+    }
+
+    fn setup_connection(conn: Connection) -> Result<Self> {
         for table in ALL_TABLES.iter() {
             conn.execute(&table.create_table_stmt, [])?;
         }
@@ -326,21 +344,89 @@ fn print_table(conn: &Connection, table_name: TableName) -> Result<()> {
     Ok(())
 }
 
-pub fn with_tracing_db() -> Arc<Mutex<Connection>> {
-    let layer = SqliteLayer::new().unwrap();
-    let conn = layer.connection();
+fn init_tracing_subscriber(layer: SqliteLayer) {
+    let handle = RELOAD_HANDLE.lock().unwrap();
+    if let Some(reload_handle) = handle.as_ref() {
+        let _ = reload_handle.reload(layer);
+    } else {
+        tracing_subscriber::registry().with(layer).init();
+    }
+}
 
-    let layer = layer.with_filter(
-        Targets::new()
-            .with_default(LevelFilter::TRACE)
-            .with_targets(vec![
-                ("tokio", LevelFilter::OFF),
-                ("opentelemetry", LevelFilter::OFF),
-                ("runtime", LevelFilter::OFF),
-            ]),
-    );
-    tracing_subscriber::registry().with(layer).init();
-    conn
+// === API ===
+
+// Creates a new reload handler and no-op layer for initialization
+pub fn get_reloadable_sqlite_layer() -> Result<reload::Layer<Option<SqliteLayer>, Registry>> {
+    let (layer, reload_handle) = reload::Layer::new(None);
+    let mut handle = RELOAD_HANDLE.lock().unwrap();
+    *handle = Some(reload_handle);
+    Ok(layer)
+}
+
+/// RAII guard for SQLite tracing database
+pub struct SqliteTracing {
+    db_path: Option<PathBuf>,
+    connection: Arc<Mutex<Connection>>,
+}
+
+impl SqliteTracing {
+    /// Create a new SqliteTracing with a temporary file
+    pub fn new() -> Result<Self> {
+        let temp_dir = std::env::temp_dir();
+        let file_name = format!("hyperactor_trace_{}.db", std::process::id());
+        let db_path = temp_dir.join(file_name);
+
+        let db_path_str = db_path.to_string_lossy();
+        let layer = SqliteLayer::new_with_file(&db_path_str)?;
+        let connection = layer.connection();
+
+        init_tracing_subscriber(layer);
+
+        Ok(Self {
+            db_path: Some(db_path),
+            connection,
+        })
+    }
+
+    /// Create a new SqliteTracing with in-memory database
+    pub fn new_in_memory() -> Result<Self> {
+        let layer = SqliteLayer::new()?;
+        let connection = layer.connection();
+
+        init_tracing_subscriber(layer);
+
+        Ok(Self {
+            db_path: None,
+            connection,
+        })
+    }
+
+    /// Get the path to the temporary database file (None for in-memory)
+    pub fn db_path(&self) -> Option<&PathBuf> {
+        self.db_path.as_ref()
+    }
+
+    /// Get a reference to the database connection
+    pub fn connection(&self) -> Arc<Mutex<Connection>> {
+        self.connection.clone()
+    }
+}
+
+impl Drop for SqliteTracing {
+    fn drop(&mut self) {
+        // Reset the layer to None
+        let handle = RELOAD_HANDLE.lock().unwrap();
+        if let Some(reload_handle) = handle.as_ref() {
+            let _ = reload_handle.reload(None);
+        }
+
+        // Delete the temporary file if it exists
+        if let Some(db_path) = &self.db_path {
+            if db_path.exists() {
+                let _ = fs::remove_file(db_path);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -350,8 +436,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_sqlite_layer() -> Result<()> {
-        let conn = with_tracing_db();
+    fn test_sqlite_tracing_with_file() -> Result<()> {
+        let tracing = SqliteTracing::new()?;
+        let conn = tracing.connection();
 
         info!(target:"messages", test_field = "test_value", "Test msg");
         info!(target:"log_events", test_field = "test_value", "Test event");
@@ -362,6 +449,87 @@ mod tests {
                 .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))?;
         print_table(&conn.lock().unwrap(), TableName::LogEvents)?;
         assert!(count > 0);
+
+        // Verify we have a file path
+        assert!(tracing.db_path().is_some());
+        let db_path = tracing.db_path().unwrap();
+        assert!(db_path.exists());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_sqlite_tracing_in_memory() -> Result<()> {
+        let tracing = SqliteTracing::new_in_memory()?;
+        let conn = tracing.connection();
+
+        info!(target:"messages", test_field = "test_value", "Test event in memory");
+
+        let count: i64 =
+            conn.lock()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))?;
+        print_table(&conn.lock().unwrap(), TableName::Messages)?;
+        assert!(count > 0);
+
+        // Verify we don't have a file path for in-memory
+        assert!(tracing.db_path().is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_sqlite_tracing_cleanup() -> Result<()> {
+        let db_path = {
+            let tracing = SqliteTracing::new()?;
+            let conn = tracing.connection();
+
+            info!(target:"log_events", test_field = "cleanup_test", "Test cleanup event");
+
+            let count: i64 =
+                conn.lock()
+                    .unwrap()
+                    .query_row("SELECT COUNT(*) FROM log_events", [], |row| row.get(0))?;
+            assert!(count > 0);
+
+            tracing.db_path().unwrap().clone()
+        }; // tracing goes out of scope here, triggering Drop
+
+        // File should be cleaned up after Drop
+        assert!(!db_path.exists());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_sqlite_tracing_different_targets() -> Result<()> {
+        let tracing = SqliteTracing::new_in_memory()?;
+        let conn = tracing.connection();
+
+        // Test different event targets
+        info!(target:"messages", src = "actor1", dest = "actor2", payload = "test_message", "Message event");
+        info!(target:"actor_lifecycle", actor_id = "123", actor = "TestActor", name = "test", "Lifecycle event");
+        info!(target:"log_events", test_field = "general_event", "General event");
+
+        // Check that events went to the right tables
+        let message_count: i64 =
+            conn.lock()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))?;
+        assert_eq!(message_count, 1);
+
+        let lifecycle_count: i64 =
+            conn.lock()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM actor_lifecycle", [], |row| row.get(0))?;
+        assert_eq!(lifecycle_count, 1);
+
+        let events_count: i64 =
+            conn.lock()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM log_events", [], |row| row.get(0))?;
+        assert_eq!(events_count, 1);
+
         Ok(())
     }
 }

@@ -74,7 +74,6 @@ def get_current_span_id() -> int:
 def use_real_clock() -> None:
     """
     Convenience function to switch to real-time clock.
-
     This switches the telemetry system to use real system time.
     """
     ...
@@ -158,5 +157,61 @@ class PyUpDownCounter:
 
         Args:
         - value (int): The value to add to the counter (can be positive or negative).
+        """
+        ...
+
+class PySqliteTracing:
+    def __init__(self, in_memory: bool = False) -> None:
+        """
+        Create a new PySqliteTracing.
+
+        This creates an RAII guard that sets up SQLite tracing collection.
+        When used as a context manager, it will automatically clean up when exiting.
+
+        Args:
+        - in_memory (bool): If True, uses an in-memory database. If False, creates a temporary file.
+        """
+        ...
+
+    def db_path(self) -> str | None:
+        """
+        Get the path to the database file.
+
+        Returns:
+        - str | None: The path to the database file, or None if using in-memory database.
+
+        Raises:
+        - RuntimeError: If the guard has been closed.
+        """
+        ...
+
+    def close(self) -> None:
+        """
+        Manually close the guard and clean up resources.
+
+        After calling this method, the guard cannot be used anymore.
+        """
+        ...
+
+    def __enter__(self) -> "PySqliteTracing":
+        """
+        Enter the context manager.
+
+        Returns:
+        - PySqliteTracing: Self for use in the with statement.
+        """
+        ...
+
+    def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> bool:
+        """
+        Exit the context manager and clean up resources.
+
+        Args:
+        - exc_type: Exception type (if any)
+        - exc_value: Exception value (if any)
+        - traceback: Exception traceback (if any)
+
+        Returns:
+        - bool: False (does not suppress exceptions)
         """
         ...
