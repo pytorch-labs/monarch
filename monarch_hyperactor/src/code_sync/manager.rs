@@ -416,7 +416,7 @@ pub async fn code_sync_mesh(
         }
     };
 
-    let (res1, res2) = futures::future::join(
+    let ((), ()) = try_join!(
         method_fut,
         // This async task will cast the code sync message to workspace owners, and process any errors.
         async move {
@@ -450,15 +450,9 @@ pub async fn code_sync_mesh(
                 .try_collect_or_stash::<()>(&mut errs);
             Ok(errs.into_result()?)
         },
-    )
-    .await;
+    )?;
 
-    // Combine code sync handler and cast errors into one.
-    let mut errs = ErrorStash::<_, _, anyhow::Error>::new(|| "code sync failed");
-    [res1, res2]
-        .into_iter()
-        .try_collect_or_stash::<()>(&mut errs);
-    Ok(errs.into_result()?)
+    Ok(())
 }
 
 #[cfg(test)]
