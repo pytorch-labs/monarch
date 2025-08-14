@@ -14,13 +14,11 @@ mod tests {
     use hyperactor::ActorRef;
     use hyperactor::Mailbox;
     use hyperactor::channel::ChannelAddr;
-    use hyperactor::channel::sim;
     use hyperactor::channel::sim::SimAddr;
     use hyperactor::id;
     use hyperactor::reference::Index;
     use hyperactor::reference::WorldId;
     use hyperactor::simnet;
-    use hyperactor::simnet::NetworkConfig;
     use hyperactor::test_utils::pingpong::PingPongActor;
     use hyperactor::test_utils::pingpong::PingPongActorParams;
     use hyperactor::test_utils::pingpong::PingPongMessage;
@@ -64,29 +62,6 @@ mod tests {
 
         let pong_actor_ref =
             spawn_proc_actor(3, system_sim_addr, sys_mailbox.clone(), world_id.clone()).await;
-
-        // Configure the simulation network.
-        let simnet_config_yaml = r#"
-edges:
-  - src: local!1
-    dst: local!2
-    metadata:
-      latency: 1
-  - src: local!2
-    dst: local!1
-    metadata:
-      latency: 1
-  - src: local!1
-    dst: local!3
-    metadata:
-      latency: 2
-  - src: local!3
-    dst: local!1
-    metadata:
-      latency: 2
-"#;
-        let simnet_config = NetworkConfig::from_yaml(simnet_config_yaml).unwrap();
-        sim::update_config(simnet_config).await.unwrap();
 
         // Kick start the ping pong game by sending a message to the ping actor. The message will ask the
         // ping actor to deliver a message to the pong actor with TTL - 1. The pong actor will then
