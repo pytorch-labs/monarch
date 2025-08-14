@@ -31,6 +31,11 @@ impl Part {
     pub fn into_inner(self) -> Bytes {
         self.0
     }
+
+    /// Returns a reference to the underlying byte buffer.
+    pub fn to_bytes(&self) -> Bytes {
+        self.0.clone()
+    }
 }
 
 impl<T: Into<Bytes>> From<T> for Part {
