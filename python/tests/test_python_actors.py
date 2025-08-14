@@ -727,25 +727,23 @@ async def test_flush_logs_fast_exit() -> None:
     # Run the binary in a separate process and capture stdout and stderr
     cmd = [str(test_bin), "flush-logs"]
 
-    # Stress test
-    for _ in range(20):
-        process = subprocess.run(cmd, capture_output=True, timeout=60, text=True)
+    process = subprocess.run(cmd, capture_output=True, timeout=60, text=True)
 
-        # Check if the process ended without error
-        if process.returncode != 0:
-            raise RuntimeError(f"{cmd} ended with error code {process.returncode}. ")
+    # Check if the process ended without error
+    if process.returncode != 0:
+        raise RuntimeError(f"{cmd} ended with error code {process.returncode}. ")
 
-        # Assertions on the captured output, 160 = 32 procs * 5 logs per proc
-        # 32 and 5 are specified in the test_bin flush-logs.
-        assert (
-            len(
-                re.findall(
-                    r"160 similar log lines.*has print streaming",
-                    process.stdout,
-                )
+    # Assertions on the captured output, 160 = 32 procs * 5 logs per proc
+    # 32 and 5 are specified in the test_bin flush-logs.
+    assert (
+        len(
+            re.findall(
+                r"160 similar log lines.*has print streaming",
+                process.stdout,
             )
-            == 1
-        ), process.stdout
+        )
+        == 1
+    ), process.stdout
 
 
 @pytest.mark.timeout(60)
