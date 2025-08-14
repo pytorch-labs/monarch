@@ -8,10 +8,10 @@
 
 """Defines defaults for ``monarch.tools``"""
 
-from typing import Callable, Optional
+from typing import Callable
 
 from monarch.tools.components import hyperactor
-from monarch.tools.config import Config, UnnamedAppDef
+from monarch.tools.config import Config, UnnamedAppDef, Workspace
 
 from torchx import specs
 from torchx.schedulers import (
@@ -40,7 +40,7 @@ def scheduler_factories() -> dict[str, SchedulerFactory]:
     }
 
 
-def config(scheduler: str, workspace: Optional[str] = None) -> Config:
+def config(scheduler: str, workspace: Workspace = None) -> Config:
     """The default :py:class:`~monarch.tools.config.Config` to use when submitting to the provided ``scheduler``."""
     return Config(scheduler=scheduler, workspace=workspace)
 

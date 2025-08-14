@@ -37,6 +37,7 @@ from monarch.actor import (
     local_proc_mesh,
     proc_mesh,
 )
+from monarch.tools.config import defaults
 from typing_extensions import assert_type
 
 
@@ -948,6 +949,49 @@ async def test_same_actor_twice() -> None:
     assert (
         "gspawn failed: an actor with name 'dup' has already been spawned" in error_msg
     ), f"Expected error message about duplicate actor name, got: {error_msg}"
+
+
+class LsActor(Actor):
+    def __init__(self, workspace: str):
+        self.workspace = workspace
+
+    @endpoint
+    async def ls(self) -> list[str]:
+        return os.listdir(self.workspace)
+
+
+async def test_sync_workspace() -> None:
+    pm = await proc_mesh(gpus=1)
+
+    # create two workspaces: one for local and one for remote
+    with tempfile.TemporaryDirectory() as workspace_src, tempfile.TemporaryDirectory() as workspace_dst, unittest.mock.patch.dict(
+        os.environ, {"WORKSPACE_DIR": workspace_dst}
+    ):
+        os.environ["WORKSPACE_DIR"] = workspace_dst
+        config = defaults.config("slurm", workspace_src)
+        await pm.sync_workspace(
+            workspace=config.workspace, conda=False, auto_reload=True
+        )
+
+        # now file in remote workspace initially
+        am = await pm.spawn("ls", LsActor, workspace_dst)
+        for item in list(am.ls.call().get()):
+            assert len(item[1]) == 0
+
+        # write a file to local workspace
+        file_path = os.path.join(workspace_src, "new_file")
+        with open(file_path, "w") as f:
+            f.write("hello world")
+            f.flush()
+
+        # force a sync and it should populate on the dst workspace
+        await pm.sync_workspace(config.workspace, conda=False, auto_reload=True)
+        for item in list(am.ls.call().get()):
+            assert len(item[1]) == 1
+            assert item[1][0] == "new_file"
+            file_path = os.path.join(workspace_dst, item[1][0])
+            with open(file_path, "r") as f:
+                assert f.readline() == "hello world"
 
 
 class TestActorMeshStop(unittest.IsolatedAsyncioTestCase):

@@ -6,9 +6,11 @@
 
 # pyre-strict
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, TYPE_CHECKING
 
-from torchx.specs import Role
+# Defer the import of Role to avoid requiring torchx at import time
+if TYPE_CHECKING:
+    from torchx.specs import Role
 
 
 NOT_SET: str = "__NOT_SET__"
@@ -20,8 +22,16 @@ class UnnamedAppDef:
     A TorchX AppDef without a name.
     """
 
-    roles: List[Role] = field(default_factory=list)
+    roles: List["Role"] = field(default_factory=list)
     metadata: Dict[str, str] = field(default_factory=dict)
+
+
+# TODO: provide a proper Workspace class to support
+#  - multiple workspaces
+#  - empty workspaces
+#  - no workspace
+#  - experimental directories
+Workspace = str | None
 
 
 @dataclass
@@ -32,6 +42,6 @@ class Config:
 
     scheduler: str = NOT_SET
     scheduler_args: dict[str, Any] = field(default_factory=dict)
-    workspace: Optional[str] = None
+    workspace: Workspace = None
     dryrun: bool = False
     appdef: UnnamedAppDef = field(default_factory=UnnamedAppDef)

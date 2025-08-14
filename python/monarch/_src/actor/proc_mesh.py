@@ -8,7 +8,6 @@
 
 import asyncio
 import logging
-import os
 import sys
 import threading
 import warnings
@@ -70,6 +69,8 @@ from monarch._src.actor.device_utils import _local_device_count
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.future import DeprecatedNotAFuture, Future
 from monarch._src.actor.shape import MeshTrait
+from monarch.tools.config import Workspace
+from monarch.tools.utils import conda as conda_utils
 
 HAS_TENSOR_ENGINE = False
 try:
@@ -369,7 +370,10 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
         return self._device_mesh.ranks
 
     async def sync_workspace(
-        self, conda: bool = False, auto_reload: bool = False
+        self,
+        workspace: Workspace = None,
+        conda: bool = False,
+        auto_reload: bool = False,
     ) -> None:
         if self._code_sync_client is None:
             self._code_sync_client = CodeSyncMeshClient.spawn_blocking(
@@ -382,21 +386,21 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
         # The workspace shape (i.e. only perform one rsync per host).
         assert set(self._shape.labels).issubset({"gpus", "hosts"})
 
-        # TODO(agallagher): Is there a better way to infer/set the local
-        # workspace dir, rather than use PWD?
-        workspaces = [
-            WorkspaceConfig(
-                local=Path(os.getcwd()),
-                remote=RemoteWorkspace(
-                    location=WorkspaceLocation.FromEnvVar("WORKSPACE_DIR"),
-                    shape=WorkspaceShape.shared("gpus"),
+        workspaces = []
+        if workspace is not None:
+            workspaces.append(
+                WorkspaceConfig(
+                    local=Path(workspace),
+                    remote=RemoteWorkspace(
+                        location=WorkspaceLocation.FromEnvVar("WORKSPACE_DIR"),
+                        shape=WorkspaceShape.shared("gpus"),
+                    ),
+                    method=CodeSyncMethod.Rsync,
                 ),
-                method=CodeSyncMethod.Rsync,
-            ),
-        ]
+            )
 
         # If `conda` is set, also sync the currently activated conda env.
-        conda_prefix = os.environ.get("CONDA_PREFIX")
+        conda_prefix = conda_utils.active_env_dir()
         if conda and conda_prefix is not None:
             workspaces.append(
                 WorkspaceConfig(
