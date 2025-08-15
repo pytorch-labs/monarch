@@ -383,7 +383,13 @@ fn create_file_writer(
     let (path, filename) = log_file_path(env)?;
     let path = Path::new(&path);
     let mut full_path = PathBuf::from(path);
-    full_path.push(format!("{}_{}.{}", filename, local_rank, suffix));
+    full_path.push(format!(
+        "{}_{}_{}.{}",
+        filename,
+        std::process::id(), // "owner" of the mesh
+        local_rank,
+        suffix
+    ));
     let file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
