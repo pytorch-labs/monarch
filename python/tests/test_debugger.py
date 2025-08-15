@@ -75,10 +75,12 @@ class DebugeeActor(Actor):
         return _debugee_actor_internal(rank)
 
 
-async def _wait_for_breakpoints(debug_client, n_breakpoints) -> List[DebugSessionInfo]:
+async def _wait_for_breakpoints(
+    debug_controller, n_breakpoints
+) -> List[DebugSessionInfo]:
     breakpoints: List[DebugSessionInfo] = []
     for i in range(10):
-        breakpoints = await debug_client.list.call_one()
+        breakpoints = await debug_controller.list.call_one()
         if len(breakpoints) == n_breakpoints:
             break
         await asyncio.sleep(1)
@@ -135,11 +137,11 @@ async def test_debug() -> None:
     ), patch("monarch._src.actor.debugger._debugger_output", new=_patch_output):
         proc = proc_mesh(hosts=2, gpus=2)
         debugee = await proc.spawn("debugee", DebugeeActor)
-        debug_client = actor.debug_client()
+        debug_controller = actor.debug_controller()
 
         fut = debugee.to_debug.call()
-        await debug_client.wait_pending_session.call_one()
-        breakpoints = await _wait_for_breakpoints(debug_client, 4)
+        await debug_controller.wait_pending_session.call_one()
+        breakpoints = await _wait_for_breakpoints(debug_controller, 4)
 
         initial_linenos = {}
         for i in range(len(breakpoints)):
@@ -150,7 +152,7 @@ async def test_debug() -> None:
             assert info.function == "test_debugger._debugee_actor_internal"
             assert info.lineno == cast(int, breakpoints[0].lineno) + 5 * info.rank
 
-        await debug_client.enter.call_one()
+        await debug_controller.enter.call_one()
 
         # Check that when detaching and re-attaching to a session, the last portion of the output is repeated
         expected_last_output = [
@@ -167,7 +169,7 @@ async def test_debug() -> None:
         ):
             assert re.match(expected_output, real_output) is not None
 
-        breakpoints = await debug_client.list.call_one()
+        breakpoints = await debug_controller.list.call_one()
         for i in range(len(breakpoints)):
             if i == 1:
                 assert breakpoints[i].function == "test_debugger.to_debug"
@@ -177,9 +179,9 @@ async def test_debug() -> None:
                 )
                 assert breakpoints[i].lineno == initial_linenos[i]
 
-        await debug_client.enter.call_one()
+        await debug_controller.enter.call_one()
 
-        breakpoints = await debug_client.list.call_one()
+        breakpoints = await debug_controller.list.call_one()
         for i in range(len(breakpoints)):
             if i == 1:
                 assert breakpoints[i].function == "test_debugger.to_debug"
@@ -194,14 +196,14 @@ async def test_debug() -> None:
                 )
                 assert breakpoints[i].lineno == initial_linenos[i]
 
-        await debug_client.enter.call_one()
+        await debug_controller.enter.call_one()
 
-        breakpoints = await debug_client.list.call_one()
+        breakpoints = await debug_controller.list.call_one()
         assert len(breakpoints) == 4
         # Expect post-mortem debugging for rank 2
         assert breakpoints[2].function == "test_debugger._bad_rank"
 
-        await debug_client.enter.call_one()
+        await debug_controller.enter.call_one()
 
         expected_last_output = [
             r"\s*(/.*/)+test_debugger.py\(\d+\)_debugee_actor_internal\(\)\n-> _bad_rank\(\)",
@@ -216,13 +218,13 @@ async def test_debug() -> None:
         ):
             assert re.match(expected_output, output) is not None
 
-        breakpoints = await debug_client.list.call_one()
+        breakpoints = await debug_controller.list.call_one()
         assert len(breakpoints) == 3
         for i, rank in enumerate((0, 1, 3)):
             assert breakpoints[i].rank == rank
 
-        await debug_client.enter.call_one()
-        breakpoints = await debug_client.list.call_one()
+        await debug_controller.enter.call_one()
+        breakpoints = await debug_controller.list.call_one()
         assert len(breakpoints) == 0
 
         with pytest.raises(
@@ -257,13 +259,13 @@ async def test_debug_multi_actor() -> None:
         proc = await proc_mesh(hosts=2, gpus=2)
         debugee_1 = await proc.spawn("debugee_1", DebugeeActor)
         debugee_2 = await proc.spawn("debugee_2", DebugeeActor)
-        debug_client = actor.debug_client()
+        debug_controller = actor.debug_controller()
 
         fut_1 = debugee_1.to_debug.call()
         fut_2 = debugee_2.to_debug.call()
-        await debug_client.wait_pending_session.call_one()
+        await debug_controller.wait_pending_session.call_one()
 
-        breakpoints = await _wait_for_breakpoints(debug_client, 8)
+        breakpoints = await _wait_for_breakpoints(debug_controller, 8)
 
         initial_linenos = {}
         for i in range(len(breakpoints)):
@@ -275,9 +277,9 @@ async def test_debug_multi_actor() -> None:
             assert info.function == "test_debugger._debugee_actor_internal"
             assert info.lineno == cast(int, breakpoints[0].lineno) + 5 * info.rank
 
-        await debug_client.enter.call_one()
+        await debug_controller.enter.call_one()
 
-        breakpoints = await _wait_for_breakpoints(debug_client, 8)
+        breakpoints = await _wait_for_breakpoints(debug_controller, 8)
         for i in range(len(breakpoints)):
             if i == 1:
                 assert breakpoints[i].actor_name == "debugee_1"
@@ -294,18 +296,18 @@ async def test_debug_multi_actor() -> None:
                 assert breakpoints[i].rank == i % 4
                 assert breakpoints[i].lineno == initial_linenos[breakpoints[i].rank]
 
-        await debug_client.enter.call_one()
+        await debug_controller.enter.call_one()
 
-        breakpoints = await _wait_for_breakpoints(debug_client, 1)
+        breakpoints = await _wait_for_breakpoints(debug_controller, 1)
         with pytest.raises(ActorError, match="ValueError: bad rank"):
             await fut_2
         assert breakpoints[0].actor_name == "debugee_1"
         assert breakpoints[0].rank == 2
         assert breakpoints[0].function == "test_debugger._bad_rank"
 
-        await debug_client.enter.call_one()
+        await debug_controller.enter.call_one()
 
-        breakpoints = await _wait_for_breakpoints(debug_client, 0)
+        breakpoints = await _wait_for_breakpoints(debug_controller, 0)
         with pytest.raises(ActorError, match="ValueError: bad rank"):
             await fut_1
 

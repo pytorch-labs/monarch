@@ -19,7 +19,7 @@ from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._src.actor.sync_state import fake_sync_state
 
 if TYPE_CHECKING:
-    from monarch._src.actor.debugger import DebugClient
+    from monarch._src.actor.debugger import DebugController
 
 
 @dataclass
@@ -35,7 +35,7 @@ class PdbWrapper(pdb.Pdb):
         rank: int,
         coords: Dict[str, int],
         actor_id: ActorId,
-        client_ref: "DebugClient",
+        client_ref: "DebugController",
         header: str | None = None,
     ):
         self.rank = rank
