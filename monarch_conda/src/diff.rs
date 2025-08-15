@@ -21,8 +21,8 @@ use sha2::Sha256;
 use tokio::fs;
 
 use crate::hash_utils;
-use crate::pack_meta::History;
-use crate::pack_meta::Offsets;
+use crate::pack_meta_history::History;
+use crate::pack_meta_history::Offsets;
 
 /// Fingerprint of the conda-meta directory, used by `CondaFingerprint` below.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -159,9 +159,9 @@ mod tests {
     use tokio::fs;
 
     use super::*;
-    use crate::pack_meta::HistoryRecord;
-    use crate::pack_meta::Offset;
-    use crate::pack_meta::OffsetRecord;
+    use crate::pack_meta_history::HistoryRecord;
+    use crate::pack_meta_history::Offset;
+    use crate::pack_meta_history::OffsetRecord;
 
     /// Helper function to create a conda environment with configurable packages and files
     async fn setup_conda_env_with_config(

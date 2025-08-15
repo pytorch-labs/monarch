@@ -693,11 +693,11 @@ mod tests {
     use super::make_executable;
     use super::set_mtime;
     use super::sync;
-    use crate::pack_meta::History;
-    use crate::pack_meta::HistoryRecord;
-    use crate::pack_meta::Offset;
-    use crate::pack_meta::OffsetRecord;
-    use crate::pack_meta::Offsets;
+    use crate::pack_meta_history::History;
+    use crate::pack_meta_history::HistoryRecord;
+    use crate::pack_meta_history::Offset;
+    use crate::pack_meta_history::OffsetRecord;
+    use crate::pack_meta_history::Offsets;
     use crate::sync::Receive;
 
     /// Helper function to create a basic conda environment structure
