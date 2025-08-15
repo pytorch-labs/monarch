@@ -13,6 +13,8 @@ use hyperactor_mesh::RootActorMesh;
 use hyperactor_mesh::actor_mesh::ActorMesh;
 use hyperactor_mesh::logging::LogClientActor;
 use hyperactor_mesh::logging::LogClientMessage;
+use hyperactor_mesh::logging::LogFlushActor;
+use hyperactor_mesh::logging::LogFlushMessage;
 use hyperactor_mesh::logging::LogForwardActor;
 use hyperactor_mesh::logging::LogForwardMessage;
 use hyperactor_mesh::selection::Selection;
@@ -33,9 +35,47 @@ use pyo3::types::PyModule;
 pub struct LoggingMeshClient {
     // handles remote process log forwarding; no python runtime
     forwarder_mesh: SharedCell<RootActorMesh<'static, LogForwardActor>>,
+    // because forwarder mesh keeps listening to the new coming logs,
+    // the flush mesh is a way to unblock it from busy waiting a log and do sync flush.
+    flush_mesh: SharedCell<RootActorMesh<'static, LogFlushActor>>,
     // handles python logger; has python runtime
     logger_mesh: SharedCell<RootActorMesh<'static, LoggerRuntimeActor>>,
     client_actor: ActorHandle<LogClientActor>,
+}
+
+impl LoggingMeshClient {
+    async fn flush_internal(
+        client_actor: ActorHandle<LogClientActor>,
+        flush_mesh: SharedCell<RootActorMesh<'static, LogFlushActor>>,
+    ) -> Result<(), anyhow::Error> {
+        let flush_inner_mesh = flush_mesh.borrow().map_err(anyhow::Error::msg)?;
+        let (reply_tx, reply_rx) = flush_inner_mesh.proc_mesh().client().open_once_port::<()>();
+        let (version_tx, version_rx) = flush_inner_mesh
+            .proc_mesh()
+            .client()
+            .open_once_port::<u64>();
+
+        // First initialize a sync flush.
+        client_actor.send(LogClientMessage::StartSyncFlush {
+            expected_procs: flush_inner_mesh.proc_mesh().shape().slice().len(),
+            reply: reply_tx.bind(),
+            version: version_tx.bind(),
+        })?;
+
+        let version = version_rx.recv().await?;
+
+        // Then ask all the flushers to ask the log forwarders to sync flush
+        flush_inner_mesh.cast(
+            flush_inner_mesh.proc_mesh().client(),
+            Selection::True,
+            LogFlushMessage::ForceSyncFlush { version },
+        )?;
+
+        // Finally the forwarder will send sync point back to the client, flush, and return.
+        reply_rx.recv().await?;
+
+        Ok(())
+    }
 }
 
 #[pymethods]
@@ -47,9 +87,11 @@ impl LoggingMeshClient {
             let client_actor = proc_mesh.client_proc().spawn("log_client", ()).await?;
             let client_actor_ref = client_actor.bind();
             let forwarder_mesh = proc_mesh.spawn("log_forwarder", &client_actor_ref).await?;
+            let flush_mesh = proc_mesh.spawn("log_flusher", &()).await?;
             let logger_mesh = proc_mesh.spawn("logger", &()).await?;
             Ok(Self {
                 forwarder_mesh,
+                flush_mesh,
                 logger_mesh,
                 client_actor,
             })
@@ -96,6 +138,18 @@ impl LoggingMeshClient {
             .map_err(anyhow::Error::msg)?;
 
         Ok(())
+    }
+
+    // A sync flush mechanism for the client make sure all the stdout/stderr are streamed back and flushed.
+    fn flush(&self) -> PyResult<PyPythonTask> {
+        let flush_mesh = self.flush_mesh.clone();
+        let client_actor = self.client_actor.clone();
+
+        PyPythonTask::new(async move {
+            Self::flush_internal(client_actor, flush_mesh)
+                .await
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))
+        })
     }
 }
 
