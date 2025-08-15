@@ -12,10 +12,8 @@ import functools
 import inspect
 import itertools
 import logging
-import os
 import random
 import traceback
-from abc import ABC, abstractmethod
 
 from dataclasses import dataclass
 from traceback import TracebackException
@@ -98,7 +96,7 @@ if TYPE_CHECKING:
     from monarch._rust_bindings.monarch_hyperactor.actor import PortProtocol
     from monarch._rust_bindings.monarch_hyperactor.actor_mesh import ActorMeshProtocol
     from monarch._rust_bindings.monarch_hyperactor.mailbox import PortReceiverBase
-    from monarch._src.actor.proc_mesh import ProcMesh
+    from monarch._src.actor.proc_mesh import _ControllerController, ProcMesh
 
 CallMethod = PythonMessageKind.CallMethod
 
@@ -127,6 +125,8 @@ class MonarchContext:
     proc_id: str
     point: Point
     send_queue: Tuple[Optional["Shared[Any]"], int]
+    controller_controller: Optional["_ControllerController"]
+    proc_mesh: Optional["ProcMesh"]  # actually this is a ProcMeshRef under the hood
 
     @staticmethod
     def get() -> "MonarchContext":
@@ -134,7 +134,9 @@ class MonarchContext:
         if c is None:
             mb = Mailbox.root_client_mailbox()
             proc_id = mb.actor_id.proc_id
-            c = MonarchContext(mb, proc_id, Point(0, singleton_shape), (None, 0))
+            c = MonarchContext(
+                mb, proc_id, Point(0, singleton_shape), (None, 0), None, None
+            )
             _context.set(c)
         return c
 
@@ -778,7 +780,12 @@ class _Actor:
             if ctx is None:
                 # we reuse ctx across the actor so that send_queue is preserved between calls.
                 ctx = self._ctx = MonarchContext(
-                    mailbox, mailbox.actor_id.proc_id, Point(rank, shape), (None, 0)
+                    mailbox,
+                    mailbox.actor_id.proc_id,
+                    Point(rank, shape),
+                    (None, 0),
+                    None,
+                    None,
                 )
             ctx.mailbox = mailbox
             ctx.proc_id = mailbox.actor_id.proc_id
@@ -791,7 +798,10 @@ class _Actor:
 
             match method:
                 case MethodSpecifier.Init():
-                    Class, *args = args
+                    Class, proc_mesh, controller_controller, *args = args
+                    ctx.controller_controller = controller_controller
+                    ctx.proc_mesh = proc_mesh
+                    _context.set(ctx)
                     try:
                         self.instance = Class(*args, **kwargs)
                     except Exception as e:
@@ -885,7 +895,7 @@ class _Actor:
         DebugContext.set(DebugContext())
 
     def _post_mortem_debug(self, exc_tb) -> None:
-        from monarch._src.actor.debugger import DebugManager
+        from monarch._src.actor.debugger import debug_controller
 
         if (pdb_wrapper := DebugContext.get().pdb_wrapper) is not None:
             with fake_sync_state():
@@ -894,7 +904,7 @@ class _Actor:
                     ctx.point.rank,
                     ctx.point.shape.coordinates(ctx.point.rank),
                     ctx.mailbox.actor_id,
-                    DebugManager.ref().get_debug_client.call_one().get(),
+                    debug_controller(),
                 )
                 DebugContext.set(DebugContext(pdb_wrapper))
                 pdb_wrapper.post_mortem(exc_tb)
@@ -1015,6 +1025,7 @@ class ActorMesh(MeshTrait, Generic[T], DeprecatedNotAFuture):
         mailbox: Mailbox,
         shape: Shape,
         proc_mesh: "ProcMesh",
+        controller_controller: Optional["_ControllerController"],
         # args and kwargs are passed to the __init__ method of the user defined
         # python actor object.
         *args: Any,
@@ -1038,7 +1049,7 @@ class ActorMesh(MeshTrait, Generic[T], DeprecatedNotAFuture):
             None,
             False,
         )
-        send(ep, (mesh._class, *args), kwargs)
+        send(ep, (mesh._class, proc_mesh, controller_controller, *args), kwargs)
 
         return mesh
 

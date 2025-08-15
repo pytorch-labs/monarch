@@ -4,7 +4,8 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-from typing import Any, final, Optional
+# pyre-strict
+from typing import Any, final
 
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 
@@ -51,7 +52,7 @@ class _RdmaBuffer:
         client: Any,
         timeout: int,
     ) -> PythonTask[Any]: ...
-    def __reduce__(self) -> tuple: ...
+    def __reduce__(self) -> tuple[Any, ...]: ...
     def __repr__(self) -> str: ...
     @staticmethod
     def new_from_json(json: str) -> _RdmaBuffer: ...
