@@ -11,6 +11,7 @@
 #![allow(dead_code)] // until it is used outside of testing
 
 use async_trait::async_trait;
+use hyperactor::ProcId;
 use hyperactor::WorldId;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
@@ -61,12 +62,23 @@ pub struct SimAlloc {
 
 impl SimAlloc {
     fn new(spec: AllocSpec) -> Self {
-        Self {
-            inner: LocalAlloc::new_with_transport(
-                spec,
-                ChannelTransport::Sim(Box::new(ChannelTransport::Unix)),
-            ),
-        }
+        let inner = LocalAlloc::new_with_transport(
+            spec,
+            ChannelTransport::Sim(Box::new(ChannelTransport::Unix)),
+        );
+        let client_proc_id = ProcId::Ranked(WorldId(format!("{}_manager", inner.name())), 0);
+
+        let ext = inner.extent();
+
+        hyperactor::simnet::simnet_handle()
+            .expect("simnet event loop not running")
+            .register_proc(
+                client_proc_id.clone(),
+                ext.point(ext.sizes().iter().map(|_| 0).collect())
+                    .expect("should be valid point"),
+            );
+
+        Self { inner }
     }
     /// A chaos monkey that can be used to stop procs at random.
     pub(crate) fn chaos_monkey(&self) -> impl Fn(usize, ProcStopReason) + 'static {
@@ -90,7 +102,13 @@ impl SimAlloc {
 #[async_trait]
 impl Alloc for SimAlloc {
     async fn next(&mut self) -> Option<ProcState> {
-        self.inner.next().await
+        let proc_state = self.inner.next().await;
+        if let Some(ProcState::Created { proc_id, point, .. }) = &proc_state {
+            hyperactor::simnet::simnet_handle()
+                .expect("simnet event loop not running")
+                .register_proc(proc_id.clone(), point.clone());
+        }
+        proc_state
     }
 
     fn extent(&self) -> &Extent {

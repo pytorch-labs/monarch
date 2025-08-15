@@ -26,6 +26,7 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use dashmap::DashSet;
 use enum_as_inner::EnumAsInner;
+use ndslice::view::Point;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
@@ -43,6 +44,7 @@ use tokio::time::interval;
 use crate::ActorId;
 use crate::Mailbox;
 use crate::OncePortRef;
+use crate::ProcId;
 use crate::channel::ChannelAddr;
 use crate::clock::Clock;
 use crate::clock::RealClock;
@@ -88,12 +90,12 @@ pub trait Event: Send + Sync + Debug {
     /// For a proc spawn, it will be creating the proc object and instantiating it.
     /// For any event that manipulates the network (like adding/removing nodes etc.)
     /// implement handle_network().
-    async fn handle(&self) -> Result<(), SimNetError>;
+    async fn handle(&mut self) -> Result<(), SimNetError>;
 
     /// This is the method that will be called when the simulator fires the event
     /// Unless you need to make changes to the network, you do not have to implement this.
     /// Only implement handle() method for all non-simnet requirements.
-    async fn handle_network(&self, _phantom: &SimNet) -> Result<(), SimNetError> {
+    async fn handle_network(&mut self, _phantom: &SimNet) -> Result<(), SimNetError> {
         self.handle().await
     }
 
@@ -117,11 +119,11 @@ struct NodeJoinEvent {
 
 #[async_trait]
 impl Event for NodeJoinEvent {
-    async fn handle(&self) -> Result<(), SimNetError> {
+    async fn handle(&mut self) -> Result<(), SimNetError> {
         Ok(())
     }
 
-    async fn handle_network(&self, simnet: &SimNet) -> Result<(), SimNetError> {
+    async fn handle_network(&mut self, simnet: &SimNet) -> Result<(), SimNetError> {
         simnet.bind(self.channel_addr.clone()).await;
         self.handle().await
     }
@@ -132,46 +134,6 @@ impl Event for NodeJoinEvent {
 
     fn summary(&self) -> String {
         "Node join".into()
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct SleepEvent {
-    done_tx: OncePortRef<()>,
-    mailbox: Mailbox,
-    duration_ms: u64,
-}
-
-impl SleepEvent {
-    pub(crate) fn new(done_tx: OncePortRef<()>, mailbox: Mailbox, duration_ms: u64) -> Box<Self> {
-        Box::new(Self {
-            done_tx,
-            mailbox,
-            duration_ms,
-        })
-    }
-}
-
-#[async_trait]
-impl Event for SleepEvent {
-    async fn handle(&self) -> Result<(), SimNetError> {
-        Ok(())
-    }
-
-    async fn handle_network(&self, _simnet: &SimNet) -> Result<(), SimNetError> {
-        self.done_tx
-            .clone()
-            .send(&self.mailbox, ())
-            .map_err(|_err| SimNetError::Closed("TODO".to_string()))?;
-        Ok(())
-    }
-
-    fn duration_ms(&self) -> u64 {
-        self.duration_ms
-    }
-
-    fn summary(&self) -> String {
-        format!("Sleeping for {} ms", self.duration_ms)
     }
 }
 
@@ -188,11 +150,11 @@ pub struct TorchOpEvent {
 
 #[async_trait]
 impl Event for TorchOpEvent {
-    async fn handle(&self) -> Result<(), SimNetError> {
+    async fn handle(&mut self) -> Result<(), SimNetError> {
         Ok(())
     }
 
-    async fn handle_network(&self, _simnet: &SimNet) -> Result<(), SimNetError> {
+    async fn handle_network(&mut self, _simnet: &SimNet) -> Result<(), SimNetError> {
         self.done_tx
             .clone()
             .send(&self.mailbox, ())
@@ -335,6 +297,7 @@ pub struct SimNetHandle {
     training_script_state_tx: tokio::sync::watch::Sender<TrainingScriptState>,
     /// Signal to stop the simnet loop
     stop_signal: Arc<AtomicBool>,
+    resources: DashMap<ProcId, Point>,
 }
 
 impl SimNetHandle {
@@ -445,6 +408,11 @@ impl SimNetHandle {
             "timeout waiting for received events to be scheduled".to_string(),
         ))
     }
+
+    /// Register the location in resource space for a Proc
+    pub fn register_proc(&self, proc_id: ProcId, point: Point) {
+        self.resources.insert(proc_id, point);
+    }
 }
 
 pub(crate) type Topology = DashMap<SimNetEdge, SimNetEdgeInfo>;
@@ -518,6 +486,7 @@ pub fn start() {
         pending_event_count,
         training_script_state_tx,
         stop_signal,
+        resources: DashMap::new(),
     });
 }
 
@@ -607,6 +576,12 @@ impl SimNet {
         let mut training_script_waiting_time: u64 = 0;
         // Duration elapsed while only non_advanceable_events has events
         let mut debounce_timer: Option<tokio::time::Instant> = None;
+
+        let debounce_duration = std::env::var("SIM_DEBOUNCE")
+            .ok()
+            .and_then(|val| val.parse::<u64>().ok())
+            .unwrap_or(1);
+
         'outer: loop {
             // Check if we should stop
             if stop_signal.load(Ordering::SeqCst) {
@@ -614,7 +589,10 @@ impl SimNet {
             }
 
             while let Ok(Some((event, advanceable, time))) = RealClock
-                .timeout(tokio::time::Duration::from_millis(1), event_rx.recv())
+                .timeout(
+                    tokio::time::Duration::from_millis(debounce_duration),
+                    event_rx.recv(),
+                )
                 .await
             {
                 let scheduled_event = match time {
@@ -710,7 +688,7 @@ impl SimNet {
                     training_script_waiting_time += advanced_time;
                 }
                 SimClock.advance_to(scheduled_time);
-                for scheduled_event in scheduled_events {
+                for mut scheduled_event in scheduled_events {
                     self.pending_event_count
                         .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
                     if scheduled_event.event.handle_network(self).await.is_err() {
@@ -811,7 +789,7 @@ mod tests {
 
     #[async_trait]
     impl Event for MessageDeliveryEvent {
-        async fn handle(&self) -> Result<(), simnet::SimNetError> {
+        async fn handle(&mut self) -> Result<(), simnet::SimNetError> {
             if let Some(dispatcher) = &self.dispatcher {
                 dispatcher
                     .send(
