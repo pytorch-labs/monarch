@@ -15,3 +15,12 @@ async def start_event_loop() -> None:
     Starts the simulator event loop
     """
     ...
+
+def is_simulator_active() -> bool:
+    """
+    Check if the simulation network is currently active.
+
+    Returns True if SimNet has been started (typically after calling
+    start_event_loop()), False otherwise.
+    """
+    ...
