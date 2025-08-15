@@ -33,6 +33,8 @@ use hyperactor::sync::monitor;
 use ndslice::view::Extent;
 use nix::sys::signal;
 use nix::unistd::Pid;
+use serde::Deserialize;
+use serde::Serialize;
 use tokio::io;
 use tokio::process::Command;
 use tokio::sync::Mutex;
@@ -55,6 +57,8 @@ use crate::shortuuid::ShortUuid;
 
 /// The maximum number of log lines to tail keep for managed processes.
 const MAX_TAIL_LOG_LINES: usize = 100;
+
+pub const CLIENT_TRACE_ID_LABEL: &str = "CLIENT_TRACE_ID";
 
 /// An allocator that allocates procs by executing managed (local)
 /// processes. ProcessAllocator is configured with a [`Command`] (template)
@@ -102,8 +106,24 @@ impl Allocator for ProcessAllocator {
             children: JoinSet::new(),
             running: true,
             failed: false,
+            client_context: ClientContext {
+                trace_id: spec
+                    .constraints
+                    .match_labels
+                    .get(CLIENT_TRACE_ID_LABEL)
+                    .cloned()
+                    .unwrap_or_else(|| "".to_string()),
+            },
         })
     }
+}
+
+// Client Context is saved in ProcessAlloc, and is also passed in
+// the RemoteProcessAllocator's Allocate method
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientContext {
+    /// Trace ID for correlating logs across client and worker processes
+    pub trace_id: String,
 }
 
 /// An allocation produced by [`ProcessAllocator`].
@@ -121,6 +141,7 @@ pub struct ProcessAlloc {
     children: JoinSet<(usize, ProcStopReason)>,
     running: bool,
     failed: bool,
+    client_context: ClientContext,
 }
 
 #[derive(EnumAsInner)]
@@ -388,6 +409,10 @@ impl ProcessAlloc {
         cmd.env(
             bootstrap::BOOTSTRAP_ADDR_ENV,
             self.bootstrap_addr.to_string(),
+        );
+        cmd.env(
+            bootstrap::CLIENT_TRACE_ID_ENV,
+            self.client_context.trace_id.as_str(),
         );
         cmd.env(bootstrap::BOOTSTRAP_INDEX_ENV, index.to_string());
         cmd.env(bootstrap::BOOTSTRAP_LOG_CHANNEL, log_channel.to_string());
