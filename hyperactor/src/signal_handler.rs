@@ -32,6 +32,11 @@ impl GlobalSignalManager {
                 signal_hook_tokio::Signals::new([signal::SIGINT as i32, signal::SIGTERM as i32])
             {
                 if let Some(signal) = signals.next().await {
+                    // If parent died, stdout/stderr are broken pipes
+                    // that cause uninterruptible sleep on write.
+                    // Detect and redirect to file to prevent hanging.
+                    crate::stdio_redirect::handle_broken_pipes();
+
                     tracing::info!("received signal: {}", signal);
 
                     get_signal_manager().execute_all_cleanups().await;

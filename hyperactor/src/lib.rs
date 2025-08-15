@@ -86,6 +86,7 @@ pub mod proc;
 pub mod reference;
 mod signal_handler;
 pub mod simnet;
+mod stdio_redirect;
 pub mod supervision;
 pub mod sync;
 /// Test utilities
