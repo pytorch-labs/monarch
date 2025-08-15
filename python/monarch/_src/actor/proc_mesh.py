@@ -142,6 +142,7 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
         self,
         hy_proc_mesh: "Shared[HyProcMesh]",
         shape: Shape,
+        _fork_processes: bool,
         _device_mesh: Optional["DeviceMesh"] = None,
     ) -> None:
         self._proc_mesh = hy_proc_mesh
@@ -155,6 +156,7 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
         self._code_sync_client: Optional[CodeSyncMeshClient] = None
         self._logging_mesh_client: Optional[LoggingMeshClient] = None
         self._maybe_device_mesh: Optional["DeviceMesh"] = _device_mesh
+        self._fork_processes = _fork_processes
         self._stopped = False
 
     @property
@@ -172,27 +174,34 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
 
         return Future(coro=task())
 
-    def _init_manager_actors(self, setup: Callable[[], None] | None = None) -> None:
+    def _init_manager_actors(
+        self, setup: Callable[[], None] | None = None, _fork_processes: bool = True
+    ) -> None:
         self._proc_mesh = PythonTask.from_coroutine(
-            self._init_manager_actors_coro(self._proc_mesh, setup)
+            self._init_manager_actors_coro(self._proc_mesh, setup, _fork_processes)
         ).spawn()
 
     async def _init_manager_actors_coro(
         self,
         proc_mesh_: "Shared[HyProcMesh]",
         setup: Callable[[], None] | None = None,
+        _fork_processes: bool = True,
     ) -> "HyProcMesh":
         # WARNING: it is unsafe to await self._proc_mesh here
         # because self._proc_mesh is the result of this function itself!
 
         proc_mesh = await proc_mesh_
 
-        self._logging_mesh_client = await LoggingMeshClient.spawn(proc_mesh=proc_mesh)
-        self._logging_mesh_client.set_mode(
-            stream_to_client=True,
-            aggregate_window_sec=3,
-            level=logging.INFO,
-        )
+        if _fork_processes:
+            # logging mesh is only makes sense with forked (remote or local) processes
+            self._logging_mesh_client = await LoggingMeshClient.spawn(
+                proc_mesh=proc_mesh
+            )
+            self._logging_mesh_client.set_mode(
+                stream_to_client=True,
+                aggregate_window_sec=3,
+                level=logging.INFO,
+            )
 
         _rdma_manager = (
             # type: ignore[16]
@@ -229,7 +238,12 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
             if self._maybe_device_mesh is None
             else self._device_mesh._new_with_shape(shape)
         )
-        pm = ProcMesh(self._proc_mesh, shape, _device_mesh=device_mesh)
+        pm = ProcMesh(
+            self._proc_mesh,
+            shape,
+            _device_mesh=device_mesh,
+            _fork_processes=self._fork_processes,
+        )
         pm._slice = True
         return pm
 
@@ -301,10 +315,12 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
             list(alloc._extent.keys()),
             Slice.new_row_major(list(alloc._extent.values())),
         )
-        pm = ProcMesh(PythonTask.from_coroutine(task()).spawn(), shape)
+        pm = ProcMesh(
+            PythonTask.from_coroutine(task()).spawn(), shape, alloc.fork_processes
+        )
 
         if _init_manager_actors:
-            pm._init_manager_actors(setup)
+            pm._init_manager_actors(setup, alloc.fork_processes)
             # we do this here rather than in _init_manager_actors
             # because serializing debug_client() requires waiting on
             # its actor to spawn which would block the tokio event loop inside
@@ -450,6 +466,11 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
         Returns:
             None
         """
+        if not self._fork_processes:
+            raise RuntimeError(
+                "Logging option is only available for allocators that fork processes. Allocators like LocalAllocator are not supported."
+            )
+
         if level < 0 or level > 255:
             raise ValueError("Invalid logging level: {}".format(level))
         await self.initialized
