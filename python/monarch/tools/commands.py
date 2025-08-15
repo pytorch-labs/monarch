@@ -297,7 +297,6 @@ async def get_or_create(
 
     server_handle = f"{config.scheduler}:///{name}"
     server_info = await server_ready(server_handle, check_interval)
-
     if not server_info or not server_info.is_running:  # then create one
         logger.info(
             "no existing RUNNING server `%s` creating new one...", server_handle
