@@ -549,10 +549,7 @@ async def test_actor_log_streaming() -> None:
                     await am.print.call("has print streaming too")
                     await am.log.call("has log streaming as level matched")
 
-                # TODO: remove this completely once we hook the flush logic upon dropping device_mesh
-                log_mesh = pm._logging_mesh_client
-                assert log_mesh is not None
-                Future(coro=log_mesh.flush().spawn().task()).get()
+                await pm.stop()
 
                 # Flush all outputs
                 stdout_file.flush()
@@ -668,10 +665,7 @@ async def test_logging_option_defaults() -> None:
                     await am.print.call("print streaming")
                     await am.log.call("log streaming")
 
-                # TODO: remove this completely once we hook the flush logic upon dropping device_mesh
-                log_mesh = pm._logging_mesh_client
-                assert log_mesh is not None
-                Future(coro=log_mesh.flush().spawn().task()).get()
+                await pm.stop()
 
                 # Flush all outputs
                 stdout_file.flush()
@@ -797,10 +791,7 @@ async def test_flush_on_disable_aggregation() -> None:
                 for _ in range(5):
                     await am.print.call("single log line")
 
-                # TODO: remove this completely once we hook the flush logic upon dropping device_mesh
-                log_mesh = pm._logging_mesh_client
-                assert log_mesh is not None
-                Future(coro=log_mesh.flush().spawn().task()).get()
+                await pm.stop()
 
                 # Flush all outputs
                 stdout_file.flush()
@@ -910,10 +901,7 @@ async def test_adjust_aggregation_window() -> None:
                 for _ in range(3):
                     await am.print.call("second batch of logs")
 
-                # TODO: remove this completely once we hook the flush logic upon dropping device_mesh
-                log_mesh = pm._logging_mesh_client
-                assert log_mesh is not None
-                Future(coro=log_mesh.flush().spawn().task()).get()
+                await pm.stop()
 
                 # Flush all outputs
                 stdout_file.flush()
