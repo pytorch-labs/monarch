@@ -4,12 +4,14 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-from typing import Any, ClassVar, Dict, final, List, NamedTuple, Union
+from typing import Any, ClassVar, Dict, final, List, NamedTuple, TYPE_CHECKING, Union
 
 from monarch._rust_bindings.monarch_extension.tensor_worker import Ref
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId, Proc, Serialized
 from monarch._rust_bindings.monarch_hyperactor.shape import Slice as NDSlice
-from monarch._rust_bindings.monarch_messages.debugger import DebuggerActionType
+
+if TYPE_CHECKING:
+    from monarch._rust_bindings.monarch_messages.debugger import DebuggerActionType
 
 class Exception:
     """
@@ -113,9 +115,9 @@ class WorkerResponse:
 
 @final
 class LogLevel:
-    INFO: ClassVar[LogLevel]
-    WARNING: ClassVar[LogLevel]
-    ERROR: ClassVar[LogLevel]
+    INFO: ClassVar["LogLevel"]
+    WARNING: ClassVar["LogLevel"]
+    ERROR: ClassVar["LogLevel"]
 
 @final
 class LogMessage:
@@ -189,7 +191,7 @@ class ClientActor:
 
     def __init__(self, proc: Proc, actor_name: str) -> None: ...
     @staticmethod
-    def new_with_parent(proc: Proc, parent_id: ActorId) -> ClientActor:
+    def new_with_parent(proc: Proc, parent_id: ActorId) -> "ClientActor":
         """
         Create a new client actor with the given parent id. This is used to create
         a client actor that is a child of another client actor.
@@ -235,7 +237,7 @@ class ClientActor:
 
     def get_next_message(
         self, *, timeout_msec: int | None = None
-    ) -> LogMessage | WorkerResponse | DebuggerMessage | None:
+    ) -> "LogMessage | WorkerResponse | DebuggerMessage | None":
         """Get the next message sent to the actor.
 
         Arguments:
@@ -248,7 +250,7 @@ class ClientActor:
         """Stop the system."""
         ...
 
-    def drain_and_stop(self) -> List[LogMessage | WorkerResponse | DebuggerMessage]:
+    def drain_and_stop(self) -> "List[LogMessage | WorkerResponse | DebuggerMessage]":
         """Stop the actor and drain all messages."""
         ...
 
@@ -276,7 +278,7 @@ class DebuggerMessage:
     """
 
     def __init__(
-        self, *, debugger_actor_id: ActorId, action: DebuggerActionType
+        self, *, debugger_actor_id: ActorId, action: "DebuggerActionType"
     ) -> None: ...
     @property
     def debugger_actor_id(self) -> ActorId:
@@ -284,6 +286,6 @@ class DebuggerMessage:
         ...
 
     @property
-    def action(self) -> DebuggerActionType:
+    def action(self) -> "DebuggerActionType":
         """Get the debugger action."""
         ...
