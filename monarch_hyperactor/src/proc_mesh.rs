@@ -233,7 +233,9 @@ impl PyProcMesh {
         let (proc_mesh, children) = tracked_proc_mesh.into_inner();
 
         // Now we discard all in-flight actor meshes.  After this, the `ProcMesh` should be "unused".
-        children.discard_all().await?;
+        // Discarding actor meshes that have been individually stopped will result in an expected error
+        // which we can safely ignore
+        children.discard_or_error_all().await;
 
         // Finally, take ownership of the inner proc mesh, which will allowing dropping it.
         let _proc_mesh = proc_mesh.take().await?;
