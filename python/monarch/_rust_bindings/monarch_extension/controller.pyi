@@ -55,7 +55,7 @@ class Node:
         ...
 
     @staticmethod
-    def from_serialized(serialized: Serialized) -> Node:
+    def from_serialized(serialized: Serialized) -> "Node":
         """Deserialize the message from a Serialized object."""
         ...
 
@@ -87,6 +87,6 @@ class Send:
         ...
 
     @staticmethod
-    def from_serialized(serialized: Serialized) -> Send:
+    def from_serialized(serialized: Serialized) -> "Send":
         """Deserialize the message from a Serialized object."""
         ...

@@ -34,7 +34,7 @@ class PythonTask(Generic[T], Awaitable[T]):
         """
         ...
 
-    def spawn(self) -> Shared[T]:
+    def spawn(self) -> "Shared[T]":
         """
         Schedule this task to run on concurrently on the tokio runtime.
         Returns a handle that can be awaited on multiple times so the
@@ -43,7 +43,7 @@ class PythonTask(Generic[T], Awaitable[T]):
         ...
 
     @staticmethod
-    def from_coroutine(coro: Coroutine[Any, Any, T]) -> PythonTask[T]:
+    def from_coroutine(coro: Coroutine[Any, Any, T]) -> "PythonTask[T]":
         """
         Create a PythonTask from a python coroutine. The coroutine should only await on other PythonTasks created
         using the pytokio APIs.
@@ -53,7 +53,7 @@ class PythonTask(Generic[T], Awaitable[T]):
         ...
 
     @staticmethod
-    def spawn_blocking(fn: Callable[[], T]) -> Shared[T]:
+    def spawn_blocking(fn: Callable[[], T]) -> "Shared[T]":
         """
         Concurrently run a python function in a way where it is acceptable for it to make synchronous calls back into
         Tokio. See tokio::spawn_blocking for more information.
@@ -67,7 +67,7 @@ class PythonTask(Generic[T], Awaitable[T]):
         """
         ...
 
-    def with_timeout(self, seconds: float) -> PythonTask[T]:
+    def with_timeout(self, seconds: float) -> "PythonTask[T]":
         """
         Perform the task but throw a TimeoutException if not finished in 'seconds' seconds.
         """

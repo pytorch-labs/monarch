@@ -4,19 +4,19 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-from typing import final, Optional, Union
+from typing import final, Optional, TYPE_CHECKING, Union
 
 from monarch._rust_bindings.monarch_hyperactor.proc import Serialized
-from monarch._rust_bindings.monarch_messages.debugger import (
-    DebuggerAction,
-    DebuggerActionType,
-)
+from monarch._rust_bindings.monarch_messages.debugger import DebuggerAction
+
+if TYPE_CHECKING:
+    from monarch._rust_bindings.monarch_messages.debugger import DebuggerActionType
 
 @final
 class DebuggerMessage:
     """A message for debugger communication between worker and client."""
 
-    def __init__(self, action: DebuggerActionType) -> None:
+    def __init__(self, action: "DebuggerActionType") -> None:
         """
         Create a new DebuggerMessage.
 
@@ -26,7 +26,7 @@ class DebuggerMessage:
         ...
 
     @property
-    def action(self) -> DebuggerActionType:
+    def action(self) -> "DebuggerActionType":
         """Get the debugger action contained in this message."""
         ...
 
@@ -47,7 +47,7 @@ class PdbActor:
         """Create a new PdbActor."""
         ...
 
-    def send(self, action: DebuggerActionType) -> None:
+    def send(self, action: "DebuggerActionType") -> None:
         """
         Send a debugger action to the worker.
 
@@ -56,7 +56,7 @@ class PdbActor:
         """
         ...
 
-    def receive(self) -> Optional[DebuggerActionType]:
+    def receive(self) -> Optional["DebuggerActionType"]:
         """
         Receive a debugger action from the worker.
 
