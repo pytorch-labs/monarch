@@ -413,9 +413,15 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
         # If `conda` is set, also sync the currently activated conda env.
         conda_prefix = conda_utils.active_env_dir()
         if conda and conda_prefix is not None:
+            conda_prefix = Path(conda_prefix)
+
+            # Resolve top-level symlinks for rsync/conda-sync.
+            while conda_prefix.is_symlink():
+                conda_prefix = conda_prefix.parent / conda_prefix.readlink()
+
             workspaces.append(
                 WorkspaceConfig(
-                    local=Path(conda_prefix),
+                    local=conda_prefix,
                     remote=RemoteWorkspace(
                         location=WorkspaceLocation.FromEnvVar("CONDA_PREFIX"),
                         shape=WorkspaceShape.shared("gpus"),
