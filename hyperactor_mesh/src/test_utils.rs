@@ -20,23 +20,13 @@ use serde::Serialize;
 #[derive(Serialize, Deserialize, Debug, Named, Clone, Bind, Unbind)]
 pub struct EmptyMessage();
 
-/// No-op actor.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Default, Actor)]
 #[hyperactor::export(
     handlers = [
         EmptyMessage { cast = true },
     ],
 )]
 pub struct EmptyActor();
-
-#[async_trait]
-impl Actor for EmptyActor {
-    type Params = ();
-
-    async fn new(_: ()) -> Result<Self, anyhow::Error> {
-        Ok(Self())
-    }
-}
 
 #[async_trait]
 impl Handler<EmptyMessage> for EmptyActor {

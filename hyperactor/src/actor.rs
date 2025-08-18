@@ -658,6 +658,8 @@ mod tests {
     use tokio::time::timeout;
 
     use super::*;
+    use crate as hyperactor;
+    use crate::Actor;
     use crate::Mailbox;
     use crate::OncePortHandle;
     use crate::PortRef;
@@ -666,7 +668,7 @@ mod tests {
     use crate::test_utils::pingpong::PingPongActor;
     use crate::test_utils::pingpong::PingPongActorParams;
     use crate::test_utils::pingpong::PingPongMessage;
-    use crate::test_utils::proc_supervison::ProcSupervisionCoordinator;
+    use crate::test_utils::proc_supervison::ProcSupervisionCoordinator; // for macros
 
     #[derive(Debug)]
     struct EchoActor(PortRef<u64>);
@@ -983,17 +985,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_actor_handle_downcast() {
-        #[derive(Debug)]
+        #[derive(Debug, Default, Actor)]
         struct NothingActor;
-
-        #[async_trait]
-        impl Actor for NothingActor {
-            type Params = ();
-
-            async fn new(_: ()) -> Result<Self, anyhow::Error> {
-                Ok(Self)
-            }
-        }
 
         // Just test that we can round-trip the handle through a downcast.
 

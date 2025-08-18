@@ -14,6 +14,7 @@ use std::sync::atomic::Ordering;
 
 use async_trait::async_trait;
 use dashmap::DashMap;
+use futures::future::join_all;
 use futures::future::try_join_all;
 use preempt_rwlock::OwnedPreemptibleRwLockReadGuard;
 use preempt_rwlock::PreemptibleRwLock;
@@ -218,6 +219,16 @@ impl SharedCellPool {
         )
         .await?;
         Ok(())
+    }
+
+    /// Run `take` on all cells in the pool and immediately drop them or produce an error if the cell has already been taken
+    pub async fn discard_or_error_all(self) -> Vec<Result<(), EmptyCellError>> {
+        join_all(
+            self.map
+                .iter()
+                .map(|r| async move { r.value().discard().await }),
+        )
+        .await
     }
 }
 

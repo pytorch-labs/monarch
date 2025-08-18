@@ -50,7 +50,7 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
 
 from monarch._rust_bindings.monarch_hyperactor.actor_mesh import (
     PythonActorMesh,
-    PythonActorMeshRef,
+    PythonActorMeshImpl,
 )
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     Mailbox,
@@ -96,6 +96,7 @@ from typing_extensions import Self
 
 if TYPE_CHECKING:
     from monarch._rust_bindings.monarch_hyperactor.actor import PortProtocol
+    from monarch._rust_bindings.monarch_hyperactor.actor_mesh import ActorMeshProtocol
     from monarch._rust_bindings.monarch_hyperactor.mailbox import PortReceiverBase
     from monarch._src.actor.proc_mesh import ProcMesh
 
@@ -170,147 +171,17 @@ A = TypeVar("A")
 _load_balancing_seed = random.Random(4)
 
 
-def to_hy_sel(selection: Selection) -> HySelection:
-    if selection == "choose":
-        return HySelection.any()
-    elif selection == "all":
-        return HySelection.all()
-    else:
-        raise ValueError(f"invalid selection: {selection}")
-
-
-# A temporary gate used by the PythonActorMesh/PythonActorMeshRef migration.
-# We can use this gate to quickly roll back to using _ActorMeshRefImpl, if we
-# encounter any issues with the migration.
-#
-# This should be removed once we confirm PythonActorMesh/PythonActorMeshRef is
-# working correctly in production.
-def _use_standin_mesh() -> bool:
-    return bool(os.getenv("USE_STANDIN_ACTOR_MESH", default=False))
-
-
-class ActorMeshProtocol(ABC):
-    """
-    Protocol defining the common interface for actor mesh, mesh ref and _ActorMeshRefImpl.
-    """
-
-    @abstractmethod
-    def cast(
-        self,
-        message: PythonMessage,
-        selection: Selection,
-        mailbox: Mailbox,
-    ) -> None: ...
-
-    @abstractmethod
-    def new_with_shape(self, shape: Shape) -> Self: ...
-
-    def supervision_event(self) -> "Optional[Shared[Exception]]":
-        return None
-
-    async def stop(self) -> None:
-        raise NotImplementedError(f"stop() is not supported for {type(self)}")
-
-    async def initialized(self):
-        return None
-
-
-class _PythonActorMeshAdapter(ActorMeshProtocol):
-    """
-    Adapter for PythonActorMesh to implement the normalized ActorMeshProtocol
-    interface. This adapter also provides a convenient way to add states to
-    the mesh on the python side, without changing the rust side implementation.
-
-    Since PythonActorMesh cannot be pickled, this adapter also provides a
-    custom pickling logic which bind the mesh to PythonActorMeshRef during
-    pickling.
-    """
-
-    def __init__(self, inner: PythonActorMesh) -> None:
-        if _use_standin_mesh():
-            raise ValueError(
-                "_PythonActorMeshAdapter should only be used when USE_STANDIN_ACTOR_MESH is not set"
-            )
-        self._inner = inner
-
-    def cast(
-        self,
-        message: PythonMessage,
-        selection: Selection,
-        mailbox: Mailbox,
-    ) -> None:
-        self._inner.cast(mailbox, to_hy_sel(selection), message)
-
-    def new_with_shape(self, shape: Shape) -> "ActorMeshProtocol":
-        sliced: PythonActorMeshRef = self._inner.new_with_shape(shape)
-        return _PythonActorMeshRefAdapter(sliced)
-
-    def supervision_event(self) -> "Optional[Shared[Exception]]":
-        return self._inner.supervision_event().spawn()
-
-    async def stop(self) -> None:
-        await self._inner.stop()
-
-    def __reduce_ex__(self, protocol: ...) -> Tuple[Any, Tuple[Any, ...]]:
-        """
-        Automatically pickle as a PythonActorMeshRef by binding the mesh.
-        Unpicklable states such as proc_mesh are dropped as well.
-        """
-        mesh_ref = self._inner.bind()
-        return _PythonActorMeshRefAdapter, (mesh_ref,)
-
-
-class _PythonActorMeshRefAdapter(ActorMeshProtocol):
-    """
-    Adapter for PythonActorMeshRef to implement the normalized ActorMeshProtocol interface. It is
-    also used to store unpickable states such as proc_mesh.
-    """
-
-    def __init__(self, inner: PythonActorMeshRef) -> None:
-        if _use_standin_mesh():
-            raise ValueError(
-                "_PythonActorMeshRefAdapter should only be used when USE_STANDIN_ACTOR_MESH is not set"
-            )
-        self._inner = inner
-
-    def cast(
-        self,
-        message: PythonMessage,
-        selection: Selection,
-        mailbox: Mailbox,
-    ) -> None:
-        self._inner.cast(mailbox, to_hy_sel(selection), message)
-
-    def new_with_shape(self, shape: Shape) -> "ActorMeshProtocol":
-        sliced: PythonActorMeshRef = self._inner.new_with_shape(shape)
-        return _PythonActorMeshRefAdapter(sliced)
-
-    def __reduce_ex__(self, protocol: ...) -> Tuple[Any, Tuple[Any, ...]]:
-        """
-        Dropping all unpickable states.
-        """
-        return _PythonActorMeshRefAdapter, (self._inner,)
-
-
-class _SingletonActorAdapator(ActorMeshProtocol):
+class _SingletonActorAdapator:
     def __init__(self, inner: ActorId, shape: Optional[Shape] = None) -> None:
         self._inner: ActorId = inner
         if shape is None:
             shape = singleton_shape
         self._shape = shape
 
-    @property
-    def shape(self) -> Shape:
-        return singleton_shape
-
-    @property
-    def proc_mesh(self) -> Optional["ProcMesh"]:
-        return None
-
     def cast(
         self,
         message: PythonMessage,
-        selection: Selection,
+        selection: str,
         mailbox: Mailbox,
     ) -> None:
         mailbox.post(self._inner, message)
@@ -318,23 +189,31 @@ class _SingletonActorAdapator(ActorMeshProtocol):
     def new_with_shape(self, shape: Shape) -> "ActorMeshProtocol":
         return _SingletonActorAdapator(self._inner, self._shape)
 
+    def supervision_event(self) -> "Optional[Shared[Exception]]":
+        return None
+
+    def stop(self) -> "PythonTask[None]":
+        raise NotImplementedError("stop()")
+
+    def initialized(self) -> "PythonTask[None]":
+        async def empty():
+            pass
+
+        return PythonTask.from_coroutine(empty())
+
 
 # standin class for whatever is the serializable python object we use
 # to name an actor mesh. Hacked up today because ActorMesh
 # isn't plumbed to non-clients
-class _ActorMeshRefImpl(ActorMeshProtocol):
+class _ActorMeshRefImpl:
     def __init__(
         self,
         mailbox: Mailbox,
-        hy_actor_mesh: Optional[PythonActorMesh],
+        hy_actor_mesh: Optional[PythonActorMeshImpl],
         proc_mesh: "Optional[ProcMesh]",
         shape: Shape,
         actor_ids: List[ActorId],
     ) -> None:
-        if not _use_standin_mesh():
-            raise ValueError(
-                "ActorMeshRefImpl should only be used when USE_STANDIN_ACTOR_MESH is set"
-            )
         self._mailbox = mailbox
         self._actor_mesh = hy_actor_mesh
         # actor meshes do not have a way to look this up at the moment,
@@ -345,14 +224,16 @@ class _ActorMeshRefImpl(ActorMeshProtocol):
 
     @staticmethod
     def from_hyperactor_mesh(
-        mailbox: Mailbox, hy_actor_mesh: PythonActorMesh, proc_mesh: "ProcMesh"
+        mailbox: Mailbox,
+        shape: Shape,
+        hy_actor_mesh: PythonActorMeshImpl,
+        proc_mesh: "ProcMesh",
     ) -> "_ActorMeshRefImpl":
-        shape: Shape = hy_actor_mesh.shape
         return _ActorMeshRefImpl(
             mailbox,
             hy_actor_mesh,
             proc_mesh,
-            hy_actor_mesh.shape,
+            shape,
             [cast(ActorId, hy_actor_mesh.get(i)) for i in range(len(shape))],
         )
 
@@ -387,7 +268,7 @@ class _ActorMeshRefImpl(ActorMeshProtocol):
     def cast(
         self,
         message: PythonMessage,
-        selection: Selection,
+        selection: str,
         mailbox: Mailbox,
     ) -> None:
         self._check_state()
@@ -454,13 +335,23 @@ class _ActorMeshRefImpl(ActorMeshProtocol):
     def supervision_event(self) -> "Optional[Shared[Exception]]":
         if self._actor_mesh is None:
             return None
-        return self._actor_mesh.supervision_event().spawn()
+        return self._actor_mesh.supervision_event()
 
-    async def stop(self):
-        await self._actor_mesh.stop()
+    def stop(self) -> PythonTask[None]:
+        async def task():
+            if self._actor_mesh is not None:
+                self._actor_mesh.stop()
+
+        return PythonTask.from_coroutine(task())
+
+    def initialized(self) -> PythonTask[None]:
+        async def task():
+            pass
+
+        return PythonTask.from_coroutine(task())
 
 
-class SharedProtocolAdapter(ActorMeshProtocol):
+class SharedProtocolAdapter:
     def __init__(self, inner: "Shared[ActorMeshProtocol]", supervise: bool):
         self._inner = inner
         self._supervise = supervise
@@ -468,7 +359,7 @@ class SharedProtocolAdapter(ActorMeshProtocol):
     def cast(
         self,
         message: PythonMessage,
-        selection: Selection,
+        selection: str,
         mailbox: Mailbox,
     ) -> None:
         ctx = MonarchContext.get()
@@ -505,11 +396,14 @@ class SharedProtocolAdapter(ActorMeshProtocol):
 
         return PythonTask.from_coroutine(task()).spawn()
 
-    async def stop(self) -> None:
-        await (await self._inner).stop()
+    def stop(self) -> "PythonTask[None]":
+        async def task():
+            await (await self._inner).stop()
+
+        return PythonTask.from_coroutine(task())
 
     @staticmethod
-    def _restore(inner: ActorMeshProtocol) -> ActorMeshProtocol:
+    def _restore(inner: "ActorMeshProtocol") -> "ActorMeshProtocol":
         return inner
 
     def __reduce_ex__(self, protocol):
@@ -530,7 +424,7 @@ class SharedProtocolAdapter(ActorMeshProtocol):
 class ActorEndpoint(Endpoint[P, R]):
     def __init__(
         self,
-        actor_mesh: ActorMeshProtocol,
+        actor_mesh: "ActorMeshProtocol",
         shape: Shape,
         proc_mesh: "Optional[ProcMesh]",
         name: MethodSpecifier,
@@ -1059,14 +953,14 @@ class ActorMesh(MeshTrait, Generic[T], DeprecatedNotAFuture):
     def __init__(
         self,
         Class: Type[T],
-        inner: ActorMeshProtocol,
+        inner: "ActorMeshProtocol",
         mailbox: Mailbox,
         shape: Shape,
         proc_mesh: "Optional[ProcMesh]",
     ) -> None:
         self.__name__: str = Class.__name__
         self._class: Type[T] = Class
-        self._inner: ActorMeshProtocol = inner
+        self._inner: "ActorMeshProtocol" = inner
         self._mailbox: Mailbox = mailbox
         self._shape = shape
         self._proc_mesh = proc_mesh
@@ -1117,7 +1011,7 @@ class ActorMesh(MeshTrait, Generic[T], DeprecatedNotAFuture):
     def _create(
         cls,
         Class: Type[T],
-        actor_mesh: "PythonTask[PythonActorMesh]",
+        actor_mesh: "PythonActorMesh | PythonActorMeshImpl",
         mailbox: Mailbox,
         shape: Shape,
         proc_mesh: "ProcMesh",
@@ -1126,17 +1020,12 @@ class ActorMesh(MeshTrait, Generic[T], DeprecatedNotAFuture):
         *args: Any,
         **kwargs: Any,
     ) -> "ActorMesh[T]":
-        async def task():
-            if _use_standin_mesh():
-                return _ActorMeshRefImpl.from_hyperactor_mesh(
-                    mailbox, await actor_mesh, proc_mesh
-                )
-            else:
-                return _PythonActorMeshAdapter(await actor_mesh)
+        if isinstance(actor_mesh, PythonActorMeshImpl):
+            actor_mesh = _ActorMeshRefImpl.from_hyperactor_mesh(
+                mailbox, shape, actor_mesh, proc_mesh
+            )
 
-        shared = PythonTask.from_coroutine(task()).spawn()
-        inner = SharedProtocolAdapter(shared, True)
-        mesh = cls(Class, inner, mailbox, shape, proc_mesh)
+        mesh = cls(Class, actor_mesh, mailbox, shape, proc_mesh)
 
         async def null_func(*_args: Iterable[Any], **_kwargs: Dict[str, Any]) -> None:
             return None

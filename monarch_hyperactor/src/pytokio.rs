@@ -8,6 +8,7 @@
 
 use std::error::Error;
 use std::future::Future;
+use std::ops::Deref;
 use std::pin::Pin;
 
 use hyperactor::clock::Clock;
@@ -19,6 +20,7 @@ use pyo3::exceptions::PyStopIteration;
 use pyo3::exceptions::PyTimeoutError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3::types::PyType;
 use tokio::sync::Mutex;
 use tokio::sync::watch;
 
@@ -119,7 +121,7 @@ where
 }
 
 impl PyPythonTask {
-    fn take_task(
+    pub(crate) fn take_task(
         &mut self,
     ) -> PyResult<Pin<Box<dyn Future<Output = Result<Py<PyAny>, PyErr>> + Send + 'static>>> {
         self.inner
@@ -158,7 +160,7 @@ impl PyPythonTask {
         signal_safe_block_on(py, task)?
     }
 
-    fn spawn(&mut self) -> PyResult<PyShared> {
+    pub(crate) fn spawn(&mut self) -> PyResult<PyShared> {
         let (tx, rx) = watch::channel(None);
         let task = self.take_task()?;
         get_tokio_runtime().spawn(async move {
@@ -266,6 +268,11 @@ impl PyPythonTask {
             result.map(|r| (r, index))
         })
     }
+
+    #[classmethod]
+    fn __class_getitem__(cls: &Bound<'_, PyType>, _arg: PyObject) -> PyObject {
+        cls.clone().unbind().into()
+    }
 }
 
 #[pyclass(
@@ -277,7 +284,7 @@ pub struct PyShared {
 }
 #[pymethods]
 impl PyShared {
-    fn task(&mut self) -> PyResult<PyPythonTask> {
+    pub(crate) fn task(&mut self) -> PyResult<PyPythonTask> {
         // watch channels start unchanged, and when a value is sent to them signal
         // the receivers `changed` future.
         // By cloning the rx before awaiting it,
@@ -305,6 +312,11 @@ impl PyShared {
         // trying to access slf will throw.
         drop(slf);
         signal_safe_block_on(py, task)?
+    }
+
+    #[classmethod]
+    fn __class_getitem__(cls: &Bound<'_, PyType>, _arg: PyObject) -> PyObject {
+        cls.clone().unbind().into()
     }
 }
 

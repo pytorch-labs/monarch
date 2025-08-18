@@ -420,17 +420,8 @@ mod tests {
 
     use super::*;
 
-    #[derive(Debug)]
+    #[derive(Debug, Default, Actor)]
     struct EchoActor {}
-
-    #[async_trait]
-    impl Actor for EchoActor {
-        type Params = ();
-
-        async fn new(_params: ()) -> Result<Self, anyhow::Error> {
-            Ok(Self {})
-        }
-    }
 
     #[async_trait]
     impl Handler<Connect> for EchoActor {

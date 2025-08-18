@@ -13,6 +13,7 @@ use std::cell::Cell;
 use hyperactor::clock::ClockKind;
 use hyperactor::clock::RealClock;
 use hyperactor::clock::SimClock;
+use hyperactor_telemetry::sqlite::SqliteTracing;
 use hyperactor_telemetry::swap_telemetry_clock;
 use opentelemetry::global;
 use opentelemetry::metrics;
@@ -65,7 +66,6 @@ pub fn forward_to_tracing(py: Python, record: PyObject) -> PyResult<()> {
     let file = record.getattr(py, "filename")?;
     let file: &str = file.extract(py)?;
     let level: i32 = record.getattr(py, "levelno")?.extract(py)?;
-
     // Map level number to level name
     match level {
         40 | 50 => {
@@ -82,6 +82,7 @@ pub fn forward_to_tracing(py: Python, record: PyObject) -> PyResult<()> {
             match traceback {
                 Some(traceback) => {
                     tracing::error!(
+                        target:"log_events",
                         file = file,
                         lineno = lineno,
                         stacktrace = traceback,
@@ -93,10 +94,10 @@ pub fn forward_to_tracing(py: Python, record: PyObject) -> PyResult<()> {
                 }
             }
         }
-        30 => tracing::warn!(file = file, lineno = lineno, message),
-        20 => tracing::info!(file = file, lineno = lineno, message),
-        10 => tracing::debug!(file = file, lineno = lineno, message),
-        _ => tracing::info!(file = file, lineno = lineno, message),
+        30 => tracing::warn!(target:"log_events", file = file, lineno = lineno, message),
+        20 => tracing::info!(target:"log_events", file = file, lineno = lineno, message),
+        10 => tracing::debug!(target:"log_events", file = file, lineno = lineno, message),
+        _ => tracing::info!(target:"log_events", file = file, lineno = lineno, message),
     }
     Ok(())
 }
@@ -215,6 +216,62 @@ impl PySpan {
     }
 }
 
+#[pyclass(
+    subclass,
+    module = "monarch._rust_bindings.monarch_hyperactor.telemetry"
+)]
+struct PySqliteTracing {
+    guard: Option<SqliteTracing>,
+}
+
+#[pymethods]
+impl PySqliteTracing {
+    #[new]
+    #[pyo3(signature = (in_memory = false))]
+    fn new(in_memory: bool) -> PyResult<Self> {
+        let guard = if in_memory {
+            SqliteTracing::new_in_memory()
+        } else {
+            SqliteTracing::new()
+        };
+
+        match guard {
+            Ok(guard) => Ok(Self { guard: Some(guard) }),
+            Err(e) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+                "Failed to create SQLite tracing guard: {}",
+                e
+            ))),
+        }
+    }
+
+    fn db_path(&self) -> PyResult<Option<String>> {
+        match &self.guard {
+            Some(guard) => Ok(guard.db_path().map(|p| p.to_string_lossy().to_string())),
+            None => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                "Guard has been closed",
+            )),
+        }
+    }
+
+    fn __enter__(slf: PyRefMut<'_, Self>) -> PyResult<PyRefMut<'_, Self>> {
+        Ok(slf)
+    }
+
+    fn __exit__(
+        &mut self,
+        _exc_type: Option<PyObject>,
+        _exc_value: Option<PyObject>,
+        _traceback: Option<PyObject>,
+    ) -> PyResult<bool> {
+        self.guard = None;
+        Ok(false) // Don't suppress exceptions
+    }
+
+    fn close(&mut self) {
+        self.guard = None;
+    }
+}
+
 use pyo3::Bound;
 use pyo3::types::PyModule;
 
@@ -267,5 +324,6 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyCounter>()?;
     module.add_class::<PyHistogram>()?;
     module.add_class::<PyUpDownCounter>()?;
+    module.add_class::<PySqliteTracing>()?;
     Ok(())
 }

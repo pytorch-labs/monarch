@@ -33,6 +33,7 @@ mod otel;
 mod pool;
 pub mod recorder;
 mod spool;
+pub mod sqlite;
 use std::io::IsTerminal;
 use std::io::Write;
 use std::str::FromStr;
@@ -63,6 +64,7 @@ use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::registry::LookupSpan;
 
 use crate::recorder::Recorder;
+use crate::sqlite::get_reloadable_sqlite_layer;
 
 pub trait TelemetryClock {
     fn now(&self) -> tokio::time::Instant;
@@ -562,6 +564,8 @@ pub fn initialize_logging_with_log_prefix(
                 .with_target("opentelemetry", LevelFilter::OFF), // otel has some log span under debug that we don't care about
         );
 
+    let sqlite_layer = get_reloadable_sqlite_layer().unwrap();
+
     use tracing_subscriber::Registry;
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
@@ -573,6 +577,7 @@ pub fn initialize_logging_with_log_prefix(
             std::env::var(env_var).unwrap_or_default() != "1"
         }
         if let Err(err) = Registry::default()
+            .with(sqlite_layer)
             .with(if is_layer_enabled(DISABLE_OTEL_TRACING) {
                 Some(otel::tracing_layer())
             } else {

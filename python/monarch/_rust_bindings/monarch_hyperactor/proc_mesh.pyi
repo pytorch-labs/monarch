@@ -6,14 +6,17 @@
 
 # pyre-strict
 
-from typing import AsyncIterator, final, Type
+from typing import AsyncIterator, final, Literal, overload, Type
 
 from monarch._rust_bindings.monarch_hyperactor.actor import Actor
-from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
+from monarch._rust_bindings.monarch_hyperactor.actor_mesh import (
+    PythonActorMesh,
+    PythonActorMeshImpl,
+)
 
 from monarch._rust_bindings.monarch_hyperactor.alloc import Alloc
 from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
+from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape
 
@@ -42,6 +45,10 @@ class ProcMesh:
         """
         ...
 
+    @staticmethod
+    def spawn_async(
+        proc_mesh: Shared[ProcMesh], name: str, actor: Type[Actor], emulated: bool
+    ) -> PythonActorMesh: ...
     async def monitor(self) -> ProcMeshMonitor:
         """
         Returns a supervision monitor for this mesh.

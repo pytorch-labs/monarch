@@ -46,7 +46,7 @@ if TYPE_CHECKING:
 P = ParamSpec("P")
 R = TypeVar("R")
 
-Selection = Literal["all", "choose"] | int
+Selection = Literal["all", "choose"]
 
 
 class Extent:

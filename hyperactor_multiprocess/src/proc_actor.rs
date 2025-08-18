@@ -963,7 +963,7 @@ mod tests {
         server_handle.await;
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, Default, Actor)]
     #[hyperactor::export(
         spawn = true,
         handlers = [
@@ -976,15 +976,6 @@ mod tests {
     enum TestActorMessage {
         Increment(u64, #[reply] OncePortRef<u64>),
         Fail(String),
-    }
-
-    #[async_trait]
-    impl Actor for TestActor {
-        type Params = ();
-
-        async fn new(_params: ()) -> Result<Self, anyhow::Error> {
-            Ok(Self)
-        }
     }
 
     #[async_trait]
@@ -1033,7 +1024,7 @@ mod tests {
     }
 
     // Sleep
-    #[derive(Debug)]
+    #[derive(Debug, Default, Actor)]
     #[hyperactor::export(
         spawn = true,
         handlers = [
@@ -1041,14 +1032,6 @@ mod tests {
         ],
     )]
     struct SleepActor {}
-
-    #[async_trait]
-    impl Actor for SleepActor {
-        type Params = ();
-        async fn new(_: ()) -> Result<Self, anyhow::Error> {
-            Ok(SleepActor {})
-        }
-    }
 
     #[async_trait]
     impl Handler<u64> for SleepActor {

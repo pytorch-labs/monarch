@@ -120,3 +120,22 @@ impl GenericArgMessageHandler<usize> for GenericArgActor {
         Ok(())
     }
 }
+
+#[derive(Actor, Default, Debug)]
+struct DefaultActorTest {
+    value: u64,
+}
+
+static_assertions::assert_impl_all!(DefaultActorTest: Actor);
+
+#[derive(Actor, Default, Debug)]
+#[actor(passthrough)]
+struct PassthroughActorTest {
+    value: u64,
+}
+
+static_assertions::assert_impl_all!(PassthroughActorTest: Actor);
+static_assertions::assert_type_eq_all!(
+    <PassthroughActorTest as hyperactor::Actor>::Params,
+    PassthroughActorTest
+);

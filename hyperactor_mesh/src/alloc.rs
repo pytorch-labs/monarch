@@ -264,7 +264,7 @@ pub mod test_utils {
     // be an entry in the spawnable actor registry in the executable
     // 'hyperactor_mesh_test_bootstrap' for the `tests::process` actor
     // mesh test suite.
-    #[derive(Debug)]
+    #[derive(Debug, Default, Actor)]
     #[hyperactor::export(
         spawn = true,
         handlers = [
@@ -272,15 +272,6 @@ pub mod test_utils {
         ],
     )]
     pub struct TestActor;
-
-    #[async_trait]
-    impl Actor for TestActor {
-        type Params = ();
-
-        async fn new(_params: Self::Params) -> Result<Self, anyhow::Error> {
-            Ok(Self)
-        }
-    }
 
     #[derive(Debug, Serialize, Deserialize, Named, Clone)]
     pub struct Wait;

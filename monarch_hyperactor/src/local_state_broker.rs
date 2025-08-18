@@ -30,22 +30,11 @@ pub enum LocalStateBrokerMessage {
     Get(usize, OncePortHandle<LocalState>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default, Actor)]
 #[hyperactor::export(spawn = true)]
 pub struct LocalStateBrokerActor {
     states: HashMap<usize, LocalState>,
     ports: HashMap<usize, OncePortHandle<LocalState>>,
-}
-
-#[async_trait]
-impl Actor for LocalStateBrokerActor {
-    type Params = ();
-    async fn new(_params: Self::Params) -> anyhow::Result<Self> {
-        Ok(Self {
-            states: HashMap::new(),
-            ports: HashMap::new(),
-        })
-    }
 }
 
 #[async_trait]

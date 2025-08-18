@@ -383,7 +383,18 @@ fn create_file_writer(
     let (path, filename) = log_file_path(env)?;
     let path = Path::new(&path);
     let mut full_path = PathBuf::from(path);
-    full_path.push(format!("{}_{}.{}", filename, local_rank, suffix));
+
+    // This is the PID of the "owner" of the proc mesh, the proc mesh
+    // this proc "belongs" to. In other words,the PID of the process
+    // that invokes `cmd.spawn()` (where `cmd: &mut
+    // tokio::process::Command`) to start the process that will host
+    // the proc that this file writer relates to.
+    let file_created_by_pid = std::process::id();
+
+    full_path.push(format!(
+        "{}_{}_{}.{}",
+        filename, file_created_by_pid, local_rank, suffix
+    ));
     let file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)

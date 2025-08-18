@@ -29,6 +29,7 @@ use hyperactor_mesh::shared_cell::SharedCellPool;
 use hyperactor_mesh::shared_cell::SharedCellRef;
 use monarch_types::PickledPyObject;
 use ndslice::Shape;
+use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyException;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -38,10 +39,13 @@ use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 
 use crate::actor_mesh::PythonActorMesh;
+use crate::actor_mesh::PythonActorMeshImpl;
 use crate::alloc::PyAlloc;
 use crate::mailbox::PyMailbox;
 use crate::pytokio::PyPythonTask;
+use crate::pytokio::PyShared;
 use crate::pytokio::PythonTask;
+use crate::runtime::get_tokio_runtime;
 use crate::shape::PyShape;
 use crate::supervision::SupervisionError;
 use crate::supervision::Unhealthy;
@@ -229,7 +233,9 @@ impl PyProcMesh {
         let (proc_mesh, children) = tracked_proc_mesh.into_inner();
 
         // Now we discard all in-flight actor meshes.  After this, the `ProcMesh` should be "unused".
-        children.discard_all().await?;
+        // Discarding actor meshes that have been individually stopped will result in an expected error
+        // which we can safely ignore
+        children.discard_or_error_all().await;
 
         // Finally, take ownership of the inner proc mesh, which will allowing dropping it.
         let _proc_mesh = proc_mesh.take().await?;
@@ -278,21 +284,63 @@ impl PyProcMesh {
         let pickled_type = PickledPyObject::pickle(actor.as_any())?;
         let proc_mesh = self.try_inner()?;
         let keepalive = self.keepalive.clone();
-        PyPythonTask::new(async move {
+        let meshimpl = async move {
             ensure_mesh_healthy(&unhealthy_event).await?;
-
             let mailbox = proc_mesh.client().clone();
             let actor_mesh = proc_mesh.spawn(&name, &pickled_type).await?;
             let actor_events = actor_mesh.with_mut(|a| a.events()).await.unwrap().unwrap();
-            Ok(PythonActorMesh::monitored(
+            let im = PythonActorMeshImpl::new(
+                actor_mesh,
+                PyMailbox { inner: mailbox },
+                keepalive,
+                actor_events,
+            );
+            Ok(PythonActorMesh::from_impl(im))
+        };
+        PyPythonTask::new(meshimpl)
+    }
+
+    #[staticmethod]
+    fn spawn_async(
+        proc_mesh: &mut PyShared,
+        name: String,
+        actor: Py<PyType>,
+        emulated: bool,
+    ) -> PyResult<PyObject> {
+        let task = proc_mesh.task()?.take_task()?;
+        let meshimpl = async move {
+            let proc_mesh = task.await?;
+            let (proc_mesh, pickled_type, unhealthy_event, keepalive) =
+                Python::with_gil(|py| -> PyResult<_> {
+                    let slf: Bound<PyProcMesh> = proc_mesh.extract(py)?;
+                    let slf = slf.borrow();
+                    let unhealthy_event = Arc::clone(&slf.unhealthy_event);
+                    let pickled_type = PickledPyObject::pickle(actor.bind(py).as_any())?;
+                    let proc_mesh = slf.try_inner()?;
+                    let keepalive = slf.keepalive.clone();
+                    Ok((proc_mesh, pickled_type, unhealthy_event, keepalive))
+                })?;
+            ensure_mesh_healthy(&unhealthy_event).await?;
+            let mailbox = proc_mesh.client().clone();
+            let actor_mesh = proc_mesh.spawn(&name, &pickled_type).await?;
+            let actor_events = actor_mesh.with_mut(|a| a.events()).await.unwrap().unwrap();
+            Ok(PythonActorMeshImpl::new(
                 actor_mesh,
                 PyMailbox { inner: mailbox },
                 keepalive,
                 actor_events,
             ))
-        })
+        };
+        if emulated {
+            // we give up on doing mesh spawn async for the emulated old version
+            // it is too complicated to make both work.
+            let r = get_tokio_runtime().block_on(meshimpl)?;
+            Python::with_gil(|py| r.into_py_any(py))
+        } else {
+            let r = PythonActorMesh::new(meshimpl);
+            Python::with_gil(|py| r.into_py_any(py))
+        }
     }
-
     // User can call this to monitor the proc mesh events. This will override
     // the default monitor that exits the client on process crash, so user can
     // handle the process crash in their own way.

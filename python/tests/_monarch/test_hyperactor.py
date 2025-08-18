@@ -97,8 +97,4 @@ async def test_actor_mesh() -> None:
     proc_mesh = await ProcMesh.allocate_nonblocking(alloc)
     actor_mesh = await proc_mesh.spawn_nonblocking("test", MyActor)
 
-    assert actor_mesh.get(0) is not None
-    assert actor_mesh.get(1) is not None
-    assert actor_mesh.get(2) is None
-
-    assert isinstance(actor_mesh.client, Mailbox)
+    await actor_mesh.initialized()

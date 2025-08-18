@@ -527,7 +527,7 @@ impl ControllerMessageHandler for ControllerActor {
                 // Randomly pick a failed proc as the failed actor.
                 let (_, failed_state) = world_state.procs.iter().next().unwrap();
                 let (failed_actor, failure_reason) =
-                    failed_state.failed_actors.iter().next().map_or_else(
+                    failed_state.failed_actors.first().map_or_else(
                         || {
                             let proc_id = &failed_state.proc_id;
                             (
@@ -1808,22 +1808,13 @@ mod tests {
         Panic(String),
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, Default, Actor)]
     #[hyperactor::export(
         handlers = [
             PanickingMessage,
         ],
     )]
     struct PanickingActor;
-
-    #[async_trait]
-    impl Actor for PanickingActor {
-        type Params = ();
-
-        async fn new(_params: ()) -> Result<Self, anyhow::Error> {
-            Ok(Self)
-        }
-    }
 
     #[async_trait]
     #[hyperactor::forward(PanickingMessage)]

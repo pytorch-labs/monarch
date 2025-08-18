@@ -180,7 +180,7 @@ impl Child {
             stderr_tee,
         );
 
-        let process_pid = Arc::new(std::sync::Mutex::new(Some(process.id().unwrap() as i32)));
+        let process_pid = Arc::new(std::sync::Mutex::new(process.id().map(|id| id as i32)));
 
         let child = Self {
             local_rank,

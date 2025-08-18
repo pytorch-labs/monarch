@@ -277,7 +277,7 @@ class RemoteException(Exception):
 
 def _cast_call_method_indirect(
     endpoint: ActorEndpoint,
-    selection: Selection,
+    selection: str,
     client: MeshClient,
     seq: Seq,
     args_kwargs_tuple: bytes,
@@ -303,7 +303,7 @@ def actor_send(
     args_kwargs_tuple: bytes,
     refs: Sequence[Any],
     port: Optional[Port[Any]],
-    selection: Selection,
+    selection: str,
 ):
     tensors = [ref for ref in refs if isinstance(ref, Tensor)]
     # we have some monarch references, we need to ensure their
@@ -352,7 +352,7 @@ def _actor_send(
     args_kwargs_tuple: bytes,
     refs: Sequence[Any],
     port: Optional[Port[Any]],
-    selection: Selection,
+    selection: str,
     client: MeshClient,
     mesh: DeviceMesh,
     tensors: List[Tensor],

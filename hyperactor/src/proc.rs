@@ -1857,7 +1857,7 @@ mod tests {
         }
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, Default, Actor)]
     #[export]
     struct TestActor;
 
@@ -1877,15 +1877,6 @@ mod tests {
             let (tx, rx) = oneshot::channel();
             parent.send(TestActorMessage::Spawn(tx)).unwrap();
             rx.await.unwrap()
-        }
-    }
-
-    #[async_trait]
-    impl Actor for TestActor {
-        type Params = ();
-
-        async fn new(_params: ()) -> Result<Self, anyhow::Error> {
-            Ok(Self)
         }
     }
 
@@ -2017,21 +2008,12 @@ mod tests {
         rx.await.unwrap();
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, Default, Actor)]
     struct LookupTestActor;
 
     #[derive(Handler, HandleClient, Debug)]
     enum LookupTestMessage {
         ActorExists(ActorRef<TestActor>, #[reply] OncePortRef<bool>),
-    }
-
-    #[async_trait]
-    impl Actor for LookupTestActor {
-        type Params = ();
-
-        async fn new(_params: ()) -> Result<Self, anyhow::Error> {
-            Ok(Self)
-        }
     }
 
     #[async_trait]
@@ -2745,17 +2727,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_instance() {
-        #[derive(Debug)]
+        #[derive(Debug, Default, Actor)]
         struct TestActor;
-
-        #[async_trait]
-        impl Actor for TestActor {
-            type Params = ();
-
-            async fn new(_params: ()) -> Result<Self, anyhow::Error> {
-                Ok(Self)
-            }
-        }
 
         #[async_trait]
         impl Handler<(String, PortRef<String>)> for TestActor {
@@ -2834,7 +2807,7 @@ mod tests {
     #[ignore = "until trace recording is turned back on"]
     #[test]
     fn test_handler_logging() {
-        #[derive(Debug)]
+        #[derive(Debug, Default, Actor)]
         struct LoggingActor;
 
         impl LoggingActor {
@@ -2842,15 +2815,6 @@ mod tests {
                 let barrier = Arc::new(Barrier::new(2));
                 handle.send(barrier.clone()).unwrap();
                 barrier.wait().await;
-            }
-        }
-
-        #[async_trait]
-        impl Actor for LoggingActor {
-            type Params = ();
-
-            async fn new(_params: ()) -> Result<Self, anyhow::Error> {
-                Ok(Self)
             }
         }
 

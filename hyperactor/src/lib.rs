@@ -106,6 +106,8 @@ pub use cityhasher;
 #[doc(hidden)]
 pub use dashmap; // For intern_typename!
 pub use data::Named;
+#[doc(hidden)]
+pub use hyperactor_macros::Actor;
 #[doc(inline)]
 pub use hyperactor_macros::Bind;
 #[doc(inline)]

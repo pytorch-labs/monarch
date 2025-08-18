@@ -210,7 +210,7 @@ enum DemoMessage {
     Error(String, #[reply] OncePortRef<()>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default, Actor)]
 #[hyperactor::export(
     spawn = true,
     handlers = [
@@ -218,15 +218,6 @@ enum DemoMessage {
     ],
 )]
 struct DemoActor;
-
-#[async_trait]
-impl Actor for DemoActor {
-    type Params = ();
-
-    async fn new(_params: ()) -> Result<Self, anyhow::Error> {
-        Ok(Self)
-    }
-}
 
 #[async_trait]
 #[forward(DemoMessage)]

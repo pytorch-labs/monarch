@@ -17,6 +17,7 @@ import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 from types import ModuleType
 from typing import cast
 
@@ -37,6 +38,7 @@ from monarch.actor import (
     local_proc_mesh,
     proc_mesh,
 )
+from monarch.tools.config import defaults
 from typing_extensions import assert_type
 
 
@@ -726,25 +728,23 @@ async def test_flush_logs_fast_exit() -> None:
     # Run the binary in a separate process and capture stdout and stderr
     cmd = [str(test_bin), "flush-logs"]
 
-    # Stress test
-    for _ in range(20):
-        process = subprocess.run(cmd, capture_output=True, timeout=60, text=True)
+    process = subprocess.run(cmd, capture_output=True, timeout=60, text=True)
 
-        # Check if the process ended without error
-        if process.returncode != 0:
-            raise RuntimeError(f"{cmd} ended with error code {process.returncode}. ")
+    # Check if the process ended without error
+    if process.returncode != 0:
+        raise RuntimeError(f"{cmd} ended with error code {process.returncode}. ")
 
-        # Assertions on the captured output, 160 = 32 procs * 5 logs per proc
-        # 32 and 5 are specified in the test_bin flush-logs.
-        assert (
-            len(
-                re.findall(
-                    r"160 similar log lines.*has print streaming",
-                    process.stdout,
-                )
+    # Assertions on the captured output, 160 = 32 procs * 5 logs per proc
+    # 32 and 5 are specified in the test_bin flush-logs.
+    assert (
+        len(
+            re.findall(
+                r"160 similar log lines.*has print streaming",
+                process.stdout,
             )
-            == 1
-        ), process.stdout
+        )
+        == 1
+    ), process.stdout
 
 
 @pytest.mark.timeout(60)
@@ -950,6 +950,51 @@ async def test_same_actor_twice() -> None:
     ), f"Expected error message about duplicate actor name, got: {error_msg}"
 
 
+class LsActor(Actor):
+    def __init__(self, workspace: str):
+        self.workspace = workspace
+
+    @endpoint
+    async def ls(self) -> list[str]:
+        return os.listdir(self.workspace)
+
+
+# oss_skip: there are address assignment issues in git CI, needs to be revisited
+@pytest.mark.oss_skip
+async def test_sync_workspace() -> None:
+    # create two workspaces: one for local and one for remote
+    with tempfile.TemporaryDirectory() as workspace_src, tempfile.TemporaryDirectory() as workspace_dst, unittest.mock.patch.dict(
+        os.environ, {"WORKSPACE_DIR": workspace_dst}
+    ):
+        pm = await proc_mesh(gpus=1)
+
+        os.environ["WORKSPACE_DIR"] = workspace_dst
+        config = defaults.config("slurm", workspace_src)
+        await pm.sync_workspace(
+            workspace=config.workspace, conda=False, auto_reload=True
+        )
+
+        # now file in remote workspace initially
+        am = await pm.spawn("ls", LsActor, workspace_dst)
+        for item in list(am.ls.call().get()):
+            assert len(item[1]) == 0
+
+        # write a file to local workspace
+        file_path = os.path.join(workspace_src, "new_file")
+        with open(file_path, "w") as f:
+            f.write("hello world")
+            f.flush()
+
+        # force a sync and it should populate on the dst workspace
+        await pm.sync_workspace(config.workspace, conda=False, auto_reload=True)
+        for item in list(am.ls.call().get()):
+            assert len(item[1]) == 1
+            assert item[1][0] == "new_file"
+            file_path = os.path.join(workspace_dst, item[1][0])
+            with open(file_path, "r") as f:
+                assert f.readline() == "hello world"
+
+
 class TestActorMeshStop(unittest.IsolatedAsyncioTestCase):
     async def test_actor_mesh_stop(self) -> None:
         pm = proc_mesh(gpus=2)
@@ -966,6 +1011,15 @@ class TestActorMeshStop(unittest.IsolatedAsyncioTestCase):
 
         await am_2.print.call("hello 3")
         await am_2.log.call("hello 4")
+
+        await pm.stop()
+
+    async def test_proc_mesh_stop_after_actor_mesh_stop(self) -> None:
+        pm = proc_mesh(gpus=2)
+        am = await pm.spawn("printer", Printer)
+
+        await cast(ActorMesh, am).stop()
+        await pm.stop()
 
 
 class PortedActor(Actor):

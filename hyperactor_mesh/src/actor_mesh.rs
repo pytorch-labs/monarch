@@ -280,7 +280,7 @@ impl<'a, A: RemoteActor> RootActorMesh<'a, A> {
     }
 
     /// Open a port on this ActorMesh.
-    pub(crate) fn open_port<M: Message>(&self) -> (PortHandle<M>, PortReceiver<M>) {
+    pub fn open_port<M: Message>(&self) -> (PortHandle<M>, PortReceiver<M>) {
         self.proc_mesh.client().open_port()
     }
 
@@ -476,7 +476,7 @@ pub(crate) mod test_util {
     // be an entry in the spawnable actor registry in the executable
     // 'hyperactor_mesh_test_bootstrap' for the `tests::process` actor
     // mesh test suite.
-    #[derive(Debug)]
+    #[derive(Debug, Default, Actor)]
     #[hyperactor::export(
         spawn = true,
         handlers = [
@@ -487,15 +487,6 @@ pub(crate) mod test_util {
         ],
     )]
     pub struct TestActor;
-
-    #[async_trait]
-    impl Actor for TestActor {
-        type Params = ();
-
-        async fn new(_params: Self::Params) -> Result<Self, anyhow::Error> {
-            Ok(Self)
-        }
-    }
 
     /// Request message to retrieve the actor's rank.
     ///
