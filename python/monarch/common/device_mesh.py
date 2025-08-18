@@ -154,6 +154,30 @@ class DeviceMeshInfo:
 
 
 class DeviceMesh(Referenceable, MeshTrait):
+    """
+    Manages a collection of devices across multiple processes for distributed computation.
+
+    DeviceMesh provides the foundation for distributed PyTorch operations by organizing
+    devices into a multi-dimensional grid. It enables efficient collective communication
+    patterns like all-reduce, all-gather, and all-to-all across the mesh dimensions.
+
+    Args:
+        client: Client instance that manages communication with remote processes.
+        processes: NDSlice representing the processes that participate in this mesh.
+        names: Tuple of dimension names for the mesh (e.g., ('batch', 'model')).
+        mesh_name: Human-readable name for this mesh. Defaults to "default".
+
+    Example:
+        >>> # Create a 2x4 mesh with 'batch' and 'model' dimensions
+        >>> processes = NDSlice(offset=0, sizes=[2, 4], strides=[4, 1])
+        >>> mesh = DeviceMesh(client, processes, ('batch', 'model'))
+        >>> 
+        >>> # Activate the mesh for distributed operations
+        >>> with mesh.activate():
+        ...     # Operations here will run distributed across the mesh
+        ...     result = some_distributed_computation()
+    """
+
     def __init__(
         self,
         client: "Client",
@@ -324,6 +348,24 @@ _dispatch_enabled = False
 
 
 def get_active_mesh():
+    """
+    Get the currently active device mesh.
+
+    Returns the device mesh that is currently active in the context stack.
+    This is the mesh that will be used for distributed operations when no
+    explicit mesh is specified.
+
+    Returns:
+        DeviceMesh: The currently active device mesh.
+
+    Raises:
+        ValueError: If no device mesh is currently active.
+
+    Example:
+        >>> with mesh.activate():
+        ...     current_mesh = get_active_mesh()
+        ...     assert current_mesh is mesh
+    """
     if _active is None:
         raise ValueError("no device mesh is active")
     return _active

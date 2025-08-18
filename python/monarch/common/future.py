@@ -68,6 +68,21 @@ T = TypeVar("T")
 
 
 class Future(Generic[T]):
+    """
+    A future represents an asynchronous computation that will complete at some point.
+
+    Future objects are used to manage asynchronous operations in the Monarch framework,
+    allowing non-blocking execution and efficient handling of remote computations.
+
+    Args:
+        client: The client instance that manages this future.
+
+    Example:
+        >>> future = some_async_operation()
+        >>> result = future.result(timeout=30.0)  # Wait up to 30 seconds
+        >>> print(f"Result: {result}")
+    """
+
     def __init__(self, client: "Client"):
         self._client = client
         self._status = "incomplete"

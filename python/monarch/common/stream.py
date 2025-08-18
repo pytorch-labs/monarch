@@ -21,6 +21,24 @@ if TYPE_CHECKING:
 
 
 class Stream:
+    """
+    A stream represents a logical execution context for operations in Monarch.
+
+    Streams enable fine-grained control over operation ordering and resource management.
+    Different streams can execute operations concurrently, while operations within
+    the same stream execute sequentially.
+
+    Args:
+        name: A human-readable name for the stream.
+        _default: Whether this is the default stream. Defaults to False.
+
+    Example:
+        >>> stream = Stream("computation")
+        >>> with stream.activate():
+        ...     # Operations here will execute on this stream
+        ...     result = some_operation()
+    """
+
     def __init__(self, name: str, _default=False):
         self.name = name
         self.default: bool = _default

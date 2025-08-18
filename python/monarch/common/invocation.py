@@ -49,9 +49,24 @@ class DeviceException(Exception):
 
 class RemoteException(Exception):
     """
-    Deterministic problem with the user's code.
-    For example, an OOM resulting in trying to allocate too much GPU memory, or violating
-    some invariant enforced by the various APIs.
+    Exception raised when a remote function execution fails deterministically.
+
+    This exception is raised when there's a deterministic problem with the user's code
+    executing on a remote process. Examples include out-of-memory errors from trying to
+    allocate too much GPU memory, shape mismatches, type errors, or other runtime errors
+    in user code.
+
+    Args:
+        seq: Sequence number identifying the failed invocation.
+        exception: The original exception that occurred on the remote process.
+        controller_frame_index: Index of the relevant frame in controller_frames.
+        controller_frames: Stack frames from the controller where the remote call was made.
+        worker_frames: Stack frames from the worker where the exception occurred.
+        source_actor_id: Identifier of the actor/process where the exception occurred.
+        message: Human-readable description of the failure.
+
+    The exception provides detailed tracebacks from both the controller (where the remote
+    function was called) and the worker (where it failed), making debugging easier.
     """
 
     def __init__(

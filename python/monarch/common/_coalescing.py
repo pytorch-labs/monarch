@@ -81,6 +81,27 @@ class CoalescingState:
 
 @contextmanager
 def coalescing() -> Generator[None, Any, Any]:
+    """
+    Context manager for coalescing multiple operations into a single batch.
+
+    This context manager delays execution of operations and batches them together
+    for more efficient remote execution. All operations within the context are
+    recorded and then sent as a single message to remote processes.
+
+    This is particularly useful for reducing communication overhead when you have
+    many small operations that can be batched together.
+
+    Yields:
+        None: The context manager doesn't yield a value.
+
+    Example:
+        >>> with coalescing():
+        ...     # These operations will be batched together
+        ...     result1 = some_remote_operation(tensor1)
+        ...     result2 = some_remote_operation(tensor2)
+        ...     result3 = some_remote_operation(tensor3)
+        ... # Batch is sent here when exiting the context
+    """
     global _coalescing
     if _coalescing is not None:
         yield

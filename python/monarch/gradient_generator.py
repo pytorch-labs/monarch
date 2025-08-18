@@ -78,6 +78,33 @@ def grad_generator(
     with_respect_to: Sequence[TensorOrEdge] = (),
     grad_roots: Sequence[Optional[torch.Tensor]] = (),
 ):
+    """
+    Create a gradient generator for distributed automatic differentiation.
+
+    This function creates a generator that computes gradients with respect to specified
+    tensors in a distributed manner, supporting the same patterns as PyTorch's autograd
+    but across multiple devices and processes.
+
+    Args:
+        roots: The tensors or gradient edges to start backpropagation from.
+               If a single tensor, it will be converted to a list.
+        with_respect_to: The tensors or gradient edges to compute gradients with respect to.
+        grad_roots: Optional gradient values at the root tensors. If provided, must match
+                   the length of roots.
+
+    Returns:
+        GradientGenerator: A generator that can be used to compute gradients iteratively.
+
+    Example:
+        >>> loss = compute_loss(model_output, targets)
+        >>> grad_gen = grad_generator(
+        ...     roots=[loss],
+        ...     with_respect_to=model.parameters()
+        ... )
+        >>> for grad in grad_gen:
+        ...     # Process each gradient as it becomes available
+        ...     update_parameter(grad)
+    """
     if isinstance(roots, torch.Tensor):
         roots = [roots]
     return _GradientGenerator(
@@ -147,6 +174,31 @@ class GradFunction(torch.autograd.Function):
 
 
 def grad_function(fn):
+    """
+    Create a gradient function that supports distributed automatic differentiation.
+
+    This decorator transforms a function into one that can participate in PyTorch's
+    autograd system while working with distributed tensors. The function should
+    return a tuple of (result, backward_continuation) where backward_continuation
+    is a closure that will be called during the backward pass.
+
+    Args:
+        fn: A function that returns (result, backward_continuation) tuple.
+
+    Returns:
+        A function that can be used in autograd graphs with distributed tensors.
+
+    Example:
+        >>> @grad_function
+        ... def custom_op(x):
+        ...     def backward(grad_output):
+        ...         return grad_output * 2  # Example backward computation
+        ...     return x.sum(), backward
+        ...
+        >>> result = custom_op(distributed_tensor)
+        >>> loss = result.sum()
+        >>> loss.backward()  # Will call the custom backward function
+    """
     return partial(GradFunction.apply, fn)
 
 

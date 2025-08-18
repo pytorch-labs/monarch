@@ -187,6 +187,37 @@ def remote(*, propagate: Propagator = None) -> RemoteIfy: ...  # type: ignore
 
 
 def remote(function: Any = None, *, propagate: Propagator = None) -> Any:
+    """
+    Decorator to create a remote function that executes on distributed processes.
+
+    This decorator transforms a regular function into a remote function that can be
+    executed across a distributed device mesh. The function will be serialized and
+    sent to remote processes for execution.
+
+    Args:
+        function: The function to make remote, or a string path to the function.
+                 If None, returns a partial function for use as a decorator.
+        propagate: A propagator function used for shape and type inference during
+                  compilation. If None, the function itself is used for propagation.
+
+    Returns:
+        A Remote object that can be called to execute the function remotely.
+
+    Example:
+        Using as a decorator:
+        >>> @remote
+        ... def add_tensors(x, y):
+        ...     return x + y
+
+        Using with a string path:
+        >>> remote_add = remote('my_module.add_tensors')
+
+        Using with custom propagation:
+        >>> @remote(propagate=lambda x, y: x + y)
+        ... def complex_function(x, y):
+        ...     # Complex implementation here
+        ...     return result
+    """
     if function is None:
         return functools.partial(remote, propagate=propagate)
     return Remote(function, propagate)

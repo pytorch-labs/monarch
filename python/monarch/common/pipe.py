@@ -21,6 +21,30 @@ from .tree import flatten
 
 
 def remote_generator(path: str, max_messages: int = 50):
+    """
+    Decorator to create a remote generator function that returns a Pipe.
+
+    This decorator transforms a regular function into a remote generator that can
+    be used for streaming data between processes using IPC sockets.
+
+    Args:
+        path: The module path to the function to be executed remotely.
+        max_messages: Maximum number of messages to buffer in the pipe. Defaults to 50.
+
+    Returns:
+        A decorator function that transforms the annotated function into a pipe creator.
+
+    Example:
+        >>> @remote_generator('dataloader.main')
+        ... def dataloader_pipe(pipe: Pipe, batch_size: int):
+        ...     while True:
+        ...         yield torch.randn(batch_size, 10)
+        ...
+        >>> with mesh.activate():
+        ...     dataloader = dataloader_pipe(32)
+        ...     batch = dataloader.recv()
+    """
+
     def wrapper(annotation):
         fn = remote(path, propagate=annotation)
         return lambda *args, **kwargs: create_pipe(
@@ -31,6 +55,30 @@ def remote_generator(path: str, max_messages: int = 50):
 
 
 def create_pipe(fn, *args, max_messages: int = 50, **kwargs):
+    """
+    Create a Pipe instance for inter-process communication.
+
+    This function creates a pipe that enables streaming data between the controller
+    and remote processes using IPC PAIR sockets.
+
+    Args:
+        fn: A remote function that will be executed to generate data.
+        *args: Positional arguments to pass to the remote function.
+        max_messages: Maximum number of messages to buffer. Defaults to 50.
+        **kwargs: Keyword arguments to pass to the remote function.
+
+    Returns:
+        Pipe: A new pipe instance for communication.
+
+    Example:
+        >>> def generator(pipe, n):
+        ...     for i in range(n):
+        ...         yield torch.tensor([i])
+        ...
+        >>> remote_fn = remote('path.to.generator')
+        >>> pipe = create_pipe(remote_fn, 10)
+        >>> data = pipe.recv()
+    """
     return Pipe(fn, max_messages, args, kwargs)
 
 

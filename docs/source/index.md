@@ -41,6 +41,7 @@ get_started
 ./generated/examples/index
 books/books
 rust-api
+api
 howtos
 glossary
 ```
