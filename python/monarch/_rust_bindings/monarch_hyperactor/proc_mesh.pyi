@@ -6,9 +6,10 @@
 
 # pyre-strict
 
-from typing import AsyncIterator, final, Literal, overload, Type
+from typing import AsyncIterator, final, Literal, overload, Type, TYPE_CHECKING
 
-from monarch._rust_bindings.monarch_hyperactor.actor import Actor
+if TYPE_CHECKING:
+    from monarch._rust_bindings.monarch_hyperactor.actor import Actor
 from monarch._rust_bindings.monarch_hyperactor.actor_mesh import (
     PythonActorMesh,
     PythonActorMeshImpl,
@@ -23,7 +24,7 @@ from monarch._rust_bindings.monarch_hyperactor.shape import Shape
 @final
 class ProcMesh:
     @classmethod
-    def allocate_nonblocking(self, alloc: Alloc) -> PythonTask[ProcMesh]:
+    def allocate_nonblocking(self, alloc: Alloc) -> PythonTask["ProcMesh"]:
         """
         Allocate a process mesh according to the provided alloc.
         Returns when the mesh is fully allocated.
@@ -34,7 +35,7 @@ class ProcMesh:
         ...
 
     def spawn_nonblocking(
-        self, name: str, actor: Type[Actor]
+        self, name: str, actor: Type["Actor"]
     ) -> PythonTask[PythonActorMesh]:
         """
         Spawn a new actor on this mesh.
@@ -47,9 +48,9 @@ class ProcMesh:
 
     @staticmethod
     def spawn_async(
-        proc_mesh: Shared[ProcMesh], name: str, actor: Type[Actor], emulated: bool
+        proc_mesh: Shared["ProcMesh"], name: str, actor: Type["Actor"], emulated: bool
     ) -> PythonActorMesh: ...
-    async def monitor(self) -> ProcMeshMonitor:
+    async def monitor(self) -> "ProcMeshMonitor":
         """
         Returns a supervision monitor for this mesh.
         """

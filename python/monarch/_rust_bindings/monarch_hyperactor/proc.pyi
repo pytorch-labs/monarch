@@ -6,9 +6,12 @@
 
 # pyre-strict
 
-from typing import final, Optional, Type
+from typing import final, Optional, Type, TYPE_CHECKING
 
-from monarch._rust_bindings.monarch_hyperactor.actor import Actor, PythonActorHandle
+from monarch._rust_bindings.monarch_hyperactor.actor import PythonActorHandle
+
+if TYPE_CHECKING:
+    from monarch._rust_bindings.monarch_hyperactor.actor import Actor
 from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
 
 def init_proc(
@@ -18,7 +21,7 @@ def init_proc(
     timeout: int = 5,
     supervision_update_interval: int = 0,
     listen_addr: Optional[str] = None,
-) -> Proc:
+) -> "Proc":
     """
     Helper function to bootstrap a new Proc.
 
@@ -86,7 +89,7 @@ class ActorId:
         ...
 
     @staticmethod
-    def from_string(actor_id_str: str) -> ActorId:
+    def from_string(actor_id_str: str) -> "ActorId":
         """
         Create an ActorId from a string representation.
 
@@ -120,7 +123,7 @@ class Proc:
         """Destroy the Proc."""
         ...
 
-    async def spawn(self, actor: Type[Actor]) -> PythonActorHandle:
+    async def spawn(self, actor: Type["Actor"]) -> PythonActorHandle:
         """
         Spawn a new actor.
 

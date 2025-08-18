@@ -4,7 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-from typing import final, List, Optional, Tuple
+from typing import final, List, Optional, Tuple, TYPE_CHECKING
 
 @final
 class ControllerCommand:
@@ -197,32 +197,33 @@ class ControllerServerRequest:
     Python binding for the Rust ControllerServerRequest enum.
     """
 
-    @final
-    class Run(ControllerServerRequest):
-        """
-        Create a Run request variant.
+    if TYPE_CHECKING:
+        @final
+        class Run(ControllerServerRequest):
+            """
+            Create a Run request variant.
 
-        Args:
-            command: The RunCommand to execute
+            Args:
+                command: The RunCommand to execute
 
-        Returns:
-            A ControllerServerRequest.Run instance
-        """
-        def __init__(
-            self,
-            command: RunCommand,
-        ) -> None: ...
+            Returns:
+                A ControllerServerRequest.Run instance
+            """
+            def __init__(
+                self,
+                command: RunCommand,
+            ) -> None: ...
 
-    @final
-    class Exit(ControllerServerRequest):
-        """
-        Create an Exit request variant.
+        @final
+        class Exit(ControllerServerRequest):
+            """
+            Create an Exit request variant.
 
-        Returns:
-            A ControllerServerRequest.Exit instance
-        """
+            Returns:
+                A ControllerServerRequest.Exit instance
+            """
 
-        pass
+            pass
 
     def to_json(self) -> str:
         """
@@ -241,19 +242,20 @@ class ControllerServerResponse:
     Python binding for the Rust ControllerServerResponse enum.
     """
 
-    @final
-    class Finished(ControllerServerResponse):
-        """
-        Create a Finished response variant.
+    if TYPE_CHECKING:
+        @final
+        class Finished(ControllerServerResponse):
+            """
+            Create a Finished response variant.
 
-        Args:
-            error: An optional error message if the operation failed
+            Args:
+                error: An optional error message if the operation failed
 
-        Returns:
-            A ControllerServerResponse.Finished instance
-        """
+            Returns:
+                A ControllerServerResponse.Finished instance
+            """
 
-        error: Optional[str]
+            error: Optional[str]
 
     @classmethod
     def from_json(cls, json: str) -> "ControllerServerResponse":

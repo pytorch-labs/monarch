@@ -5,7 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 from pathlib import Path
-from typing import final
+from typing import final, TYPE_CHECKING
 
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
 
@@ -15,13 +15,15 @@ class WorkspaceLocation:
     """
     Python binding for the Rust WorkspaceLocation enum.
     """
-    @final
-    class Constant(WorkspaceLocation):
-        def __init__(self, path) -> None: ...
 
-    @final
-    class FromEnvVar(WorkspaceLocation):
-        def __init__(self, var) -> None: ...
+    if TYPE_CHECKING:
+        @final
+        class Constant(WorkspaceLocation):
+            def __init__(self, path) -> None: ...
+
+        @final
+        class FromEnvVar(WorkspaceLocation):
+            def __init__(self, var) -> None: ...
 
     def resolve(self) -> Path:
         """
@@ -44,8 +46,8 @@ class CodeSyncMethod:
     Python binding for the Rust CodeSyncMethod enum.
     """
 
-    Rsync: CodeSyncMethod
-    CondaSync: CodeSyncMethod
+    Rsync: "CodeSyncMethod"
+    CondaSync: "CodeSyncMethod"
 
 @final
 class RemoteWorkspace:
@@ -75,7 +77,7 @@ class CodeSyncMeshClient:
     @staticmethod
     def spawn_blocking(
         proc_mesh: ProcMesh,
-    ) -> CodeSyncMeshClient: ...
+    ) -> "CodeSyncMeshClient": ...
     async def sync_workspace(
         self,
         *,

@@ -4,45 +4,46 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-from typing import final, Optional, Tuple
+from typing import final, Optional, Tuple, TYPE_CHECKING
 
 class WorkerServerRequest:
     """
     Python binding for the Rust WorkerServerRequest enum.
     """
 
-    @final
-    class Run(WorkerServerRequest):
-        """
-        Create a Run request variant.
+    if TYPE_CHECKING:
+        @final
+        class Run(WorkerServerRequest):
+            """
+            Create a Run request variant.
 
-        Args:
-            world_id: The ID of the world
-            proc_id: The ID of the process
-            bootstrap_addr: The bootstrap address
+            Args:
+                world_id: The ID of the world
+                proc_id: The ID of the process
+                bootstrap_addr: The bootstrap address
 
-        Returns:
-            A WorkerServerRequest.Run instance
-        """
-        def __init__(
-            self,
-            *,
-            world_id: str,
-            proc_id: str,
-            bootstrap_addr: str,
-            labels: list[Tuple[str, str]],
-        ) -> None: ...
+            Returns:
+                A WorkerServerRequest.Run instance
+            """
+            def __init__(
+                self,
+                *,
+                world_id: str,
+                proc_id: str,
+                bootstrap_addr: str,
+                labels: list[Tuple[str, str]],
+            ) -> None: ...
 
-    @final
-    class Exit(WorkerServerRequest):
-        """
-        Create an Exit request variant.
+        @final
+        class Exit(WorkerServerRequest):
+            """
+            Create an Exit request variant.
 
-        Returns:
-            A WorkerServerRequest.Exit instance
-        """
+            Returns:
+                A WorkerServerRequest.Exit instance
+            """
 
-        pass
+            pass
 
     def to_json(self) -> str:
         """
@@ -61,19 +62,20 @@ class WorkerServerResponse:
     Python binding for the Rust WorkerServerResponse enum.
     """
 
-    @final
-    class Finished(WorkerServerResponse):
-        """
-        Create a Finished response variant.
+    if TYPE_CHECKING:
+        @final
+        class Finished(WorkerServerResponse):
+            """
+            Create a Finished response variant.
 
-        Args:
-            error: An optional error message if the operation failed
+            Args:
+                error: An optional error message if the operation failed
 
-        Returns:
-            A WorkerServerResponse.Finished instance
-        """
+            Returns:
+                A WorkerServerResponse.Finished instance
+            """
 
-        error: Optional[str]
+            error: Optional[str]
 
     @classmethod
     def from_json(cls, json: str) -> "WorkerServerResponse":

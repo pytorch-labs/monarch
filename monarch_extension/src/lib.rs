@@ -27,12 +27,20 @@ mod tensor_worker;
 
 mod blocking;
 mod panic;
+
+use monarch_types::py_global;
 use pyo3::prelude::*;
 
 #[pyfunction]
 fn has_tensor_engine() -> bool {
     cfg!(feature = "tensor_engine")
 }
+
+py_global!(
+    add_extension_methods,
+    "monarch._src.actor.python_extension_methods",
+    "add_extension_methods"
+);
 
 fn get_or_add_new_module<'py>(
     module: &Bound<'py, PyModule>,
@@ -46,20 +54,27 @@ fn get_or_add_new_module<'py>(
         if let Some(submodule) = submodule {
             current_module = submodule.extract()?;
         } else {
-            let new_module = PyModule::new(current_module.py(), part)?;
-            current_module.add_submodule(&new_module)?;
+            let name = format!("monarch._rust_bindings.{}", parts.join("."));
+            let new_module = PyModule::new(current_module.py(), &name)?;
+            current_module.add(part, new_module.clone())?;
             current_module
                 .py()
                 .import("sys")?
                 .getattr("modules")?
-                .set_item(
-                    format!("monarch._rust_bindings.{}", parts.join(".")),
-                    new_module.clone(),
-                )?;
+                .set_item(name, new_module.clone())?;
             current_module = new_module;
         }
     }
     Ok(current_module)
+}
+
+fn register<F>(module: &Bound<'_, PyModule>, module_path: &str, register_fn: F) -> PyResult<()>
+where
+    F: FnOnce(&Bound<'_, PyModule>) -> PyResult<()>,
+{
+    let submodule = get_or_add_new_module(module, module_path)?;
+    register_fn(&submodule)?;
+    Ok(())
 }
 
 #[pymodule]
@@ -71,153 +86,190 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         runtime.handle().clone(),
         Some(::hyperactor_mesh::bootstrap::BOOTSTRAP_INDEX_ENV.to_string()),
     );
-
-    monarch_hyperactor::shape::register_python_bindings(&get_or_add_new_module(
+    register(
         module,
         "monarch_hyperactor.shape",
-    )?)?;
-
-    monarch_hyperactor::selection::register_python_bindings(&get_or_add_new_module(
+        monarch_hyperactor::shape::register_python_bindings,
+    )?;
+    register(
         module,
         "monarch_hyperactor.selection",
-    )?)?;
-
-    monarch_hyperactor::supervision::register_python_bindings(&get_or_add_new_module(
+        monarch_hyperactor::selection::register_python_bindings,
+    )?;
+    register(
         module,
         "monarch_hyperactor.supervision",
-    )?)?;
+        monarch_hyperactor::supervision::register_python_bindings,
+    )?;
 
     #[cfg(feature = "tensor_engine")]
     {
-        client::register_python_bindings(&get_or_add_new_module(
+        register(
             module,
             "monarch_extension.client",
-        )?)?;
-        tensor_worker::register_python_bindings(&get_or_add_new_module(
+            client::register_python_bindings,
+        )?;
+        register(
             module,
             "monarch_extension.tensor_worker",
-        )?)?;
-        controller::register_python_bindings(&get_or_add_new_module(
+            tensor_worker::register_python_bindings,
+        )?;
+        register(
             module,
             "monarch_extension.controller",
-        )?)?;
-        debugger::register_python_bindings(&get_or_add_new_module(
+            controller::register_python_bindings,
+        )?;
+        register(
             module,
             "monarch_extension.debugger",
-        )?)?;
-        monarch_messages::debugger::register_python_bindings(&get_or_add_new_module(
+            debugger::register_python_bindings,
+        )?;
+        register(
             module,
             "monarch_messages.debugger",
-        )?)?;
-        simulator_client::register_python_bindings(&get_or_add_new_module(
+            monarch_messages::debugger::register_python_bindings,
+        )?;
+        register(
             module,
             "monarch_extension.simulator_client",
-        )?)?;
-        ::controller::bootstrap::register_python_bindings(&get_or_add_new_module(
+            simulator_client::register_python_bindings,
+        )?;
+        register(
             module,
             "controller.bootstrap",
-        )?)?;
-        ::monarch_tensor_worker::bootstrap::register_python_bindings(&get_or_add_new_module(
+            ::controller::bootstrap::register_python_bindings,
+        )?;
+        register(
             module,
             "monarch_tensor_worker.bootstrap",
-        )?)?;
-        crate::convert::register_python_bindings(&get_or_add_new_module(
+            ::monarch_tensor_worker::bootstrap::register_python_bindings,
+        )?;
+        register(
             module,
             "monarch_extension.convert",
-        )?)?;
-        crate::mesh_controller::register_python_bindings(&get_or_add_new_module(
+            crate::convert::register_python_bindings,
+        )?;
+        register(
             module,
             "monarch_extension.mesh_controller",
-        )?)?;
-        monarch_rdma_extension::register_python_bindings(&get_or_add_new_module(module, "rdma")?)?;
+            crate::mesh_controller::register_python_bindings,
+        )?;
+        register(
+            module,
+            "rdma",
+            monarch_rdma_extension::register_python_bindings,
+        )?;
     }
-    simulation_tools::register_python_bindings(&get_or_add_new_module(
+    register(
         module,
         "monarch_extension.simulation_tools",
-    )?)?;
-    monarch_hyperactor::bootstrap::register_python_bindings(&get_or_add_new_module(
+        simulation_tools::register_python_bindings,
+    )?;
+    register(
         module,
         "monarch_hyperactor.bootstrap",
-    )?)?;
+        monarch_hyperactor::bootstrap::register_python_bindings,
+    )?;
 
-    monarch_hyperactor::proc::register_python_bindings(&get_or_add_new_module(
+    register(
         module,
         "monarch_hyperactor.proc",
-    )?)?;
+        monarch_hyperactor::proc::register_python_bindings,
+    )?;
 
-    monarch_hyperactor::actor::register_python_bindings(&get_or_add_new_module(
+    register(
         module,
         "monarch_hyperactor.actor",
-    )?)?;
+        monarch_hyperactor::actor::register_python_bindings,
+    )?;
 
-    monarch_hyperactor::pytokio::register_python_bindings(&get_or_add_new_module(
+    register(
         module,
         "monarch_hyperactor.pytokio",
-    )?)?;
-
-    monarch_hyperactor::mailbox::register_python_bindings(&get_or_add_new_module(
+        monarch_hyperactor::pytokio::register_python_bindings,
+    )?;
+    register(
         module,
         "monarch_hyperactor.mailbox",
-    )?)?;
+        monarch_hyperactor::mailbox::register_python_bindings,
+    )?;
 
-    monarch_hyperactor::alloc::register_python_bindings(&get_or_add_new_module(
+    register(
         module,
         "monarch_hyperactor.alloc",
-    )?)?;
-    monarch_hyperactor::channel::register_python_bindings(&get_or_add_new_module(
+        monarch_hyperactor::alloc::register_python_bindings,
+    )?;
+    register(
         module,
         "monarch_hyperactor.channel",
-    )?)?;
-    monarch_hyperactor::actor_mesh::register_python_bindings(&get_or_add_new_module(
+        monarch_hyperactor::channel::register_python_bindings,
+    )?;
+    register(
         module,
         "monarch_hyperactor.actor_mesh",
-    )?)?;
-    monarch_hyperactor::proc_mesh::register_python_bindings(&get_or_add_new_module(
+        monarch_hyperactor::actor_mesh::register_python_bindings,
+    )?;
+    register(
         module,
         "monarch_hyperactor.proc_mesh",
-    )?)?;
+        monarch_hyperactor::proc_mesh::register_python_bindings,
+    )?;
 
-    monarch_hyperactor::runtime::register_python_bindings(&get_or_add_new_module(
+    register(
         module,
         "monarch_hyperactor.runtime",
-    )?)?;
-    monarch_hyperactor::telemetry::register_python_bindings(&get_or_add_new_module(
+        monarch_hyperactor::runtime::register_python_bindings,
+    )?;
+    register(
         module,
         "monarch_hyperactor.telemetry",
-    )?)?;
-    code_sync::register_python_bindings(&get_or_add_new_module(
+        monarch_hyperactor::telemetry::register_python_bindings,
+    )?;
+    register(
         module,
         "monarch_extension.code_sync",
-    )?)?;
+        code_sync::register_python_bindings,
+    )?;
 
-    crate::panic::register_python_bindings(&get_or_add_new_module(
+    register(
         module,
         "monarch_extension.panic",
-    )?)?;
+        crate::panic::register_python_bindings,
+    )?;
 
-    crate::blocking::register_python_bindings(&get_or_add_new_module(
+    register(
         module,
         "monarch_extension.blocking",
-    )?)?;
+        crate::blocking::register_python_bindings,
+    )?;
 
-    crate::logging::register_python_bindings(&get_or_add_new_module(
+    register(
         module,
         "monarch_extension.logging",
-    )?)?;
+        crate::logging::register_python_bindings,
+    )?;
 
     #[cfg(fbcode_build)]
     {
-        monarch_hyperactor::meta::alloc::register_python_bindings(&get_or_add_new_module(
+        register(
             module,
             "monarch_hyperactor.meta.alloc",
-        )?)?;
-        monarch_hyperactor::meta::alloc_mock::register_python_bindings(&get_or_add_new_module(
+            monarch_hyperactor::meta::alloc::register_python_bindings,
+        )?;
+        register(
             module,
             "monarch_hyperactor.meta.alloc_mock",
-        )?)?;
+            monarch_hyperactor::meta::alloc_mock::register_python_bindings,
+        )?;
     }
     // Add feature detection function
     module.add_function(wrap_pyfunction!(has_tensor_engine, module)?)?;
 
+    // this should be called last. otherwise cross references in pyi files will not have been
+    // added to sys.modules yet.
+    let maybe_module = module.py().import("monarch._src");
+    if maybe_module.is_ok() {
+        add_extension_methods(module.py()).call1((module,))?;
+    }
     Ok(())
 }

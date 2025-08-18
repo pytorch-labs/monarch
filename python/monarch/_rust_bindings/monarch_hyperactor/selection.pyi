@@ -18,7 +18,7 @@ class Selection:
     """
     def __repr__(self) -> str: ...
     @classmethod
-    def from_string(cls, s: str) -> Selection:
+    def from_string(cls, s: str) -> "Selection":
         """Parse a selection expression from a string.
 
         Accepts a compact string syntax such as `"(*, 0:4)"` or `"0 & (1 | 2)"`,
@@ -30,7 +30,7 @@ class Selection:
         ...
 
     @classmethod
-    def any(cls) -> Selection:
+    def any(cls) -> "Selection":
         """Selects one element nondeterministically — use this to
         mean "route to a single random node".
 
@@ -41,7 +41,7 @@ class Selection:
         ...
 
     @classmethod
-    def all(cls) -> Selection:
+    def all(cls) -> "Selection":
         """Selects all elements in the mesh — use this to mean "route
         to all nodes".
 

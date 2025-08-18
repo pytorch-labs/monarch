@@ -41,7 +41,7 @@ class PythonActorMesh(ActorMeshProtocol):
     pass
 
 class PythonActorMeshImpl:
-    def get_supervision_event(self) -> ActorSupervisionEvent | None:
+    def get_supervision_event(self) -> Optional["ActorSupervisionEvent"]:
         """
         Returns supervision event if there is any.
         """

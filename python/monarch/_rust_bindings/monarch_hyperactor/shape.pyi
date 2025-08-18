@@ -77,7 +77,7 @@ class Slice:
     @overload
     def __getitem__(self, i: int) -> int: ...
     @overload
-    def __getitem__(self, i: slice[Any, Any, Any]) -> tuple[int, ...]: ...
+    def __getitem__(self, i: "slice[Any, Any, Any]") -> tuple[int, ...]: ...
     def __len__(self) -> int:
         """Returns the complete size of the slice."""
         ...
@@ -130,7 +130,7 @@ class Shape:
         """
         ...
 
-    def select(self, label: str, slice: slice[Any, Any, Any]) -> "Shape":
+    def select(self, label: str, slice: "slice[Any, Any, Any]") -> "Shape":
         """
         Restrict this shape along a named dimension using a slice. The
         dimension is kept but its size may change.

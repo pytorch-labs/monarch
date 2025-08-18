@@ -6,12 +6,14 @@
 
 # pyre-strict
 
-from typing import final, Protocol
+from typing import final, Optional, Protocol, TYPE_CHECKING
 
-from monarch._rust_bindings.monarch_hyperactor.actor import (
-    PythonMessage,
-    UndeliverableMessageEnvelope,
-)
+from monarch._rust_bindings.monarch_hyperactor.actor import PythonMessage
+
+if TYPE_CHECKING:
+    from monarch._rust_bindings.monarch_hyperactor.actor import (
+        UndeliverableMessageEnvelope,
+    )
 
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
@@ -43,7 +45,7 @@ class PortId:
         ...
 
     @staticmethod
-    def from_string(port_id_str: str) -> PortId:
+    def from_string(port_id_str: str) -> "PortId":
         """
         Parse a port id from the provided string.
         """
@@ -58,7 +60,7 @@ class PortHandle:
     def send(self, message: PythonMessage) -> None:
         """Send a message to the port's receiver."""
 
-    def bind(self) -> PortRef:
+    def bind(self) -> "PortRef":
         """Bind this port. The returned port ref can be used to reach the port externally."""
         ...
 
@@ -68,7 +70,7 @@ class PortRef:
     A reference to a remote port over which PythonMessages can be sent.
     """
 
-    def send(self, mailbox: Mailbox, message: PythonMessage) -> None:
+    def send(self, mailbox: "Mailbox", message: PythonMessage) -> None:
         """Send a single message to the port's receiver."""
         ...
 
@@ -93,10 +95,10 @@ class UndeliverablePortReceiver:
     """
     A receiver to which undeliverable message envelopes are sent.
     """
-    async def recv(self) -> UndeliverableMessageEnvelope:
+    async def recv(self) -> "UndeliverableMessageEnvelope":
         """Receive a single undeliverable message from the port's sender."""
         ...
-    def blocking_recv(self) -> UndeliverableMessageEnvelope:
+    def blocking_recv(self) -> "UndeliverableMessageEnvelope":
         """Receive a single undeliverable message from the port's sender."""
         ...
 
@@ -110,7 +112,7 @@ class OncePortHandle:
         """Send a single message to the port's receiver."""
         ...
 
-    def bind(self) -> OncePortRef:
+    def bind(self) -> "OncePortRef":
         """Bind this port. The returned port ID can be used to reach the port externally."""
         ...
 
@@ -120,7 +122,7 @@ class OncePortRef:
     A reference to a remote once port over which a single PythonMessages can be sent.
     """
 
-    def send(self, mailbox: Mailbox, message: PythonMessage) -> None:
+    def send(self, mailbox: "Mailbox", message: PythonMessage) -> None:
         """Send a single message to the port's receiver."""
         ...
 
@@ -148,7 +150,7 @@ class Mailbox:
         ...
 
     def open_accum_port(
-        self, accumulator: Accumulator
+        self, accumulator: "Accumulator"
     ) -> tuple[PortHandle, PortReceiver]:
         """Open a accum port."""
         ...
@@ -202,7 +204,7 @@ class Accumulator(Protocol):
     Define the initial state of this accumulator.
     """
     @property
-    def reducer(self) -> Reducer | None: ...
+    def reducer(self) -> Optional["Reducer"]: ...
     """
     The reducer associated with this accumulator.
     """
