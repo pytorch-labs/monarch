@@ -1012,6 +1012,15 @@ class TestActorMeshStop(unittest.IsolatedAsyncioTestCase):
         await am_2.print.call("hello 3")
         await am_2.log.call("hello 4")
 
+        await pm.stop()
+
+    async def test_proc_mesh_stop_after_actor_mesh_stop(self) -> None:
+        pm = proc_mesh(gpus=2)
+        am = await pm.spawn("printer", Printer)
+
+        await cast(ActorMesh, am).stop()
+        await pm.stop()
+
 
 class PortedActor(Actor):
     @endpoint(explicit_response_port=True)
