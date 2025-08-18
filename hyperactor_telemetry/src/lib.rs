@@ -34,6 +34,7 @@ mod pool;
 pub mod recorder;
 mod spool;
 pub mod sqlite;
+pub mod trace;
 use std::io::IsTerminal;
 use std::io::Write;
 use std::str::FromStr;

@@ -29,6 +29,7 @@ use crate::proc_mesh::mesh_agent::MeshAgent;
 
 pub const BOOTSTRAP_ADDR_ENV: &str = "HYPERACTOR_MESH_BOOTSTRAP_ADDR";
 pub const BOOTSTRAP_INDEX_ENV: &str = "HYPERACTOR_MESH_INDEX";
+pub const CLIENT_TRACE_ID_ENV: &str = "MONARCH_CLIENT_TRACE_ID";
 /// A channel used by each process to receive its own stdout and stderr
 /// Because stdout and stderr can only be obtained by the parent process,
 /// they need to be streamed back to the process.

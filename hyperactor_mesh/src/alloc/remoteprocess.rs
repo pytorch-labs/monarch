@@ -55,12 +55,15 @@ use tokio_stream::wrappers::WatchStream;
 use tokio_util::sync::CancellationToken;
 
 use crate::alloc::Alloc;
+use crate::alloc::AllocConstraints;
 use crate::alloc::AllocSpec;
 use crate::alloc::Allocator;
 use crate::alloc::AllocatorError;
 use crate::alloc::ProcState;
 use crate::alloc::ProcStopReason;
 use crate::alloc::ProcessAllocator;
+use crate::alloc::process::CLIENT_TRACE_ID_LABEL;
+use crate::alloc::process::ClientContext;
 
 /// Control messages sent from remote process allocator to local allocator.
 #[derive(Debug, Clone, Serialize, Deserialize, Named)]
@@ -74,6 +77,10 @@ pub enum RemoteProcessAllocatorMessage {
         /// Ordered list of hosts in this allocation. Can be used to
         /// pre-populate the any local configurations such as torch.dist.
         hosts: Vec<String>,
+        /// Client context which is passed to the ProcessAlloc
+        /// Todo: Once RemoteProcessAllocator moves to mailbox,
+        /// the client_context will go to the message header instead
+        client_context: Option<ClientContext>,
     },
     /// Stop allocation.
     Stop,
@@ -196,15 +203,25 @@ impl RemoteProcessAllocator {
                             view,
                             bootstrap_addr,
                             hosts,
+                            client_context,
                         }) => {
                             tracing::info!("received allocation request for view: {}", view);
                             ensure_previous_alloc_stopped(&mut active_allocation).await;
                             tracing::info!("allocating...");
 
                             // Create the corresponding local allocation spec.
+                            let mut constraints: AllocConstraints = Default::default();
+                            if let Some(context) = &client_context {
+                                constraints = AllocConstraints {
+                                    match_labels: HashMap::from([(
+                                    CLIENT_TRACE_ID_LABEL.to_string(),
+                                    context.trace_id.to_string(),
+                                    )]
+                                )};
+                            }
                             let spec = AllocSpec {
                                 extent: view.extent(),
-                                constraints: Default::default(),
+                                constraints,
                             };
 
                             match process_allocator.allocate(spec.clone()).await {
@@ -749,10 +766,15 @@ impl RemoteProcessAlloc {
                     "failed to dial remote {} for host {}",
                     remote_addr, host.id
                 ))?;
+
+            let trace_id = hyperactor_telemetry::trace::get_or_create_trace_id();
+            let client_context = Some(ClientContext { trace_id });
+
             tx.post(RemoteProcessAllocatorMessage::Allocate {
                 view,
                 bootstrap_addr: self.bootstrap_addr.clone(),
                 hosts: hostnames.clone(),
+                client_context,
             });
 
             self.hosts_by_offset.insert(offset, host.id.clone());
@@ -1280,6 +1302,7 @@ mod test {
             view: extent.clone().into(),
             bootstrap_addr,
             hosts: vec![],
+            client_context: None,
         })
         .await
         .unwrap();
@@ -1419,6 +1442,7 @@ mod test {
             view: extent.clone().into(),
             bootstrap_addr,
             hosts: vec![],
+            client_context: None,
         })
         .await
         .unwrap();
@@ -1519,6 +1543,7 @@ mod test {
             view: extent.clone().into(),
             bootstrap_addr: bootstrap_addr.clone(),
             hosts: vec![],
+            client_context: None,
         })
         .await
         .unwrap();
@@ -1539,6 +1564,7 @@ mod test {
             view: extent.clone().into(),
             bootstrap_addr,
             hosts: vec![],
+            client_context: None,
         })
         .await
         .unwrap();
@@ -1632,6 +1658,7 @@ mod test {
             view: extent.clone().into(),
             bootstrap_addr,
             hosts: vec![],
+            client_context: None,
         })
         .await
         .unwrap();
@@ -1721,6 +1748,7 @@ mod test {
             view: extent.clone().into(),
             bootstrap_addr,
             hosts: vec![],
+            client_context: None,
         })
         .await
         .unwrap();
@@ -1741,6 +1769,150 @@ mod test {
         // receive all stops
         next_tx.send(()).unwrap();
         // we are expecting 1 Done when Alloc successfully stops.
+        let m = rx.recv().await.unwrap();
+        assert_matches!(m, RemoteProcessProcStateMessage::Done(world_id) if world_id == test_world_id);
+
+        remote_allocator.terminate();
+        handle.await.unwrap().unwrap();
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 15)]
+    async fn test_trace_id_propagation() {
+        let config = hyperactor::config::global::lock();
+        let _guard = config.override_key(
+            hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
+            Duration::from_secs(60),
+        );
+        hyperactor_telemetry::initialize_logging(ClockKind::default());
+        let serve_addr = ChannelAddr::any(ChannelTransport::Unix);
+        let bootstrap_addr = ChannelAddr::any(ChannelTransport::Unix);
+        let (_, mut rx) = channel::serve(bootstrap_addr.clone()).await.unwrap();
+
+        let extent = extent!(host = 1, gpu = 1);
+        let tx = channel::dial(serve_addr.clone()).unwrap();
+        let test_world_id: WorldId = id!(test_world_id);
+        let test_trace_id = "test_trace_id_12345";
+
+        // Create a mock alloc that we can verify receives the correct trace id
+        let mut alloc = MockAlloc::new();
+        alloc.expect_world_id().return_const(test_world_id.clone());
+        alloc.expect_extent().return_const(extent.clone());
+        alloc.expect_next().return_const(None);
+
+        // Create a mock allocator that captures the AllocSpec passed to it
+        let mut allocator = MockAllocator::new();
+        allocator
+            .expect_allocate()
+            .times(1)
+            .withf(move |spec: &AllocSpec| {
+                // Verify that the trace id is correctly set in the constraints
+                spec.constraints
+                    .match_labels
+                    .get(CLIENT_TRACE_ID_LABEL)
+                    .is_some_and(|trace_id| trace_id == test_trace_id)
+            })
+            .return_once(|_| Ok(MockAllocWrapper::new(alloc)));
+
+        let remote_allocator = RemoteProcessAllocator::new();
+        let handle = tokio::spawn({
+            let remote_allocator = remote_allocator.clone();
+            async move {
+                remote_allocator
+                    .start_with_allocator(serve_addr, allocator, None)
+                    .await
+            }
+        });
+
+        // Send allocate message with client context containing trace id
+        tx.send(RemoteProcessAllocatorMessage::Allocate {
+            view: extent.clone().into(),
+            bootstrap_addr,
+            hosts: vec![],
+            client_context: Some(ClientContext {
+                trace_id: test_trace_id.to_string(),
+            }),
+        })
+        .await
+        .unwrap();
+
+        // Verify we get the allocated message
+        let m = rx.recv().await.unwrap();
+        assert_matches!(
+            m,
+            RemoteProcessProcStateMessage::Allocated { world_id, view }
+            if world_id == test_world_id && view.extent() == extent
+        );
+
+        // Verify we get the done message since the mock alloc returns None immediately
+        let m = rx.recv().await.unwrap();
+        assert_matches!(m, RemoteProcessProcStateMessage::Done(world_id) if world_id == test_world_id);
+
+        remote_allocator.terminate();
+        handle.await.unwrap().unwrap();
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 15)]
+    async fn test_trace_id_propagation_no_client_context() {
+        let config = hyperactor::config::global::lock();
+        let _guard = config.override_key(
+            hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
+            Duration::from_secs(60),
+        );
+        hyperactor_telemetry::initialize_logging(ClockKind::default());
+        let serve_addr = ChannelAddr::any(ChannelTransport::Unix);
+        let bootstrap_addr = ChannelAddr::any(ChannelTransport::Unix);
+        let (_, mut rx) = channel::serve(bootstrap_addr.clone()).await.unwrap();
+
+        let extent = extent!(host = 1, gpu = 1);
+        let tx = channel::dial(serve_addr.clone()).unwrap();
+        let test_world_id: WorldId = id!(test_world_id);
+
+        // Create a mock alloc
+        let mut alloc = MockAlloc::new();
+        alloc.expect_world_id().return_const(test_world_id.clone());
+        alloc.expect_extent().return_const(extent.clone());
+        alloc.expect_next().return_const(None);
+
+        // Create a mock allocator that verifies no trace id is set when client_context is None
+        let mut allocator = MockAllocator::new();
+        allocator
+            .expect_allocate()
+            .times(1)
+            .withf(move |spec: &AllocSpec| {
+                // Verify that no trace id is set in the constraints when client_context is None
+                spec.constraints.match_labels.is_empty()
+            })
+            .return_once(|_| Ok(MockAllocWrapper::new(alloc)));
+
+        let remote_allocator = RemoteProcessAllocator::new();
+        let handle = tokio::spawn({
+            let remote_allocator = remote_allocator.clone();
+            async move {
+                remote_allocator
+                    .start_with_allocator(serve_addr, allocator, None)
+                    .await
+            }
+        });
+
+        // Send allocate message without client context
+        tx.send(RemoteProcessAllocatorMessage::Allocate {
+            view: extent.clone().into(),
+            bootstrap_addr,
+            hosts: vec![],
+            client_context: None,
+        })
+        .await
+        .unwrap();
+
+        // Verify we get the allocated message
+        let m = rx.recv().await.unwrap();
+        assert_matches!(
+            m,
+            RemoteProcessProcStateMessage::Allocated { world_id, view }
+            if world_id == test_world_id && view.extent() == extent
+        );
+
+        // Verify we get the done message since the mock alloc returns None immediately
         let m = rx.recv().await.unwrap();
         assert_matches!(m, RemoteProcessProcStateMessage::Done(world_id) if world_id == test_world_id);
 
