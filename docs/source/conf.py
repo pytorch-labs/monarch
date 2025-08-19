@@ -15,10 +15,7 @@ import sys
 # Import our stub module early to mock heavy dependencies
 # This must be done before importing pytorch_sphinx_theme2 or any other modules
 # that might try to import torch
-try:
-    from . import _sphinx_stub
-except ImportError:
-    import _sphinx_stub
+import _sphinx_stub
 
 import pytorch_sphinx_theme2
 
