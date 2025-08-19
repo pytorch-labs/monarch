@@ -41,6 +41,7 @@ This example implements a distributed PPO-like algorithm with three main compone
 1. Generator: Produces actions using the current policy and sends them for scoring
 2. Scorer: Evaluates actions and assigns rewards
 3. Learner: Updates policy based on collected experiences
+
 Key features demonstrated:
 - Distributed actors on separate GPU meshes
 - Asynchronous communication via queues
@@ -56,6 +57,7 @@ ACTION_DIM = 4  # vocab size
 @dataclass
 class TrajectorySlice:
     """Single trajectory from one generator call.
+
     Attributes:
         policy_version: Version of policy that produced this slice
         state: Input state tensor [STATE_DIM]
@@ -75,6 +77,7 @@ class TrajectorySlice:
 @dataclass
 class TrainingBatch:
     """Batch of trajectories for training.
+
     Attributes:
         states: Batched states [batch_size, STATE_DIM]
         actions: Batched actions [batch_size * G]
@@ -101,6 +104,7 @@ class TrajectoryQueue(Actor):
     @endpoint
     async def put(self, slice: TrajectorySlice) -> None:
         """Add a trajectory slice to the queue.
+
         Args:
             slice: The trajectory slice to add
         """
@@ -127,6 +131,7 @@ class ReplayBuffer(Actor):
     @endpoint
     async def put(self, slice: TrajectorySlice) -> None:
         """Add a trajectory slice to the buffer.
+
         Args:
             slice: The trajectory slice to add
         """
@@ -140,12 +145,16 @@ class ReplayBuffer(Actor):
     @endpoint
     async def sample_from(self, k: int) -> List[TrajectorySlice]:
         """Sample k trajectory slices using weighted sampling.
+
         Items from newer policy versions have higher probability of being selected.
         If the buffer is empty, waits for it to be populated with a timeout.
+
         Args:
             k: Number of slices to sample
+
         Returns:
             List of sampled trajectory slices
+
         Raises:
             RuntimeError: If buffer is empty after timeout
         """
@@ -153,11 +162,14 @@ class ReplayBuffer(Actor):
             await asyncio.wait_for(self._wait_for_storage(), timeout=10.0)
         except asyncio.TimeoutError:
             raise RuntimeError("Timeout waiting for ReplayBuffer to be populated")
+
         # Extract policy versions and add 1 to ensure all weights are positive
         policy_versions = [version + 1 for version, _ in self.storage]
+
         # Use policy versions as weights for sampling
         total = sum(policy_versions)
         probs = [v / total for v in policy_versions]
+
         # Sample indices based on policy version weights
         indices = list(range(len(self.storage)))
         chosen_indices = random.choices(indices, weights=probs, k=k)
@@ -170,6 +182,7 @@ class Scorer(Actor):
 
     def __init__(self, trajectory_queue: Any, replay_buffer: Any):
         """Initialize the scorer.
+
         Args:
             trajectory_queue: Queue to pull trajectory slices from
             replay_buffer: Buffer to store scored slices in
@@ -185,12 +198,14 @@ class Scorer(Actor):
 
     async def _score_slice(self, slice: TrajectorySlice) -> None:
         """Score a trajectory slice and store it in the replay buffer.
+
         Args:
             slice: The trajectory slice to score
         """
         s = slice.state.to("cuda").unsqueeze(0).repeat(G, 1)
         a = slice.actions.to("cuda").float().unsqueeze(-1)
         rewards = self.net(torch.cat([s, a], dim=-1)).squeeze(-1).cpu()
+
         scored = TrajectorySlice(
             policy_version=slice.policy_version,
             state=slice.state,
@@ -203,11 +218,13 @@ class Scorer(Actor):
     @endpoint
     async def run(self) -> None:
         """Start the scoring event loop.
+
         Continuously pulls slices from the queue, scores them,
         and puts them in the replay buffer until stopped.
         """
         if self.running:
             return
+
         self.running = True
         try:
             while self.running:
@@ -236,6 +253,7 @@ class Learner(Actor):
 
     def __init__(self, replay_buffer: Any):
         """Initialize the learner.
+
         Args:
             replay_buffer: Buffer to sample experiences from
         """
@@ -247,6 +265,7 @@ class Learner(Actor):
         for p in self.ref_model.parameters():
             p.requires_grad = False
         self.ref_model.eval()
+
         # Optimization parameters
         self.optim = optim.Adam(self.model.parameters(), lr=1e-3, eps=1e-5)
         self.eps = 0.2  # PPO clipping parameter
@@ -259,6 +278,7 @@ class Learner(Actor):
     @endpoint
     async def init_generators(self, generators: Any) -> None:
         """Set the generators service for weight updates.
+
         Args:
             generators: Service to notify of policy updates
         """
@@ -267,6 +287,7 @@ class Learner(Actor):
     @endpoint
     async def weights_handle(self) -> Dict[str, RDMABuffer]:
         """Create RDMA buffers for model weights.
+
         Returns:
             Dictionary mapping parameter names to RDMA buffers
         """
@@ -277,26 +298,34 @@ class Learner(Actor):
 
     def _compute_advantages(self, rewards: torch.Tensor) -> torch.Tensor:
         """Compute advantages from rewards.
+
         In PPO, advantages represent how much better an action is compared to the average.
         Here we compute advantages by subtracting a baseline (mean reward) from the rewards
         and then normalizing to stabilize training.
+
         Args:
             rewards: Raw rewards tensor [batch_size * G]
+
         Returns:
             Advantages tensor [batch_size * G]
         """
         # First, reshape rewards to [batch_size, G] to compute per-state baseline
         batch_size = rewards.shape[0] // G
         rewards_reshaped = rewards.view(batch_size, G)
+
         # Compute baseline (mean reward) for each state
         baselines = rewards_reshaped.mean(dim=1, keepdim=True)  # [batch_size, 1]
+
         # Subtract baseline from rewards to get advantages
         advantages = rewards_reshaped - baselines  # [batch_size, G]
+
         # Reshape back to original shape
         advantages = advantages.reshape(-1)  # [batch_size * G]
+
         # Normalize advantages for training stability
         if advantages.numel() > 1:  # Check if we have more than one element
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
         return advantages
 
     def _apply_policy_update(
@@ -307,26 +336,31 @@ class Learner(Actor):
         advantages: torch.Tensor,
     ) -> torch.Tensor:
         """Apply PPO update to policy network.
+
         Args:
             states: Batch of states
             actions: Batch of actions
             old_logps: Log probabilities from old policy
             advantages: Normalized advantages
+
         Returns:
             Loss value
         """
         # Compute new policy distribution and log probabilities
         dist_new = Categorical(logits=self.model(states))
         new_logps = dist_new.log_prob(actions)
+
         # PPO clipped objective
         ratio = (new_logps - old_logps).exp()
         unclipped = ratio * advantages
         clipped = torch.clamp(ratio, 1 - self.eps, 1 + self.eps) * advantages
         ppo_loss = -torch.min(unclipped, clipped).mean()
+
         # KL penalty to prevent large policy updates
         with torch.no_grad():
             ref_logits = self.ref_model(states)
         kl = kl_divergence(Categorical(logits=ref_logits), dist_new).mean()
+
         # Update policy
         loss = ppo_loss + self.kl_coeff * kl
         self.optim.zero_grad()
@@ -334,23 +368,27 @@ class Learner(Actor):
         nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
         self.optim.step()
         self.policy_version += 1
+
         return loss.detach()
 
     @endpoint
     async def step(self) -> torch.Tensor:
         """Perform one training step.
+
         Returns:
             Loss value from the update
         """
         # Notify generators of current policy version
         if self.generators:
             await self.generators.update.call(self.policy_version)
+
         # Sample and process trajectory slices
         slices = await self.replay_buffer.sample_from.call_one(self.batch_size)
         raw_states = torch.stack([s.state for s in slices])
         actions = torch.cat([s.actions for s in slices])
         old_logps = torch.cat([s.old_logps for s in slices])
         rewards = torch.cat([s.rewards for s in slices])
+
         # Prepare tensors for update
         states = raw_states.repeat_interleave(G, 0).to("cuda")
         actions, old_logps, rewards = [
@@ -379,6 +417,7 @@ class Generator(Actor):
 
     def __init__(self, weight_buffers, trajectory_queue):
         """Initialize the generator.
+
         Args:
             weight_buffers: RDMA buffers for policy weights
             trajectory_queue: Queue to put generated trajectories in
@@ -395,6 +434,7 @@ class Generator(Actor):
     @endpoint
     async def generate(self, state: torch.Tensor) -> None:
         """Generate actions for a given state.
+
         Args:
             state: Input state tensor [STATE_DIM]
         """
@@ -403,11 +443,13 @@ class Generator(Actor):
             await self.cond.wait_for(
                 lambda: self.state == GeneratorState.READY_TO_GENERATE
             )
+
             # Generate actions using current policy
             x = state.to("cuda").unsqueeze(0).repeat(G, 1)
             dist = Categorical(logits=self.model(x))
             acts = dist.sample()
             logps = dist.log_prob(acts)
+
             # Create trajectory slice
             slice_ = TrajectorySlice(
                 self.policy_version,
@@ -416,8 +458,10 @@ class Generator(Actor):
                 logps,
                 torch.zeros(G),
             )
+
         # Send to trajectory queue for scoring
         await self.trajectory_queue.put.call(slice_)
+
         async with self.cond:
             # Signal ready for update
             self.state = GeneratorState.READY_TO_UPDATE
@@ -426,6 +470,7 @@ class Generator(Actor):
     @endpoint
     async def update(self, version: int) -> None:
         """Update policy weights from RDMA buffers.
+
         Args:
             version: New policy version number
         """
@@ -447,11 +492,13 @@ async def main():
     # Create process meshes for different components
     learner_mesh = await proc_mesh(gpus=1)
     gen_mesh = await proc_mesh(gpus=2)
+
     # Spawn actors on the learner mesh
     traj_q = await learner_mesh.spawn("traj", TrajectoryQueue)
     replay_buf = await learner_mesh.spawn("rb", ReplayBuffer)
     learner = await learner_mesh.spawn("learner", Learner, replay_buf)
     scorer = await learner_mesh.spawn("scorer", Scorer, traj_q, replay_buf)
+
     # Get weight buffers and spawn generators on the generator mesh
     wb = await learner.weights_handle.call_one()
     generators = await gen_mesh.spawn(
@@ -461,8 +508,10 @@ async def main():
         traj_q,
     )
     await learner.init_generators.call(generators)
+
     # Start the scorer event loop in the background
     scorer_run_future = scorer.run.call_one()
+
     # Training loop
     for step in range(5):
         state = torch.randn(STATE_DIM)
