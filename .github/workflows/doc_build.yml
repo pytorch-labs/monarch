@@ -50,6 +50,10 @@ jobs:
         export _GLIBCXX_USE_CXX11_ABI=1
         export CUDA_LIB_DIR=/usr/lib64
 
+        # Install the monarch package in development mode
+        # This is needed for Sphinx autosummary to import the modules
+        pip install -e .
+
         # Generate documentation for all workspace crates
         cargo doc --workspace --no-deps
 
