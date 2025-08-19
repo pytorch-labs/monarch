@@ -4,6 +4,23 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+"""
+Distributed PPO-like Reinforcement Learning with Monarch Actors
+==============================================================
+This example demonstrates implementing a distributed PPO-like reinforcement learning
+algorithm using the Monarch actor framework. The implementation features:
+- Distributed actor architecture with Generator, Scorer, and Learner components
+- Asynchronous communication via queues
+- RDMA-based weight synchronization
+- Event-driven architecture for efficient processing
+The example shows how to:
+- Set up distributed actors on separate GPU meshes
+- Implement policy gradient methods in a distributed setting
+- Use RDMA buffers for efficient parameter sharing
+- Create an asynchronous training loop with multiple components
+"""
+
+# %%
 import asyncio
 import copy
 import random
@@ -13,14 +30,13 @@ from typing import Any, Dict, List, Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.optim as optim
-
 from monarch.actor import Actor, endpoint, proc_mesh
 from monarch.rdma import RDMABuffer
 from torch.distributions import Categorical, kl_divergence
 
+# %%
 """
 Online reinforcement learning (RL) training loop using the Monarch actor framework.
-
 This example implements a distributed PPO-like algorithm with three main components:
 1. Generator: Produces actions using the current policy and sends them for scoring
 2. Scorer: Evaluates actions and assigns rewards
@@ -37,6 +53,7 @@ STATE_DIM = 4
 ACTION_DIM = 4  # vocab size
 
 
+# %%
 @dataclass
 class TrajectorySlice:
     """Single trajectory from one generator call.
@@ -56,6 +73,7 @@ class TrajectorySlice:
     rewards: torch.Tensor
 
 
+# %%
 @dataclass
 class TrainingBatch:
     """Batch of trajectories for training.
@@ -75,6 +93,7 @@ class TrainingBatch:
     policy_versions: List[int]
 
 
+# %%
 class TrajectoryQueue(Actor):
     """Queue for trajectory slices between Generator and Scorer."""
 
@@ -94,13 +113,13 @@ class TrajectoryQueue(Actor):
     @endpoint
     async def get(self) -> TrajectorySlice:
         """Remove and return a trajectory slice from the queue.
-
         Returns:
             The next trajectory slice in the queue
         """
         return await self.queue.get()
 
 
+# %%
 class ReplayBuffer(Actor):
     """Storage for scored trajectory slices with weighted sampling."""
 
@@ -154,10 +173,10 @@ class ReplayBuffer(Actor):
         # Sample indices based on policy version weights
         indices = list(range(len(self.storage)))
         chosen_indices = random.choices(indices, weights=probs, k=k)
-
         return [self.storage[i][1] for i in chosen_indices]
 
 
+# %%
 class Scorer(Actor):
     """Evaluates actions and assigns rewards to trajectory slices."""
 
@@ -228,6 +247,7 @@ class Scorer(Actor):
         self.running = False
 
 
+# %%
 class Learner(Actor):
     """Updates policy based on collected experiences using PPO algorithm."""
 
@@ -374,12 +394,12 @@ class Learner(Actor):
         actions, old_logps, rewards = [
             x.to("cuda") for x in (actions, old_logps, rewards)
         ]
-
         # Compute advantages and update policy
         advs = self._compute_advantages(rewards)
         return self._apply_policy_update(states, actions, old_logps, advs)
 
 
+# %%
 class GeneratorState:
     """States for the Generator's state machine."""
 
@@ -387,9 +407,9 @@ class GeneratorState:
     READY_TO_UPDATE = "READY_TO_UPDATE"
 
 
+# %%
 class Generator(Actor):
     """Generates actions using the current policy.
-
     Maintains a copy of the policy network that is synchronized with the Learner
     via RDMA buffers. Generates actions for given states and sends them to the
     trajectory queue for scoring.
@@ -460,13 +480,13 @@ class Generator(Actor):
             for n, b in self.weight_buffers.items():
                 await b.read_into(sd[n].view(torch.uint8).flatten())
             self.model.load_state_dict(sd)
-
             # Update version and state
             self.policy_version = version
             self.state = GeneratorState.READY_TO_GENERATE
             self.cond.notify_all()
 
 
+# %%
 async def main():
     """Run the distributed reinforcement learning training loop."""
     # Create process meshes for different components
@@ -501,12 +521,12 @@ async def main():
             learner.step.call_one(),
         )
         print(f"[Step {step:02d}] loss={loss:.3f}")
-
     # Clean up
     await scorer.stop.call_one()
     await scorer_run_future
     print("✅ done")
 
 
+# %%
 if __name__ == "__main__":
     asyncio.run(main())
