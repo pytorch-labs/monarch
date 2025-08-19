@@ -12,6 +12,14 @@
 import os
 import sys
 
+# Import our stub module early to mock heavy dependencies
+# This must be done before importing pytorch_sphinx_theme2 or any other modules
+# that might try to import torch
+try:
+    from . import _sphinx_stub
+except ImportError:
+    import _sphinx_stub
+
 import pytorch_sphinx_theme2
 
 # -- Project information -----------------------------------------------------
@@ -75,11 +83,12 @@ autodoc_default_options = {
 }
 
 # Mock imports for modules that can't be imported during doc build
+# Only mock external dependencies and Rust bindings, not the actual monarch modules
 autodoc_mock_imports = [
     "torch",
     "numpy",
     "monarch._rust_bindings",
-    "monarch.monarch_hyperactor",
+    "monarch.monarch_hyperactor", 
     "monarch_hyperactor",
     "hyperactor_mesh",
     "hyperactor_multiprocess",
@@ -87,30 +96,9 @@ autodoc_mock_imports = [
     "rdma",
     "monarch_messages",
     "monarch_types",
-    "monarch._src.actor.shape",
-    "monarch.common.device_mesh",
-    "monarch.common.pipe",
-    "monarch.common.stream",
-    "monarch.common.tensor",
-    "monarch.common.future",
-    "monarch.common.invocation",
-    "monarch.common.selection",
-    "monarch.common.opaque_ref",
-    "monarch.common._coalescing",
-    "monarch.common.remote",
-    "monarch.common.function",
-    "monarch.fetch",
-    "monarch.gradient_generator",
-    "monarch.python_local_mesh",
-    "monarch.notebook",
-    "monarch.rust_backend_mesh",
-    "monarch.rust_local_mesh",
-    "monarch.simulator.interface",
-    "monarch.simulator.config",
-    "monarch.world_mesh",
-    "monarch.timer",
-    "monarch.future",
-    "monarch.builtins",
+    # Keep these Rust/C++ bindings mocked
+    "monarch.common._C",
+    "monarch.gradient._gradient_generator",
 ]
 
 # -- Autosummary configuration ----------------------------------------------
