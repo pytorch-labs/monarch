@@ -10,6 +10,7 @@ import asyncio
 import logging
 
 import click
+from monarch._src.actor.future import Future
 
 from monarch.actor import Actor, endpoint, proc_mesh
 
@@ -40,8 +41,10 @@ async def _flush_logs() -> None:
     for _ in range(5):
         await am.print.call("has print streaming")
 
-    # TODO: will soon be removed by D80051803
-    await asyncio.sleep(2)
+    # TODO: remove this completely once we hook the flush logic upon dropping device_mesh
+    log_mesh = pm._logging_mesh_client
+    assert log_mesh is not None
+    Future(coro=log_mesh.flush().spawn().task()).get()
 
 
 @main.command("flush-logs")
