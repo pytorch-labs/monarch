@@ -33,6 +33,7 @@ logger: logging.Logger = logging.getLogger(__name__)
 class AllocHandle(DeprecatedNotAFuture):
     _hy_alloc: "Shared[Alloc]"
     _extent: Dict[str, int]
+    _fork_processes: bool
 
     @property
     def initialized(self) -> Future[Literal[True]]:
@@ -47,6 +48,10 @@ class AllocHandle(DeprecatedNotAFuture):
             return True
 
         return Future(coro=task())
+
+    @property
+    def fork_processes(self) -> bool:
+        return self._fork_processes
 
 
 class AllocateMixin(abc.ABC):
@@ -63,7 +68,14 @@ class AllocateMixin(abc.ABC):
         Returns:
         - A future that will be fulfilled when the requested allocation is fulfilled.
         """
-        return AllocHandle(self.allocate_nonblocking(spec).spawn(), spec.extent)
+        return AllocHandle(
+            self.allocate_nonblocking(spec).spawn(),
+            spec.extent,
+            self._fork_processes(),
+        )
+
+    @abc.abstractmethod
+    def _fork_processes(self) -> bool: ...
 
 
 @final
@@ -72,6 +84,9 @@ class ProcessAllocator(ProcessAllocatorBase, AllocateMixin):
     An allocator that allocates by spawning local processes.
     """
 
+    def _fork_processes(self) -> bool:
+        return True
+
 
 @final
 class LocalAllocator(LocalAllocatorBase, AllocateMixin):
@@ -79,12 +94,18 @@ class LocalAllocator(LocalAllocatorBase, AllocateMixin):
     An allocator that allocates by spawning actors into the current process.
     """
 
+    def _fork_processes(self) -> bool:
+        return False
+
 
 @final
 class SimAllocator(SimAllocatorBase, AllocateMixin):
     """
     An allocator that allocates by spawning actors into the current process using simulated channels for transport
     """
+
+    def _fork_processes(self) -> bool:
+        return False
 
 
 class RemoteAllocInitializer(abc.ABC):
@@ -219,3 +240,6 @@ class RemoteAllocator(RemoteAllocatorBase, AllocateMixin):
     An allocator that allocates by spawning actors on a remote host.
     The remote host must be running hyperactor's remote-process-allocator.
     """
+
+    def _fork_processes(self) -> bool:
+        return True

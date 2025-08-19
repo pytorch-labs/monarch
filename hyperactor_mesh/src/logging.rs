@@ -34,7 +34,6 @@ use hyperactor::Unbind;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelRx;
-use hyperactor::channel::ChannelTransport;
 use hyperactor::channel::ChannelTx;
 use hyperactor::channel::Rx;
 use hyperactor::channel::Tx;
@@ -550,6 +549,10 @@ impl<T: LogSender + Unpin + 'static, S: io::AsyncWrite + Send + Unpin + 'static>
                 // Since LogSender::send takes &self, we don't need to clone it
                 if let Err(e) = this.log_sender.send(output_target, data_to_send) {
                     tracing::error!("error sending log: {}", e);
+                    return Poll::Ready(Err(io::Error::other(format!(
+                        "error sending write message: {}",
+                        e
+                    ))));
                 }
                 // Return success with the full buffer size
                 Poll::Ready(Ok(buf.len()))
@@ -621,15 +624,7 @@ impl Actor for LogForwardActor {
     async fn new(logging_client_ref: Self::Params) -> Result<Self> {
         let log_channel: ChannelAddr = match std::env::var(BOOTSTRAP_LOG_CHANNEL) {
             Ok(channel) => channel.parse()?,
-            Err(err) => {
-                tracing::debug!(
-                    "log forwarder actor failed to read env var {}: {}",
-                    BOOTSTRAP_LOG_CHANNEL,
-                    err
-                );
-                // TODO: an empty channel to serve
-                ChannelAddr::any(ChannelTransport::Unix)
-            }
+            Err(err) => return Err(err.into()),
         };
         tracing::info!(
             "log forwarder {} serve at {}",
@@ -637,21 +632,7 @@ impl Actor for LogForwardActor {
             log_channel
         );
 
-        let rx = match channel::serve(log_channel.clone()).await {
-            Ok((_, rx)) => rx,
-            Err(err) => {
-                // This can happen if we are not spanwed on a separate process like local.
-                // For local mesh, log streaming anyway is not needed.
-                tracing::error!(
-                    "log forwarder actor failed to bootstrap on given channel {}: {}",
-                    log_channel,
-                    err
-                );
-                channel::serve(ChannelAddr::any(ChannelTransport::Unix))
-                    .await?
-                    .1
-            }
-        };
+        let (_, rx) = channel::serve(log_channel.clone()).await?;
         Ok(Self {
             rx,
             logging_client_ref,
@@ -754,15 +735,7 @@ impl Actor for LogFlushActor {
     async fn new(_: ()) -> Result<Self, anyhow::Error> {
         let log_channel: ChannelAddr = match std::env::var(BOOTSTRAP_LOG_CHANNEL) {
             Ok(channel) => channel.parse()?,
-            Err(err) => {
-                tracing::debug!(
-                    "log forwarder actor failed to read env var {}: {}",
-                    BOOTSTRAP_LOG_CHANNEL,
-                    err
-                );
-                // TODO: this should error out; it can only happen with local proc; we need to fix it.
-                ChannelAddr::any(ChannelTransport::Unix)
-            }
+            Err(err) => return Err(err.into()),
         };
         let tx = channel::dial::<LogMessage>(log_channel)?;
 
@@ -1036,6 +1009,7 @@ mod tests {
 
     use hyperactor::channel;
     use hyperactor::channel::ChannelAddr;
+    use hyperactor::channel::ChannelTransport;
     use hyperactor::channel::ChannelTx;
     use hyperactor::channel::Tx;
     use hyperactor::id;

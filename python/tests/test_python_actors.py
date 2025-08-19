@@ -1101,3 +1101,12 @@ def test_mesh_len():
     proc_mesh = local_proc_mesh(gpus=12).get()
     s = proc_mesh.spawn("sync_actor", SyncActor).get()
     assert 12 == len(s)
+
+
+async def test_logging_option_on_local_procs() -> None:
+    proc_mesh = local_proc_mesh(gpus=1)
+    with pytest.raises(
+        RuntimeError,
+        match="Logging option is only available for allocators that fork processes",
+    ):
+        await proc_mesh.logging_option(stream_to_client=True)
