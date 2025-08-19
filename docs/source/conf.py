@@ -88,6 +88,7 @@ autodoc_mock_imports = [
     "monarch_messages",
     "monarch_types",
     "monarch._src.actor.shape",
+    "monarch.common.device_mesh",
     "monarch.common.pipe",
     "monarch.common.stream",
     "monarch.common.tensor",
@@ -224,7 +225,7 @@ source_suffix = {
 }
 
 # The master toctree document.
-master_doc = "index"
+#master_doc = "index"
 
 # Configure MyST-Parser to properly handle relative links in the books directory
 myst_url_schemes = ["http", "https", "mailto"]
