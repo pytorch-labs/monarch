@@ -22,7 +22,6 @@ use super::*;
 use crate::channel;
 use crate::clock::Clock;
 use crate::clock::RealClock;
-use crate::clock::SimClock;
 use crate::data::Serialized;
 use crate::mailbox::MessageEnvelope;
 use crate::simnet;
@@ -129,7 +128,7 @@ pub(crate) struct MessageDeliveryEvent {
     src_addr: Option<ChannelAddr>,
     dest_addr: ChannelAddr,
     data: Serialized,
-    duration_ms: u64,
+    duration: tokio::time::Duration,
 }
 
 impl MessageDeliveryEvent {
@@ -139,7 +138,7 @@ impl MessageDeliveryEvent {
             src_addr,
             dest_addr,
             data,
-            duration_ms: 100,
+            duration: tokio::time::Duration::from_millis(100),
         }
     }
 }
@@ -158,8 +157,8 @@ impl Event for MessageDeliveryEvent {
         Ok(())
     }
 
-    fn duration_ms(&self) -> u64 {
-        self.duration_ms
+    fn duration(&self) -> tokio::time::Duration {
+        self.duration
     }
 
     fn summary(&self) -> String {
@@ -178,12 +177,12 @@ impl Event for MessageDeliveryEvent {
                 src: src_addr.clone(),
                 dst: self.dest_addr.clone(),
             };
-            self.duration_ms = topology
+            self.duration = topology
                 .lock()
                 .await
                 .topology
                 .get(&edge)
-                .map_or_else(|| 1, |v| v.latency.as_millis() as u64);
+                .map_or_else(|| tokio::time::Duration::from_millis(1), |v| v.latency);
         }
     }
 }
@@ -332,7 +331,7 @@ impl<M: RemoteMessage> Tx<M> for SimTx<M> {
                         self.dst_addr.clone(),
                         data,
                     )),
-                    time: SimClock.millis_since_start(RealClock.now()),
+                    time: RealClock.now(),
                 }),
                 _ => handle.send_event(Box::new(MessageDeliveryEvent::new(
                     self.src_addr.clone(),
@@ -551,7 +550,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(SimClock.millis_since_start(RealClock.now()), 0);
+        assert_eq!(
+            SimClock.duration_since_start(RealClock.now()),
+            tokio::time::Duration::ZERO
+        );
         // Fast forward real time to 5 seconds
         tokio::time::advance(tokio::time::Duration::from_secs(5)).await;
         {

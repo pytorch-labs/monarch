@@ -70,7 +70,7 @@ const OPERATIONAL_MESSAGE_BUFFER_SIZE: usize = 8;
 pub trait Address: Hash + Debug + Eq + PartialEq + Ord + PartialOrd + Clone {}
 impl<A: Hash + Debug + Eq + PartialEq + Ord + PartialOrd + Clone> Address for A {}
 
-type SimulatorTimeInstant = u64;
+type SimulatorTimeInstant = tokio::time::Instant;
 
 /// The unit of execution for the simulator.
 /// Using handle(), simnet can schedule executions in the network.
@@ -99,7 +99,7 @@ pub trait Event: Send + Sync + Debug {
 
     /// The latency of the event. This could be network latency, induced latency (sleep), or
     /// GPU work latency.
-    fn duration_ms(&self) -> u64;
+    fn duration(&self) -> tokio::time::Duration;
 
     /// Read the simnet config and update self accordingly.
     async fn read_simnet_config(&mut self, _topology: &Arc<Mutex<SimNetConfig>>) {}
@@ -126,8 +126,8 @@ impl Event for NodeJoinEvent {
         self.handle().await
     }
 
-    fn duration_ms(&self) -> u64 {
-        0
+    fn duration(&self) -> tokio::time::Duration {
+        tokio::time::Duration::ZERO
     }
 
     fn summary(&self) -> String {
@@ -139,15 +139,19 @@ impl Event for NodeJoinEvent {
 pub(crate) struct SleepEvent {
     done_tx: OncePortRef<()>,
     mailbox: Mailbox,
-    duration_ms: u64,
+    duration: tokio::time::Duration,
 }
 
 impl SleepEvent {
-    pub(crate) fn new(done_tx: OncePortRef<()>, mailbox: Mailbox, duration_ms: u64) -> Box<Self> {
+    pub(crate) fn new(
+        done_tx: OncePortRef<()>,
+        mailbox: Mailbox,
+        duration: tokio::time::Duration,
+    ) -> Box<Self> {
         Box::new(Self {
             done_tx,
             mailbox,
-            duration_ms,
+            duration,
         })
     }
 }
@@ -166,12 +170,12 @@ impl Event for SleepEvent {
         Ok(())
     }
 
-    fn duration_ms(&self) -> u64 {
-        self.duration_ms
+    fn duration(&self) -> tokio::time::Duration {
+        self.duration
     }
 
     fn summary(&self) -> String {
-        format!("Sleeping for {} ms", self.duration_ms)
+        format!("Sleeping for {} ms", self.duration.as_millis())
     }
 }
 
@@ -200,8 +204,8 @@ impl Event for TorchOpEvent {
         Ok(())
     }
 
-    fn duration_ms(&self) -> u64 {
-        100
+    fn duration(&self) -> tokio::time::Duration {
+        tokio::time::Duration::from_millis(100)
     }
 
     fn summary(&self) -> String {
@@ -561,22 +565,20 @@ impl SimNet {
         // Get latency
         event.read_simnet_config(&self.config).await;
         ScheduledEvent {
-            time: SimClock.millis_since_start(
-                SimClock.now() + tokio::time::Duration::from_millis(event.duration_ms()),
-            ),
+            time: SimClock.now() + event.duration(),
             event,
         }
     }
 
     /// Schedule the event into the network.
     fn schedule_event(&mut self, scheduled_event: ScheduledEvent, advanceable: bool) {
-        let start_at = SimClock.millis_since_start(SimClock.now());
+        let start_at = SimClock.now();
         let end_at = scheduled_event.time;
 
         self.records.push(SimulatorEventRecord {
             summary: scheduled_event.event.summary(),
-            start_at,
-            end_at,
+            start_at: SimClock.duration_since_start(start_at).as_millis() as u64,
+            end_at: SimClock.duration_since_start(end_at).as_millis() as u64,
         });
 
         if advanceable {
@@ -604,7 +606,7 @@ impl SimNet {
     ) -> Vec<SimulatorEventRecord> {
         // The simulated number of milliseconds the training script
         // has spent waiting for the backend to resolve a future
-        let mut training_script_waiting_time: u64 = 0;
+        let mut training_script_waiting_time = tokio::time::Duration::from_millis(0);
         // Duration elapsed while only non_advanceable_events has events
         let mut debounce_timer: Option<tokio::time::Instant> = None;
         'outer: loop {
@@ -638,9 +640,7 @@ impl SimNet {
                         .scheduled_events
                         .first_key_value()
                         .is_some_and(|(time, _)| {
-                            *time
-                                > SimClock.millis_since_start(RealClock.now())
-                                    + training_script_waiting_time
+                            *time > RealClock.now() + training_script_waiting_time
                         })
                 {
                     tokio::task::yield_now().await;
@@ -705,8 +705,7 @@ impl SimNet {
                     continue;
                 };
                 if training_script_state_rx.borrow().is_waiting() {
-                    let advanced_time =
-                        scheduled_time - SimClock.millis_since_start(SimClock.now());
+                    let advanced_time = scheduled_time - SimClock.now();
                     training_script_waiting_time += advanced_time;
                 }
                 SimClock.advance_to(scheduled_time);
@@ -749,9 +748,9 @@ pub struct SimulatorEventRecord {
     /// Event dependent summary for user
     pub summary: String,
     /// The time at which the message delivery was started.
-    pub start_at: SimulatorTimeInstant,
+    pub start_at: u64,
     /// The time at which the message was delivered to the receiver.
-    pub end_at: SimulatorTimeInstant,
+    pub end_at: u64,
 }
 
 /// A configuration for the network topology.
@@ -805,7 +804,7 @@ mod tests {
         src_addr: SimAddr,
         dest_addr: SimAddr,
         data: Serialized,
-        duration_ms: u64,
+        duration: tokio::time::Duration,
         dispatcher: Option<TestDispatcher>,
     }
 
@@ -823,8 +822,8 @@ mod tests {
             }
             Ok(())
         }
-        fn duration_ms(&self) -> u64 {
-            self.duration_ms
+        fn duration(&self) -> tokio::time::Duration {
+            self.duration
         }
 
         fn summary(&self) -> String {
@@ -840,12 +839,12 @@ mod tests {
                 src: self.src_addr.addr().clone(),
                 dst: self.dest_addr.addr().clone(),
             };
-            self.duration_ms = config
+            self.duration = config
                 .lock()
                 .await
                 .topology
                 .get(&edge)
-                .map_or_else(|| 1, |v| v.latency.as_millis() as u64);
+                .map_or_else(|| tokio::time::Duration::from_millis(1), |v| v.latency);
         }
     }
 
@@ -860,7 +859,7 @@ mod tests {
                 src_addr,
                 dest_addr,
                 data,
-                duration_ms: 1,
+                duration: tokio::time::Duration::from_millis(1),
                 dispatcher,
             }
         }
@@ -1132,12 +1131,18 @@ mod tests {
         start();
 
         let start = SimClock.now();
-        assert_eq!(SimClock.millis_since_start(start), 0);
+        assert_eq!(
+            SimClock.duration_since_start(start),
+            tokio::time::Duration::ZERO
+        );
 
         SimClock.sleep(tokio::time::Duration::from_secs(10)).await;
 
         let end = SimClock.now();
-        assert_eq!(SimClock.millis_since_start(end), 10000);
+        assert_eq!(
+            SimClock.duration_since_start(end),
+            tokio::time::Duration::from_secs(10)
+        );
     }
 
     #[tokio::test]

@@ -197,11 +197,7 @@ impl Clock for SimClock {
 
         simnet_handle()
             .unwrap()
-            .send_event(SleepEvent::new(
-                tx.bind(),
-                mailbox,
-                duration.as_millis() as u64,
-            ))
+            .send_event(SleepEvent::new(tx.bind(), mailbox, duration))
             .unwrap();
         rx.recv().await.unwrap();
     }
@@ -212,11 +208,7 @@ impl Clock for SimClock {
 
         simnet_handle()
             .unwrap()
-            .send_nonadvanceable_event(SleepEvent::new(
-                tx.bind(),
-                mailbox,
-                duration.as_millis() as u64,
-            ))
+            .send_nonadvanceable_event(SleepEvent::new(tx.bind(), mailbox, duration))
             .unwrap();
         rx.recv().await.unwrap();
     }
@@ -247,11 +239,7 @@ impl Clock for SimClock {
 
         simnet_handle()
             .unwrap()
-            .send_event(SleepEvent::new(
-                tx.bind(),
-                mailbox,
-                duration.as_millis() as u64,
-            ))
+            .send_event(SleepEvent::new(tx.bind(), mailbox, duration))
             .unwrap();
 
         let fut = f;
@@ -290,14 +278,19 @@ impl SimClock {
     }
 
     /// Advance the sumulator's time to the specified instant
-    pub fn advance_to(&self, millis: u64) {
+    pub fn advance_to(&self, time: tokio::time::Instant) {
         let mut guard = SIM_TIME.now.lock().unwrap();
-        *guard = SIM_TIME.start + tokio::time::Duration::from_millis(millis);
+        *guard = time;
     }
 
     /// Get the number of milliseconds elapsed since the start of the simulation
-    pub fn millis_since_start(&self, instant: tokio::time::Instant) -> u64 {
-        instant.duration_since(SIM_TIME.start).as_millis() as u64
+    pub fn duration_since_start(&self, instant: tokio::time::Instant) -> tokio::time::Duration {
+        instant.duration_since(SIM_TIME.start)
+    }
+
+    /// Instant marking the start of the simulation
+    pub fn start(&self) -> tokio::time::Instant {
+        SIM_TIME.start.clone()
     }
 }
 
@@ -347,10 +340,16 @@ mod tests {
     #[tokio::test]
     async fn test_sim_clock_simple() {
         let start = SimClock.now();
-        assert_eq!(SimClock.millis_since_start(start), 0);
-        SimClock.advance_to(10000);
+        assert_eq!(
+            SimClock.duration_since_start(start),
+            tokio::time::Duration::ZERO
+        );
+        SimClock.advance_to(SimClock.start() + tokio::time::Duration::from_millis(10000));
         let end = SimClock.now();
-        assert_eq!(SimClock.millis_since_start(end), 10000);
+        assert_eq!(
+            SimClock.duration_since_start(end),
+            tokio::time::Duration::from_millis(10000)
+        );
         assert_eq!(
             end.duration_since(start),
             tokio::time::Duration::from_secs(10)
@@ -360,7 +359,7 @@ mod tests {
     #[tokio::test]
     async fn test_sim_clock_system_time() {
         let start = SimClock.system_time_now();
-        SimClock.advance_to(10000);
+        SimClock.advance_to(SimClock.start() + tokio::time::Duration::from_millis(10000));
         let end = SimClock.system_time_now();
         assert_eq!(
             end.duration_since(start).unwrap(),
