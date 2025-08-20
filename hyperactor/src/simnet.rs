@@ -569,6 +569,12 @@ impl SimNet {
         let mut training_script_waiting_time = tokio::time::Duration::from_millis(0);
         // Duration elapsed while only non_advanceable_events has events
         let mut debounce_timer: Option<tokio::time::Instant> = None;
+
+        let debounce_duration = std::env::var("SIM_DEBOUNCE")
+            .ok()
+            .and_then(|val| val.parse::<u64>().ok())
+            .unwrap_or(1);
+
         'outer: loop {
             // Check if we should stop
             if stop_signal.load(Ordering::SeqCst) {
@@ -576,7 +582,10 @@ impl SimNet {
             }
 
             while let Ok(Some((event, advanceable, time))) = RealClock
-                .timeout(tokio::time::Duration::from_millis(1), event_rx.recv())
+                .timeout(
+                    tokio::time::Duration::from_millis(debounce_duration),
+                    event_rx.recv(),
+                )
                 .await
             {
                 let scheduled_event = match time {
