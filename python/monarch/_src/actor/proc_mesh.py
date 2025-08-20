@@ -179,6 +179,7 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
         self,
         hy_proc_mesh: "Shared[HyProcMesh]",
         shape: Shape,
+        _fork_processes: bool,
         _device_mesh: Optional["DeviceMesh"] = None,
     ) -> None:
         self._proc_mesh = hy_proc_mesh
@@ -193,6 +194,7 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
         self._code_sync_client: Optional[CodeSyncMeshClient] = None
         self._logging_mesh_client: Optional[LoggingMeshClient] = None
         self._maybe_device_mesh: Optional["DeviceMesh"] = _device_mesh
+        self._fork_processes = _fork_processes
         self._stopped = False
         self._controller_controller: Optional["_ControllerController"] = None
 
@@ -225,7 +227,12 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
             if self._maybe_device_mesh is None
             else self._device_mesh._new_with_shape(shape)
         )
-        pm = ProcMesh(self._proc_mesh, shape, _device_mesh=device_mesh)
+        pm = ProcMesh(
+            self._proc_mesh,
+            shape,
+            _fork_processes=self._fork_processes,
+            _device_mesh=device_mesh,
+        )
         pm._slice = True
         return pm
 
@@ -300,7 +307,12 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
 
         hy_proc_mesh = PythonTask.from_coroutine(task()).spawn()
 
-        pm = ProcMesh(hy_proc_mesh, shape)
+        fork_processes: bool = alloc.fork_processes
+        pm = ProcMesh(
+            hy_proc_mesh,
+            shape,
+            _fork_processes=fork_processes,
+        )
 
         async def task(
             pm: "ProcMesh",
@@ -309,14 +321,15 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
         ) -> HyProcMesh:
             hy_proc_mesh = await hy_proc_mesh_task
 
-            pm._logging_mesh_client = await LoggingMeshClient.spawn(
-                proc_mesh=hy_proc_mesh
-            )
-            pm._logging_mesh_client.set_mode(
-                stream_to_client=True,
-                aggregate_window_sec=3,
-                level=logging.INFO,
-            )
+            if fork_processes:
+                pm._logging_mesh_client = await LoggingMeshClient.spawn(
+                    proc_mesh=hy_proc_mesh
+                )
+                pm._logging_mesh_client.set_mode(
+                    stream_to_client=True,
+                    aggregate_window_sec=3,
+                    level=logging.INFO,
+                )
 
             if setup_actor is not None:
                 await setup_actor.setup.call()
@@ -483,6 +496,11 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
         Returns:
             None
         """
+        if not self._fork_processes:
+            raise RuntimeError(
+                "Logging option is only available for allocators that fork processes. Allocators like LocalAllocator are not supported."
+            )
+
         if level < 0 or level > 255:
             raise ValueError("Invalid logging level: {}".format(level))
         await self.initialized

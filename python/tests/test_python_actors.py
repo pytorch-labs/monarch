@@ -27,6 +27,7 @@ import torch
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 
 from monarch._src.actor.actor_mesh import ActorMesh, Channel, Port
+from monarch._src.actor.future import Future
 
 from monarch.actor import (
     Accumulator,
@@ -559,8 +560,10 @@ async def test_actor_log_streaming() -> None:
                     await am.print.call("has print streaming too")
                     await am.log.call("has log streaming as level matched")
 
-                # Give it some time to reflect and aggregate
-                await asyncio.sleep(1)
+                # TODO: remove this completely once we hook the flush logic upon dropping device_mesh
+                log_mesh = pm._logging_mesh_client
+                assert log_mesh is not None
+                Future(coro=log_mesh.flush().spawn().task()).get()
 
                 # Flush all outputs
                 stdout_file.flush()
@@ -675,7 +678,11 @@ async def test_logging_option_defaults() -> None:
                 for _ in range(5):
                     await am.print.call("print streaming")
                     await am.log.call("log streaming")
-                await asyncio.sleep(4)
+
+                # TODO: remove this completely once we hook the flush logic upon dropping device_mesh
+                log_mesh = pm._logging_mesh_client
+                assert log_mesh is not None
+                Future(coro=log_mesh.flush().spawn().task()).get()
 
                 # Flush all outputs
                 stdout_file.flush()
@@ -801,8 +808,10 @@ async def test_flush_on_disable_aggregation() -> None:
                 for _ in range(5):
                     await am.print.call("single log line")
 
-                # Wait a bit to ensure flush completes
-                await asyncio.sleep(1)
+                # TODO: remove this completely once we hook the flush logic upon dropping device_mesh
+                log_mesh = pm._logging_mesh_client
+                assert log_mesh is not None
+                Future(coro=log_mesh.flush().spawn().task()).get()
 
                 # Flush all outputs
                 stdout_file.flush()
@@ -846,6 +855,32 @@ async def test_flush_on_disable_aggregation() -> None:
             pass
 
 
+@pytest.mark.timeout(120)
+async def test_multiple_ongoing_flushes_no_deadlock() -> None:
+    """
+    The goal is to make sure when a user sends multiple sync flushes, we are not deadlocked.
+    Because now a flush call is purely sync, it is very easy to get into a deadlock.
+    So we assert the last flush call will not get into such a state.
+    """
+    pm = await proc_mesh(gpus=4)
+    am = await pm.spawn("printer", Printer)
+
+    # Generate some logs that will be aggregated but not flushed immediately
+    for _ in range(10):
+        await am.print.call("aggregated log line")
+
+    log_mesh = pm._logging_mesh_client
+    assert log_mesh is not None
+    futures = []
+    for _ in range(5):
+        # FIXME: the order of futures doesn't necessarily mean the order of flushes due to the async nature.
+        await asyncio.sleep(0.1)
+        futures.append(Future(coro=log_mesh.flush().spawn().task()))
+
+    # The last flush should not block
+    futures[-1].get()
+
+
 @pytest.mark.timeout(60)
 async def test_adjust_aggregation_window() -> None:
     """Test that the flush deadline is updated when the aggregation window is adjusted.
@@ -886,8 +921,10 @@ async def test_adjust_aggregation_window() -> None:
                 for _ in range(3):
                     await am.print.call("second batch of logs")
 
-                # Wait just enough time for the shorter window to trigger a flush
-                await asyncio.sleep(1)
+                # TODO: remove this completely once we hook the flush logic upon dropping device_mesh
+                log_mesh = pm._logging_mesh_client
+                assert log_mesh is not None
+                Future(coro=log_mesh.flush().spawn().task()).get()
 
                 # Flush all outputs
                 stdout_file.flush()
@@ -1075,3 +1112,12 @@ def test_mesh_len():
     proc_mesh = local_proc_mesh(gpus=12).get()
     s = proc_mesh.spawn("sync_actor", SyncActor).get()
     assert 12 == len(s)
+
+
+async def test_logging_option_on_local_procs() -> None:
+    proc_mesh = local_proc_mesh(gpus=1)
+    with pytest.raises(
+        RuntimeError,
+        match="Logging option is only available for allocators that fork processes",
+    ):
+        await proc_mesh.logging_option(stream_to_client=True)
