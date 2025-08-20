@@ -88,12 +88,12 @@ pub trait Event: Send + Sync + Debug {
     /// For a proc spawn, it will be creating the proc object and instantiating it.
     /// For any event that manipulates the network (like adding/removing nodes etc.)
     /// implement handle_network().
-    async fn handle(&self) -> Result<(), SimNetError>;
+    async fn handle(&mut self) -> Result<(), SimNetError>;
 
     /// This is the method that will be called when the simulator fires the event
     /// Unless you need to make changes to the network, you do not have to implement this.
     /// Only implement handle() method for all non-simnet requirements.
-    async fn handle_network(&self, _phantom: &SimNet) -> Result<(), SimNetError> {
+    async fn handle_network(&mut self, _phantom: &SimNet) -> Result<(), SimNetError> {
         self.handle().await
     }
 
@@ -117,11 +117,11 @@ struct NodeJoinEvent {
 
 #[async_trait]
 impl Event for NodeJoinEvent {
-    async fn handle(&self) -> Result<(), SimNetError> {
+    async fn handle(&mut self) -> Result<(), SimNetError> {
         Ok(())
     }
 
-    async fn handle_network(&self, simnet: &SimNet) -> Result<(), SimNetError> {
+    async fn handle_network(&mut self, simnet: &SimNet) -> Result<(), SimNetError> {
         simnet.bind(self.channel_addr.clone()).await;
         self.handle().await
     }
@@ -132,50 +132,6 @@ impl Event for NodeJoinEvent {
 
     fn summary(&self) -> String {
         "Node join".into()
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct SleepEvent {
-    done_tx: OncePortRef<()>,
-    mailbox: Mailbox,
-    duration: tokio::time::Duration,
-}
-
-impl SleepEvent {
-    pub(crate) fn new(
-        done_tx: OncePortRef<()>,
-        mailbox: Mailbox,
-        duration: tokio::time::Duration,
-    ) -> Box<Self> {
-        Box::new(Self {
-            done_tx,
-            mailbox,
-            duration,
-        })
-    }
-}
-
-#[async_trait]
-impl Event for SleepEvent {
-    async fn handle(&self) -> Result<(), SimNetError> {
-        Ok(())
-    }
-
-    async fn handle_network(&self, _simnet: &SimNet) -> Result<(), SimNetError> {
-        self.done_tx
-            .clone()
-            .send(&self.mailbox, ())
-            .map_err(|_err| SimNetError::Closed("TODO".to_string()))?;
-        Ok(())
-    }
-
-    fn duration(&self) -> tokio::time::Duration {
-        self.duration
-    }
-
-    fn summary(&self) -> String {
-        format!("Sleeping for {} ms", self.duration.as_millis())
     }
 }
 
@@ -192,11 +148,11 @@ pub struct TorchOpEvent {
 
 #[async_trait]
 impl Event for TorchOpEvent {
-    async fn handle(&self) -> Result<(), SimNetError> {
+    async fn handle(&mut self) -> Result<(), SimNetError> {
         Ok(())
     }
 
-    async fn handle_network(&self, _simnet: &SimNet) -> Result<(), SimNetError> {
+    async fn handle_network(&mut self, _simnet: &SimNet) -> Result<(), SimNetError> {
         self.done_tx
             .clone()
             .send(&self.mailbox, ())
@@ -308,6 +264,10 @@ pub enum SimNetError {
     /// SimnetHandle being accessed without starting simnet
     #[error("simnet not started")]
     NotStarted,
+
+    /// A task has panicked.
+    #[error("panicked task")]
+    PanickedTask,
 }
 
 struct State {
@@ -709,7 +669,7 @@ impl SimNet {
                     training_script_waiting_time += advanced_time;
                 }
                 SimClock.advance_to(scheduled_time);
-                for scheduled_event in scheduled_events {
+                for mut scheduled_event in scheduled_events {
                     self.pending_event_count
                         .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
                     if scheduled_event.event.handle_network(self).await.is_err() {
@@ -810,7 +770,7 @@ mod tests {
 
     #[async_trait]
     impl Event for MessageDeliveryEvent {
-        async fn handle(&self) -> Result<(), simnet::SimNetError> {
+        async fn handle(&mut self) -> Result<(), simnet::SimNetError> {
             if let Some(dispatcher) = &self.dispatcher {
                 dispatcher
                     .send(
