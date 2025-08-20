@@ -26,6 +26,7 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use dashmap::DashSet;
 use enum_as_inner::EnumAsInner;
+use ndslice::view::Point;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
@@ -43,6 +44,7 @@ use tokio::time::interval;
 use crate::ActorId;
 use crate::Mailbox;
 use crate::OncePortRef;
+use crate::ProcId;
 use crate::channel::ChannelAddr;
 use crate::clock::Clock;
 use crate::clock::RealClock;
@@ -299,6 +301,7 @@ pub struct SimNetHandle {
     training_script_state_tx: tokio::sync::watch::Sender<TrainingScriptState>,
     /// Signal to stop the simnet loop
     stop_signal: Arc<AtomicBool>,
+    resources: DashMap<ProcId, Point>,
 }
 
 impl SimNetHandle {
@@ -409,6 +412,11 @@ impl SimNetHandle {
             "timeout waiting for received events to be scheduled".to_string(),
         ))
     }
+
+    /// Register the location in resource space for a Proc
+    pub fn register_proc(&self, proc_id: ProcId, point: Point) {
+        self.resources.insert(proc_id, point);
+    }
 }
 
 pub(crate) type Topology = DashMap<SimNetEdge, SimNetEdgeInfo>;
@@ -482,6 +490,7 @@ pub fn start() {
         pending_event_count,
         training_script_state_tx,
         stop_signal,
+        resources: DashMap::new(),
     });
 }
 
