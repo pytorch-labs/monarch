@@ -130,11 +130,76 @@ impl Alloc for SimAlloc {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
+    use hyperactor::simnet::BetaDistribution;
+    use hyperactor::simnet::LatencyConfig;
+    use hyperactor::simnet::LatencyDistribution;
+    use ndslice::extent;
+
     use super::*;
+    use crate::ProcMesh;
+    use crate::RootActorMesh;
+    use crate::actor_mesh::ActorMesh;
+    use crate::alloc::AllocConstraints;
+    use crate::alloc::test_utils::TestActor;
 
     #[tokio::test]
     async fn test_allocator_basic() {
         hyperactor::simnet::start();
         crate::alloc::testing::test_allocator_basic(SimAllocator).await;
+    }
+
+    #[tokio::test]
+    async fn test_allocator_registers_resources() {
+        hyperactor::simnet::start_with_config(LatencyConfig {
+            inter_zone_distribution: LatencyDistribution::Beta(
+                BetaDistribution::new(
+                    tokio::time::Duration::from_millis(999),
+                    tokio::time::Duration::from_millis(999),
+                    1.0,
+                    1.0,
+                )
+                .unwrap(),
+            ),
+            ..Default::default()
+        });
+
+        let alloc = SimAllocator
+            .allocate(AllocSpec {
+                extent: extent!(region = 1, dc = 1, zone = 10, rack = 1, host = 1, gpu = 1),
+                constraints: AllocConstraints {
+                    match_labels: HashMap::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        let proc_mesh = ProcMesh::allocate(alloc).await.unwrap();
+
+        let handle = hyperactor::simnet::simnet_handle().unwrap();
+        let actor_mesh: RootActorMesh<TestActor> = proc_mesh.spawn("echo", &()).await.unwrap();
+        let actors = actor_mesh.iter_actor_refs().collect::<Vec<_>>();
+        assert_eq!(
+            handle.sample_latency(
+                actors[0].actor_id().proc_id(),
+                actors[1].actor_id().proc_id()
+            ),
+            tokio::time::Duration::from_millis(999)
+        );
+        assert_eq!(
+            handle.sample_latency(
+                actors[2].actor_id().proc_id(),
+                actors[9].actor_id().proc_id()
+            ),
+            tokio::time::Duration::from_millis(999)
+        );
+        assert_eq!(
+            handle.sample_latency(
+                proc_mesh.client().actor_id().proc_id(),
+                actors[1].actor_id().proc_id()
+            ),
+            tokio::time::Duration::from_millis(999)
+        );
     }
 }
