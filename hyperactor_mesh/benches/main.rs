@@ -33,6 +33,7 @@ use tokio::runtime::Runtime;
 fn bench_actor_scaling(c: &mut Criterion) {
     let mut group = c.benchmark_group("actor_scaling");
     let host_counts = vec![1, 10, 100];
+    let gpus = 1;
     let message_size = 1024; // Fixed message size (1KB)
     group.sample_size(10);
     group.sampling_mode(criterion::SamplingMode::Flat);
@@ -43,7 +44,7 @@ fn bench_actor_scaling(c: &mut Criterion) {
             b.iter_custom(|iters| async move {
                 let alloc = LocalAllocator
                     .allocate(AllocSpec {
-                        extent: extent!(hosts = host_count, gpus = 8),
+                        extent: extent!(hosts = host_count, gpus = gpus),
                         constraints: Default::default(),
                     })
                     .await
@@ -74,13 +75,17 @@ fn bench_actor_scaling(c: &mut Criterion) {
                         .unwrap();
 
                     let mut msg_rcv = 0;
-                    while msg_rcv < host_count {
-                        let _ = rx.recv().await.unwrap();
+                    while msg_rcv < host_count * gpus {
+                        let _ = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+                            .await
+                            .unwrap();
+
                         msg_rcv += 1;
                     }
                 }
 
                 let elapsed = start.elapsed();
+                println!("Elapsed: {:?} on iters {}", elapsed, iters);
                 proc_mesh
                     .events()
                     .unwrap()
@@ -89,7 +94,7 @@ fn bench_actor_scaling(c: &mut Criterion) {
                     .await
                     .expect("Failed to stop allocator");
                 elapsed
-            });
+            })
         });
     }
 
@@ -167,7 +172,9 @@ fn bench_actor_mesh_message_sizes(c: &mut Criterion) {
 
                             let mut msg_rcv = 0;
                             while msg_rcv < actor_count {
-                                let _ = rx.recv().await.unwrap();
+                                let _ = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+                                    .await
+                                    .unwrap();
                                 msg_rcv += 1;
                             }
                         }
