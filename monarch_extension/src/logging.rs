@@ -38,6 +38,44 @@ pub struct LoggingMeshClient {
     client_actor: ActorHandle<LogClientActor>,
 }
 
+impl LoggingMeshClient {
+    async fn flush_internal(
+        client_actor: ActorHandle<LogClientActor>,
+        forwarder_mesh: SharedCell<RootActorMesh<'static, LogForwardActor>>,
+    ) -> Result<(), anyhow::Error> {
+        let forwarder_inner_mesh = forwarder_mesh.borrow().map_err(anyhow::Error::msg)?;
+        let (reply_tx, reply_rx) = forwarder_inner_mesh
+            .proc_mesh()
+            .client()
+            .open_once_port::<()>();
+        let (version_tx, version_rx) = forwarder_inner_mesh
+            .proc_mesh()
+            .client()
+            .open_once_port::<u64>();
+
+        // First initialize a sync flush.
+        client_actor.send(LogClientMessage::StartSyncFlush {
+            expected_procs: forwarder_inner_mesh.proc_mesh().shape().slice().len(),
+            reply: reply_tx.bind(),
+            version: version_tx.bind(),
+        })?;
+
+        let version = version_rx.recv().await?;
+
+        // Then ask all the flushers to ask the log forwarders to sync flush
+        forwarder_inner_mesh.cast(
+            forwarder_inner_mesh.proc_mesh().client(),
+            Selection::True,
+            LogForwardMessage::ForceSyncFlush { version },
+        )?;
+
+        // Finally the forwarder will send sync point back to the client, flush, and return.
+        reply_rx.recv().await?;
+
+        Ok(())
+    }
+}
+
 #[pymethods]
 impl LoggingMeshClient {
     #[staticmethod]
@@ -96,6 +134,18 @@ impl LoggingMeshClient {
             .map_err(anyhow::Error::msg)?;
 
         Ok(())
+    }
+
+    // A sync flush mechanism for the client make sure all the stdout/stderr are streamed back and flushed.
+    fn flush(&self) -> PyResult<PyPythonTask> {
+        let forwarder_mesh = self.forwarder_mesh.clone();
+        let client_actor = self.client_actor.clone();
+
+        PyPythonTask::new(async move {
+            Self::flush_internal(client_actor, forwarder_mesh)
+                .await
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))
+        })
     }
 }
 
