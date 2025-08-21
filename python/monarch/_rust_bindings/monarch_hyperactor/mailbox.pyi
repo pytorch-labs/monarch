@@ -8,10 +8,7 @@
 
 from typing import final, Protocol
 
-from monarch._rust_bindings.monarch_hyperactor.actor import (
-    PythonMessage,
-    UndeliverableMessageEnvelope,
-)
+from monarch._rust_bindings.monarch_hyperactor.actor import PythonMessage
 
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
@@ -20,9 +17,9 @@ from monarch._rust_bindings.monarch_hyperactor.shape import Shape
 
 @final
 class PortId:
-    def __init__(self, actor_id: ActorId, index: int) -> None:
+    def __init__(self, *, actor_id: ActorId, port: int) -> None:
         """
-        Create a new port id given an actor id and an index.
+        Create a new port id given an actor id and a port index.
         """
         ...
     def __repr__(self) -> str: ...
@@ -67,6 +64,12 @@ class PortRef:
     """
     A reference to a remote port over which PythonMessages can be sent.
     """
+
+    def __init__(self, port_id: PortId) -> None:
+        """
+        Create a new port ref given a port id.
+        """
+        ...
 
     def send(self, mailbox: Mailbox, message: PythonMessage) -> None:
         """Send a single message to the port's receiver."""
@@ -218,3 +221,27 @@ class Reducer(Protocol):
 
     This method's Rust counterpart is `CommReducer::reduce`.
     """
+
+class UndeliverableMessageEnvelope:
+    """
+    An envelope representing a message that could not be delivered.
+    """
+
+    def __repr__(self) -> str: ...
+    def sender(self) -> ActorId:
+        """
+        The actor id of the sender.
+        """
+        ...
+
+    def dest(self) -> PortId:
+        """
+        The port id of the destination.
+        """
+        ...
+
+    def error_msg(self) -> str:
+        """
+        The error message describing why the message could not be delivered.
+        """
+        ...

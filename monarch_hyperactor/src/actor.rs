@@ -21,6 +21,8 @@ use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::OncePortHandle;
+use hyperactor::mailbox::MessageEnvelope;
+use hyperactor::mailbox::Undeliverable;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::Unbind;
@@ -50,6 +52,7 @@ use crate::local_state_broker::BrokerId;
 use crate::local_state_broker::LocalStateBrokerMessage;
 use crate::mailbox::EitherPortRef;
 use crate::mailbox::PyMailbox;
+use crate::mailbox::PythonUndeliverableMessageEnvelope;
 use crate::proc::InstanceWrapper;
 use crate::proc::PyActorId;
 use crate::proc::PyProc;
@@ -497,6 +500,41 @@ impl Actor for PythonActor {
             },
         );
         Ok(())
+    }
+
+    async fn handle_undeliverable_message(
+        &mut self,
+        cx: &Instance<Self>,
+        envelope: Undeliverable<MessageEnvelope>,
+    ) -> Result<(), anyhow::Error> {
+        assert_eq!(envelope.0.sender(), cx.self_id());
+
+        let (envelope, handled) = Python::with_gil(|py| {
+            let py_envelope = PythonUndeliverableMessageEnvelope {
+                inner: Some(envelope),
+            }
+            .into_bound_py_any(py)?;
+            let handled = self
+                .actor
+                .call_method(py, "_handle_undeliverable_message", (&py_envelope,), None)
+                .map_err(|err| anyhow::Error::from(SerializablePyErr::from(py, &err)))?
+                .extract::<bool>(py)?;
+            Ok::<_, anyhow::Error>((
+                py_envelope
+                    .downcast::<PythonUndeliverableMessageEnvelope>()
+                    .map_err(PyErr::from)?
+                    .try_borrow_mut()
+                    .map_err(PyErr::from)?
+                    .take()?,
+                handled,
+            ))
+        })?;
+
+        if !handled {
+            <Self as Actor>::handle_undeliverable_message(self, cx, envelope).await
+        } else {
+            Ok(())
+        }
     }
 }
 

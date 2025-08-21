@@ -421,8 +421,53 @@ impl PythonPortReceiver {
     module = "monarch._rust_bindings.monarch_hyperactor.mailbox"
 )]
 pub(crate) struct PythonUndeliverableMessageEnvelope {
-    #[allow(dead_code)] // At this time, field `inner` isn't read.
-    pub(crate) inner: Undeliverable<MessageEnvelope>,
+    pub(crate) inner: Option<Undeliverable<MessageEnvelope>>,
+}
+
+impl PythonUndeliverableMessageEnvelope {
+    fn inner(&self) -> PyResult<&Undeliverable<MessageEnvelope>> {
+        self.inner.as_ref().ok_or_else(|| {
+            PyErr::new::<PyRuntimeError, _>(
+                "PythonUndeliverableMessageEnvelope was already consumed",
+            )
+        })
+    }
+
+    pub(crate) fn take(&mut self) -> anyhow::Result<Undeliverable<MessageEnvelope>> {
+        self.inner.take().ok_or_else(|| {
+            anyhow::anyhow!("PythonUndeliverableMessageEnvelope was already consumed")
+        })
+    }
+}
+
+#[pymethods]
+impl PythonUndeliverableMessageEnvelope {
+    fn __repr__(&self) -> PyResult<String> {
+        Ok(format!(
+            "UndeliverableMessageEnvelope(sender={}, dest={}, error={})",
+            self.inner()?.0.sender(),
+            self.inner()?.0.dest(),
+            self.error_msg()?
+        ))
+    }
+
+    fn sender(&self) -> PyResult<PyActorId> {
+        Ok(PyActorId {
+            inner: self.inner()?.0.sender().clone(),
+        })
+    }
+
+    fn dest(&self) -> PyResult<PyPortId> {
+        Ok(self.inner()?.0.dest().clone().into())
+    }
+
+    fn error_msg(&self) -> PyResult<String> {
+        Ok(self
+            .inner()?
+            .0
+            .error()
+            .map_or("None".to_string(), |e| e.to_string()))
+    }
 }
 
 #[derive(Debug)]
@@ -445,7 +490,9 @@ impl PythonUndeliverablePortReceiver {
                 .recv()
                 .await
                 .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
-            Ok(PythonUndeliverableMessageEnvelope { inner: message })
+            Ok(PythonUndeliverableMessageEnvelope {
+                inner: Some(message),
+            })
         })
     }
 
@@ -457,7 +504,9 @@ impl PythonUndeliverablePortReceiver {
         let message = signal_safe_block_on(py, async move { receiver.lock().await.recv().await })?
             .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
 
-        Ok(PythonUndeliverableMessageEnvelope { inner: message })
+        Ok(PythonUndeliverableMessageEnvelope {
+            inner: Some(message),
+        })
     }
 }
 
@@ -796,5 +845,6 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
     hyperactor_mod.add_class::<PythonOncePortReceiver>()?;
     hyperactor_mod.add_class::<Instance>()?;
     hyperactor_mod.add_class::<Context>()?;
+    hyperactor_mod.add_class::<PythonUndeliverableMessageEnvelope>()?;
     Ok(())
 }

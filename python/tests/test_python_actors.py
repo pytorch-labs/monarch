@@ -19,14 +19,24 @@ import time
 import unittest
 import unittest.mock
 from types import ModuleType
-from typing import cast
+from typing import cast, Tuple
 
 import pytest
 
 import torch
+from monarch._rust_bindings.monarch_hyperactor.actor import (
+    PythonMessage,
+    PythonMessageKind,
+)
+from monarch._rust_bindings.monarch_hyperactor.mailbox import (
+    PortId,
+    PortRef,
+    UndeliverableMessageEnvelope,
+)
+from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 
-from monarch._src.actor.actor_mesh import ActorMesh, Channel, Port
+from monarch._src.actor.actor_mesh import ActorMesh, Channel, context, Port
 
 from monarch.actor import (
     Accumulator,
@@ -1090,3 +1100,59 @@ def test_mesh_len():
     proc_mesh = local_proc_mesh(gpus=12).get()
     s = proc_mesh.spawn("sync_actor", SyncActor).get()
     assert 12 == len(s)
+
+
+class UndeliverableMessageReceiver(Actor):
+    def __init__(self):
+        self._messages = asyncio.Queue()
+
+    @endpoint
+    async def receive_undeliverable(
+        self, sender: ActorId, dest: PortId, error_msg: str
+    ) -> None:
+        await self._messages.put((sender, dest, error_msg))
+
+    @endpoint
+    async def get_messages(self) -> Tuple[ActorId, PortId, str]:
+        return await self._messages.get()
+
+
+class UndeliverableMessageSender(Actor):
+    def __init__(self, receiver: UndeliverableMessageReceiver):
+        self._receiver = receiver
+
+    @endpoint
+    def send_undeliverable(self) -> None:
+        mailbox = context().actor_instance._mailbox
+        port_id = PortId(
+            actor_id=ActorId(
+                world_name=mailbox.actor_id.world_name, rank=0, actor_name="bogus"
+            ),
+            port=1234,
+        )
+        port_ref = PortRef(port_id)
+        port_ref.send(
+            mailbox,
+            PythonMessage(PythonMessageKind.Result(None), b"123"),
+        )
+
+    def _handle_undeliverable_message(
+        self, message: UndeliverableMessageEnvelope
+    ) -> bool:
+        self._receiver.receive_undeliverable.call_one(
+            message.sender(), message.dest(), message.error_msg()
+        ).get()
+        return True
+
+
+@pytest.mark.timeout(60)
+async def test_undeliverable_message() -> None:
+    pm = proc_mesh(gpus=1)
+    receiver = pm.spawn("undeliverable_receiver", UndeliverableMessageReceiver)
+    sender = pm.spawn("undeliverable_sender", UndeliverableMessageSender, receiver)
+    sender.send_undeliverable.call().get()
+    sender, dest, error_msg = receiver.get_messages.call_one().get()
+    assert sender.actor_name == "undeliverable_sender"
+    assert dest.actor_id.actor_name == "bogus"
+    assert error_msg is not None
+    pm.stop().get()
