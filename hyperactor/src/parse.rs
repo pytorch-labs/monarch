@@ -104,9 +104,9 @@ impl<'a> Iterator for Lexer<'a> {
 // TODO: improve error reporting here
 macro_rules! parse {
     (
-        $token_stream:expr_2021;
+        $token_stream:expr;
         $(
-            $($pattern:pat_param)* => $constructor:expr_2021
+            $($pattern:pat_param)* => $constructor:expr
         ),* $(,)?
     ) => {
         {

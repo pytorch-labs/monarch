@@ -668,7 +668,7 @@ mod tests {
     // These tests are parametric over allocators.
     #[macro_export]
     macro_rules! actor_mesh_test_suite {
-        ($allocator:expr_2021) => {
+        ($allocator:expr) => {
             use std::assert_matches::assert_matches;
 
             use ndslice::extent;

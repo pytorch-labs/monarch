@@ -275,7 +275,7 @@ impl fmt::Display for Shape {
 /// ```
 #[macro_export]
 macro_rules! shape {
-    ( $( $label:ident = $size:expr_2021 ),* $(,)? ) => {
+    ( $( $label:ident = $size:expr ),* $(,)? ) => {
         {
             let mut labels = Vec::new();
             let mut sizes = Vec::new();
@@ -303,11 +303,11 @@ macro_rules! shape {
 /// ```
 #[macro_export]
 macro_rules! select {
-    ($shape:ident, $label:ident = $range:expr_2021) => {
+    ($shape:ident, $label:ident = $range:expr) => {
         $shape.select(stringify!($label), $range)
     };
 
-    ($shape:ident, $label:ident = $range:expr_2021, $($labels:ident = $ranges:expr_2021),+) => {
+    ($shape:ident, $label:ident = $range:expr, $($labels:ident = $ranges:expr),+) => {
         $shape.select(stringify!($label), $range).and_then(|shape| $crate::select!(shape, $($labels = $ranges),+))
     };
 }
