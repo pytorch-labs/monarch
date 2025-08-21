@@ -26,6 +26,12 @@ use hyperactor::channel::Rx;
 use hyperactor::channel::Tx;
 use hyperactor::channel::dial;
 use hyperactor::channel::serve;
+use hyperactor::mailbox::Mailbox;
+use hyperactor::mailbox::PortSender;
+use hyperactor::mailbox::monitored_return_handle;
+use hyperactor::reference::ActorId;
+use hyperactor::reference::ProcId;
+use hyperactor::reference::WorldId;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::runtime;
@@ -56,6 +62,7 @@ impl Message {
     }
 }
 
+// CHANNEL
 // Benchmark message sizes
 fn bench_message_sizes(c: &mut Criterion) {
     let transports = vec![
@@ -65,7 +72,7 @@ fn bench_message_sizes(c: &mut Criterion) {
     ];
 
     for (transport_name, transport) in &transports {
-        for size in [10_000, 1_000_000, 10_000_000, 100_000_000, 1_000_000_000] {
+        for size in [10_000, 1_000_000_000] {
             let mut group = c.benchmark_group(format!("send_receive/{}", transport_name));
             let transport = transport.clone();
             group.throughput(Throughput::Bytes(size as u64));
@@ -107,7 +114,7 @@ fn bench_message_rates(c: &mut Criterion) {
         //TODO Add TLS once it is able to run in Sandcastle
     ];
 
-    let rates = vec![100, 1000, 5000];
+    let rates = vec![100, 5000];
 
     let payload_size = 1024; // 1KB payload
 
@@ -148,13 +155,12 @@ fn bench_message_rates(c: &mut Criterion) {
                             }
 
                             let handle = tokio::spawn(async move {
-                                select! {
-                                    _ = return_receiver => {},
-                                    _ = tokio::time::sleep(Duration::from_millis(5000)) => {
-                                        panic!("Did not get ack within timeout");
-
-                                    }
-                                }
+                                _ = tokio::time::timeout(
+                                    Duration::from_millis(5000),
+                                    return_receiver,
+                                )
+                                .await
+                                .unwrap();
                             });
 
                             response_handlers.push(handle);
@@ -234,11 +240,127 @@ async fn channel_ping_pong(
     start.elapsed()
 }
 
+// MAILBOX
+
+fn bench_mailbox_message_sizes(c: &mut Criterion) {
+    let sizes: Vec<usize> = vec![10_000, 1_000_000_000];
+
+    for size in sizes {
+        let mut group = c.benchmark_group("mailbox_send_receive".to_string());
+        group.throughput(Throughput::Bytes(size as u64));
+        group.sampling_mode(criterion::SamplingMode::Flat);
+        group.sample_size(10);
+        group.bench_function(BenchmarkId::from_parameter(size), move |b| {
+            let mut b = b.to_async(Runtime::new().unwrap());
+            b.iter_custom(|iters| async move {
+                let proc_id = ProcId::Ranked(WorldId("world".to_string()), 0);
+                let actor_id = ActorId(proc_id, "actor".to_string(), 0);
+                let mbox = Mailbox::new_detached(actor_id);
+                let (port, mut receiver) = mbox.open_port::<Message>();
+                let port = port.bind();
+
+                let msg = Message::new(0, size);
+                let start = Instant::now();
+                for _ in 0..iters {
+                    mbox.serialize_and_send(&port, msg.clone(), monitored_return_handle())
+                        .unwrap();
+                    receiver.recv().await.unwrap();
+                }
+                start.elapsed()
+            });
+        });
+        group.finish();
+    }
+}
+
+// Benchmark message rates for mailbox
+fn bench_mailbox_message_rates(c: &mut Criterion) {
+    let mut group = c.benchmark_group("mailbox_message_rates");
+    let rates = vec![100, 5000];
+    let payload_size = 1024; // 1KB payload
+
+    for rate in &rates {
+        let rate = *rate;
+        group.bench_function(format!("rate_{}mps", rate), move |b| {
+            let mut b = b.to_async(Runtime::new().unwrap());
+            b.iter_custom(|iters| async move {
+                let proc_id = ProcId::Ranked(WorldId("world".to_string()), 0);
+                let actor_id = ActorId(proc_id, "actor".to_string(), 0);
+                let mbox = Mailbox::new_detached(actor_id);
+                let (port, mut receiver) = mbox.open_port::<Message>();
+                let port = port.bind();
+
+                // Spawn a task to receive messages
+                let total_msgs = iters * rate;
+                let receiver_task = tokio::spawn(async move {
+                    let mut received_count = 0;
+                    while received_count < total_msgs {
+                        match receiver.recv().await {
+                            Ok(_) => received_count += 1,
+                            Err(e) => {
+                                panic!("Error receiving message: {}", e);
+                            }
+                        }
+                    }
+                });
+
+                let message = Message::new(0, payload_size);
+                let start = Instant::now();
+
+                for _ in 0..iters {
+                    let mut response_handlers: Vec<tokio::task::JoinHandle<()>> =
+                        Vec::with_capacity(rate as usize);
+
+                    for _ in 0..rate {
+                        let (return_sender, return_receiver) = oneshot::channel();
+                        let msg_clone = message.clone();
+                        let port_clone = port.clone();
+                        let mbox_clone = mbox.clone();
+
+                        let handle = tokio::spawn(async move {
+                            mbox_clone
+                                .serialize_and_send(
+                                    &port_clone,
+                                    msg_clone,
+                                    monitored_return_handle(),
+                                )
+                                .unwrap();
+                            let _ = return_sender.send(());
+
+                            let _ =
+                                tokio::time::timeout(Duration::from_millis(5000), return_receiver)
+                                    .await
+                                    .expect("Timed out waiting for return message");
+                        });
+
+                        response_handlers.push(handle);
+
+                        let delay_ms = if rate > 0 { 1000 / rate } else { 0 };
+                        let elapsed = start.elapsed().as_millis();
+                        let effective_delay = (delay_ms as u128).saturating_sub(elapsed);
+                        if effective_delay > 0 {
+                            tokio::time::sleep(Duration::from_millis(effective_delay as u64)).await;
+                        }
+                    }
+                    join_all(response_handlers).await;
+                }
+
+                receiver_task.await.unwrap();
+                start.elapsed()
+            });
+        });
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_message_sizes,
     bench_message_rates,
-    bench_channel_ping_pong
+    bench_mailbox_message_sizes,
+    bench_mailbox_message_rates,
+    bench_channel_ping_pong,
 );
 
 criterion_main!(benches);
