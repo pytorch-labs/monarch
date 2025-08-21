@@ -42,6 +42,10 @@ fn get_env_var_with_rerun(name: &str) -> Result<String, std::env::VarError> {
     std::env::var(name)
 }
 
+#[cfg(target_os = "macos")]
+fn main() {}
+
+#[cfg(not(target_os = "macos"))]
 fn main() {
     let mut libtorch_include_dirs: Vec<PathBuf> = vec![];
     let mut libtorch_lib_dir: Option<PathBuf> = None;

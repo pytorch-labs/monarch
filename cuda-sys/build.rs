@@ -132,6 +132,10 @@ fn validate_cuda_installation() -> String {
     cuda_home
 }
 
+#[cfg(target_os = "macos")]
+fn main() {}
+
+#[cfg(not(target_os = "macos"))]
 fn main() {
     // Validate CUDA installation and get CUDA home path
     let cuda_home = validate_cuda_installation();

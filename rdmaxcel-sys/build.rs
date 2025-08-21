@@ -132,6 +132,10 @@ fn validate_cuda_installation() -> String {
     cuda_home
 }
 
+#[cfg(target_os = "macos")]
+fn main() {}
+
+#[cfg(not(target_os = "macos"))]
 fn main() {
     // Tell cargo to look for shared libraries in the specified directory
     println!("cargo:rustc-link-search=/usr/lib");
