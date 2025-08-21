@@ -210,6 +210,36 @@ impl PyPoint {
         }
     }
 
+    fn __repr__(&self, py: Python) -> PyResult<String> {
+        let shape = self.shape.bind(py).get();
+        let inner_shape = &shape.inner;
+        let slice = inner_shape.slice();
+
+        let total_size = slice.len();
+        let current_rank = self.rank;
+
+        let coords = slice
+            .coordinates(current_rank)
+            .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
+
+        let labels = inner_shape.labels();
+        let sizes = slice.sizes();
+
+        let coords_parts: Vec<String> = labels
+            .iter()
+            .zip(coords.iter())
+            .zip(sizes.iter())
+            .map(|((label, &coord), &size)| format!("{}={}/{}", label, coord, size))
+            .collect();
+
+        let coords_str = coords_parts.join(",");
+
+        Ok(format!(
+            "rank={}/{} coords={{{}}}",
+            current_rank, total_size, coords_str
+        ))
+    }
+
     fn __len__(&self, py: Python) -> usize {
         self.shape.bind(py).get().__len__()
     }

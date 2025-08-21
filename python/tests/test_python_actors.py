@@ -163,6 +163,10 @@ class RunIt(Actor):
     async def run(self, fn):
         return fn()
 
+    @endpoint
+    async def return_current_rank_str(self):
+        return str(current_rank())
+
 
 @pytest.mark.timeout(60)
 async def test_rank_size():
@@ -173,6 +177,17 @@ async def test_rank_size():
 
     assert 1 == await acc.accumulate(lambda: current_rank()["gpus"])
     assert 4 == await acc.accumulate(lambda: current_size()["gpus"])
+
+
+@pytest.mark.timeout(60)
+async def test_rank_string():
+    proc = await local_proc_mesh(gpus=2)
+    r = await proc.spawn("runit", RunIt)
+    vm = r.return_current_rank_str.call().get()
+    r0 = vm.flatten("r").slice(r=0).item()
+    r1 = vm.flatten("r").slice(r=1).item()
+    assert r0 == "rank=0/2 coords={hosts=0/1,gpus=0/2}"
+    assert r1 == "rank=1/2 coords={hosts=0/1,gpus=1/2}"
 
 
 class SyncActor(Actor):
