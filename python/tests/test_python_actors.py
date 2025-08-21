@@ -25,6 +25,7 @@ import pytest
 
 import torch
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
+from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
 
 from monarch._src.actor.actor_mesh import ActorMesh, Channel, Port
 
@@ -1075,3 +1076,42 @@ def test_mesh_len():
     proc_mesh = local_proc_mesh(gpus=12).get()
     s = proc_mesh.spawn("sync_actor", SyncActor).get()
     assert 12 == len(s)
+
+
+logger = logging.getLogger(__name__)
+
+
+class CleanupActor(Actor):
+    @endpoint
+    def fail(self) -> None:
+        raise BaseException("simulated failure for testing")
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        logger.info(f"running cleanup: \n{exc_type=} \n{exc_value=} \n{traceback=}\n")
+
+
+async def test_actor_cleanup_no_exceptions(caplog):
+    with caplog.at_level(logging.INFO, logger=__name__):
+        proc_mesh = await local_proc_mesh(gpus=1)
+        am = await proc_mesh.spawn("cleanup_actor", CleanupActor)
+        asyncio.sleep(1)
+        # __exit__ not invoked before proc_mesh.stop()
+        assert caplog.text == ""
+
+        await proc_mesh.stop()
+        assert "running cleanup:" in caplog.text
+        assert "exc_type=None" in caplog.text
+        assert "exc_value=None" in caplog.text
+        assert "traceback=None" in caplog.text
+
+
+async def test_actor_cleanup_with_exceptions(caplog):
+    with caplog.at_level(logging.INFO, logger=__name__):
+        proc_mesh = await local_proc_mesh(gpus=1)
+        am = await proc_mesh.spawn("cleanup_actor", CleanupActor)
+        with pytest.raises(SupervisionError):
+            await am.fail.call()
+        assert "running cleanup:" in caplog.text
+        assert "exc_type=<class 'BaseException'>" in caplog.text
+        assert "exc_value=BaseException('simulated failure for testing')" in caplog.text
+        assert "traceback=" in caplog.text

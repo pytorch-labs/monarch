@@ -35,6 +35,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use pyo3::types::PyDict;
 use pyo3::types::PyList;
+use pyo3::types::PyNone;
 use pyo3::types::PyType;
 use serde::Deserialize;
 use serde::Serialize;
@@ -57,6 +58,8 @@ use crate::proc::PySerialized;
 use crate::pytokio::PythonTask;
 use crate::runtime::signal_safe_block_on;
 use crate::shape::PyShape;
+
+const USER_DEFINED_CLEANUP_METHOD: &str = "_run_user_defined_cleanup";
 
 #[pyclass(frozen, module = "monarch._rust_bindings.monarch_hyperactor.actor")]
 #[derive(Serialize, Deserialize, Named)]
@@ -497,6 +500,18 @@ impl Actor for PythonActor {
             },
         );
         Ok(())
+    }
+}
+
+impl Drop for PythonActor {
+    fn drop(&mut self) {
+        if let Err(e) = Python::with_gil(|py| -> Result<_, SerializablePyErr> {
+            self.actor
+                .call_method1(py, USER_DEFINED_CLEANUP_METHOD, (PyNone::get(py),))?;
+            Ok(())
+        }) {
+            tracing::error!("error calling {}: {}", USER_DEFINED_CLEANUP_METHOD, e);
+        }
     }
 }
 
