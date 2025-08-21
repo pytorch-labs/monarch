@@ -10,6 +10,7 @@ use std::str::FromStr;
 
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
+use hyperactor::channel::TlsMode;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
@@ -22,7 +23,8 @@ use pyo3::prelude::*;
 #[derive(PartialEq, Clone, Copy, Debug)]
 pub enum PyChannelTransport {
     Tcp,
-    MetaTls,
+    MetaTlsWithHostname,
+    MetaTlsWithIpV6,
     Local,
     Unix,
     // Sim(/*transport:*/ ChannelTransport), TODO kiuk@ add support
@@ -80,7 +82,10 @@ impl PyChannelAddr {
         let transport = self.inner.transport();
         match transport {
             ChannelTransport::Tcp => Ok(PyChannelTransport::Tcp),
-            ChannelTransport::MetaTls => Ok(PyChannelTransport::MetaTls),
+            ChannelTransport::MetaTls(mode) => match mode {
+                TlsMode::Hostname => Ok(PyChannelTransport::MetaTlsWithHostname),
+                TlsMode::IpV6 => Ok(PyChannelTransport::MetaTlsWithIpV6),
+            },
             ChannelTransport::Local => Ok(PyChannelTransport::Local),
             ChannelTransport::Unix => Ok(PyChannelTransport::Unix),
             _ => Err(PyRuntimeError::new_err(format!(
@@ -96,7 +101,8 @@ impl From<PyChannelTransport> for ChannelTransport {
     fn from(val: PyChannelTransport) -> Self {
         match val {
             PyChannelTransport::Tcp => ChannelTransport::Tcp,
-            PyChannelTransport::MetaTls => ChannelTransport::MetaTls,
+            PyChannelTransport::MetaTlsWithHostname => ChannelTransport::MetaTls(TlsMode::Hostname),
+            PyChannelTransport::MetaTlsWithIpV6 => ChannelTransport::MetaTls(TlsMode::IpV6),
             PyChannelTransport::Local => ChannelTransport::Local,
             PyChannelTransport::Unix => ChannelTransport::Unix,
         }
@@ -120,7 +126,8 @@ mod tests {
         for transport in [
             PyChannelTransport::Tcp,
             PyChannelTransport::Unix,
-            PyChannelTransport::MetaTls,
+            PyChannelTransport::MetaTlsWithHostname,
+            PyChannelTransport::MetaTlsWithIpV6,
             PyChannelTransport::Local,
         ] {
             let address = PyChannelAddr::any(transport)?;
@@ -159,7 +166,16 @@ mod tests {
         );
         assert_eq!(
             PyChannelAddr::parse("metatls!devgpu001.pci.facebook.com:26600")?.get_transport()?,
-            PyChannelTransport::MetaTls
+            PyChannelTransport::MetaTlsWithHostname
+        );
+        assert_eq!(
+            PyChannelAddr::parse("metatls!::1:26600")?.get_transport()?,
+            PyChannelTransport::MetaTlsWithIpV6
+        );
+        assert_eq!(
+            // IpV4 will fallback to hostname
+            PyChannelAddr::parse("metatls!127.0.0.1:26600")?.get_transport()?,
+            PyChannelTransport::MetaTlsWithHostname
         );
         assert_eq!(
             PyChannelAddr::parse("local!12345")?.get_transport()?,
