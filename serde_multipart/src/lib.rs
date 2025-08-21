@@ -46,7 +46,7 @@ mod part;
 mod ser;
 use bytes::Bytes;
 use bytes::BytesMut;
-use part::Part;
+pub use part::Part;
 use serde::Deserialize;
 use serde::Serialize;
 

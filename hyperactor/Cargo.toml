@@ -61,6 +61,7 @@ serde_multipart = { version = "0.0.0", path = "../serde_multipart" }
 serde_with = { version = "3", features = ["hex", "json"] }
 serde_yaml = "0.9.25"
 signal-hook-tokio = { version = "0.3", features = ["futures-v0_3"] }
+strum = { version = "0.27.1", features = ["derive"] }
 thiserror = "2.0.12"
 tokio = { version = "1.46.1", features = ["full", "test-util", "tracing"] }
 tokio-rustls = "0.26.2"

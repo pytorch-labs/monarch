@@ -9,6 +9,22 @@
 //! This module contains core traits and implementation to manage remote data
 //! types in Hyperactor.
 
+use std::any::TypeId;
+use std::collections::HashMap;
+use std::fmt;
+use std::io::Cursor;
+use std::str::FromStr;
+use std::sync::LazyLock;
+
+use enum_as_inner::EnumAsInner;
+use serde::Deserialize;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+
+// use strum::EnumIter;
+use crate as hyperactor;
+use crate::config;
+
 /// A [`Named`] type is a type that has a globally unique name.
 pub trait Named: Sized + 'static {
     /// The globally unique type name for the type.
@@ -132,17 +148,7 @@ macro_rules! intern_typename {
         }
     };
 }
-use std::any::TypeId;
-use std::collections::HashMap;
-use std::fmt;
-use std::io::Cursor;
-use std::sync::LazyLock;
-
-use enum_as_inner::EnumAsInner;
 pub use intern_typename;
-use serde::Deserialize;
-use serde::Serialize;
-use serde::de::DeserializeOwned;
 
 macro_rules! tuple_format_string {
     ($a:ident,) => { "{}" };
@@ -299,13 +305,28 @@ macro_rules! register_type {
 
 /// An enumeration containing the supported encodings of Serialized
 /// values.
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    crate::Named,
+    strum::EnumIter,
+    strum::Display,
+    strum::EnumString
+)]
 pub enum Encoding {
     /// Serde bincode encoding.
+    #[strum(to_string = "bincode")]
     Bincode,
     /// Serde JSON encoding.
+    #[strum(to_string = "serde_json")]
     Json,
     /// Serde multipart encoding.
+    #[strum(to_string = "serde_multipart")]
     Multipart,
 }
 
@@ -388,6 +409,10 @@ pub enum Error {
     /// Errors returned from serde JSON.
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+
+    /// The encoding was not recognized.
+    #[error("unknown encoding: {0}")]
+    InvalidEncoding(String),
 }
 
 /// Represents a serialized value, wrapping the underlying serialization
@@ -422,10 +447,11 @@ impl std::fmt::Display for Serialized {
 
 impl Serialized {
     /// Construct a new serialized value by serializing the provided T-typed value.
-    /// Serialize uses the default encoding; use [`serialize_with_encoding`] to serialize
-    /// values with a specific encoding.
+    /// Serialize uses the default encoding defined by the configuration key
+    /// [`config::DEFAULT_ENCODING`] in the global configuration; use [`serialize_with_encoding`]
+    /// to serialize values with a specific encoding.
     pub fn serialize<T: Serialize + Named>(value: &T) -> Result<Self, Error> {
-        Self::serialize_with_encoding(Encoding::Bincode, value)
+        Self::serialize_with_encoding(config::global::get(config::DEFAULT_ENCODING), value)
     }
 
     /// Serialize the value with the using the provided encoding.
@@ -501,6 +527,11 @@ impl Serialized {
             }
             Encoded::Json(data) => serde_json::from_slice(data).map_err(anyhow::Error::from),
         }
+    }
+
+    /// The encoding used by this serialized value.
+    pub fn encoding(&self) -> Encoding {
+        self.encoded.encoding()
     }
 
     /// The typehash of the serialized value, if available.
@@ -649,6 +680,8 @@ mod tests {
 
     use serde::Deserialize;
     use serde::Serialize;
+    use serde_multipart::Part;
+    use strum::IntoEnumIterator;
 
     use super::*;
     use crate as hyperactor; // for macros
@@ -696,6 +729,7 @@ mod tests {
         a: String,
         b: u64,
         c: Option<i32>,
+        d: Option<Part>,
     }
     crate::register_type!(TestDumpStruct);
 
@@ -705,6 +739,7 @@ mod tests {
             a: "hello".to_string(),
             b: 1234,
             c: Some(5678),
+            d: None,
         };
         let serialized = Serialized::serialize(&data).unwrap();
         let serialized_json = serialized.clone().transcode_to_json().unwrap();
@@ -715,7 +750,10 @@ mod tests {
         let json_string =
             String::from_utf8(serialized_json.encoded.as_json().unwrap().to_vec().clone()).unwrap();
         // The serialized data for JSON is just the (compact) JSON string.
-        assert_eq!(json_string, "{\"a\":\"hello\",\"b\":1234,\"c\":5678}");
+        assert_eq!(
+            json_string,
+            "{\"a\":\"hello\",\"b\":1234,\"c\":5678,\"d\":null}"
+        );
 
         for serialized in [serialized, serialized_json] {
             // Note, at this point, serialized has no knowledge other than its embedded typehash.
@@ -732,12 +770,13 @@ mod tests {
                     "a": "hello",
                     "b": 1234,
                     "c": 5678,
+                    "d": null,
                 })
             );
 
             assert_eq!(
                 format!("{}", serialized),
-                "TestDumpStruct{\"a\":\"hello\",\"b\":1234,\"c\":5678}",
+                "TestDumpStruct{\"a\":\"hello\",\"b\":1234,\"c\":5678,\"d\":null}",
             );
         }
     }
@@ -748,6 +787,7 @@ mod tests {
             a: "hello".to_string(),
             b: 1234,
             c: Some(5678),
+            d: None,
         };
 
         let mut ser = Serialized::serialize(&data).unwrap();
@@ -762,6 +802,7 @@ mod tests {
                 a: "hello, world, 123!".to_string(),
                 b: 1234,
                 c: Some(5678),
+                d: None,
             }
         );
     }
@@ -863,5 +904,20 @@ mod tests {
             format!("{}", JsonFmt(&nested_json)),
             "{\"outer\":{\"inner\":{\"simple_value\":\"short\"},\"long_array\":\"[1,2,3,4[...28 chars] CRC:e5c881af 5b 31 2c 32 2c 33 2c 34 [...20 bytes]\",\"long_string\":\"aaaaaaaa[...18 chars] CRC:b8ac0e31 61 61 61 61 61 61 61 61 [...10 bytes]\"},\"simple_bool\":true,\"simple_number\":42}",
         );
+    }
+
+    #[test]
+    fn test_encodings() {
+        let value = TestDumpStruct {
+            a: "hello, world".to_string(),
+            b: 123,
+            c: Some(321),
+            d: Some(Part::from("hello, world, again")),
+        };
+        for enc in Encoding::iter() {
+            let ser = Serialized::serialize_with_encoding(enc, &value).unwrap();
+            assert_eq!(ser.encoding(), enc);
+            assert_eq!(ser.deserialized::<TestDumpStruct>().unwrap(), value);
+        }
     }
 }

@@ -23,6 +23,7 @@ use std::time::Duration;
 
 use crate::attrs::Attrs;
 use crate::attrs::declare_attrs;
+use crate::data::Encoding;
 
 // Declare configuration keys using the new attrs system with defaults
 declare_attrs! {
@@ -49,6 +50,9 @@ declare_attrs! {
 
     /// Heartbeat interval for remote allocator
     pub attr REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
+
+    /// The default encoding to be used.
+    pub attr DEFAULT_ENCODING: Encoding = Encoding::Bincode;
 }
 
 /// Load configuration from environment variables
@@ -97,6 +101,13 @@ pub fn from_env() -> Attrs {
         }
     }
 
+    // Load default encoding
+    if let Ok(val) = env::var("HYPERACTOR_DEFAULT_ENCODING") {
+        if let Ok(parsed) = val.parse::<Encoding>() {
+            config[DEFAULT_ENCODING] = parsed;
+        }
+    }
+
     config
 }
 
@@ -134,6 +145,9 @@ pub fn merge(config: &mut Attrs, other: &Attrs) {
     }
     if other.contains_key(REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL) {
         config[REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL] = other[REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL];
+    }
+    if other.contains_key(DEFAULT_ENCODING) {
+        config[DEFAULT_ENCODING] = other[DEFAULT_ENCODING];
     }
 }
 
