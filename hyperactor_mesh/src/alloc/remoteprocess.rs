@@ -168,7 +168,7 @@ impl RemoteProcessAllocator {
         <A as Allocator>::Alloc: Sync,
     {
         tracing::info!("starting remote allocator on: {}", serve_addr);
-        let (_, mut rx) = channel::serve(serve_addr)
+        let (_, mut rx) = channel::serve(serve_addr.clone())
             .await
             .map_err(anyhow::Error::from)?;
 
@@ -232,6 +232,7 @@ impl RemoteProcessAllocator {
                                         handle: tokio::spawn(Self::handle_allocation_request(
                                             Box::new(alloc) as Box<dyn Alloc + Send + Sync>,
                                             view,
+                                            serve_addr.transport(),
                                             bootstrap_addr,
                                             hosts,
                                             cancel_token,
@@ -285,14 +286,18 @@ impl RemoteProcessAllocator {
     async fn handle_allocation_request(
         alloc: Box<dyn Alloc + Send + Sync>,
         view: View,
+        serve_transport: ChannelTransport,
         bootstrap_addr: ChannelAddr,
         hosts: Vec<String>,
         cancel_token: CancellationToken,
     ) {
         tracing::info!("handle allocation request, bootstrap_addr: {bootstrap_addr}");
         // start proc message forwarder
+        // Use serve_transport instead of bootstrap_addr's transport so the transports are
+        // consistent between the remote process allocator and the processes.
+        // The bootstrap_addr could be a different transport that the process might not be compatible with.
         let (forwarder_addr, forwarder_rx) =
-            match channel::serve(ChannelAddr::any(bootstrap_addr.transport())).await {
+            match channel::serve(ChannelAddr::any(serve_transport)).await {
                 Ok(v) => v,
                 Err(e) => {
                     tracing::error!("failed to to bootstrap forwarder actor: {}", e);
