@@ -11,14 +11,18 @@
 //! **big-endian** length prefix (u64), followed by exactly that many
 //! bytes of payload.
 //!
-//! Message frames are serialized with `bincode`; ack frames are
-//! represented directly as an 8-byte big-endian sequence number.
+//! Message frames carry a `serde_multipart::Message` (not raw
+//! bincode). In compat mode (current default), this is encoded as a
+//! sentinel `u64::MAX` followed by a single bincode payload. Ack
+//! frames are represented directly as an 8-byte big-endian sequence
+//! number.
 //!
-//! Message frame (example):
+//! Message frame (compat/unipart) example:
 //! ```text
-//! +------------------ len: u64 (BE) ------------------+--------------------- data -------------+
-//! | \x00\x00\x00\x00\x00\x00\x00\x0B                  | 11 bytes of bincode-serialized message |
-//! +---------------------------------------------------+----------------------------------------+
+//! +------------------ len: u64 (BE) ------------------+----------------------- data -----------------------+
+//! | \x00\x00\x00\x00\x00\x00\x00\x10                  | \xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF | <bincode bytes> |
+//! |                       16                          |           u64::MAX             |                   |
+//! +---------------------------------------------------+-----------------------------------------------------+
 //! ```
 //!
 //! ACK frame (wire format):
@@ -86,6 +90,7 @@ use crate::RemoteMessage;
 use crate::clock::Clock;
 use crate::clock::RealClock;
 use crate::config;
+use crate::config::CHANNEL_MULTIPART;
 use crate::metrics;
 
 mod framed;
@@ -152,6 +157,18 @@ fn deserialize_ack(mut data: Bytes) -> Result<u64, usize> {
     Ok(data.get_u64())
 }
 
+/// Serializes using the "illegal" multipart encoding whenever multipart
+/// is not enabled.
+fn serialize_bincode<S: ?Sized + serde::Serialize>(
+    value: &S,
+) -> Result<serde_multipart::Message, bincode::Error> {
+    if config::global::get(CHANNEL_MULTIPART) {
+        serde_multipart::serialize_bincode(value)
+    } else {
+        serde_multipart::serialize_illegal_bincode(value)
+    }
+}
+
 /// A Tx implemented on top of a Link. The Tx manages the link state,
 /// reconnections, etc.
 #[derive(Debug)]
@@ -190,7 +207,7 @@ impl<M: RemoteMessage> NetTx<M> {
         #[derive(Debug)]
         struct QueuedMessage<M: RemoteMessage> {
             seq: u64,
-            data: Bytes,
+            message: serde_multipart::Message,
             received_at: Instant,
             return_channel: oneshot::Sender<M>,
         }
@@ -228,12 +245,12 @@ impl<M: RemoteMessage> NetTx<M> {
                 self.deque.is_empty()
             }
 
-            fn front_bytes(&self) -> Option<Bytes> {
-                self.deque.front().map(|msg| msg.data.clone())
+            fn front_message(&self) -> Option<serde_multipart::Message> {
+                self.deque.front().map(|msg| msg.message.clone())
             }
 
             fn front_size(&self) -> Option<usize> {
-                self.deque.front().map(|msg| msg.data.len())
+                self.deque.front().map(|msg| msg.message.frame_len())
             }
 
             fn pop_front(&mut self) -> Option<QueuedMessage<M>> {
@@ -253,14 +270,13 @@ impl<M: RemoteMessage> NetTx<M> {
                 );
 
                 let frame = Frame::Message(self.next_seq, message);
-                let data: Bytes = bincode::serialize(&frame)
-                    .map_err(|e| format!("serialization error: {e}"))?
-                    .into();
-                metrics::REMOTE_MESSAGE_SEND_SIZE.record(data.len() as f64, &[]);
+                let message =
+                    serialize_bincode(&frame).map_err(|e| format!("serialization error: {e}"))?;
+                metrics::REMOTE_MESSAGE_SEND_SIZE.record(message.frame_len() as f64, &[]);
 
                 self.deque.push_back(QueuedMessage {
                     seq: self.next_seq,
-                    data,
+                    message,
                     received_at,
                     return_channel,
                 });
@@ -441,7 +457,7 @@ impl<M: RemoteMessage> NetTx<M> {
             /// Connected and ready to go.
             Connected {
                 reader: FrameReader<ReadHalf<S>>,
-                write_state: WriteState<WriteHalf<S>, ()>,
+                write_state: WriteState<WriteHalf<S>, serde_multipart::Frame, ()>,
             },
         }
 
@@ -516,13 +532,16 @@ impl<M: RemoteMessage> NetTx<M> {
                         ..
                     },
                 ) if !outbox.is_empty() => {
-                    let body = outbox.front_bytes().unwrap();
+                    let message = outbox.front_message().unwrap();
                     (
                         State::Running(Deliveries { outbox, unacked }),
                         Conn::Connected {
                             reader,
                             // Dequeue the next message to be sent:
-                            write_state: WriteState::Writing(FrameWrite::new(writer, body), ()),
+                            write_state: WriteState::Writing(
+                                FrameWrite::new(writer, message.framed()),
+                                (),
+                            ),
                         },
                     )
                 }
@@ -694,10 +713,10 @@ impl<M: RemoteMessage> NetTx<M> {
                     } else {
                         match link.connect().await {
                             Ok(stream) => {
-                                let frame =
-                                    bincode::serialize(&Frame::<M>::Init(session_id)).unwrap();
+                                let message =
+                                    serialize_bincode(&Frame::<M>::Init(session_id)).unwrap();
 
-                                let mut write = FrameWrite::new(stream, frame.into());
+                                let mut write = FrameWrite::new(stream, message.framed());
                                 let initialized = write.send().await.is_ok();
                                 let stream = write.complete();
 
@@ -781,7 +800,7 @@ impl<M: RemoteMessage> NetTx<M> {
                     .drain(..)
                     .chain(outbox.deque.drain(..))
                     .filter_map(|queued_msg| {
-                        bincode::deserialize(&queued_msg.data)
+                        serde_multipart::deserialize_bincode(queued_msg.message.clone())
                             .ok()
                             .and_then(|frame| match frame {
                                 Frame::Message(_, msg) => Some((queued_msg.return_channel, msg)),
@@ -995,17 +1014,17 @@ pub enum ClientError {
 }
 
 #[derive(EnumAsInner)]
-enum WriteState<W, T> {
+enum WriteState<W, F, T> {
     /// No frame being written.
     Idle(W),
     /// Currently writing a frame, with associated T-typed value.
-    Writing(FrameWrite<W>, T),
+    Writing(FrameWrite<W, F>, T),
 
     /// Internal state to manage completions.
     Broken,
 }
 
-impl<W: AsyncWrite + Unpin, T> WriteState<W, T> {
+impl<W: AsyncWrite + Unpin, F: Buf, T> WriteState<W, F, T> {
     async fn send(&mut self) -> io::Result<T> {
         match self {
             Self::Idle(_) => futures::future::pending().await,
@@ -1024,7 +1043,7 @@ impl<W: AsyncWrite + Unpin, T> WriteState<W, T> {
 
 struct ServerConn<S> {
     reader: FrameReader<ReadHalf<S>>,
-    write_state: WriteState<WriteHalf<S>, u64>,
+    write_state: WriteState<WriteHalf<S>, Bytes, u64>,
     source: ChannelAddr,
     dest: ChannelAddr,
 }
@@ -1046,7 +1065,9 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
         let Some(frame) = self.reader.next().await? else {
             anyhow::bail!("end of stream before first frame from {}", self.source);
         };
-        let Frame::Init(session_id) = bincode::deserialize::<Frame<M>>(&frame)? else {
+        let message = serde_multipart::Message::from_framed(frame)?;
+        let Frame::Init(session_id) = serde_multipart::deserialize_bincode::<Frame<M>>(message)?
+        else {
             anyhow::bail!("unexpected initial frame from {}", self.source);
         };
         Ok(session_id)
@@ -1083,19 +1104,49 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
 
             tokio::select! {
                 bytes = self.reader.next() => {
-                    let frame = match bytes {
-                        Ok(bytes) => bytes.map(|buf| bincode::deserialize(&buf)).transpose(),
-                        Err(e) => Err(e.into()),
+                    // First handle transport-level I/O errors, and EOFs.
+                    let bytes = match bytes {
+                        Ok(Some(bytes)) => bytes,
+                        Ok(None) => break (next, Ok(())),
+
+                        Err(err) => break (
+                            next,
+                            Err::<(), anyhow::Error>(err.into()).context(
+                                format!(
+                                    "error reading into Frame with M = {} for data from {:?}",
+                                    type_name::<M>(),
+                                    self.source,
+                                )
+                            )
+                        ),
                     };
-                    match frame {
-                        Ok(Some(Frame::Init(_))) => {
+
+                    // De-frame the multi-part message.
+                    let message = match serde_multipart::Message::from_framed(bytes) {
+                        Ok(message) => message,
+                        Err(err) => break (
+                            next,
+                            Err::<(), anyhow::Error>(err.into()).context(
+                                format!(
+                                    "failed to de-frame message with M = {} for data from {:?}",
+                                    type_name::<M>(),
+                                    self.source,
+                                )
+                            )
+                        ),
+                    };
+
+                    // Finally decode the message. This assembles the M-typed message
+                    // from its constituent parts.
+                    match serde_multipart::deserialize_bincode(message) {
+                        Ok(Frame::Init(_)) => {
                             break (next, Err(anyhow::anyhow!("unexpected init frame from {}", self.source)))
                         },
                         // Ignore retransmits.
-                        Ok(Some(Frame::Message(seq, _))) if seq < next.seq => (),
+                        Ok(Frame::Message(seq, _)) if seq < next.seq => (),
                         // The following segment ensures exactly-once semantics.
                         // That means No out-of-order delivery and no duplicate delivery.
-                        Ok(Some(Frame::Message(seq, message))) => {
+                        Ok(Frame::Message(seq, message)) => {
                             // received seq should be equal to next seq. Else error out!
                             if seq > next.seq {
                                 tracing::error!("out-of-sequence message from {}", self.source);
@@ -1120,14 +1171,11 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                                 }
                             }
                         },
-
-                        Ok(None) => break (next, Ok(())),
-
                         Err(err) => break (
                             next,
                             Err::<(), anyhow::Error>(err.into()).context(
                                 format!(
-                                    "error reading into Frame with M = {} for data from {:?}",
+                                    "failed to deserialize message with M = {} for data from {:?}",
                                     type_name::<M>(),
                                     self.source,
                                 )
@@ -1135,6 +1183,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                         ),
                     }
                 }
+
                 // We have to be careful to manage the ack write state here, so that we do not
                 // write partial acks in the presence of cancellation.
                 ack_result = self.write_state.send() => {
@@ -2609,15 +2658,18 @@ mod tests {
         W: AsyncWrite + Unpin,
     {
         if init {
-            let frame = bincode::serialize(&Frame::<u64>::Init(session_id)).unwrap();
-            let mut fw = FrameWrite::new(writer, Bytes::from(frame));
+            let message =
+                serde_multipart::serialize_bincode(&Frame::<u64>::Init(session_id)).unwrap();
+            let mut fw = FrameWrite::new(writer, message.framed());
             fw.send().await.unwrap();
             writer = fw.complete();
         }
 
         for (seq, message) in messages {
-            let frame = bincode::serialize(&Frame::<M>::Message(*seq, message.clone())).unwrap();
-            let mut fw = FrameWrite::new(writer, Bytes::from(frame));
+            let message =
+                serde_multipart::serialize_bincode(&Frame::<M>::Message(*seq, message.clone()))
+                    .unwrap();
+            let mut fw = FrameWrite::new(writer, message.framed());
             fw.send().await.unwrap();
             writer = fw.complete();
         }
@@ -2815,7 +2867,8 @@ mod tests {
     ) {
         let expected = Frame::Message(expect.0, expect.1);
         let bytes = reader.next().await.unwrap().expect("unexpected EOF");
-        let frame: Frame<M> = bincode::deserialize(bytes.as_ref()).unwrap();
+        let message = serde_multipart::Message::from_framed(bytes).unwrap();
+        let frame: Frame<M> = serde_multipart::deserialize_bincode(message).unwrap();
 
         assert_eq!(frame, expected, "from ln={loc}");
     }
@@ -2828,7 +2881,8 @@ mod tests {
     ) -> u64 {
         let session_id = {
             let bytes = reader.next().await.unwrap().expect("unexpected EOF");
-            let frame: Frame<M> = bincode::deserialize(bytes.as_ref()).unwrap();
+            let message = serde_multipart::Message::from_framed(bytes).unwrap();
+            let frame: Frame<M> = serde_multipart::deserialize_bincode(message).unwrap();
             match frame {
                 Frame::Init(session_id) => session_id,
                 _ => panic!("the 1st frame is not Init: {:?}. from ln={loc}", frame),

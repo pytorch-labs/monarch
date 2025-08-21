@@ -34,6 +34,7 @@ use hyperactor::reference::ProcId;
 use hyperactor::reference::WorldId;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_multipart::Part;
 use tokio::runtime;
 use tokio::runtime::Runtime;
 use tokio::select;
@@ -208,12 +209,17 @@ async fn channel_ping_pong(
     message_size: usize,
     num_iter: usize,
 ) -> Duration {
-    let (client_addr, mut client_rx) = channel::serve::<Bytes>(ChannelAddr::any(transport.clone()))
-        .await
-        .unwrap();
-    let (server_addr, mut server_rx) = channel::serve::<Bytes>(ChannelAddr::any(transport.clone()))
-        .await
-        .unwrap();
+    #[derive(Clone, Debug, Named, Serialize, Deserialize)]
+    struct Message(Part);
+
+    let (client_addr, mut client_rx) =
+        channel::serve::<Message>(ChannelAddr::any(transport.clone()))
+            .await
+            .unwrap();
+    let (server_addr, mut server_rx) =
+        channel::serve::<Message>(ChannelAddr::any(transport.clone()))
+            .await
+            .unwrap();
 
     let _server_handle: tokio::task::JoinHandle<Result<(), anyhow::Error>> =
         tokio::spawn(async move {
@@ -227,7 +233,7 @@ async fn channel_ping_pong(
     let client_handle: tokio::task::JoinHandle<Result<(), anyhow::Error>> =
         tokio::spawn(async move {
             let server_tx = channel::dial(server_addr)?;
-            let message = Bytes::from(vec![0u8; message_size]);
+            let message = Message(Part::from(vec![0u8; message_size]));
             for _ in 0..num_iter {
                 server_tx.post(message.clone() /*cheap */);
                 client_rx.recv().await?;

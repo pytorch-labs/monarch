@@ -9,6 +9,7 @@
 //! This module implements a cancellation-safe zero-copy framer for network channels.
 
 use std::io;
+use std::io::IoSlice;
 use std::mem::take;
 
 use bytes::Buf;
@@ -118,26 +119,22 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
 /// the underlying state machines through (possibly) successive calls to
 /// `send`, retaining cancellation safety. The `FrameWrite` owns the underlying
 /// writer until the frame has been written to completion.
-pub struct FrameWrite<W> {
+pub struct FrameWrite<W, B> {
     writer: W,
-    state: FrameWriteState,
-}
-enum FrameWriteState {
-    /// Writing frame length.
-    WriteLen { len_buf: Bytes, body: Bytes },
-    /// Writing the frame body.
-    WriteBody { body: Bytes },
+    len_buf: Bytes,
+    body: B,
 }
 
-impl<W: AsyncWrite + Unpin> FrameWrite<W> {
+impl<W: AsyncWrite + Unpin, B: Buf> FrameWrite<W, B> {
     /// Create a new frame writer, writing `body` to `writer`.
-    pub fn new(writer: W, body: Bytes) -> Self {
+    pub fn new(writer: W, body: B) -> Self {
         let mut len_buf = BytesMut::with_capacity(8);
-        len_buf.put_u64(body.len() as u64);
+        len_buf.put_u64(body.remaining() as u64);
         let len_buf = len_buf.freeze();
         Self {
             writer,
-            state: FrameWriteState::WriteLen { len_buf, body },
+            len_buf,
+            body,
         }
     }
 
@@ -152,21 +149,29 @@ impl<W: AsyncWrite + Unpin> FrameWrite<W> {
     /// is in an undefined state.
     pub async fn send(&mut self) -> io::Result<()> {
         loop {
-            match &mut self.state {
-                FrameWriteState::WriteLen { len_buf, .. } if !len_buf.is_empty() => {
-                    self.writer.write_all_buf(len_buf).await?;
-                }
-                FrameWriteState::WriteLen { body, .. } => {
-                    self.state = FrameWriteState::WriteBody {
-                        body: body.clone(), // cheap, but let's get rid of it
-                    }
-                }
-                FrameWriteState::WriteBody { body } if !body.is_empty() => {
-                    self.writer.write_all_buf(body).await?;
-                }
-                FrameWriteState::WriteBody { .. } => {
-                    return Ok(());
-                }
+            if self.len_buf.has_remaining() {
+                self.writer.write_all_buf(&mut self.len_buf).await?;
+            } else if self.body.has_remaining() {
+                // This is safe. According to the docs for write_vectored:
+                //
+                // > This method is cancellation safe in the sense that if it is used as
+                // > the event in a [`tokio::select!`](crate::select) statement and some
+                // > other branch completes first, then it is guaranteed that no data was
+                // > written to this `AsyncWrite`.
+                //
+                // We write at most 4 chunks at a time (to be tuned). We may also consider
+                // using MaybeUninit here to avoid initialization overhead.
+                let mut chunks = [
+                    IoSlice::new(&[]),
+                    IoSlice::new(&[]),
+                    IoSlice::new(&[]),
+                    IoSlice::new(&[]),
+                ];
+                let num_chunks = self.body.chunks_vectored(&mut chunks);
+                let count = self.writer.write_vectored(&chunks[0..num_chunks]).await?;
+                self.body.advance(count);
+            } else {
+                return Ok(());
             }
         }
     }
@@ -208,8 +213,8 @@ impl<W: AsyncWrite + Unpin> FrameWrite<W> {
     /// // `writer` is any AsyncWrite + Unpin (e.g. a tokio `WriteHalf`)
     /// let writer = FrameWrite::write_frame(writer, Bytes::from_static(b"hello")).await?;
     /// ```
-    pub async fn write_frame(writer: W, bytes: Bytes) -> std::io::Result<W> {
-        let mut fw = FrameWrite::new(writer, bytes);
+    pub async fn write_frame(writer: W, buf: B) -> std::io::Result<W> {
+        let mut fw = FrameWrite::new(writer, buf);
         fw.send().await?;
         Ok(fw.complete())
     }
@@ -265,14 +270,18 @@ mod tests {
 
         let mut reader = FrameReader::new(r, 1024);
 
+        eprintln!("write 1");
         let w = FrameWrite::write_frame(w, Bytes::from_static(b"hello"))
             .await
             .unwrap();
+        eprintln!("write 2");
         let _ = FrameWrite::write_frame(w, Bytes::from_static(b"world"))
             .await
             .unwrap();
 
+        eprintln!("read 1");
         let f1 = reader.next().await.unwrap().unwrap();
+        eprintln!("read 2");
         let f2 = reader.next().await.unwrap().unwrap();
 
         assert_eq!(f1.as_ref(), b"hello");

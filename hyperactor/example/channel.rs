@@ -7,17 +7,23 @@
  */
 
 use bytes::Bytes;
+use hyperactor::Named;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelRx;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::channel::Rx;
 use hyperactor::channel::Tx;
+use serde::Deserialize;
+use serde::Serialize;
 use tokio::time::Duration;
 use tokio::time::Instant;
 
+#[derive(Clone, Debug, Named, Serialize, Deserialize)]
+struct Message(serde_multipart::Part);
+
 async fn server(
-    mut server_rx: ChannelRx<Bytes>,
+    mut server_rx: ChannelRx<Message>,
     client_addr: ChannelAddr,
 ) -> Result<(), anyhow::Error> {
     let client_tx = channel::dial(client_addr)?;
@@ -35,19 +41,21 @@ async fn main() -> Result<(), anyhow::Error> {
     let transport = ChannelTransport::Tcp;
     // let transport = ChannelTransport::Local;
     let message_size = 1_000_000;
-    let num_iter = 100;
+    let num_iter = 1000;
 
-    let (client_addr, mut client_rx) = channel::serve::<Bytes>(ChannelAddr::any(transport.clone()))
-        .await
-        .unwrap();
-    let (server_addr, server_rx) = channel::serve::<Bytes>(ChannelAddr::any(transport.clone()))
+    let (client_addr, mut client_rx) =
+        channel::serve::<Message>(ChannelAddr::any(transport.clone()))
+            .await
+            .unwrap();
+    let (server_addr, server_rx) = channel::serve::<Message>(ChannelAddr::any(transport.clone()))
         .await
         .unwrap();
 
     let _server_handle = tokio::spawn(server(server_rx, client_addr));
 
     let server_tx = channel::dial(server_addr)?;
-    let message = Bytes::from(vec![0u8; message_size]);
+
+    let message = Message(serde_multipart::Part::from(vec![0u8; message_size]));
 
     for _ in 0..10 {
         // Warmup
@@ -62,10 +70,10 @@ async fn main() -> Result<(), anyhow::Error> {
 
     let start = Instant::now();
     for _ in 0..num_iter {
-        total_bytes_sent += message.len();
+        total_bytes_sent += message.0.len();
         let start = Instant::now();
         server_tx.post(message.clone() /*cheap */);
-        total_bytes_received += client_rx.recv().await?.len();
+        total_bytes_received += client_rx.recv().await?.0.len();
         latencies.push(start.elapsed());
     }
     let elapsed = start.elapsed();

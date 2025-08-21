@@ -53,6 +53,9 @@ declare_attrs! {
 
     /// The default encoding to be used.
     pub attr DEFAULT_ENCODING: Encoding = Encoding::Bincode;
+
+    /// Whether to use multipart encoding for network channel communications.
+    pub attr CHANNEL_MULTIPART: bool = false;
 }
 
 /// Load configuration from environment variables
@@ -108,6 +111,13 @@ pub fn from_env() -> Attrs {
         }
     }
 
+    // Load channel multipart.
+    if let Ok(val) = env::var("HYPERACTOR_CHANNEL_MULTIPART") {
+        if let Ok(parsed) = val.parse::<bool>() {
+            config[CHANNEL_MULTIPART] = parsed;
+        }
+    }
+
     config
 }
 
@@ -148,6 +158,9 @@ pub fn merge(config: &mut Attrs, other: &Attrs) {
     }
     if other.contains_key(DEFAULT_ENCODING) {
         config[DEFAULT_ENCODING] = other[DEFAULT_ENCODING];
+    }
+    if other.contains_key(CHANNEL_MULTIPART) {
+        config[CHANNEL_MULTIPART] = other[CHANNEL_MULTIPART];
     }
 }
 
