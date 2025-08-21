@@ -224,7 +224,7 @@ impl MessageEnvelope {
         dest: PortId,
         value: &T,
         headers: Attrs,
-    ) -> Result<Self, bincode::Error> {
+    ) -> Result<Self, crate::data::Error> {
         Ok(Self {
             headers,
             data: Serialized::serialize(value)?,

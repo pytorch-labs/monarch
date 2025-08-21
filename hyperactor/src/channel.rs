@@ -64,6 +64,10 @@ pub enum ChannelError {
     #[error(transparent)]
     Bincode(#[from] Box<bincode::ErrorKind>),
 
+    /// Data encoding errors.
+    #[error(transparent)]
+    Data(#[from] crate::data::Error),
+
     /// Some other error.
     #[error(transparent)]
     Other(#[from] anyhow::Error),

@@ -297,12 +297,24 @@ macro_rules! register_type {
     };
 }
 
+/// An enumeration containing the supported encodings of Serialized
+/// values.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum Encoding {
+    /// Serde bincode encoding.
+    Bincode,
+    /// Serde JSON encoding.
+    Json,
+    /// Serde multipart encoding.
+    Multipart,
+}
+
 /// The encoding used for a serialized value.
 #[derive(Clone, Serialize, Deserialize, PartialEq, EnumAsInner)]
 enum Encoded {
     Bincode(serde_bytes::ByteBuf),
     Json(serde_bytes::ByteBuf),
-    // todo: multipart
+    Multipart(serde_multipart::Message),
 }
 
 impl Encoded {
@@ -311,6 +323,7 @@ impl Encoded {
         match &self {
             Encoded::Bincode(data) => data.len(),
             Encoded::Json(data) => data.len(),
+            Encoded::Multipart(message) => message.len(),
         }
     }
 
@@ -319,6 +332,16 @@ impl Encoded {
         match &self {
             Encoded::Bincode(data) => data.is_empty(),
             Encoded::Json(data) => data.is_empty(),
+            Encoded::Multipart(message) => message.is_empty(),
+        }
+    }
+
+    /// Returns the encoding of this serialized value.
+    pub fn encoding(&self) -> Encoding {
+        match &self {
+            Encoded::Bincode(_) => Encoding::Bincode,
+            Encoded::Json(_) => Encoding::Json,
+            Encoded::Multipart(_) => Encoding::Multipart,
         }
     }
 
@@ -327,6 +350,14 @@ impl Encoded {
         match &self {
             Encoded::Bincode(data) => crc32fast::hash(data),
             Encoded::Json(data) => crc32fast::hash(data),
+            Encoded::Multipart(message) => {
+                let mut hasher = crc32fast::Hasher::new();
+                hasher.update(message.body().as_ref());
+                for part in message.parts() {
+                    hasher.update(part.as_ref());
+                }
+                hasher.finalize()
+            }
         }
     }
 }
@@ -336,8 +367,27 @@ impl std::fmt::Debug for Encoded {
         match self {
             Encoded::Bincode(data) => write!(f, "Encoded::Bincode({})", HexFmt(data.as_slice())),
             Encoded::Json(data) => write!(f, "Encoded::Json({})", HexFmt(data.as_slice())),
+            Encoded::Multipart(message) => {
+                write!(f, "Encoded::Multipart(body={}", HexFmt(message.body()))?;
+                for (index, part) in message.parts().iter().enumerate() {
+                    write!(f, ", part[{}]={}", index, HexFmt(part))?;
+                }
+                write!(f, ")")
+            }
         }
     }
+}
+
+/// The type of error returned by operations on [`Serialized`].
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    /// Errors returned from serde bincode.
+    #[error(transparent)]
+    Bincode(#[from] bincode::Error),
+
+    /// Errors returned from serde JSON.
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
 }
 
 /// Represents a serialized value, wrapping the underlying serialization
@@ -372,9 +422,25 @@ impl std::fmt::Display for Serialized {
 
 impl Serialized {
     /// Construct a new serialized value by serializing the provided T-typed value.
-    pub fn serialize<T: Serialize + Named>(value: &T) -> Result<Self, bincode::Error> {
+    /// Serialize uses the default encoding; use [`serialize_with_encoding`] to serialize
+    /// values with a specific encoding.
+    pub fn serialize<T: Serialize + Named>(value: &T) -> Result<Self, Error> {
+        Self::serialize_with_encoding(Encoding::Bincode, value)
+    }
+
+    /// Serialize the value with the using the provided encoding.
+    pub fn serialize_with_encoding<T: Serialize + Named>(
+        encoding: Encoding,
+        value: &T,
+    ) -> Result<Self, Error> {
         Ok(Self {
-            encoded: Encoded::Bincode(bincode::serialize(value)?.into()),
+            encoded: match encoding {
+                Encoding::Bincode => Encoded::Bincode(bincode::serialize(value)?.into()),
+                Encoding::Json => Encoded::Json(serde_json::to_vec(value)?.into()),
+                Encoding::Multipart => {
+                    Encoded::Multipart(serde_multipart::serialize_bincode(value)?)
+                }
+            },
             typehash: Some(T::typehash()),
         })
     }
@@ -392,6 +458,9 @@ impl Serialized {
         match &self.encoded {
             Encoded::Bincode(data) => bincode::deserialize(data).map_err(anyhow::Error::from),
             Encoded::Json(data) => serde_json::from_slice(data).map_err(anyhow::Error::from),
+            Encoded::Multipart(message) => {
+                serde_multipart::deserialize_bincode(message.clone()).map_err(anyhow::Error::from)
+            }
         }
     }
 
@@ -399,7 +468,7 @@ impl Serialized {
     /// is embedded in the value, and the corresponding type is available in this binary.
     pub fn transcode_to_json(self) -> Result<Self, Self> {
         match self.encoded {
-            Encoded::Bincode(_) => {
+            Encoded::Bincode(_) | Encoded::Multipart(_) => {
                 let json_value = match self.dump() {
                     Ok(json_value) => json_value,
                     Err(_) => return Err(self),
@@ -421,7 +490,7 @@ impl Serialized {
     /// in the serialized value; 2) the named type is linked into the binary.
     pub fn dump(&self) -> Result<serde_json::Value, anyhow::Error> {
         match &self.encoded {
-            Encoded::Bincode(_) => {
+            Encoded::Bincode(_) | Encoded::Multipart(_) => {
                 let Some(typehash) = self.typehash() else {
                     anyhow::bail!("serialized value does not contain a typehash");
                 };

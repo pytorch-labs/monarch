@@ -57,6 +57,7 @@ rustls-pemfile = "1.0.0"
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_bytes = "0.11"
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
+serde_multipart = { version = "0.0.0", path = "../serde_multipart" }
 serde_with = { version = "3", features = ["hex", "json"] }
 serde_yaml = "0.9.25"
 signal-hook-tokio = { version = "0.3", features = ["futures-v0_3"] }
