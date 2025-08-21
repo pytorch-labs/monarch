@@ -2196,11 +2196,10 @@ mod tests {
         assert!(rx.await.is_err());
     }
 
-    #[ignore = "fix problem in Sandcastle T208303369"]
     #[tracing_test::traced_test]
     #[tokio::test]
     async fn test_meta_tls_basic() {
-        let addr = ChannelAddr::any(ChannelTransport::MetaTls);
+        let addr = ChannelAddr::any(ChannelTransport::MetaTls(TlsMode::IpV6));
         let (hostname, port) = match addr {
             ChannelAddr::MetaTls(hostname, port) => (hostname, port),
             _ => ("".to_string(), 0),

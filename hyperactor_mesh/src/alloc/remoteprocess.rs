@@ -739,7 +739,7 @@ impl RemoteProcessAlloc {
             tracing::debug!("allocating: {} for host: {}", view, host.id);
 
             let remote_addr = match self.transport {
-                ChannelTransport::MetaTls => {
+                ChannelTransport::MetaTls(_) => {
                     format!("metatls!{}:{}", host.hostname, self.remote_allocator_port)
                 }
                 ChannelTransport::Tcp => {

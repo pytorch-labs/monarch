@@ -20,6 +20,7 @@ use std::str::FromStr;
 
 use async_trait::async_trait;
 use lazy_static::lazy_static;
+use local_ip_address::local_ipv6;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::mpsc;
@@ -223,6 +224,16 @@ impl<M: RemoteMessage> Rx<M> for MpscRx<M> {
     }
 }
 
+/// The hostname to use for TLS connections.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TlsMode {
+    /// Use IpV6 address for TLS connections.
+    IpV6,
+    /// Use host domain name for TLS connections.
+    Hostname,
+    // TODO: consider adding IpV4 support.
+}
+
 /// Types of channel transports.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChannelTransport {
@@ -230,7 +241,7 @@ pub enum ChannelTransport {
     Tcp,
 
     /// Transport over a TCP connection with TLS support within Meta
-    MetaTls,
+    MetaTls(TlsMode),
 
     /// Local transports uses an in-process registry and mpsc channels.
     Local,
@@ -246,7 +257,7 @@ impl fmt::Display for ChannelTransport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Tcp => write!(f, "tcp"),
-            Self::MetaTls => write!(f, "metatls"),
+            Self::MetaTls(mode) => write!(f, "metatls({:?})", mode),
             Self::Local => write!(f, "local"),
             Self::Sim(transport) => write!(f, "sim({})", transport),
             Self::Unix => write!(f, "unix"),
@@ -372,12 +383,18 @@ impl ChannelAddr {
                     .unwrap_or_else(|| IpAddr::from_str("::1").unwrap());
                 Self::Tcp(SocketAddr::new(ip, 0))
             }
-            ChannelTransport::MetaTls => {
-                let hostname = hostname::get()
-                    .ok()
-                    .and_then(|hostname| hostname.to_str().map(|s| s.to_string()))
-                    .unwrap_or("unknown_host".to_string());
-                Self::MetaTls(hostname, 0)
+            ChannelTransport::MetaTls(mode) => {
+                let host_address = match mode {
+                    TlsMode::Hostname => hostname::get()
+                        .ok()
+                        .and_then(|hostname| hostname.to_str().map(|s| s.to_string()))
+                        .unwrap_or("unknown_host".to_string()),
+                    TlsMode::IpV6 => local_ipv6()
+                        .ok()
+                        .and_then(|addr| addr.to_string().parse().ok())
+                        .expect("failed to retrieve ipv6 address"),
+                };
+                Self::MetaTls(host_address, 0)
             }
             ChannelTransport::Local => Self::Local(0),
             ChannelTransport::Sim(transport) => sim::any(*transport),
@@ -390,7 +407,13 @@ impl ChannelAddr {
     pub fn transport(&self) -> ChannelTransport {
         match self {
             Self::Tcp(_) => ChannelTransport::Tcp,
-            Self::MetaTls(_, _) => ChannelTransport::MetaTls,
+            Self::MetaTls(address, _) => match address.parse::<IpAddr>() {
+                Ok(ip) => match ip {
+                    IpAddr::V6(_) => ChannelTransport::MetaTls(TlsMode::IpV6),
+                    IpAddr::V4(_) => ChannelTransport::MetaTls(TlsMode::Hostname),
+                },
+                Err(_) => ChannelTransport::MetaTls(TlsMode::Hostname),
+            },
             Self::Local(_) => ChannelTransport::Local,
             Self::Sim(addr) => ChannelTransport::Sim(Box::new(addr.transport())),
             Self::Unix(_) => ChannelTransport::Unix,
