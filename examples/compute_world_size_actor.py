@@ -18,7 +18,7 @@ class TestActor(Actor):
         rank: int = current_rank().rank
         world_size: int = math.prod(current_size().values())
 
-        backend = "gloo"
+        backend = "nccl"
         os.environ["MASTER_ADDR"] = master_addr
         os.environ["MASTER_PORT"] = str(master_port)
 
