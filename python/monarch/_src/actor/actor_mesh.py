@@ -752,6 +752,7 @@ class _Actor:
         self._saved_error: ActorError | None = None
         self._proc_mesh: Optional[ProcMesh] = None
         self._controller_controller: Optional["_ControllerController"] = None
+        self._cleanup_called = False
 
     async def handle(
         self,
@@ -855,10 +856,12 @@ class _Actor:
 
             response_port.send(result)
         except Exception as e:
+            self._run_user_defined_cleanup(e)
             self._post_mortem_debug(e.__traceback__)
             traceback.print_exc()
             response_port.exception(ActorError(e))
         except BaseException as e:
+            self._run_user_defined_cleanup(e)
             self._post_mortem_debug(e.__traceback__)
             # A BaseException can be thrown in the case of a Rust panic.
             # In this case, we need a way to signal the panic to the Rust side.
@@ -894,6 +897,22 @@ class _Actor:
                 DebugContext.set(DebugContext(pdb_wrapper))
                 pdb_wrapper.post_mortem(exc_tb)
                 self._maybe_exit_debugger(do_continue=False)
+
+    def _run_user_defined_cleanup(self, exc: Exception | BaseException | None) -> None:
+        if self._cleanup_called or self.instance is None:
+            return
+
+        cleanup = getattr(self.instance, "__exit__", None)
+        if cleanup is None:
+            return
+
+        if exc is None:
+            cleanup(None, None, None)
+        else:
+            cleanup(type(exc), exc, exc.__traceback__)
+
+        # ensure idempotency
+        self._cleanup_called = True
 
 
 def _is_mailbox(x: object) -> bool:
