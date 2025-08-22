@@ -107,6 +107,7 @@ async def main():
     image = "monarch_default_workspace:latest"
 
     num_hosts = 2
+    num_gpus_per_host = 4
 
     config = Config(
         scheduler="slurm",
@@ -145,7 +146,7 @@ async def main():
     mesh_name = server_info.get_mesh_spec("mesh0").name
 
     allocator = RemoteAllocator(world_id="foo", initializer=TorchXRemoteAllocInitializer(f"slurm:///{server_info.name}"))
-    alloc = await allocator.allocate(AllocSpec(AllocConstraints(), hosts=num_hosts, gpus=1))
+    alloc = await allocator.allocate(AllocSpec(AllocConstraints(), hosts=num_hosts, gpus=num_gpus_per_host))
 
     proc_mesh = await ProcMesh.from_alloc(alloc)
     actor = await proc_mesh.spawn("compute_world_size_actor", TestActor)
@@ -168,4 +169,4 @@ async def main():
 if __name__ == "__main__":
     cloudpickle.register_pickle_by_value(sys.modules[TestActor.__module__])
 
-    asyncio.run
+    asyncio.run(main())
