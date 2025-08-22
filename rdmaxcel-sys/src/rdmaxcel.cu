@@ -303,15 +303,18 @@ __host__ __device__ void cqe_poll(int32_t* byte_cnt, cqe_poll_params_t params) {
   // Extract the opcode (upper 4 bits)
   uint8_t actual_opcode = op_own >> 4;
 
+  // check ownership (lower 1 bit), needs SW ownership to be consumed
+  bool is_sw_owned = ((op_own & 0x1) == ((idx / params.cqe_cnt) & 0x1));
+
   // this only checks for valid opcode, in some case should generate error
   const uint8_t FIRST_TWO_BITS_MASK = 0x3; // Binary: 00000011
   bool is_valid_opcode = (actual_opcode & ~FIRST_TWO_BITS_MASK) == 0;
 
-  if (is_valid_opcode) {
+  if (is_sw_owned && is_valid_opcode) {
     *byte_cnt = byte_swap32(*(uint32_t*)(cqe + 44));
 
-    *params.dbrec = byte_swap32((idx + 1) & 0xFFFFFF);
-
+    volatile uint32_t* dbrec = (uint32_t*)params.dbrec;
+    *dbrec = byte_swap32((idx + 1) & 0xFFFFFF);
   } else {
     *byte_cnt = -1;
   }
