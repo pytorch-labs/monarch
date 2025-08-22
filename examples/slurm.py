@@ -160,6 +160,7 @@ async def main():
 {'-'*40}
 {json.dumps(values_by_rank, indent=2)}
 {'-'*40}""")
+    commands.kill(f"slurm:///{server_info.name}")
 
 
 if __name__ == "__main__":
