@@ -210,6 +210,31 @@ impl PyPoint {
         }
     }
 
+    fn __str__(&self, py: Python) -> PyResult<String> {
+        let shape = self.shape.bind(py).get();
+        let inner_shape = &shape.inner;
+        let slice = inner_shape.slice();
+        let total_size = slice.len();
+        let current_rank = self.rank;
+
+        let coords = slice
+            .coordinates(current_rank)
+            .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
+
+        // Create the underlying Point struct from ndslice::view
+        let extent =
+            ndslice::view::Extent::new(inner_shape.labels().to_vec(), slice.sizes().to_vec())
+                .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
+        let point = extent
+            .point(coords)
+            .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
+
+        Ok(format!(
+            "rank={}/{} coords={{{}}}",
+            current_rank, total_size, point
+        ))
+    }
+
     fn __repr__(&self, py: Python) -> PyResult<String> {
         let shape = self.shape.bind(py).get();
         let inner_shape = &shape.inner;
@@ -234,6 +259,7 @@ impl PyPoint {
 
         let coords_str = coords_parts.join(",");
 
+        // TODO: Should we call the Display implementation of the Point struct using extent here as well?
         Ok(format!(
             "rank={}/{} coords={{{}}}",
             current_rank, total_size, coords_str

@@ -106,7 +106,7 @@ class Shape:
 
     Arguments:
     - `labels`: A list of strings representing the labels for each dimension.
-    - `slice`: An Slice object representing the shape.
+    - `slice`: A Slice object representing the shape.
     """
     def __new__(cls, labels: Sequence[str], slice: Slice) -> "Shape": ...
     @property

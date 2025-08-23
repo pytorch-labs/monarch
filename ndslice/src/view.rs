@@ -370,7 +370,13 @@ impl std::fmt::Display for Point {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let n = self.coords.len();
         for i in 0..n {
-            write!(f, "{}={}", self.extent.labels()[i], self.coords[i])?;
+            write!(
+                f,
+                "{}={}/{}",
+                self.extent.labels()[i],
+                self.coords[i],
+                self.extent.sizes()[i]
+            )?;
             if i != n - 1 {
                 write!(f, ",")?;
             }
@@ -851,7 +857,7 @@ mod test {
     fn test_point_display() {
         let extent = Extent::new(vec!["x".into(), "y".into(), "z".into()], vec![4, 5, 6]).unwrap();
         let point = extent.point(vec![1, 2, 3]).unwrap();
-        assert_eq!(format!("{}", point), "x=1,y=2,z=3");
+        assert_eq!(format!("{}", point), "x=1/4,y=2/5,z=3/6");
 
         assert!(extent.point(vec![]).is_err());
 
