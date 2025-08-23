@@ -46,6 +46,9 @@ async def _flush_logs() -> None:
     assert log_mesh is not None
     Future(coro=log_mesh.flush().spawn().task()).get()
 
+    # TODO: without stop, we will have PyGILState_Release error under stress test
+    await pm.stop()
+
 
 @main.command("flush-logs")
 def flush_logs() -> None:

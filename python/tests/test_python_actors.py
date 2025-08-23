@@ -775,7 +775,9 @@ async def test_flush_logs_fast_exit() -> None:
 
     # Check if the process ended without error
     if process.returncode != 0:
-        raise RuntimeError(f"{cmd} ended with error code {process.returncode}. ")
+        raise RuntimeError(
+            f"{cmd} ended with error code {process.returncode}. {process.stderr}"
+        )
 
     # Assertions on the captured output, 160 = 32 procs * 5 logs per proc
     # 32 and 5 are specified in the test_bin flush-logs.
