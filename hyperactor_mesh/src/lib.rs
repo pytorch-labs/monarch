@@ -19,6 +19,7 @@ mod assign;
 pub mod bootstrap;
 pub mod comm;
 pub mod connect;
+pub mod debug;
 pub mod logging;
 pub mod mesh;
 pub mod mesh_selection;

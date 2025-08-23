@@ -25,3 +25,8 @@ class ChannelAddr:
         calling `hyperactor::channel::ChannelAddr::from_str()`.
         """
         ...
+
+    @staticmethod
+    def parse(addr: str) -> "ChannelAddr":
+        """Parses a string into a `ChannelAddr` object."""
+        ...

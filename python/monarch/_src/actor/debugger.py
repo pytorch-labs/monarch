@@ -11,27 +11,122 @@ import inspect
 import logging
 import os
 import sys
+from abc import abstractmethod
 from dataclasses import dataclass
 from typing import cast, Dict, Generator, List, Optional, Tuple, Union
 
+from monarch._rust_bindings.monarch_hyperactor.channel import ChannelAddr
+
+from monarch._rust_bindings.monarch_hyperactor.debug import (
+    bind_debug_cli_actor,
+    init_debug_server,
+)
+
+from monarch._rust_bindings.monarch_hyperactor.mailbox import (
+    UndeliverableMessageEnvelope,
+)
+
+from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._src.actor.actor_mesh import Actor, context, DebugContext
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.pdb_wrapper import DebuggerWrite, PdbWrapper
 from monarch._src.actor.proc_mesh import get_or_spawn_controller
 from monarch._src.actor.sync_state import fake_sync_state
+from pyre_extensions import none_throws
 from tabulate import tabulate
 
 
 logger = logging.getLogger(__name__)
 
+_MONARCH_DEBUG_SERVER_ADDR_ENV_VAR = "MONARCH_DEBUG_SERVER_ADDR"
+_MONARCH_DEBUG_SERVER_ADDR_DEFAULT = "tcp![::1]:29700"
 
-async def _debugger_input(prompt=""):
-    return await asyncio.to_thread(input, prompt)
+
+def _get_debug_server_addr() -> ChannelAddr:
+    return ChannelAddr.parse(
+        os.environ.get(
+            _MONARCH_DEBUG_SERVER_ADDR_ENV_VAR, _MONARCH_DEBUG_SERVER_ADDR_DEFAULT
+        )
+    )
 
 
-def _debugger_output(msg):
-    sys.stdout.write(msg)
-    sys.stdout.flush()
+_MONARCH_ENABLE_EXTERNAL_DEBUG_CLI = "MONARCH_ENABLE_EXTERNAL_DEBUG_CLI"
+
+
+def _external_debug_cli_enabled() -> bool:
+    return os.environ.get(_MONARCH_ENABLE_EXTERNAL_DEBUG_CLI, "1") == "1"
+
+
+class DebugIO:
+    @abstractmethod
+    async def input(self, prompt: str = "") -> str: ...
+
+    @abstractmethod
+    async def output(self, msg: str) -> None: ...
+
+    @abstractmethod
+    async def quit(self) -> None: ...
+
+
+class DebugStdIO(DebugIO):
+    async def input(self, prompt: str = "") -> str:
+        return await asyncio.to_thread(input, prompt)
+
+    async def output(self, msg: str) -> None:
+        sys.stdout.write(msg)
+        sys.stdout.flush()
+
+    async def quit(self) -> None:
+        pass
+
+
+@dataclass
+class DebugCliInput:
+    prompt: str
+
+
+@dataclass
+class DebugCliOutput:
+    msg: str
+
+
+class DebugCliQuit:
+    pass
+
+
+DebugCliMessage = Union[DebugCliInput, DebugCliOutput, DebugCliQuit]
+
+
+class DebugCliIO(DebugIO):
+    def __init__(self):
+        # The debug cli will put input into this queue, and
+        # the debug controller will read from it.
+        self._input_queue = asyncio.Queue()
+        # The debug controller will put output into this queue,
+        # and the debug cli will read from it.
+        self._output_queue = asyncio.Queue()
+
+    async def input(self, prompt: str = "") -> str:
+        # The debug cli fetches output from _output_queue in
+        # a loop. It only knows to send input once it reads
+        # this message from the output.
+        await self._output_queue.put(DebugCliInput(prompt))
+        return await self._input_queue.get()
+
+    async def output(self, msg) -> None:
+        await self._output_queue.put(DebugCliOutput(msg))
+
+    async def quit(self) -> None:
+        await self._output_queue.put(DebugCliQuit())
+
+    async def take_output(self) -> List[DebugCliMessage]:
+        output = [await self._output_queue.get()]
+        while not self._output_queue.empty():
+            output.append(await self._output_queue.get())
+        return output
+
+    async def put_input(self, inp: str) -> None:
+        await self._input_queue.put(inp)
 
 
 @dataclass
@@ -70,15 +165,19 @@ class DebugSession:
         self._function_lineno = None
         self._need_read = False
 
-    async def _event_loop(self, line=None, suppress_output=False):
+    async def _event_loop(self, debug_io: DebugIO, line=None, suppress_output=False):
         if not suppress_output:
             # If the user had previously attached to this debug session,
             # then it would have printed various messages from the
             # message queue. When the user re-attaches, we want to
             # print out all of the output that was printed since the
             # last command sent to this session.
+            if len(self._outputs_since_last_input) > 0:
+                await debug_io.output(
+                    f"<last pdb output for {self.actor_name} {self.rank} follows>\n"
+                )
             for output in self._outputs_since_last_input:
-                _debugger_output(output.payload.decode())
+                await debug_io.output(output.payload.decode())
 
         while True:
             # When the user inputs "detach", it uses up a "read" message
@@ -95,20 +194,29 @@ class DebugSession:
                 # Return to the main outer debug loop.
                 break
             elif message == "read":
-                break_after = False
-                if line is not None:
-                    break_after = True
-                else:
-                    line = await _debugger_input()
-                if line.strip("\n") == "detach":
-                    self._need_read = True
-                    break
-                else:
-                    self._outputs_since_last_input = []
-                    await self._pending_send_to_actor.put((line + "\n").encode())
-                    line = None
-                    if break_after:
+                try:
+                    break_after = False
+                    if line is not None:
+                        break_after = True
+                    else:
+                        line = await debug_io.input()
+                    if line.strip("\n") == "detach":
+                        self._need_read = True
                         break
+                    else:
+                        await self._pending_send_to_actor.put((line + "\n").encode())
+                        # Cancel safety: don't clear the previous outputs until we know
+                        # the actor will receive the input.
+                        self._outputs_since_last_input = []
+                        line = None
+                        if break_after:
+                            break
+                except asyncio.CancelledError as e:
+                    # See earlier comment about this flag. If either of the awaits inside
+                    # the try block is cancelled, we need to redo the read without actually
+                    # reinserting "read" into the message queue.
+                    self._need_read = True
+                    raise e
             elif message[0] == "write":
                 output = message[1]
                 # If the user sees this output but then detaches from the session,
@@ -116,11 +224,11 @@ class DebugSession:
                 # they can be printed again when the user re-attaches.
                 self._outputs_since_last_input.append(output)
                 if not suppress_output:
-                    _debugger_output(output.payload.decode())
+                    await debug_io.output(output.payload.decode())
 
         if not suppress_output:
-            print(
-                f"Detaching from debug session for rank {self.rank} ({self.hostname})"
+            await debug_io.output(
+                f"Detaching from debug session for {self.actor_name} {self.rank} ({self.hostname})\n"
             )
 
     def get_info(self):
@@ -131,14 +239,20 @@ class DebugSession:
             self.actor_name, self.rank, self.coords, self.hostname, function, lineno
         )
 
-    async def attach(self, line=None, suppress_output=False):
+    async def attach(self, debug_io: DebugIO, line=None, suppress_output=False):
         self._active = True
         if not suppress_output:
-            print(f"Attached to debug session for rank {self.rank} ({self.hostname})")
-        self._task = asyncio.create_task(self._event_loop(line, suppress_output))
+            await debug_io.output(
+                f"Attached to debug session for {self.actor_name} {self.rank} ({self.hostname})\n"
+            )
+        self._task = asyncio.create_task(
+            self._event_loop(debug_io, line, suppress_output)
+        )
         await self._task
         if not suppress_output:
-            print(f"Detached from debug session for rank {self.rank} ({self.hostname})")
+            await debug_io.output(
+                f"Detached from debug session for {self.actor_name} {self.rank} ({self.hostname})\n"
+            )
         self._active = False
 
     async def detach(self):
@@ -380,12 +494,12 @@ def _get_debug_input_transformer():
 
 class DebugCommand:
     @staticmethod
-    def parse(line: str) -> Union["DebugCommand", None]:
+    async def parse(debug_io: DebugIO, line: str) -> Union["DebugCommand", None]:
         try:
             tree = _get_debug_input_parser().parse(line)
             return _get_debug_input_transformer().transform(tree)
         except Exception as e:
-            print(f"Error parsing input: {e}")
+            await debug_io.output(f"Error parsing input: {e}\n")
             return None
 
 
@@ -431,6 +545,16 @@ class DebugController(Actor):
 
     def __init__(self) -> None:
         self.sessions = DebugSessions()
+        self._task_lock = asyncio.Lock()
+        self._task: asyncio.Task | None = None
+        self._debug_io: DebugIO = DebugStdIO()
+        self._current_debug_cli_actor_id: ActorId | None = None
+        self._disable_auto_attach = _external_debug_cli_enabled()
+        if _external_debug_cli_enabled():
+            init_debug_server(
+                context().actor_instance._mailbox,
+                _get_debug_server_addr(),
+            )
 
     @endpoint
     async def wait_pending_session(self):
@@ -440,7 +564,7 @@ class DebugController(Actor):
     @endpoint
     async def list(self) -> List[DebugSessionInfo]:
         session_info = sorted(self.sessions.info())
-        print(
+        await self._debug_io.output(
             tabulate(
                 (
                     (
@@ -463,40 +587,75 @@ class DebugController(Actor):
                 ],
                 tablefmt="grid",
             )
+            + "\n"
         )
         return session_info
 
     @endpoint
-    async def enter(self) -> None:
+    async def enter(
+        self,
+        debug_cli_actor_id: ActorId,
+        debug_cli_addr: str,
+    ) -> None:
+        assert _external_debug_cli_enabled()
+        # Make sure only one external debug process can
+        # be attached at a time. If a new request is
+        # received, the current task is cancelled.
+        async with self._task_lock:
+            if self._task is not None:
+                self._task.cancel()
+                try:
+                    await none_throws(self._task)
+                except asyncio.CancelledError:
+                    pass
+            # Tell the debug controller where to send responses.
+            bind_debug_cli_actor(debug_cli_actor_id, ChannelAddr.parse(debug_cli_addr))
+            self._current_debug_cli_actor_id = debug_cli_actor_id
+            # We need a new DebugCliIO instance for the new connection. Otherwise
+            # a new debug terminal could show confusing partial output from a previous
+            # connection, or there could be unused input that would put the debugger
+            # in a weird state.
+            self._debug_io = DebugCliIO()
+            self._task = asyncio.create_task(self._enter(allow_quit_command=True))
+
+    async def _enter(self, allow_quit_command: bool) -> None:
         await asyncio.sleep(0.5)
-        logger.info("Remote breakpoint hit. Entering monarch debugger...")
-        print("\n\n************************ MONARCH DEBUGGER ************************")
-        print("Enter 'help' for a list of commands.")
-        print("Enter 'list' to show all active breakpoints.\n")
+        await self._debug_io.output(
+            "\n\n************************ MONARCH DEBUGGER ************************\n"
+        )
+        await self._debug_io.output("Enter 'help' for a list of commands.\n")
+        await self._debug_io.output("Enter 'list' to show all active breakpoints.\n\n")
 
         while True:
             try:
-                user_input = await _debugger_input("monarch_dbg> ")
+                user_input = await self._debug_io.input("monarch_dbg> ")
                 if not user_input.strip():
                     continue
-                command = DebugCommand.parse(user_input)
+                command = await DebugCommand.parse(self._debug_io, user_input)
                 if isinstance(command, Help):
-                    print("monarch_dbg commands:")
-                    print("\tattach <actor_name> <rank> - attach to a debug session")
-                    print("\tlist - list all debug sessions")
-                    print("\tquit - exit the debugger, leaving all sessions in place")
-                    print(
+                    await self._debug_io.output("monarch_dbg commands:\n")
+                    await self._debug_io.output(
+                        "\tattach <actor_name> <rank> - attach to a debug session\n"
+                    )
+                    await self._debug_io.output("\tlist - list all debug sessions\n")
+                    if allow_quit_command:
+                        await self._debug_io.output(
+                            "\tquit - exit the debugger, leaving all sessions in place\n"
+                        )
+                    await self._debug_io.output(
                         "\tcast <actor_name> ranks(...) <command> - send a command to a set of ranks on the specified actor mesh.\n"
                         "\t\tThe value inside ranks(...) can be a single rank (ranks(1)),\n"
                         "\t\ta list of ranks (ranks(1,4,6)), a range of ranks (ranks(start?:stop?:step?)),\n"
-                        "\t\tor a dict of dimensions (ranks(dim1=1:5:2,dim2=3, dim4=(3,6)))."
+                        "\t\tor a dict of dimensions (ranks(dim1=1:5:2,dim2=3, dim4=(3,6))).\n"
                     )
-                    print(
-                        "\tcontinue - tell all ranks to continue execution, then exit the debugger"
+                    await self._debug_io.output(
+                        "\tcontinue - tell all ranks to continue execution, then exit the debugger\n"
                     )
-                    print("\thelp - print this help message")
+                    await self._debug_io.output("\thelp - print this help message\n")
                 elif isinstance(command, Attach):
-                    await self.sessions.get(command.actor_name, command.rank).attach()
+                    await self.sessions.get(command.actor_name, command.rank).attach(
+                        self._debug_io
+                    )
                 elif isinstance(command, ListCommand):
                     # pyre-ignore
                     await self.list._method(self)
@@ -508,15 +667,22 @@ class DebugController(Actor):
                     await self._cast_input_and_wait("clear")
                     while len(self.sessions) > 0:
                         await self._cast_input_and_wait("c")
+                    await self._debug_io.quit()
                     return
                 elif isinstance(command, Quit):
+                    if not allow_quit_command:
+                        await self._debug_io.output(
+                            "`quit` command not allowed in this mode\n"
+                        )
+                        continue
+                    await self._debug_io.quit()
                     return
                 elif isinstance(command, Cast):
                     await self._cast_input_and_wait(
                         command.command, (command.actor_name, command.ranks)
                     )
             except Exception as e:
-                print(f"Error processing command: {e}")
+                await self._debug_io.output(f"Error processing command: {e}\n")
 
     async def _cast_input_and_wait(
         self,
@@ -525,7 +691,7 @@ class DebugController(Actor):
     ) -> None:
         tasks = []
         for session in self.sessions.iter(selection):
-            tasks.append(session.attach(command, suppress_output=True))
+            tasks.append(session.attach(self._debug_io, command, suppress_output=True))
         await asyncio.gather(*tasks)
 
     ##########################################################################
@@ -540,6 +706,12 @@ class DebugController(Actor):
         # Create a session if it doesn't exist
         if (actor_name, rank) not in self.sessions:
             self.sessions.insert(DebugSession(rank, coords, hostname, actor_name))
+            if not self._disable_auto_attach:
+                async with self._task_lock:
+                    if self._task is None:
+                        self._task = asyncio.create_task(
+                            self._enter(allow_quit_command=False)
+                        )
 
     @endpoint
     async def debugger_session_end(self, actor_name: str, rank: int) -> None:
@@ -559,6 +731,70 @@ class DebugController(Actor):
     ) -> None:
         """Write to the debug session for the given rank."""
         await self.sessions.get(actor_name, rank).debugger_write(write)
+
+    @endpoint
+    async def debug_cli_output(
+        self, debug_cli_actor_id: ActorId
+    ) -> List[DebugCliMessage]:
+        if self._current_debug_cli_actor_id is None:
+            raise RuntimeError(
+                "Attempting to retrieve debugger output, but not in a debug session"
+            )
+        elif self._current_debug_cli_actor_id != debug_cli_actor_id:
+            raise RuntimeError(
+                f"Attempting to retrieve debugger output with incorrect debug_cli_actor_id: "
+                f"{debug_cli_actor_id} (actual) vs. {self._current_debug_cli_actor_id} (expected)"
+            )
+        elif not isinstance(self._debug_io, DebugCliIO):
+            raise RuntimeError(
+                "Retrieving debugger output not supported in current mode"
+            )
+        return await self._debug_io.take_output()
+
+    @endpoint
+    async def debug_cli_input(self, inp: str, debug_cli_actor_id: ActorId) -> None:
+        if self._current_debug_cli_actor_id is None:
+            raise RuntimeError(
+                "Attempting to put debugger input, but not in a debug session"
+            )
+        elif self._current_debug_cli_actor_id != debug_cli_actor_id:
+            raise RuntimeError(
+                f"Attempting to put debugger input with incorrect debug_cli_actor_id: "
+                f"{debug_cli_actor_id} (actual) vs. {self._current_debug_cli_actor_id} (expected)"
+            )
+        elif not isinstance(self._debug_io, DebugCliIO):
+            raise RuntimeError("Putting debugger input not supported in current mode")
+        await self._debug_io.put_input(inp)
+
+    def _handle_undeliverable_message(
+        self, message: UndeliverableMessageEnvelope
+    ) -> bool:
+        logging.warning(
+            "Undeliverable message returned to DebugController: %s. This likely means a previous debug session was closed.",
+            message,
+        )
+        # Return True to indicate that the message was handled and nothing more
+        # needs to be done with it.
+        return True
+
+    @endpoint
+    def _set_disable_auto_attach(self, disable_auto_attach: bool) -> None:
+        # It's convenient for testing to be able to set this independently
+        # of whether or not external debugging is enabled. When multiple
+        # debugging tests run in parallel, enabling external debugging can
+        # cause issues due to multiple debug controllers in different tests
+        # trying to use the same port.
+        self._disable_auto_attach = disable_auto_attach
+
+    @endpoint
+    async def _blocking_enter_TEST_ONLY(self) -> None:
+        # This is useful for testing because it allows us to programmatically
+        # run a few commands, exit the debugging session, do some assertions,
+        # and then reattach.
+        assert self._disable_auto_attach
+        async with self._task_lock:
+            assert self._task is None
+            await self._enter(allow_quit_command=True)
 
 
 # Cached so that we don't have to call out to the root client every time,
