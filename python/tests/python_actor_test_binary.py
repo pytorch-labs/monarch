@@ -42,7 +42,7 @@ async def _flush_logs() -> None:
         await am.print.call("has print streaming")
 
     # TODO: remove this completely once we hook the flush logic upon dropping device_mesh
-    log_mesh = pm._logging_mesh_client
+    log_mesh = pm._logging_manager._logging_mesh_client
     assert log_mesh is not None
     Future(coro=log_mesh.flush().spawn().task()).get()
 

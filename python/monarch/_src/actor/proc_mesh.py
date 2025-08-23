@@ -33,7 +33,6 @@ from typing import (
 )
 from weakref import WeakValueDictionary
 
-from monarch._rust_bindings.monarch_extension.logging import LoggingMeshClient
 from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monarch/monarch_extension:monarch_extension
     Alloc,
     AllocConstraints,
@@ -67,9 +66,11 @@ from monarch._src.actor.device_utils import _local_device_count
 
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.future import DeprecatedNotAFuture, Future
+from monarch._src.actor.logging import LoggingManager
 from monarch._src.actor.shape import MeshTrait
 from monarch.tools.config import Workspace
 from monarch.tools.utils import conda as conda_utils
+
 
 HAS_TENSOR_ENGINE = False
 try:
@@ -191,7 +192,7 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
         # of whether this is a slice of a real proc_meshg
         self._slice = False
         self._code_sync_client: Optional[CodeSyncMeshClient] = None
-        self._logging_mesh_client: Optional[LoggingMeshClient] = None
+        self._logging_manager: LoggingManager = LoggingManager()
         self._maybe_device_mesh: Optional["DeviceMesh"] = _device_mesh
         self._stopped = False
         self._controller_controller: Optional["_ControllerController"] = None
@@ -311,14 +312,7 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
         ) -> HyProcMesh:
             hy_proc_mesh = await hy_proc_mesh_task
 
-            pm._logging_mesh_client = await LoggingMeshClient.spawn(
-                proc_mesh=hy_proc_mesh
-            )
-            pm._logging_mesh_client.set_mode(
-                stream_to_client=True,
-                aggregate_window_sec=3,
-                level=logging.INFO,
-            )
+            await pm._logging_manager.init(hy_proc_mesh)
 
             if setup_actor is not None:
                 await setup_actor.setup.call()
@@ -482,12 +476,9 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
         Returns:
             None
         """
-        if level < 0 or level > 255:
-            raise ValueError("Invalid logging level: {}".format(level))
         await self.initialized
 
-        assert self._logging_mesh_client is not None
-        self._logging_mesh_client.set_mode(
+        await self._logging_manager.logging_option(
             stream_to_client=stream_to_client,
             aggregate_window_sec=aggregate_window_sec,
             level=level,
@@ -499,6 +490,8 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
         return self
 
     def stop(self) -> Future[None]:
+        self._logging_manager.stop()
+
         async def _stop_nonblocking() -> None:
             await (await self._proc_mesh).stop_nonblocking()
             self._stopped = True
@@ -516,6 +509,8 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
     # Finalizer to check if the proc mesh was closed properly.
     def __del__(self) -> None:
         if not self._stopped:
+            self._logging_manager.stop()
+
             warnings.warn(
                 f"unstopped ProcMesh {self!r}",
                 ResourceWarning,
