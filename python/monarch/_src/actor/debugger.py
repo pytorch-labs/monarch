@@ -387,7 +387,7 @@ def _get_debug_input_parser():
             dims: dim ("," dim)*
             ranks: "ranks(" (dims | rank_range | rank_list | INT) ")"
             pdb_command: /\\w+.*/
-            actor_name: /\\w+/
+            actor_name: /[-_a-zA-Z0-9]+/
             cast: "cast" _WS actor_name ranks pdb_command
             help: "h" | "help"
             attach: ("a" | "attach") _WS actor_name INT

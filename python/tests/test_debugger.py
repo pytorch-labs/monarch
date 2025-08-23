@@ -544,7 +544,7 @@ async def test_debug_sessions_iter() -> None:
     ["user_input", "expected_output"],
     [
         ("attach debugee 1", Attach("debugee", 1)),
-        ("a my_awesome_actor 100", Attach("my_awesome_actor", 100)),
+        ("a my_awesome_actor-123_DBG 100", Attach("my_awesome_actor-123_DBG", 100)),
         ("list", ListCommand()),
         ("l", ListCommand()),
         ("help", Help()),
