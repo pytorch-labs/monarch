@@ -753,7 +753,7 @@ inventory::submit! {
 }
 
 #[pyclass(name = "Instance", module = "monarch._src.actor.actor_mesh")]
-struct Instance {
+pub(crate) struct Instance {
     mailbox: Mailbox,
     actor_id: ActorId,
     #[pyo3(get, set)]

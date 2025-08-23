@@ -2493,6 +2493,49 @@ impl MailboxSender for UnroutableMailboxSender {
     }
 }
 
+/// MailboxSender that expects messages for one actor id and
+/// posts the envelopes to the mailbox of an actor with a
+/// different actor id. Envelopes are opened and resealed with
+/// the correct destination port.
+#[derive(Debug)]
+pub struct AliasingMailboxSender {
+    /// The actor id to expect messages for
+    actor_id: ActorId,
+    /// The mailbox of the true recipient of the message
+    mailbox: Mailbox,
+}
+
+impl AliasingMailboxSender {
+    /// Create a new instance of the AliasingMailboxSender
+    pub fn new(actor_id: ActorId, mailbox: Mailbox) -> Self {
+        Self { actor_id, mailbox }
+    }
+}
+
+impl MailboxSender for AliasingMailboxSender {
+    fn post(
+        &self,
+        envelope: MessageEnvelope,
+        return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+    ) {
+        let dest_actor_id = envelope.dest().actor_id().clone();
+        if dest_actor_id != self.actor_id {
+            envelope.undeliverable(
+                DeliveryError::Unroutable(format!(
+                    "AliasingMailboxSender expected dest actor id {}, but got {}",
+                    self.actor_id, dest_actor_id
+                )),
+                return_handle,
+            );
+        } else {
+            let (mut metadata, data) = envelope.open();
+            metadata.dest = PortId(self.mailbox.actor_id().clone(), metadata.dest.index());
+            self.mailbox
+                .post(MessageEnvelope::seal(metadata, data), return_handle);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -3316,5 +3359,30 @@ mod tests {
         RealClock.sleep(Duration::from_secs(2)).await;
         let msg = receiver.try_recv().unwrap();
         assert_eq!(msg, None);
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_aliasing_mailbox_sender() {
+        let mailbox = Mailbox::new_detached(id!(test[0].actor));
+        let (port_handle, mut receiver) = mailbox.open_port::<u64>();
+        let dest_port_true_ref = port_handle.bind();
+        let dest_port_alias_ref = PortRef::<u64>::attest(PortId(
+            id!(test[0].alias),
+            dest_port_true_ref.port_id().index(),
+        ));
+        let aliasing_mailbox_sender =
+            AliasingMailboxSender::new(id!(test[0].alias), mailbox.clone());
+        let sending_mailbox = Mailbox::new(
+            id!(test[0].sender),
+            BoxedMailboxSender::new(aliasing_mailbox_sender),
+        );
+        let (undeliverable_handle, mut undeliverable_receiver) =
+            sending_mailbox.open_port::<Undeliverable<MessageEnvelope>>();
+        undeliverable_handle.bind_to(Undeliverable::<MessageEnvelope>::port());
+        dest_port_alias_ref.send(&sending_mailbox, 5).unwrap();
+        assert_eq!(receiver.recv().await.unwrap(), 5);
+        dest_port_true_ref.send(&sending_mailbox, 6).unwrap();
+        let message = undeliverable_receiver.recv().await.unwrap();
+        assert_eq!(message.0.open().1.deserialized::<u64>().unwrap(), 6);
     }
 }

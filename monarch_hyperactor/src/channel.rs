@@ -35,7 +35,7 @@ pub enum PyChannelTransport {
     module = "monarch._rust_bindings.monarch_hyperactor.channel"
 )]
 pub struct PyChannelAddr {
-    inner: ChannelAddr,
+    pub(crate) inner: ChannelAddr,
 }
 
 impl FromStr for PyChannelAddr {

@@ -785,6 +785,7 @@ impl<A: Actor> Deref for Context<'_, A> {
 /// An actor instance. This is responsible for managing a running actor, including
 /// its full lifecycle, supervision, signal management, etc. Instances can represent
 /// a managed actor or a "client" actor that has joined the proc.
+#[derive(Debug)]
 pub struct Instance<A: Actor> {
     /// The proc that owns this instance.
     proc: Proc,
@@ -1281,6 +1282,21 @@ impl<A: Actor> Drop for Instance<A> {
     }
 }
 
+#[async_trait]
+impl<A: Actor> MailboxSender for &'static Instance<A> {
+    fn post(
+        &self,
+        envelope: MessageEnvelope,
+        return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+    ) {
+        if envelope.dest().actor_id() == self.self_id() {
+            MailboxSender::post(&self.mailbox, envelope, return_handle);
+        } else {
+            self.proc.post(envelope, return_handle);
+        }
+    }
+}
+
 impl<A: Actor> cap::sealed::CanSend for Instance<A> {
     fn post(&self, dest: PortId, headers: Attrs, data: Serialized) {
         let envelope = MessageEnvelope::new(self.self_id().clone(), dest, data, headers);
@@ -1694,6 +1710,7 @@ impl WeakInstanceCell {
 /// The interface memoizes the ports so that they are reused. We do not
 /// (yet) support stable identifiers across multiple instances of the same
 /// actor.
+#[derive(Debug)]
 pub struct Ports<A: Actor> {
     ports: DashMap<TypeId, Box<dyn Any + Send + Sync + 'static>>,
     bound: DashMap<u64, &'static str>,
