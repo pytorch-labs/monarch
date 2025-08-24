@@ -835,8 +835,7 @@ async def test_flush_logs_ipython() -> None:
                             stream_to_client=True, aggregate_window_sec=600
                         )
                         assert mock_ipython.events.unregisters == 2 * i
-                        # TODO: remove `1 +` from attaching controller_controller
-                        assert mock_ipython.events.registers == 1 + 2 * (i + 1)
+                        assert mock_ipython.events.registers == 2 * (i + 1)
                         await asyncio.sleep(1)
 
                         # Generate some logs that will be aggregated
@@ -855,12 +854,10 @@ async def test_flush_logs_ipython() -> None:
 
                 gc.collect()
 
-                # TODO: this should be 6 without attaching controller_controller
-                assert mock_ipython.events.registers == 7
+                assert mock_ipython.events.registers == 6
                 # There are many objects still taking refs
                 assert mock_ipython.events.unregisters == 4
-                # TODO: same, this should be 2
-                assert len(mock_ipython.events.callbacks["post_run_cell"]) == 3
+                assert len(mock_ipython.events.callbacks["post_run_cell"]) == 2
             finally:
                 # Restore Python's sys.stdout
                 sys.stdout = original_sys_stdout

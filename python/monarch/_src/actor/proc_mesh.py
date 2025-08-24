@@ -309,10 +309,12 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
             pm: "ProcMesh",
             hy_proc_mesh_task: "Shared[HyProcMesh]",
             setup_actor: Optional[SetupActor],
+            init_logging: bool,
         ) -> HyProcMesh:
             hy_proc_mesh = await hy_proc_mesh_task
 
-            await pm._logging_manager.init(hy_proc_mesh)
+            if init_logging:
+                await pm._logging_manager.init(hy_proc_mesh)
 
             if setup_actor is not None:
                 await setup_actor.setup.call()
@@ -329,7 +331,7 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
             )
 
         pm._proc_mesh = PythonTask.from_coroutine(
-            task(pm, hy_proc_mesh, setup_actor)
+            task(pm, hy_proc_mesh, setup_actor, _attach_controller_controller)
         ).spawn()
 
         return pm

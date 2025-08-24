@@ -733,3 +733,29 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
                 sleep(0.2)
 
             print("======== All Done ========")
+
+    async def test_init_logging_path(self) -> None:
+        """Test that _init_logging parameter controls logging mesh client initialization."""
+        with remote_process_allocator() as host:
+            allocator = RemoteAllocator(
+                world_id="test_actor_logger",
+                initializer=StaticRemoteAllocInitializer(host),
+            )
+
+            # init case
+            spec = AllocSpec(AllocConstraints(), host=1, gpu=2)
+
+            proc_mesh = ProcMesh.from_alloc(
+                allocator.allocate(spec), _attach_controller_controller=True
+            )
+
+            await proc_mesh.initialized
+            assert proc_mesh._logging_manager._logging_mesh_client is not None
+
+            # not init case
+            proc_mesh = ProcMesh.from_alloc(
+                allocator.allocate(spec), _attach_controller_controller=False
+            )
+
+            await proc_mesh.initialized
+            assert proc_mesh._logging_manager._logging_mesh_client is None
