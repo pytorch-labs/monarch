@@ -8,7 +8,11 @@
 
 #![allow(unsafe_op_in_unsafe_fn)]
 
+use std::time::Duration;
+
 use hyperactor::ActorHandle;
+use hyperactor::clock::Clock;
+use hyperactor::clock::RealClock;
 use hyperactor_mesh::RootActorMesh;
 use hyperactor_mesh::actor_mesh::ActorMesh;
 use hyperactor_mesh::logging::LogClientActor;
@@ -24,6 +28,8 @@ use monarch_hyperactor::pytokio::PyPythonTask;
 use pyo3::Bound;
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
+
+static FLUSH_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[pyclass(
     frozen,
@@ -86,6 +92,38 @@ impl LoggingMeshClient {
             let client_actor_ref = client_actor.bind();
             let forwarder_mesh = proc_mesh.spawn("log_forwarder", &client_actor_ref).await?;
             let logger_mesh = proc_mesh.spawn("logger", &()).await?;
+
+            // Register flush_internal as a on-stop callback
+            let client_actor_for_callback = client_actor.clone();
+            let forwarder_mesh_for_callback = forwarder_mesh.clone();
+            proc_mesh
+                .register_onstop_callback(|| async move {
+                    match RealClock
+                        .timeout(
+                            FLUSH_TIMEOUT,
+                            Self::flush_internal(
+                                client_actor_for_callback,
+                                forwarder_mesh_for_callback,
+                            ),
+                        )
+                        .await
+                    {
+                        Ok(Ok(())) => {
+                            tracing::debug!("flush completed successfully during shutdown");
+                        }
+                        Ok(Err(e)) => {
+                            tracing::error!("error during flush: {}", e);
+                        }
+                        Err(_) => {
+                            tracing::error!(
+                                "flush timed out after {} seconds during shutdown",
+                                FLUSH_TIMEOUT.as_secs()
+                            );
+                        }
+                    }
+                })
+                .await?;
+
             Ok(Self {
                 forwarder_mesh,
                 logger_mesh,
@@ -103,7 +141,7 @@ impl LoggingMeshClient {
     ) -> PyResult<()> {
         if aggregate_window_sec.is_some() && !stream_to_client {
             return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                "Cannot set aggregate window without streaming to client".to_string(),
+                "cannot set aggregate window without streaming to client".to_string(),
             ));
         }
 
