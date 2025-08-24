@@ -44,6 +44,7 @@ use ndslice::view::Extent;
 use ndslice::view::Point;
 use serde::Deserialize;
 use serde::Serialize;
+use strum::AsRefStr;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -66,7 +67,7 @@ use crate::alloc::process::CLIENT_TRACE_ID_LABEL;
 use crate::alloc::process::ClientContext;
 
 /// Control messages sent from remote process allocator to local allocator.
-#[derive(Debug, Clone, Serialize, Deserialize, Named)]
+#[derive(Debug, Clone, Serialize, Deserialize, Named, AsRefStr)]
 pub enum RemoteProcessAllocatorMessage {
     /// Create allocation with given spec and send updates to bootstrap_addr.
     Allocate {
@@ -91,7 +92,8 @@ pub enum RemoteProcessAllocatorMessage {
 
 /// Control message sent from local allocator to remote allocator
 /// relaying process state updates.
-#[derive(Debug, Clone, Serialize, Deserialize, Named)]
+/// AsRefStr allows us to log the values
+#[derive(Debug, Clone, Serialize, Deserialize, Named, AsRefStr)]
 pub enum RemoteProcessProcStateMessage {
     /// Allocation successful and Update, Done messages will follow.
     Allocated { world_id: WorldId, view: View },
@@ -143,6 +145,7 @@ impl RemoteProcessAllocator {
     /// At any point, client can send Stop message to serve_addr to stop the allocator.
     /// If timeout is Some, the allocator will exit if no client connects within
     /// that timeout, and no child allocation is running.
+    #[hyperactor::instrument]
     pub async fn start(
         &self,
         cmd: Command,
@@ -182,6 +185,7 @@ impl RemoteProcessAllocator {
                 active_allocation.cancel_token.cancel();
                 match active_allocation.handle.await {
                     Ok(_) => {
+                        // Todo, add named tracing for state change here
                         tracing::info!("allocation stopped.")
                     }
                     Err(e) => {
@@ -207,7 +211,6 @@ impl RemoteProcessAllocator {
                         }) => {
                             tracing::info!("received allocation request for view: {}", view);
                             ensure_previous_alloc_stopped(&mut active_allocation).await;
-                            tracing::info!("allocating...");
 
                             // Create the corresponding local allocation spec.
                             let mut constraints: AllocConstraints = Default::default();
@@ -218,6 +221,10 @@ impl RemoteProcessAllocator {
                                     context.trace_id.to_string(),
                                     )]
                                 )};
+                                tracing::info!(
+                                    monarch_client_trace_id = context.trace_id.to_string(),
+                                    "allocating...",
+                                );
                             }
                             let spec = AllocSpec {
                                 extent: view.extent(),
@@ -368,13 +375,12 @@ impl RemoteProcessAllocator {
                 return;
             }
         };
-        if let Err(e) = tx
-            .send(RemoteProcessProcStateMessage::Allocated {
-                world_id: alloc.world_id().clone(),
-                view,
-            })
-            .await
-        {
+        let message = RemoteProcessProcStateMessage::Allocated {
+            world_id: alloc.world_id().clone(),
+            view,
+        };
+        tracing::info!(name = message.as_ref(), "sending allocated message",);
+        if let Err(e) = tx.send(message).await {
             tracing::error!("failed to send Allocated message: {}", e);
             return;
         }
@@ -408,7 +414,7 @@ impl RemoteProcessAllocator {
                 e = alloc.next() => {
                     match e {
                         Some(event) => {
-                            tracing::debug!("got event: {:?}", event);
+                            tracing::debug!(name = event.as_ref(), "got event: {:?}", event);
                             let event = match event {
                                 ProcState::Created { .. } => event,
                                 ProcState::Running { proc_id, mesh_agent, addr } => {
@@ -435,7 +441,7 @@ impl RemoteProcessAllocator {
                                     event
                                 }
                             };
-                            tracing::debug!("sending event: {:?}", event);
+                            tracing::debug!(name = event.as_ref(), "sending event: {:?}", event);
                             tx.post(RemoteProcessProcStateMessage::Update(event));
                         }
                         None => {
@@ -774,13 +780,17 @@ impl RemoteProcessAlloc {
 
             let trace_id = hyperactor_telemetry::trace::get_or_create_trace_id();
             let client_context = Some(ClientContext { trace_id });
-
-            tx.post(RemoteProcessAllocatorMessage::Allocate {
+            let message = RemoteProcessAllocatorMessage::Allocate {
                 view,
                 bootstrap_addr: self.bootstrap_addr.clone(),
                 hosts: hostnames.clone(),
                 client_context,
-            });
+            };
+            tracing::info!(
+                name = message.as_ref(),
+                "sending allocate message to workers"
+            );
+            tx.post(message);
 
             self.hosts_by_offset.insert(offset, host.id.clone());
             self.host_states.insert(

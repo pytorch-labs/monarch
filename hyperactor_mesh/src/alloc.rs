@@ -37,6 +37,7 @@ pub use process::ProcessAlloc;
 pub use process::ProcessAllocator;
 use serde::Deserialize;
 use serde::Serialize;
+use strum::AsRefStr;
 
 use crate::alloc::test_utils::MockAllocWrapper;
 use crate::proc_mesh::mesh_agent::MeshAgent;
@@ -92,7 +93,7 @@ pub trait Allocator {
 
 /// A proc's status. A proc can only monotonically move from
 /// `Created` to `Running` to `Stopped`.
-#[derive(Clone, Debug, PartialEq, EnumAsInner, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, EnumAsInner, Serialize, Deserialize, AsRefStr)]
 pub enum ProcState {
     /// A proc was added to the alloc.
     Created {

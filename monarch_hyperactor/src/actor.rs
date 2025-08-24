@@ -646,7 +646,7 @@ impl Handler<HandlePanic> for PythonActorPanicWatcher {
                 return Err(err.into());
             }
             None => {
-                tracing::warn!("panic forwarding channel was closed unexpectidly")
+                tracing::warn!("panic forwarding channel was closed unexpectedly")
             }
         }
         Ok(())

@@ -639,7 +639,7 @@ impl Proc {
     }
 
     /// Create a root allocation in the proc.
-    #[hyperactor::instrument]
+    #[hyperactor::instrument(fields(actor_name=name))]
     fn allocate_root_id(&self, name: &str) -> Result<ActorId, anyhow::Error> {
         let name = name.to_string();
         match self.state().roots.entry(name.to_string()) {
@@ -654,6 +654,7 @@ impl Proc {
     }
 
     /// Create a child allocation in the proc.
+    #[hyperactor::instrument(fields(actor_name=parent_id.name()))]
     pub(crate) fn allocate_child_id(&self, parent_id: &ActorId) -> Result<ActorId, anyhow::Error> {
         assert_eq!(*parent_id.proc_id(), self.state().proc_id);
         let pid = match self.state().roots.get(parent_id.name()) {
@@ -832,7 +833,8 @@ impl<A: Actor> Instance<A> {
             None => ActorType::Anonymous(std::any::type_name::<A>()),
         };
         let ais = actor_id.to_string();
-
+        let aid = actor_id.clone();
+        let actor_name = aid.name();
         let actor_loop_ports = if detached {
             None
         } else {
@@ -868,6 +870,7 @@ impl<A: Actor> Instance<A> {
             status_span: Mutex::new(tracing::debug_span!(
                 "actor_status",
                 actor_id = ais,
+                actor_name = actor_name,
                 name = "created"
             )),
             _last_status_change: Arc::new(start),
@@ -883,6 +886,7 @@ impl<A: Actor> Instance<A> {
         *self.status_span.lock().expect("can't change") = tracing::debug_span!(
             "actor_status",
             actor_id = actor_id_str,
+            actor_name = self.self_id().name(),
             name = new.arm().unwrap_or_default()
         );
     }

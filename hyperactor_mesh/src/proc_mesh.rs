@@ -124,6 +124,7 @@ struct EventState {
 }
 
 impl ProcMesh {
+    #[hyperactor::instrument(fields(name = "proc_mesh_allocate"))]
     pub async fn allocate(
         alloc: impl Alloc + Send + Sync + 'static,
     ) -> Result<Self, AllocatorError> {

@@ -772,7 +772,7 @@ impl<M: RemoteMessage> NetTx<M> {
                                 )
                             }
                             Err(err) => {
-                                tracing::debug!(
+                                tracing::error!(
                                     "session {}.{}: failed to connect: {}",
                                     link.dest(),
                                     session_id,
