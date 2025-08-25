@@ -503,7 +503,7 @@ mod tests {
     }
 
     macro_rules! generate_py_object_roundtrip_tests {
-        ($($kind:ident, $input:expr_2021);* $(;)?) => {
+        ($($kind:ident, $input:expr);* $(;)?) => {
             paste! {
                 $(
                     #[test]
@@ -552,7 +552,7 @@ mod tests {
     }
 
     macro_rules! generate_serde_roundtrip_tests {
-        ($($kind:ident, $input:expr_2021);* $(;)?) => {
+        ($($kind:ident, $input:expr);* $(;)?) => {
             paste! {
                 $(
                     #[test]
