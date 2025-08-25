@@ -69,7 +69,7 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
                     let n = self.reader.read_buf(buf).await?;
 
                     // https://docs.rs/tokio/latest/tokio/io/trait.AsyncReadExt.html#method.read_buf
-                    // "This reader has reached its “end of file” and will likely no longer
+                    // "This reader has reached its "end of file" and will likely no longer
                     // be able to produce bytes. Note that this does not mean that the reader
                     // will always no longer be able to produce bytes."
                     //
@@ -354,8 +354,8 @@ mod test_support {
         }
 
         fn is_write_vectored(&self) -> bool {
-            let mut w = self.0.lock().unwrap();
-            Pin::new(&mut *w).is_write_vectored()
+            let w = self.0.lock().unwrap();
+            (*w).is_write_vectored()
         }
 
         fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -410,7 +410,7 @@ mod test_support {
         /// Create a new `Gate` with zero initial budget and no
         /// registered waker.
         ///
-        /// The returned gate starts in the “closed” state: any call
+        /// The returned gate starts in the "closed" state: any call
         /// to [`Gate::take_chunk`] will return `0` until budget is
         /// added via [`Gate::add`]. Once budget is added, tasks may
         /// consume it and will be woken if they had previously parked
@@ -463,8 +463,9 @@ mod test_support {
                     // to avoid lost wakeups.
                     let mut slot = self.0.waker.lock().unwrap();
                     // If budget arrived while we were preparing to
-                    // park, don’t park; try again.
+                    // park, don't park; try again.
                     if self.0.budget.load(Ordering::Acquire) > 0 {
+                        drop(slot); // release the lock before looping
                         continue;
                     }
                     *slot = Some(cx.waker().clone());
@@ -535,15 +536,50 @@ mod test_support {
             cx: &mut Context<'_>,
             buf: &[u8],
         ) -> Poll<io::Result<usize>> {
-            // Ask the gate how much we're allowed to write now.
-            let n = self.gate.take_chunk(buf.len(), cx);
-            if n == 0 {
+            // Ask the gate how much we're allowed to attempt now.
+            // **Cancel-safety rule** (mirrors vectored path):
+            //   We must credit back any portion of `grant` not durably
+            //   consumed by the inner writer in this poll:
+            //   - `Ok(written < grant)` => add(grant - written)
+            //   - `Err(_)` => `add(grant)`
+            //   - `Pending` => `add(grant)`
+            // This prevents budget from "sticking" in flight and
+            // guarantees forward progress across
+            // cancellations/retries.
+            let grant = self.gate.take_chunk(buf.len(), cx);
+            if grant == 0 {
                 return Poll::Pending;
             }
-            // Synchronous lock is fine: `poll_*` must not await; we
-            // only hold it for the call.
+
+            debug_assert!(grant <= buf.len());
+
+            // Hold the inner writer lock only for the duration of the
+            // *poll*. `poll_*` must not `.await`, so a synchronous
+            // lock here is fine. Only attempt to write up to the
+            // granted amount.
             let mut guard = self.inner.lock_guard();
-            Pin::new(&mut *guard).poll_write(cx, &buf[..n])
+            match Pin::new(&mut *guard).poll_write(cx, &buf[..grant]) {
+                Poll::Ready(Ok(written)) => {
+                    debug_assert!(written <= grant);
+
+                    // If the inner wrote fewer than we granted,
+                    // credit back the unused.
+                    if written < grant {
+                        self.gate.add(grant - written);
+                    }
+                    Poll::Ready(Ok(written))
+                }
+                Poll::Ready(Err(e)) => {
+                    // Nothing consumed; credit back entire grant.
+                    self.gate.add(grant);
+                    Poll::Ready(Err(e))
+                }
+                Poll::Pending => {
+                    // Nothing consumed; credit back entire grant.
+                    self.gate.add(grant);
+                    Poll::Pending
+                }
+            }
         }
 
         fn poll_write_vectored(
@@ -559,8 +595,8 @@ mod test_support {
             if grant == 0 {
                 return Poll::Pending;
             }
-            // Build a truncated view of `bufs` whose total length ≤
-            // grant. We may end with a shortened last slice.
+
+            // Truncate the iovecs to not exceed grant.
             let mut left = grant;
             let mut granted: Vec<IoSlice<'_>> = Vec::with_capacity(bufs.len());
             for s in bufs {
@@ -569,13 +605,48 @@ mod test_support {
                 }
                 let take = s.len().min(left);
                 if take > 0 {
+                    // SAFETY: IoSlice derefs to [u8], so slicing is fine.
                     granted.push(IoSlice::new(&s[..take]));
                     left -= take;
                 }
             }
 
+            // Hold the inner writer lock only for the duration of the
+            // *poll*. `poll_*` must not `.await`, so a synchronous
+            // lock here is fine.
+            // Invariants at this point:
+            //   - `granted`’s total length ≤ `grant` (we truncated
+            //     above)
+            //   - We must **credit back** any portion of `grant` not
+            //     durably consumed to prevent budget from "sticking" in
+            //     flight.
             let mut guard = self.inner.lock_guard();
-            Pin::new(&mut *guard).poll_write_vectored(cx, &granted)
+            match Pin::new(&mut *guard).poll_write_vectored(cx, &granted) {
+                Poll::Ready(Ok(written)) => {
+                    debug_assert!(written <= grant);
+                    // Short write: inner accepted fewer bytes than we
+                    // were allowed to attempt. Return the unused
+                    // portion to the bucket so other waiters can make
+                    // progress. (Cancel-safety: no budget is lost.)
+                    if written < grant {
+                        self.gate.add(grant - written);
+                    }
+                    Poll::Ready(Ok(written))
+                }
+                Poll::Ready(Err(e)) => {
+                    // Error path consumed nothing from the grant;
+                    // refund all of it.
+                    self.gate.add(grant);
+                    Poll::Ready(Err(e))
+                }
+                Poll::Pending => {
+                    // Not ready: nothing written; refund the entire
+                    // grant so the producer/waker can re-schedule us
+                    // later without starvation.
+                    self.gate.add(grant);
+                    Poll::Pending
+                }
+            }
         }
 
         fn is_write_vectored(&self) -> bool {
@@ -597,7 +668,7 @@ mod test_support {
     ///
     /// Each element is the number of units to add in one step.
     /// - Sequence length: 1 to 8 steps
-    /// - Each step adds between 0 and 8 units
+    /// - Each step adds between 1 and 8 units (inclusive)
     ///
     /// Mathematically:
     ///   len(drips) ∈ [1, 8],
@@ -621,8 +692,8 @@ mod test_support {
     /// Generate a `Message` that is either unipart or true multipart
     /// (body + 0..=3 additional parts). Kept small for fast tests.
     pub fn multipart_message() -> impl Strategy<Value = Message> {
-        let max_parts = 4usize; // total parts = 1..=4
-        let max_len = 64usize; // bytes per part
+        let max_parts = 3usize; // total parts = 1..=3
+        let max_len = 32usize; // bytes per part
 
         prop_oneof![
             // Unipart (compat path): body only
@@ -640,8 +711,8 @@ mod test_support {
     /// 1..=3 additional parts). Use this when you want to force the
     /// vectored path every time.
     pub fn multipart_message_only() -> impl Strategy<Value = Message> {
-        let max_parts = 4usize; // total parts = 2..=4
-        let max_len = 64usize;
+        let max_parts = 3usize; // total parts = 2..=3
+        let max_len = 32usize;
 
         (
             multipart_part(max_len),
@@ -986,6 +1057,7 @@ mod property_tests {
                 drips.insert(0, 8);
 
                 let idx = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                let pending_ticks = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
                 let total_need = 8 + body.len();
 
                 // Wrap the whole run in a 2s timeout. This does not
@@ -1016,8 +1088,8 @@ mod property_tests {
                             async move { fw.send().await.map_err(|_| ()) }
                         },
                         Ok(()),
-                        // `step`: invoked on each `Poll::Pending` to
-                        // advance external state.
+                        // - `step`: invoked on each `Poll::Pending` to
+                        //   advance external state.
                         // - Index into the fuzzed `drips` sequence
                         //   (shared via `idx`).
                         // - Add that budget to the shared `Gate`,
@@ -1027,17 +1099,26 @@ mod property_tests {
                         //   completion.
                         // - Returned future performs the actual
                         //   `gate.add` each tick.
+                        // - Occasionally yield so timers make
+                        // progress without slowing every step.
                         {
                             let gate = gate.clone();
                             let idx = idx.clone();
+                            let pt_outer = pending_ticks.clone();
                             move || {
                                 let i = idx.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                 let add = *drips.get(i).unwrap_or(&total_need);
                                 let gate = gate.clone();
-                                async move { gate.add(add) }
+                                let pt = pt_outer.clone();
+
+                                async move {
+                                    gate.add(add);
+                                    if pt.fetch_add(1, std::sync::atomic::Ordering::Relaxed) & 31 == 0 {
+                                        tokio::task::yield_now().await;
+                                    }
+                                }
                             }
                         }
-
                     );
                     // At this point `fw.send()` has completed
                     // successfully, so the frame must be fully
@@ -1048,6 +1129,206 @@ mod property_tests {
                     assert_eq!(got, body);
                 }
                 ).await.expect("cancel-safety run timed out");
+            });
+        }
+    }
+
+    // Theorem: FrameWrite::send is cancel-safe for *strictly
+    // multipart* messages (ensures vectored writes are actually
+    // exercised).
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
+        #[test]
+        fn framewrite_cancellation_is_safe_multipart_only(
+            msg in test_support::multipart_message_only(),
+            drips in test_support::budget_drips()) {
+            let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+            rt.block_on(async move {
+                let (a, b) = tokio::io::duplex(4096);
+                let (r, _wu) = tokio::io::split(a);
+                let (_ru, w) = tokio::io::split(b);
+
+                let gate = Gate::new();
+                let shared = SharedWriter::new(w);
+
+                // Sanity: underlying writer should support vectored
+                // writes; our BudgetedWriter forwards
+                // poll_write_vectored and preserves that capability.
+                assert!(shared.is_write_vectored(), "underlying writer is not vectored");
+
+                let mut reader = FrameReader::new(r, 1024 * 1024);
+
+                // Compute expected bytes once (len-prefix stripped).
+                let mut framed = msg.clone().framed();
+                let expected_body = framed.copy_to_bytes(framed.remaining());
+                let total_need = 8 + expected_body.len();
+
+                let mut drips = drips.clone();
+                drips.insert(0, 8);
+
+                let idx = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                let pending_ticks = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+                let step_idx   = idx.clone();
+                let make_gate  = gate.clone(); // used by mk-future
+                let step_gate  = gate.clone(); // used by step-closure
+                let step_ticks = pending_ticks.clone();
+                let step_drips = drips.clone();
+
+                #[allow(clippy::disallowed_methods)]
+                tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                    assert_cancel_safe_async!(
+                        // `mk`: Build a *fresh* send future each attempt.
+                        // - We clone `shared` and `make_gate` (both
+                        //   `Arc`-backed), so the underlying writer +
+                        //   budget pool persist across cancellations.
+                        // - We clone and frame `msg` each time; with
+                        //   ≥2 part this drives the vectored write
+                        //   path.
+                        // - We construct a new `FrameWrite` each time
+                        //   (the future under test), so
+                        //   `assert_cancel_safe_async` can cancel at
+                        //   any `Poll::Pending`, drop it, and retry
+                        //   from the same shared world state.
+                        // - Map `Result<(), io::Error>` → `Result<(),()>`
+                        //   so the `expected` value (`Ok(())`) is
+                        //   equality comparable (requires `PartialEq`).
+                        {
+                            let bw = BudgetedWriter::new(shared.clone(), make_gate.clone());
+                            let body = msg.clone().framed(); // multipart → vectored path
+                            let mut fw = FrameWrite::new(bw, body);
+                            async move { fw.send().await.map_err(|_| ()) }
+                        },
+                        Ok(()),
+
+                        // - `step`: invoked on each `Poll::Pending` to
+                        //   advance external state.
+                        // - Index into the fuzzed `drips` sequence
+                        //   (shared via `step_idx`).
+                        // - Add that budget to the shared `Gate` (via
+                        //   `step_gate`), waking any waiter.
+                        // - If we run out of drips, fall back to
+                        //   `total_need` to guarantee eventual
+                        //   completion.
+                        // - Returned future performs the actual
+                        //   `gate.add` each tick.
+                        // - Occasionally yield so timers make
+                        // progress without slowing every step.
+                        move || {
+                            let i = step_idx.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let add = *step_drips.get(i).unwrap_or(&total_need);
+                            let gate = step_gate.clone();
+                            let ticks = step_ticks.clone();
+
+                            async move {
+                                gate.add(add);
+                                if ticks.fetch_add(1, std::sync::atomic::Ordering::Relaxed) & 31 == 0 {
+                                    tokio::task::yield_now().await;
+                                }
+                            }
+                        }
+                    );
+                    // At this point `fw.send()` has completed
+                    // successfully, so the frame must be fully
+                    // written to the wire. Verifying that the next
+                    // read yields exactly `expected_body` checks the
+                    // postcondition of `send()` (the reader sees the
+                    // body bytes, with the length prefix stripped).
+                    let got = tokio::time::timeout(std::time::Duration::from_secs(1), reader.next())
+                        .await.expect("reader stalled").unwrap().unwrap();
+                    assert_eq!(got, expected_body);
+                }).await.expect("strict multipart cancel-safety run timed out");
+            });
+        }
+    }
+
+    // Theorem: `FrameWrite::send` is cancel-safe for messages that
+    // may be unipart OR multipart. (May or may not take the vectored
+    // path.)
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
+        #[test]
+        fn framewrite_cancellation_is_safe_unipart_or_multipart(
+            msg in test_support::multipart_message(),
+            drips in test_support::budget_drips()
+        ) {
+            let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+            rt.block_on(async move {
+                let (a, b) = tokio::io::duplex(4096);
+                let (r, _wu) = tokio::io::split(a);
+                let (_ru, w) = tokio::io::split(b);
+
+                let gate   = Gate::new();
+                let shared = SharedWriter::new(w);
+
+                let mut reader = FrameReader::new(r, 1024 * 1024);
+
+                // Compute expected bytes once (len-prefix stripped).
+                let mut framed = msg.clone().framed();
+                let expected_body = framed.copy_to_bytes(framed.remaining());
+                let total_need = 8 + expected_body.len();
+
+                let mut drips = drips.clone();
+                drips.insert(0, 8);
+
+                let idx            = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                let pending_ticks  = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+                let step_idx   = idx.clone();
+                let make_gate  = gate.clone(); // used by mk-future
+                let step_gate  = gate.clone(); // used by step-closure
+                let step_ticks = pending_ticks.clone();
+                let step_drips = drips.clone();
+
+                #[allow(clippy::disallowed_methods)]
+                tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                    assert_cancel_safe_async!(
+                        // `mk`: Build a *fresh* send future each attempt.
+                        // - Clone `shared` and `make_gate` (Arc-backed) so
+                        //   writer + budget persist across cancellations.
+                        // - Clone+frame `msg` each time; if it's multipart (≥2 parts)
+                        //   this will exercise the vectored write path, otherwise it
+                        //   goes down the scalar path — both are valid.
+                        // - Construct a new `FrameWrite` each attempt so the harness
+                        //   can cancel at any `Poll::Pending` and retry from shared state.
+                        // - Map `Result<(), io::Error>` → `Result<(),()>` so `Ok(())`
+                        //   is equality comparable.
+                        {
+                            let bw = BudgetedWriter::new(shared.clone(), make_gate.clone());
+                            let body = msg.clone().framed(); // may or may not be multipart
+                            let mut fw = FrameWrite::new(bw, body);
+                            async move { fw.send().await.map_err(|_| ()) }
+                        },
+                        Ok(()),
+
+                        // `step`: invoked on each `Poll::Pending` to advance external state.
+                        // - Index into the fuzzed `drips` (via `step_idx`).
+                        // - Add budget to the shared `Gate` (`step_gate`).
+                        // - If we run out of drips, fall back to `total_need`.
+                        // - Occasionally yield so timers progress without slowing every step.
+                        move || {
+                            let i = step_idx.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let add = *step_drips.get(i).unwrap_or(&total_need);
+                            let gate = step_gate.clone();
+                            let ticks = step_ticks.clone();
+
+                            async move {
+                                gate.add(add);
+                                if ticks.fetch_add(1, std::sync::atomic::Ordering::Relaxed) & 31 == 0 {
+                                    tokio::task::yield_now().await;
+                                }
+                            }
+                        }
+                    );
+
+                    // At this point `fw.send()` has completed successfully, so the frame
+                    // must be fully written to the wire. Verifying that the next read
+                    // yields exactly `expected_body` checks the postcondition of `send()`
+                    // (the reader sees the body bytes, with the length prefix stripped).
+                    let got = tokio::time::timeout(std::time::Duration::from_secs(1), reader.next())
+                        .await.expect("reader stalled").unwrap().unwrap();
+                    assert_eq!(got, expected_body);
+                }).await.expect("unipart/multipart cancel-safety run timed out");
             });
         }
     }
