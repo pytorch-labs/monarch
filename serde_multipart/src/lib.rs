@@ -377,6 +377,8 @@ fn options() -> part::BincodeOptionsType {
 mod tests {
     use std::assert_matches::assert_matches;
 
+    use proptest::prelude::*;
+    use proptest_derive::Arbitrary;
     use serde::Deserialize;
     use serde::Serialize;
     use serde::de::DeserializeOwned;
@@ -430,6 +432,11 @@ mod tests {
                 struct U {
                     parts: Vec<Part>,
                 }
+                #[derive(Serialize, Deserialize, Debug, PartialEq)]
+                enum E {
+                    First(Part),
+                    Second(String),
+                }
 
                 #[derive(Serialize, Deserialize, Debug, PartialEq)]
                 struct T {
@@ -437,6 +444,7 @@ mod tests {
                     field3: Part,
                     field4: Part,
                     field5: Vec<U>,
+                    field6: E,
                 }
 
                 T {
@@ -451,9 +459,10 @@ mod tests {
                             parts: vec![Part::from("five"), Part::from("six"), Part::from("seven")],
                         },
                     ],
+                    field6: E::First(Part::from("eight")),
                 }
             },
-            7,
+            8,
         );
         test_roundtrip(
             {
@@ -556,5 +565,67 @@ mod tests {
         let mut framed = message.clone().framed();
         let framed = framed.copy_to_bytes(framed.remaining());
         assert_eq!(Message::from_framed(framed).unwrap(), message);
+    }
+
+    prop_compose! {
+        fn arb_bytes()(len in 0..1000000usize) -> Bytes {
+            Bytes::from(vec![42; len])
+        }
+    }
+
+    prop_compose! {
+        fn arb_part()(bytes in arb_bytes()) -> Part {
+            bytes.into()
+        }
+    }
+
+    #[derive(Arbitrary, Serialize, Deserialize, Debug, PartialEq)]
+    enum TupleEnum {
+        One,
+        Two(String),
+        Three(u32),
+    }
+
+    #[derive(Arbitrary, Serialize, Deserialize, Debug, PartialEq)]
+    enum StructEnum {
+        One {
+            a: i32,
+        },
+        Two {
+            s: String,
+        },
+        Three {
+            e: TupleEnum,
+            s: String,
+            u: u32,
+        },
+        Four {
+            #[proptest(strategy = "arb_part()")]
+            part: Part,
+        },
+    }
+
+    #[derive(Arbitrary, Serialize, Deserialize, Debug, PartialEq)]
+    struct S {
+        field: String,
+        tup: (StructEnum, i32, String, u32, f32),
+        tup2: Option<(String, String, String, i32)>,
+        e: StructEnum,
+        maybe_e: Option<StructEnum>,
+        many_e: Vec<(StructEnum, Option<TupleEnum>)>,
+        #[proptest(strategy = "arb_bytes()")]
+        some_bytes: Bytes,
+    }
+
+    #[derive(Arbitrary, Serialize, Deserialize, Debug, PartialEq)]
+    struct N(S);
+
+    proptest! {
+        #[test]
+        fn test_arbitrary_roundtrip(value in any::<N>()) {
+            let message = serialize_bincode(&value).unwrap();
+            let deserialized_value = deserialize_bincode(message.clone()).unwrap();
+            assert_eq!(value, deserialized_value);
+        }
     }
 }
