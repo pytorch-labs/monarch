@@ -160,7 +160,7 @@ impl Message {
 
         let body = buf.split_to(body_len as usize);
         let mut parts = Vec::new();
-        while buf.len() > 0 {
+        while !buf.is_empty() {
             parts.push(Self::split_part(&mut buf)?.into());
         }
         Ok(Self {
@@ -179,6 +179,10 @@ impl Message {
             return Err(std::io::ErrorKind::UnexpectedEof.into());
         }
         Ok(buf.split_to(at))
+    }
+
+    pub fn is_illegal(&self) -> bool {
+        self.is_illegal
     }
 }
 
@@ -557,8 +561,7 @@ mod tests {
                 Part::from(""),
                 Part::from("xyz"),
                 Part::from("xyzd"),
-            ]
-            .into(),
+            ],
             is_illegal: false,
         };
 

@@ -788,7 +788,7 @@ mod tests {
             .fetch_result(
                 &worker,
                 20.into(),
-                Ok(Serialized::serialize_anon(&PyTree::from(RValue::Int(42))).unwrap()),
+                Ok(Serialized::serialize(&PyTree::from(RValue::Int(42))).unwrap()),
             )
             .await
             .unwrap();

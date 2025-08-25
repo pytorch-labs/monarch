@@ -13,7 +13,6 @@ use std::any::TypeId;
 use std::collections::HashMap;
 use std::fmt;
 use std::io::Cursor;
-use std::str::FromStr;
 use std::sync::LazyLock;
 
 use enum_as_inner::EnumAsInner;
@@ -389,7 +388,12 @@ impl std::fmt::Debug for Encoded {
             Encoded::Bincode(data) => write!(f, "Encoded::Bincode({})", HexFmt(data)),
             Encoded::Json(data) => write!(f, "Encoded::Json({})", HexFmt(data)),
             Encoded::Multipart(message) => {
-                write!(f, "Encoded::Multipart(body={}", HexFmt(message.body()))?;
+                write!(
+                    f,
+                    "Encoded::Multipart(illegal?={} body={}",
+                    message.is_illegal(),
+                    HexFmt(message.body())
+                )?;
                 for (index, part) in message.parts().iter().enumerate() {
                     write!(f, ", part[{}]={}", index, HexFmt(part))?;
                 }
@@ -425,9 +429,9 @@ pub enum Error {
 pub struct Serialized {
     /// The encoded data
     encoded: Encoded,
-    /// The typehash of the serialized value, if available. This is used to provide
+    /// The typehash of the serialized value. This is used to provide
     /// typed introspection of the value.
-    typehash: Option<u64>,
+    typehash: u64,
 }
 
 impl std::fmt::Display for Serialized {
@@ -467,20 +471,18 @@ impl Serialized {
                     Encoded::Multipart(serde_multipart::serialize_bincode(value)?)
                 }
             },
-            typehash: Some(T::typehash()),
-        })
-    }
-
-    /// Construct a new anonymous (unnamed) serialized value by serializing the provided T-typed value.
-    pub fn serialize_anon<T: Serialize>(value: &T) -> Result<Self, bincode::Error> {
-        Ok(Self {
-            encoded: Encoded::Bincode(bincode::serialize(value)?.into()),
-            typehash: None,
+            typehash: T::typehash(),
         })
     }
 
     /// Deserialize a value to the provided type T.
-    pub fn deserialized<T: DeserializeOwned>(&self) -> Result<T, anyhow::Error> {
+    pub fn deserialized<T: DeserializeOwned + Named>(&self) -> Result<T, anyhow::Error> {
+        anyhow::ensure!(
+            self.is::<T>(),
+            "attempted to serialize {}-typed serialized into type {}",
+            self.typename().unwrap_or("unknown"),
+            T::typename()
+        );
         match &self.encoded {
             Encoded::Bincode(data) => bincode::deserialize(data).map_err(anyhow::Error::from),
             Encoded::Json(data) => serde_json::from_slice(data).map_err(anyhow::Error::from),
@@ -517,11 +519,8 @@ impl Serialized {
     pub fn dump(&self) -> Result<serde_json::Value, anyhow::Error> {
         match &self.encoded {
             Encoded::Bincode(_) | Encoded::Multipart(_) => {
-                let Some(typehash) = self.typehash() else {
-                    anyhow::bail!("serialized value does not contain a typehash");
-                };
-                let Some(typeinfo) = TYPE_INFO.get(&typehash) else {
-                    anyhow::bail!("binary does not have typeinfo for {}", typehash);
+                let Some(typeinfo) = TYPE_INFO.get(&self.typehash) else {
+                    anyhow::bail!("binary does not have typeinfo for {}", self.typehash);
                 };
                 typeinfo.dump(self.clone())
             }
@@ -534,15 +533,16 @@ impl Serialized {
         self.encoded.encoding()
     }
 
-    /// The typehash of the serialized value, if available.
-    pub fn typehash(&self) -> Option<u64> {
+    /// The typehash of the serialized value.
+    pub fn typehash(&self) -> u64 {
         self.typehash
     }
 
     /// The typename of the serialized value, if available.
     pub fn typename(&self) -> Option<&'static str> {
-        self.typehash
-            .and_then(|typehash| TYPE_INFO.get(&typehash).map(|typeinfo| typeinfo.typename()))
+        TYPE_INFO
+            .get(&self.typehash)
+            .map(|typeinfo| typeinfo.typename())
     }
 
     /// Deserialize a prefix of the value. This is currently only supported
@@ -595,6 +595,12 @@ impl Serialized {
     /// Returns the 32bit crc of the serialized data
     pub fn crc(&self) -> u32 {
         self.encoded.crc()
+    }
+
+    /// Returns whether this value contains a serialized M-typed value. Returns None
+    /// when type information is unavailable.
+    pub fn is<M: Named>(&self) -> bool {
+        self.typehash == M::typehash()
     }
 }
 

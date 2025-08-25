@@ -235,7 +235,7 @@ impl MessageEnvelope {
     }
 
     /// Deserialize the message in the envelope to the provided type T.
-    pub fn deserialized<T: DeserializeOwned>(&self) -> Result<T, anyhow::Error> {
+    pub fn deserialized<T: DeserializeOwned + Named>(&self) -> Result<T, anyhow::Error> {
         self.data.deserialized()
     }
 
