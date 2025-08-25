@@ -31,7 +31,9 @@ class TestActor(Actor):
         dist.init_process_group(backend, rank=rank, world_size=world_size)
 
         try:
-            t = F.one_hot(torch.tensor(rank), num_classes=dist.get_world_size())
+            # TODO: generalize this.
+            local_rank = rank % 4 # current_rank()["gpus"]
+            t = F.one_hot(torch.tensor(rank, device=f"cuda:{local_rank}"), num_classes=dist.get_world_size())
             dist.all_reduce(t)
             return int(torch.sum(t).item())
         finally:

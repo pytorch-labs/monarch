@@ -69,7 +69,17 @@ async def main():
     image = "monarch_default_workspace:latest"
 
     num_hosts = 2
-    num_gpus_per_host = 4
+    
+
+    appdef = hyperactor.host_mesh(
+            image=image,
+            # TODO: For some reason gpu.medium doens't work here
+            meshes=[f"mesh0:{num_hosts}:aws_g5.12xlarge"],  # mesh_name:num_hosts:host_type
+        )
+    
+    # TODO: Register this so we don't have to do this every time
+    for role in appdef.roles:
+        role.resource.memMB = 186777
 
     config = Config(
         scheduler="slurm",
@@ -80,20 +90,24 @@ async def main():
             "hpcClusterUuid": "MastProdCluster",
             "rmAttribution": "pytorch4all_clients_approved",
         },
-        appdef=hyperactor.host_mesh(
-            image=image,
-            # TODO: For some reason gpu.medium doens't work here
-            meshes=[f"mesh0:{num_hosts}:gpu.large"],  # mesh_name:num_hosts:host_type
-        ),
+        appdef=appdef,
         workspace=str(CWD),  # or None to disable building ephemeral,
     )
+
+    # config.dryrun = True
+    # o = commands.create(config)
+    # print(o)
+    # sys.exit(0)
 
     server_info = await commands.get_or_create(
         jobname,
         config,
         force_restart=args.force_restart,
     )
-    print(f"ahmad: {server_info}")
+    # TODO: why is gpus equal to -1 in server_info?
+
+    num_gpus_per_host = appdef.roles[0].resource.gpu
+    print(f"ahmad: {server_info} {role.resource.gpu}")
 
     logger.info(
         "\n===== Server Info =====\n%s",
@@ -107,7 +121,7 @@ async def main():
     # this is redundant but is here for example sake
     mesh_name = server_info.get_mesh_spec("mesh0").name
 
-    allocator = RemoteAllocator(world_id="foo", initializer=TorchXRemoteAllocInitializer(f"slurm:///{server_info.name}"))
+    allocator = RemoteAllocator(world_id="foo", initializer=TorchXRemoteAllocInitializer(server_info.server_handle))
     alloc = await allocator.allocate(AllocSpec(AllocConstraints(), hosts=num_hosts, gpus=num_gpus_per_host))
 
     proc_mesh = await ProcMesh.from_alloc(alloc)
