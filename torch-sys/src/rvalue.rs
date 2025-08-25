@@ -8,6 +8,7 @@
 
 use derive_more::From;
 use derive_more::TryInto;
+use hyperactor::Named;
 use monarch_types::PickledPyObject;
 use monarch_types::TryIntoPyObjectUnsafe;
 use pyo3::IntoPyObjectExt;
@@ -29,7 +30,7 @@ use crate::ivalue::OpaqueIValueCell;
 
 /// A pure Rust equivalent for [`IValue`]. This is safe to treat like a normal
 /// Rust value.
-#[derive(Debug, Clone, From, TryInto, Serialize, Deserialize)]
+#[derive(Debug, Clone, From, TryInto, Serialize, Deserialize, Named)]
 #[try_into(owned, ref, ref_mut)]
 pub enum RValue {
     Tensor(TensorCell),

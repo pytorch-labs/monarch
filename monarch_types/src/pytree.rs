@@ -6,6 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use hyperactor::Named;
 use pyo3::Bound;
 use pyo3::FromPyObject;
 use pyo3::IntoPyObject;
@@ -40,7 +41,7 @@ pub enum TreeSpec {
 /// https://github.com/pytorch/pytorch/blob/main/torch/utils/_pytree.py
 // NOTE: We have runtime deps on torch's pytree module and `pickle`, which the
 // user must ensure is available.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Named)]
 pub struct PyTree<T> {
     /// A wrapper around the tree spec.
     // NOTE: This is currently just the pickled bytes of the tree spec.  We

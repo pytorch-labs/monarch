@@ -77,7 +77,7 @@ impl WorkerResponse {
         } else {
             Ok(Self {
                 seq: seq.into(),
-                result: Some(Ok(Serialized::serialize_anon(
+                result: Some(Ok(Serialized::serialize(
                     &response.extract::<PyTree<RValue>>(py)?,
                 )
                 .map_err(|err| {
