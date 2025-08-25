@@ -48,13 +48,13 @@ rust-api
 
 ## License
 
-Monarch is BSD-3 licensed, as found in the [LICENSE](https://github.com/pytorch-labs/monarch/blob/main/LICENSE) file.
+Monarch is BSD-3 licensed, as found in the [LICENSE](https://github.com/meta-pytorch/monarch/blob/main/LICENSE) file.
 
 ## Community
 
 We welcome contributions from the community! If you're interested in contributing, please:
 
-1. Check the [GitHub repository](https://github.com/pytorch-labs/monarch)
+1. Check the [GitHub repository](https://github.com/meta-pytorch/monarch)
 2. Review existing issues or create a new one
 3. Discuss your proposed changes before starting work
 4. Submit a pull request with your changes

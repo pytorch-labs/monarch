@@ -6,7 +6,7 @@ version = "0.0.0"
 authors = ["Facebook <opensource+crates-serde_multipart@fb.com>"]
 edition = "2021"
 description = "multipart encoding for serde"
-repository = "https://github.com/pytorch-labs/monarch/"
+repository = "https://github.com/meta-pytorch/monarch/"
 license = "BSD-3-Clause"
 
 [dependencies]
