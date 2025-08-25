@@ -465,8 +465,8 @@ impl PythonUndeliverableMessageEnvelope {
         Ok(self
             .inner()?
             .0
-            .error()
-            .map_or("None".to_string(), |e| e.to_string()))
+            .error_msg()
+            .unwrap_or_else(|| "None".to_string()))
     }
 }
 
