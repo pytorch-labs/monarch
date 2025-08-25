@@ -6,6 +6,11 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::ops::Deref;
+
+use monarch_types::MapPyErr;
+use ndslice::Extent;
+use ndslice::Point;
 use ndslice::Shape;
 use ndslice::Slice;
 use pyo3::IntoPyObjectExt;
@@ -13,8 +18,90 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use pyo3::types::PyDict;
+use pyo3::types::PyMapping;
+use serde::Deserialize;
+use serde::Serialize;
 
 use crate::ndslice::PySlice;
+
+#[derive(Serialize, Deserialize, Clone)]
+#[pyclass(
+    name = "Extent",
+    module = "monarch._rust_bindings.monarch_hyperactor.shape",
+    frozen
+)]
+pub struct PyExtent {
+    inner: Extent,
+}
+
+#[pymethods]
+impl PyExtent {
+    #[new]
+    pub fn new(labels: Vec<String>, sizes: Vec<usize>) -> PyResult<PyExtent> {
+        Ok(PyExtent {
+            inner: Extent::new(labels, sizes).map_pyerr()?,
+        })
+    }
+    #[getter]
+    fn nelements(&self) -> usize {
+        self.inner.num_ranks()
+    }
+    fn __repr__(&self) -> String {
+        self.inner.to_string()
+    }
+    #[getter]
+    fn labels(&self) -> &[String] {
+        self.inner.labels()
+    }
+    #[getter]
+    fn sizes(&self) -> &[usize] {
+        self.inner.sizes()
+    }
+
+    #[staticmethod]
+    fn from_bytes(bytes: &Bound<'_, PyBytes>) -> PyResult<Self> {
+        let extent: PyExtent = bincode::deserialize(bytes.as_bytes())
+            .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
+        Ok(extent)
+    }
+
+    fn __reduce__<'py>(
+        slf: &Bound<'py, Self>,
+    ) -> PyResult<(Bound<'py, PyAny>, (Bound<'py, PyBytes>,))> {
+        let bytes = bincode::serialize(&*slf.borrow())
+            .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
+        let py_bytes = PyBytes::new(slf.py(), &bytes);
+        Ok((slf.getattr("from_bytes")?, (py_bytes,)))
+    }
+
+    fn __iter__<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
+        Ok(self
+            .labels()
+            .into_bound_py_any(py)?
+            .call_method0("__iter__")?
+            .into())
+    }
+
+    fn __getitem__(&self, label: &str) -> PyResult<usize> {
+        self.inner.size(label).ok_or_else(|| {
+            PyErr::new::<PyValueError, _>(format!("Dimension '{}' not found", label))
+        })
+    }
+
+    fn __len__(&self) -> usize {
+        self.inner.len()
+    }
+
+    fn keys<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
+        Ok(self.inner.labels().into_bound_py_any(py)?.into())
+    }
+}
+
+impl From<Extent> for PyExtent {
+    fn from(inner: Extent) -> Self {
+        PyExtent { inner }
+    }
+}
 
 #[pyclass(
     name = "Shape",
@@ -155,6 +242,11 @@ impl PyShape {
     fn unity() -> PyShape {
         Shape::unity().into()
     }
+
+    #[getter]
+    fn extent(&self) -> PyExtent {
+        self.inner.extent().into()
+    }
 }
 
 impl From<Shape> for PyShape {
@@ -163,144 +255,120 @@ impl From<Shape> for PyShape {
     }
 }
 
+#[derive(Serialize, Deserialize, Clone, Eq, PartialEq, Debug)]
 #[pyclass(
     name = "Point",
     module = "monarch._rust_bindings.monarch_hyperactor.shape",
     subclass,
     frozen
 )]
-
 pub struct PyPoint {
     rank: usize,
-    shape: Py<PyShape>,
+    extent: Extent,
 }
 
 #[pymethods]
 impl PyPoint {
     #[new]
-    pub fn new(rank: usize, shape: Py<PyShape>) -> Self {
-        PyPoint { rank, shape }
-    }
-    fn __getitem__(&self, py: Python, label: &str) -> PyResult<usize> {
-        let shape = self.shape.bind(py).get();
-        let ranks = shape
-            .inner
-            .slice()
-            .coordinates(self.rank)
-            .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
-        if let Some(index) = shape.inner.labels().iter().position(|l| l == label) {
-            Ok(ranks[index])
-        } else {
-            Err(PyErr::new::<PyValueError, _>(format!(
-                "Dimension '{}' not found",
-                label
-            )))
+    pub fn new(rank: usize, extent: PyExtent) -> Self {
+        PyPoint {
+            rank,
+            extent: extent.inner,
         }
     }
-
-    fn size(&self, py: Python<'_>, label: &str) -> PyResult<usize> {
-        let shape = &self.shape.bind(py).get().inner;
-        if let Some(index) = shape.labels().iter().position(|l| l == label) {
-            Ok(shape.slice().sizes()[index])
-        } else {
-            Err(PyErr::new::<PyValueError, _>(format!(
-                "Dimension '{}' not found",
-                label
-            )))
-        }
+    fn __getitem__(&self, label: &str) -> PyResult<usize> {
+        let index = self.extent.position(label).ok_or_else(|| {
+            PyErr::new::<PyValueError, _>(format!("Dimension '{}' not found", label))
+        })?;
+        let point = self.extent.point_of_rank(self.rank).map_pyerr()?;
+        Ok(point.coords()[index])
     }
 
-    fn __str__(&self, py: Python) -> PyResult<String> {
-        let shape = self.shape.bind(py).get();
-        let inner_shape = &shape.inner;
-        let slice = inner_shape.slice();
-        let total_size = slice.len();
-        let current_rank = self.rank;
-
-        let coords = slice
-            .coordinates(current_rank)
-            .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
-
-        // Create the underlying Point struct from ndslice::view
-        let extent =
-            ndslice::view::Extent::new(inner_shape.labels().to_vec(), slice.sizes().to_vec())
-                .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
-        let point = extent
-            .point(coords)
-            .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
-
-        Ok(format!(
-            "rank={}/{} coords={{{}}}",
-            current_rank, total_size, point
-        ))
+    fn size(&self, label: &str) -> PyResult<usize> {
+        self.extent.size(label).ok_or_else(|| {
+            PyErr::new::<PyValueError, _>(format!("Dimension '{}' not found", label))
+        })
     }
 
-    fn __repr__(&self, py: Python) -> PyResult<String> {
-        let shape = self.shape.bind(py).get();
-        let inner_shape = &shape.inner;
-        let slice = inner_shape.slice();
-
-        let total_size = slice.len();
-        let current_rank = self.rank;
-
-        let coords = slice
-            .coordinates(current_rank)
-            .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
-
-        let labels = inner_shape.labels();
-        let sizes = slice.sizes();
-
-        let coords_parts: Vec<String> = labels
-            .iter()
-            .zip(coords.iter())
-            .zip(sizes.iter())
-            .map(|((label, &coord), &size)| format!("{}={}/{}", label, coord, size))
-            .collect();
-
-        let coords_str = coords_parts.join(",");
-
-        // TODO: Should we call the Display implementation of the Point struct using extent here as well?
-        Ok(format!(
-            "rank={}/{} coords={{{}}}",
-            current_rank, total_size, coords_str
-        ))
-    }
-
-    fn __len__(&self, py: Python) -> usize {
-        self.shape.bind(py).get().__len__()
+    fn __len__(&self) -> usize {
+        self.extent.len()
     }
     fn __iter__<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
-        self.shape
-            .bind(py)
-            .get()
+        Ok(self
+            .extent
             .labels()
-            .into_py_any(py)?
-            .call_method0(py, "__iter__")
+            .into_bound_py_any(py)?
+            .call_method0("__iter__")?
+            .into())
     }
+
+    #[staticmethod]
+    fn from_bytes(bytes: &Bound<'_, PyBytes>) -> PyResult<Self> {
+        let point: PyPoint = bincode::deserialize(bytes.as_bytes())
+            .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
+        Ok(point)
+    }
+
     fn __reduce__<'py>(
         slf: &Bound<'py, Self>,
-    ) -> (
-        pyo3::Bound<'py, pyo3::types::PyType>,
-        (usize, pyo3::Py<PyShape>),
-    ) {
-        (
-            slf.get_type(),
-            (slf.get().rank, slf.get().shape.clone_ref(slf.py())),
-        )
+    ) -> PyResult<(Bound<'py, PyAny>, (Bound<'py, PyBytes>,))> {
+        let bytes = bincode::serialize(&*slf.borrow())
+            .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
+        let py_bytes = PyBytes::new(slf.py(), &bytes);
+        Ok((slf.getattr("from_bytes")?, (py_bytes,)))
     }
+
     #[getter]
-    fn shape(&self, py: Python<'_>) -> Py<PyShape> {
-        self.shape.clone_ref(py)
+    fn extent(&self) -> PyExtent {
+        PyExtent {
+            inner: self.extent.clone(),
+        }
     }
     #[getter]
     fn rank(&self) -> usize {
         self.rank
     }
+    fn __repr__(&self) -> PyResult<String> {
+        let point = self.extent.point_of_rank(self.rank).map_pyerr()?;
+        let coords = point.coords();
+        let labels = self.extent.labels();
+        let sizes = self.extent.sizes();
+        let mut parts = Vec::new();
+        for (i, label) in labels.iter().enumerate() {
+            parts.push(format!("'{}': {}/{}", label, coords[i], sizes[i]));
+        }
+
+        Ok(format!("{{{}}}", parts.join(", ")))
+    }
+
+    fn __eq__(&self, other: &Bound<'_, PyAny>) -> PyResult<bool> {
+        if let Ok(other) = other.extract::<PyPoint>() {
+            Ok(*self == other)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn keys<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
+        Ok(self.extent.labels().into_bound_py_any(py)?.into())
+    }
+}
+impl From<Point> for PyPoint {
+    fn from(inner: Point) -> Self {
+        PyPoint {
+            rank: inner.rank(),
+            extent: inner.extent().clone(),
+        }
+    }
 }
 
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    let py = module.py();
     module.add_class::<PyShape>()?;
     module.add_class::<PySlice>()?;
     module.add_class::<PyPoint>()?;
+    PyMapping::register::<PyPoint>(py)?;
+    module.add_class::<PyExtent>()?;
+    PyMapping::register::<PyExtent>(py)?;
     Ok(())
 }

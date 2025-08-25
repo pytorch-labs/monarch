@@ -28,9 +28,9 @@ from typing import (
 import monarch.common.messages as messages
 
 import torch
-from monarch._rust_bindings.monarch_hyperactor.shape import Shape
+from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Shape
 from monarch._src.actor.actor_mesh import Port
-from monarch._src.actor.endpoint import Extent, Selection
+from monarch._src.actor.endpoint import Selection
 
 from monarch.common import _coalescing, device_mesh, stream
 from monarch.common.future import Future as OldFuture

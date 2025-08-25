@@ -142,8 +142,8 @@ impl Handler<PhilosopherMessage> for PhilosopherActor {
         cx: &Context<Self>,
         message: PhilosopherMessage,
     ) -> Result<(), anyhow::Error> {
-        let (rank, _) = cx.cast_info();
-        self.rank = rank;
+        let point = cx.cast_info();
+        self.rank = point.rank();
         match message {
             PhilosopherMessage::Start(waiter) => {
                 self.waiter.set(waiter)?;

@@ -30,6 +30,8 @@ from typing import (
     TypeVar,
 )
 
+from monarch._rust_bindings.monarch_hyperactor.shape import Extent
+
 from monarch._src.actor.future import Future
 from monarch._src.actor.tensor_engine_shim import _cached_propagation, fake_call
 
@@ -47,19 +49,6 @@ P = ParamSpec("P")
 R = TypeVar("R")
 
 Selection = Literal["all", "choose"]
-
-
-class Extent:
-    def __init__(self, labels: Sequence[str], sizes: Sequence[int]) -> None:
-        self.labels = labels
-        self.sizes = sizes
-
-    @property
-    def nelements(self) -> int:
-        return functools.reduce(mul, self.sizes, 1)
-
-    def __str__(self) -> str:
-        return str(dict(zip(self.labels, self.sizes)))
 
 
 Propagator = Any

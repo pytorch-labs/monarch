@@ -40,6 +40,8 @@ use hyperactor_mesh::comm::multicast::set_cast_info_on_headers;
 use hyperactor_mesh::proc_mesh::global_root_client;
 use monarch_types::PickledPyObject;
 use monarch_types::py_global;
+use ndslice::Extent;
+use ndslice::Point;
 use ndslice::shape::Shape;
 use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyEOFError;
@@ -753,13 +755,15 @@ inventory::submit! {
 }
 
 #[pyclass(name = "Instance", module = "monarch._src.actor.actor_mesh")]
-struct Instance {
+pub(crate) struct Instance {
     mailbox: Mailbox,
     actor_id: ActorId,
     #[pyo3(get, set)]
     proc_mesh: Option<PyObject>,
     #[pyo3(get, set, name = "_controller_controller")]
     controller_controller: Option<PyObject>,
+    #[pyo3(get, set)]
+    rank: PyPoint,
 }
 #[pymethods]
 impl Instance {
@@ -782,6 +786,19 @@ impl<A: hyperactor::Actor> From<&hyperactor::proc::Instance<A>> for Instance {
             actor_id: ins.self_id().clone(),
             proc_mesh: None,
             controller_controller: None,
+            rank: PyPoint::new(0, Extent::unity().into()),
+        }
+    }
+}
+impl<A: hyperactor::Actor> From<&hyperactor::proc::Context<'_, A>> for Instance {
+    fn from(cx: &hyperactor::proc::Context<A>) -> Self {
+        let ins: &hyperactor::proc::Instance<A> = cx.deref();
+        Instance {
+            mailbox: ins.mailbox_for_py().clone(),
+            actor_id: ins.self_id().clone(),
+            proc_mesh: None,
+            controller_controller: None,
+            rank: cx.cast_info().into(),
         }
     }
 }
@@ -789,8 +806,7 @@ impl<A: hyperactor::Actor> From<&hyperactor::proc::Instance<A>> for Instance {
 #[pyclass(name = "Context", module = "monarch._src.actor.actor_mesh")]
 pub(crate) struct Context {
     instance: Py<Instance>,
-    rank: usize,
-    shape: Shape,
+    rank: Point,
 }
 
 py_global!(point, "monarch._src.actor.actor_mesh", "Point");
@@ -802,32 +818,27 @@ impl Context {
         &self.instance
     }
     #[getter]
-    fn message_rank<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let shape = PyShape::from(self.shape.clone());
-        point(py).call1((self.rank, shape.into_pyobject(py).unwrap().unbind()))
+    fn message_rank<'py>(&self) -> PyPoint {
+        self.rank.clone().into()
     }
     #[staticmethod]
     fn _root_client_context(py: Python<'_>) -> Context {
         let instance: Instance = global_root_client().into();
         Context {
             instance: instance.into_pyobject(py).unwrap().into(),
-            rank: 0,
-            shape: Shape::unity(),
+            rank: Extent::unity().point_of_rank(0).unwrap(),
         }
     }
 }
 
 impl Context {
     pub(crate) fn new<T: hyperactor::actor::Actor>(
-        py: Python<'_>,
         cx: &hyperactor::proc::Context<T>,
+        instance: Py<Instance>,
     ) -> Context {
-        let instance: Instance = cx.deref().into();
-        let (rank, shape) = cx.cast_info();
         Context {
-            instance: instance.into_pyobject(py).unwrap().into(),
-            rank,
-            shape,
+            instance,
+            rank: cx.cast_info(),
         }
     }
 }

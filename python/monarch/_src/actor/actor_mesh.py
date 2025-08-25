@@ -151,19 +151,39 @@ class Instance:
         the current actor was spawned. In other words, it is the `monarch.current_rank()` of
         The actors __init__ message.
         """
-        raise NotImplementedError("NYI: complete for release 0.0")
+        ...
+
+    @rank.setter
+    def rank(self, value: Point) -> Point: ...
 
     @property
-    def proc_mesh(self) -> "ProcMesh": ...
+    def proc_mesh(self) -> "ProcMesh":
+        """
+        The proc mesh over which all actors in this mesh were launched.
+        """
+        ...
+
+    @proc_mesh.setter
+    def proc_mesh(self, value: "ProcMesh") -> None: ...
 
     @proc_mesh.setter
     def proc_mesh(self, value: "ProcMesh") -> None: ...
 
     @property
+    def proc(self) -> "ProcMesh":
+        """
+        The singleton proc mesh that corresponds to just this actor.
+        """
+
+        return self.proc_mesh.slice(**self.rank)
+
+    @property
     def _controller_controller(self) -> "_ControllerController": ...
 
     @_controller_controller.setter
-    def _controller_controller(self, value: "_ControllerController") -> None: ...
+    def _controller_controller(
+        self, value: "Optional[_ControllerController]"
+    ) -> None: ...
 
 
 @rust_struct("monarch_hyperactor::mailbox::Context")
@@ -202,9 +222,13 @@ def context() -> Context:
     if c is None:
         c = Context._root_client_context()
         _context.set(c)
+        from monarch._src.actor.host_mesh import create_local_host_mesh
         from monarch._src.actor.proc_mesh import _get_controller_controller
 
-        c.actor_instance._controller_controller = _get_controller_controller()
+        c.actor_instance.proc_mesh, c.actor_instance._controller_controller = (
+            _get_controller_controller()
+        )
+        c.actor_instance.proc_mesh._host_mesh = create_local_host_mesh()
     return c
 
 
@@ -564,8 +588,9 @@ class ValueMesh(MeshTrait, Generic[R]):
         return self._values[self._ndslice.nditem(coordinates)]
 
     def items(self) -> Iterable[Tuple[Point, R]]:
-        for rank in self._shape.ranks():
-            yield Point(rank, self._shape), self._values[rank]
+        extent = self._shape.extent
+        for i, rank in enumerate(self._shape.ranks()):
+            yield Point(i, extent), self._values[rank]
 
     def __iter__(self) -> Iterator[Tuple[Point, R]]:
         return iter(self.items())
@@ -751,8 +776,6 @@ class _Actor:
         self.instance: object | None = None
         # TODO: (@pzhang) remove this with T229200522
         self._saved_error: ActorError | None = None
-        self._proc_mesh: Optional[ProcMesh] = None
-        self._controller_controller: Optional["_ControllerController"] = None
 
     async def handle(
         self,
@@ -775,13 +798,9 @@ class _Actor:
 
             match method:
                 case MethodSpecifier.Init():
-                    Class, self._proc_mesh, self._controller_controller, *args = args
-                    if self._controller_controller is not None:
-                        ctx.actor_instance._controller_controller = (
-                            self._controller_controller
-                        )
-                    assert self._proc_mesh is not None
-                    ctx.actor_instance.proc_mesh = self._proc_mesh
+                    ins = ctx.actor_instance
+                    Class, ins.proc_mesh, ins._controller_controller, *args = args
+                    ins.rank = ctx.message_rank
                     try:
                         self.instance = Class(*args, **kwargs)
                     except Exception as e:
@@ -815,10 +834,7 @@ class _Actor:
                         f" This is likely due to an earlier error: {self._saved_error}"
                     )
                 raise AssertionError(error_message)
-            if self._controller_controller is not None:
-                ctx.actor_instance._controller_controller = self._controller_controller
-            assert self._proc_mesh is not None
-            ctx.actor_instance.proc_mesh = self._proc_mesh
+
             the_method = getattr(self.instance, method_name)
             if isinstance(the_method, EndpointProperty):
                 module = the_method._method.__module__
@@ -885,10 +901,10 @@ class _Actor:
         if (pdb_wrapper := DebugContext.get().pdb_wrapper) is not None:
             with fake_sync_state():
                 ctx = context()
-                rank = ctx.message_rank.rank
+                msg_rank = ctx.message_rank
                 pdb_wrapper = PdbWrapper(
-                    rank,
-                    ctx.message_rank.shape.coordinates(rank),
+                    msg_rank.rank,
+                    {k: msg_rank[k] for k in msg_rank},
                     ctx.actor_instance.actor_id,
                     debug_controller(),
                 )
@@ -1136,5 +1152,5 @@ def current_rank() -> Point:
 
 
 def current_size() -> Dict[str, int]:
-    r = context().message_rank
-    return dict(zip(r.shape.labels, r.shape.ndslice.sizes))
+    r = context().message_rank.extent
+    return {k: r[k] for k in r}

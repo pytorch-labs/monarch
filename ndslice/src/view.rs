@@ -78,6 +78,10 @@ impl Extent {
         })
     }
 
+    pub fn unity() -> Extent {
+        Extent::new(vec![], vec![]).unwrap()
+    }
+
     /// Returns the ordered list of dimension labels in this extent.
     pub fn labels(&self) -> &[String] {
         &self.inner.labels
@@ -191,12 +195,14 @@ impl Extent {
 impl std::fmt::Display for Extent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let n = self.sizes().len();
+        write!(f, "{{")?;
         for i in 0..n {
-            write!(f, "{}={}", self.labels()[i], self.sizes()[i])?;
+            write!(f, "'{}': {}", self.labels()[i], self.sizes()[i])?;
             if i != n - 1 {
-                write!(f, ",")?;
+                write!(f, ", ")?;
             }
         }
+        write!(f, "}}")?;
         Ok(())
     }
 }
@@ -837,10 +843,10 @@ mod test {
     #[test]
     fn test_extent_display() {
         let extent = Extent::new(vec!["x".into(), "y".into(), "z".into()], vec![4, 5, 6]).unwrap();
-        assert_eq!(format!("{}", extent), "x=4,y=5,z=6");
+        assert_eq!(format!("{}", extent), "{'x': 4, 'y': 5, 'z': 6}");
 
         let empty_extent = Extent::new(vec![], vec![]).unwrap();
-        assert_eq!(format!("{}", empty_extent), "");
+        assert_eq!(format!("{}", empty_extent), "{}");
     }
 
     #[test]

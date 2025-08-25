@@ -590,7 +590,7 @@ def remote_breakpointhook() -> None:
     rank = ctx.message_rank
     pdb_wrapper = PdbWrapper(
         rank.rank,
-        rank.shape.coordinates(rank.rank),
+        {k: rank[k] for k in rank},
         ctx.actor_instance.actor_id,
         debug_controller(),
     )

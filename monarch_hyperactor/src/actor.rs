@@ -332,10 +332,10 @@ impl PythonMessage {
                                 .unwrap()
                         },
                         |x| {
-                            let (rank, _) = cx.cast_info();
+                            let point = cx.cast_info();
                             py.import("monarch._src.actor.actor_mesh")
                                 .unwrap()
-                                .call_method1("Port", (x, mailbox, rank))
+                                .call_method1("Port", (x, mailbox, point.rank()))
                                 .unwrap()
                         },
                     )
@@ -448,6 +448,11 @@ pub struct PythonActor {
     task_locals: Option<pyo3_async_runtimes::TaskLocals>,
     panic_watcher: UnhandledErrorObserver,
     panic_sender: UnboundedSender<anyhow::Result<(), SerializablePyErr>>,
+
+    /// instance object that we keep across handle calls
+    /// so that we can store information from the Init (spawn rank, controller controller)
+    /// and provide it to other calls
+    instance: Option<Py<crate::mailbox::Instance>>,
 }
 
 impl PythonActor {
@@ -481,6 +486,7 @@ impl Actor for PythonActor {
                 task_locals,
                 panic_watcher: UnhandledErrorObserver::ForwardTo(rx),
                 panic_sender: tx,
+                instance: None,
             })
         })?)
     }
@@ -663,11 +669,15 @@ impl Handler<PythonMessage> for PythonActor {
         let (sender, receiver) = oneshot::channel();
 
         let future = Python::with_gil(|py| -> Result<_, SerializablePyErr> {
+            let instance = self.instance.get_or_insert_with(|| {
+                let instance: crate::mailbox::Instance = cx.into();
+                instance.into_pyobject(py).unwrap().into()
+            });
             let awaitable = self.actor.call_method(
                 py,
                 "handle",
                 (
-                    crate::mailbox::Context::new(py, cx),
+                    crate::mailbox::Context::new(cx, instance.clone_ref(py)),
                     resolved.method,
                     resolved.bytes,
                     PanicFlag {

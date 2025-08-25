@@ -29,6 +29,7 @@ use hyperactor_mesh::alloc::remoteprocess::RemoteProcessAllocHost;
 use hyperactor_mesh::alloc::remoteprocess::RemoteProcessAllocInitializer;
 use hyperactor_mesh::alloc::sim::SimAllocator;
 use ndslice::Extent;
+use ndslice::Shape;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -38,6 +39,18 @@ use tokio::process::Command;
 use crate::channel::PyChannelAddr;
 use crate::pytokio::PyPythonTask;
 use crate::runtime::get_tokio_runtime;
+use crate::shape::PyShape;
+
+/// Convert a PyDict to an Extent
+fn pydict_to_extent(shape: &Bound<'_, PyDict>) -> PyResult<Extent> {
+    let mut labels = Vec::new();
+    let mut sizes = Vec::new();
+    for (key, value) in shape {
+        labels.push(key.extract::<String>()?);
+        sizes.push(value.extract::<usize>()?);
+    }
+    Ok(Extent::new(labels, sizes).unwrap())
+}
 
 /// A python class that wraps a Rust Alloc trait object. It represents what
 /// is shown on the python side. Internals are not exposed.
@@ -48,6 +61,34 @@ use crate::runtime::get_tokio_runtime;
 )]
 pub struct PyAlloc {
     pub inner: Option<Box<dyn Alloc + Sync + Send>>,
+}
+
+struct ReshapedAlloc {
+    extent: Extent,
+    base: Box<dyn Alloc + Sync + Send>,
+}
+
+#[async_trait]
+impl Alloc for ReshapedAlloc {
+    async fn next(&mut self) -> Option<ProcState> {
+        self.base.next().await
+    }
+
+    fn extent(&self) -> &Extent {
+        &self.extent
+    }
+
+    fn world_id(&self) -> &WorldId {
+        self.base.world_id()
+    }
+
+    fn transport(&self) -> ChannelTransport {
+        self.base.transport()
+    }
+
+    async fn stop(&mut self) -> Result<(), AllocatorError> {
+        self.base.stop().await
+    }
 }
 
 impl PyAlloc {
@@ -69,6 +110,30 @@ impl PyAlloc {
             None => Ok("Alloc(None)".to_string()),
             Some(wrapper) => Ok(format!("Alloc({})", wrapper.shape())),
         }
+    }
+    pub fn reshape(&mut self, shape: &Bound<'_, PyDict>) -> PyResult<Option<PyAlloc>> {
+        let alloc = self.take();
+        alloc
+            .map(|alloc| {
+                let extent = alloc.extent();
+                let old_num_elements = extent.num_ranks();
+
+                // Create extent from the PyDict
+                let new_extent = pydict_to_extent(shape)?;
+
+                let new_elements = new_extent.num_ranks();
+                if old_num_elements != new_elements {
+                    return Err(PyErr::new::<PyValueError, _>(format!(
+                        "cannot reshape {} != {}",
+                        old_num_elements, new_elements
+                    )));
+                }
+                Ok(PyAlloc::new(Box::new(ReshapedAlloc {
+                    extent: new_extent,
+                    base: alloc,
+                })))
+            })
+            .transpose()
     }
 }
 
@@ -106,20 +171,16 @@ pub struct PyAllocSpec {
 impl PyAllocSpec {
     #[new]
     #[pyo3(signature = (constraints, **kwargs))]
-    fn new(constraints: &PyAllocConstraints, kwargs: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
-        let Some(kwargs) = kwargs else {
-            return Err(PyValueError::new_err(
-                "Shape must have at least one dimension",
-            ));
-        };
-        let extent_dict = kwargs.downcast::<PyDict>()?;
-
+    fn new(constraints: &PyAllocConstraints, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<Self> {
         let mut keys = Vec::new();
         let mut values = Vec::new();
-        for (key, value) in extent_dict {
-            keys.push(key.clone());
-            values.push(value.clone());
-        }
+
+        if let Some(kwargs) = kwargs {
+            for (key, value) in kwargs {
+                keys.push(key.clone());
+                values.push(value.clone());
+            }
+        };
 
         let extent = Extent::new(
             keys.into_iter()

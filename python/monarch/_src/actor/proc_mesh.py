@@ -89,6 +89,7 @@ except ImportError:
 if TYPE_CHECKING:
     Tensor = Any
     DeviceMesh = Any
+    from monarch._src.actor.host_mesh import HostMesh
 
 
 class SetupActor(Actor):
@@ -135,6 +136,7 @@ def _use_standin_mesh() -> bool:
 class ProcMeshRef:
     def __init__(self, proc_mesh_id: int) -> None:
         self._proc_mesh_id = proc_mesh_id
+        self._host_mesh: Optional["HostMesh"] = None
 
     @classmethod
     def _fake_proc_mesh(cls, proc_mesh_id: int) -> "ProcMesh":
@@ -196,6 +198,8 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
         self._maybe_device_mesh: Optional["DeviceMesh"] = _device_mesh
         self._stopped = False
         self._controller_controller: Optional["_ControllerController"] = None
+        # current set only for context()'s proc_mesh to be a local host mesh.
+        self._host_mesh: Optional["HostMesh"] = None
 
     @property
     def initialized(self) -> Future[Literal[True]]:
@@ -213,6 +217,14 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
         return Future(coro=task())
 
     @property
+    def host_mesh(self) -> "HostMesh":
+        if self._host_mesh is None:
+            raise NotImplementedError(
+                "NYI complete for release 0.1 (ProcMeshRef knowing its host mesh)"
+            )
+        return self._host_mesh
+
+    @property
     def _ndslice(self) -> Slice:
         return self._shape.ndslice
 
@@ -221,6 +233,11 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
         return self._shape.labels
 
     def _new_with_shape(self, shape: Shape) -> "ProcMesh":
+        # make sure that if we slice something with unity,
+        # we do not lose the ability to spawn on it.
+        # remote when spawn is implemented.
+        if shape == self._shape:
+            return self
         device_mesh = (
             None
             if self._maybe_device_mesh is None
@@ -539,6 +556,12 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
 
 
 def local_proc_mesh(*, gpus: Optional[int] = None, hosts: int = 1) -> ProcMesh:
+    warnings.warn(
+        "Use monarch._src.actor.host_mesh.fake_in_process_host().spawn_procs for testing. For launching an actor in the current process use this_proc().spawn_procs()",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
     return _proc_mesh_from_allocator(allocator=LocalAllocator(), gpus=gpus, hosts=hosts)
 
 
@@ -613,6 +636,12 @@ def proc_mesh(
     env: dict[str, str] | None = None,
     setup: Callable[[], None] | None = None,
 ) -> ProcMesh:
+    warnings.warn(
+        "use this_host().spawn_proc(per_host = {'hosts': 2, 'gpus': 3}) instead of monarch.actor.proc_mesh(hosts=2, gpus=3)",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
     env = env or {}
     # Todo: Deprecate the env field from the ProcessAllocator
     # The PAR_MAIN_OVERRIDE needs to be passed as an env
@@ -661,21 +690,19 @@ _controller_controller: Optional["_ControllerController"] = None
 # otherwise two initializing procs will both try to init resulting in duplicates. The critical
 # region is not blocking: it spawns a separate task to do the init, assigns the
 # Shared[_ControllerController] from that task to the global and releases the lock.
-def _get_controller_controller() -> "_ControllerController":
+def _get_controller_controller() -> "Tuple[ProcMesh, _ControllerController]":
     global _controller_controller, _cc_proc_mesh
     with _cc_init:
         if _controller_controller is None:
-            _cc_proc_mesh = _proc_mesh_from_allocator(
-                gpus=1,
-                hosts=1,
-                allocator=LocalAllocator(),
-                _attach_controller_controller=False,
+            alloc = LocalAllocator().allocate(AllocSpec(AllocConstraints()))
+            _cc_proc_mesh = ProcMesh.from_alloc(
+                alloc, _attach_controller_controller=False
             )
             _controller_controller = _cc_proc_mesh.spawn(
                 "controller_controller", _ControllerController
             )
-
-    return _controller_controller
+    assert _cc_proc_mesh is not None
+    return _cc_proc_mesh, _controller_controller
 
 
 def get_or_spawn_controller(
