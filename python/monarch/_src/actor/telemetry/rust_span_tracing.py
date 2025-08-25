@@ -11,12 +11,10 @@ from contextlib import contextmanager
 from typing import Iterator, Mapping, Optional, Union
 
 import opentelemetry.util.types as types  # @manual=fbsource//third-party/pypi/opentelemetry-api:opentelemetry-api
-
 from monarch._rust_bindings.monarch_hyperactor.telemetry import (
     get_current_span_id,
     PySpan,
 )
-
 from opentelemetry import (  # @manual=fbsource//third-party/pypi/opentelemetry-api:opentelemetry-api
     trace,
 )
