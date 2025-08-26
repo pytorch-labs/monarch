@@ -946,7 +946,7 @@ impl<A: Actor> Instance<A> {
 
     /// Start an A-typed actor onto this instance with the provided params. When spawn returns,
     /// the actor has been linked with its parent, if it has one.
-    #[hyperactor::instrument]
+    #[hyperactor::instrument(fields(actor_id=self.cell.actor_id().clone().to_string(), actor_name=self.cell.actor_id().name()))]
     async fn start(self, actor: A) -> Result<ActorHandle<A>, anyhow::Error> {
         let instance_cell = self.cell.clone();
         let actor_id = self.cell.actor_id().clone();

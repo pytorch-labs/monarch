@@ -698,7 +698,25 @@ impl MailboxSender for UndeliverableMailboxSender {
         envelope: MessageEnvelope,
         _return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        tracing::error!("message not delivered: {}", envelope);
+        let sender_name = envelope.sender.name();
+        let mut error_str = "".to_string();
+        if !envelope.errors.is_empty() {
+            error_str = envelope
+                .errors
+                .iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("; ");
+        }
+
+        tracing::error!(
+            name = "undelivered_message",
+            actor_name = sender_name,
+            actor_id = envelope.sender.to_string(),
+            "message not delivered to {}, {}",
+            envelope.dest.actor_id().name(),
+            error_str,
+        );
     }
 }
 
@@ -804,13 +822,6 @@ impl MailboxSender for BoxedMailboxSender {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        metrics::MAILBOX_POSTS.add(
-            1,
-            hyperactor_telemetry::kv_pairs!(
-                "actor_id" => envelope.sender.to_string(),
-                "dest_actor_id" => envelope.dest.0.to_string(),
-            ),
-        );
         self.0.post(envelope, return_handle);
     }
 }
@@ -1357,7 +1368,20 @@ impl MailboxSender for Mailbox {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        tracing::trace!(name = "post", "posting message to {}", envelope.dest);
+        metrics::MAILBOX_POSTS.add(
+            1,
+            hyperactor_telemetry::kv_pairs!(
+                "actor_id" => envelope.sender.to_string(),
+                "dest_actor_id" => envelope.dest.0.to_string(),
+            ),
+        );
+        tracing::trace!(
+            name = "post",
+            actor_name = envelope.sender.name(),
+            actor_id = envelope.sender.to_string(),
+            "posting message to {}",
+            envelope.dest
+        );
 
         if envelope.dest().actor_id() != &self.inner.actor_id {
             return self.inner.forwarder.post(envelope, return_handle);
