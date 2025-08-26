@@ -30,35 +30,6 @@ def forward_to_tracing(record: logging.LogRecord) -> None:
     """
     ...
 
-def enter_span(module_name: str, method_name: str, actor_id: str) -> None:
-    """
-    Enter a tracing span for a Python actor method.
-
-    Creates and enters a new tracing span for the current thread that tracks
-    execution of a Python actor method. The span is stored in thread-local
-    storage and will be active until exit_span() is called.
-
-    If a span is already active for the current thread, this function will
-    preserve that span and not create a new one.
-
-    Args:
-    - module_name (str): The name of the module containing the actor (used as the target).
-    - method_name (str): The name of the method being called (used as the span name).
-    - actor_id (str): The ID of the actor instance (included as a field in the span).
-    """
-    ...
-
-def exit_span() -> None:
-    """
-    Exit the current tracing span for a Python actor method.
-
-    Exits and drops the tracing span that was previously created by enter_span().
-    This should be called when the actor method execution is complete.
-
-    If no span is currently active for this thread, this function has no effect.
-    """
-    ...
-
 def get_current_span_id() -> int:
     """
     Get the current span ID from the active span.
@@ -102,12 +73,14 @@ def get_execution_id() -> str:
     ...
 
 class PySpan:
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, actor_id: str | None = None) -> None:
         """
         Create a new PySpan.
 
         Args:
         - name (str): The name of the span.
+        - actor_id (str | None, optional): The actor ID associated with the span.
+          If None, Rust will handle actor identification automatically.
         """
         ...
 

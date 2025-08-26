@@ -44,31 +44,23 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessage,
     PythonMessageKind,
 )
-
 from monarch._rust_bindings.monarch_hyperactor.actor_mesh import (
     PythonActorMesh,
     PythonActorMeshImpl,
 )
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     Mailbox,
-    OncePortReceiver as HyOncePortReceiver,
+    OncePortReceiver as HyOncePortReceiver,  # noqa: F401
     OncePortRef,
-    PortReceiver as HyPortReceiver,
+    PortReceiver as HyPortReceiver,  # noqa: F401
     PortRef,
     UndeliverableMessageEnvelope,
 )
-
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
-from monarch._rust_bindings.monarch_hyperactor.pytokio import (
-    is_tokio_thread,
-    PythonTask,
-    Shared,
-)
+from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._rust_bindings.monarch_hyperactor.selection import Selection as HySelection
 from monarch._rust_bindings.monarch_hyperactor.shape import Point as HyPoint, Shape
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
-from monarch._rust_bindings.monarch_hyperactor.telemetry import enter_span, exit_span
-
 from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator
 from monarch._src.actor.endpoint import (
     Endpoint,
@@ -80,29 +72,26 @@ from monarch._src.actor.endpoint import (
 )
 from monarch._src.actor.future import DeprecatedNotAFuture, Future
 from monarch._src.actor.pdb_wrapper import PdbWrapper
-
 from monarch._src.actor.pickle import flatten, unflatten
-
 from monarch._src.actor.python_extension_methods import rust_struct
-
 from monarch._src.actor.shape import MeshTrait, NDSlice
 from monarch._src.actor.sync_state import fake_sync_state
-
 from monarch._src.actor.telemetry import METER
-
 from monarch._src.actor.tensor_engine_shim import actor_rref, actor_send
 from typing_extensions import Self
-
 
 if TYPE_CHECKING:
     from monarch._rust_bindings.monarch_hyperactor.actor import PortProtocol
     from monarch._rust_bindings.monarch_hyperactor.actor_mesh import ActorMeshProtocol
     from monarch._rust_bindings.monarch_hyperactor.mailbox import PortReceiverBase
     from monarch._src.actor.proc_mesh import _ControllerController, ProcMesh
+from monarch._src.actor.telemetry import get_monarch_tracer
 
 CallMethod = PythonMessageKind.CallMethod
 
 logger: logging.Logger = logging.getLogger(__name__)
+
+TRACER = get_monarch_tracer()
 
 Allocator = ProcessAllocator | LocalAllocator
 
@@ -837,38 +826,35 @@ class _Actor:
 
             the_method = getattr(self.instance, method_name)
             if isinstance(the_method, EndpointProperty):
-                module = the_method._method.__module__
                 the_method = functools.partial(the_method._method, self.instance)
-            else:
-                module = the_method.__module__
 
             if inspect.iscoroutinefunction(the_method):
 
                 async def instrumented():
-                    enter_span(
-                        module,
+                    with TRACER.start_as_current_span(
                         method_name,
-                        str(ctx.actor_instance.actor_id),
-                    )
-                    try:
-                        result = await the_method(*args, **kwargs)
-                        self._maybe_exit_debugger()
-                    except Exception as e:
-                        logging.critical(
-                            "Unhandled exception in actor endpoint",
-                            exc_info=e,
-                        )
-                        raise e
-                    exit_span()
+                        attributes={"actor_id": str(ctx.actor_instance.actor_id)},
+                    ):
+                        try:
+                            result = await the_method(*args, **kwargs)
+                            self._maybe_exit_debugger()
+                        except Exception as e:
+                            logging.critical(
+                                "Unhandled exception in actor endpoint",
+                                exc_info=e,
+                            )
+                            raise e
                     return result
 
                 result = await instrumented()
             else:
-                enter_span(module, method_name, str(ctx.actor_instance.actor_id))
-                with fake_sync_state():
-                    result = the_method(*args, **kwargs)
-                self._maybe_exit_debugger()
-                exit_span()
+                with TRACER.start_as_current_span(
+                    method_name,
+                    attributes={"actor_id": str(ctx.actor_instance.actor_id)},
+                ):
+                    with fake_sync_state():
+                        result = the_method(*args, **kwargs)
+                    self._maybe_exit_debugger()
 
             response_port.send(result)
         except Exception as e:
