@@ -637,7 +637,7 @@ impl<T: Viewable> ViewExt for T {
 /// ```
 #[macro_export]
 macro_rules! extent {
-    ( $( $label:ident = $size:expr_2021 ),* $(,)? ) => {
+    ( $( $label:ident = $size:expr ),* $(,)? ) => {
         {
             let mut labels = Vec::new();
             let mut sizes = Vec::new();

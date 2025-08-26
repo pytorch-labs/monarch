@@ -1421,18 +1421,18 @@ where
 /// [`selection_from`]: crate::selection::selection_from
 #[macro_export]
 macro_rules! sel_from_shape {
-    ($shape:expr_2021, $label:ident = $range:expr_2021) => {
+    ($shape:expr, $label:ident = $range:expr) => {
         $crate::selection::selection_from_one($shape, stringify!($label), $range).unwrap()
     };
 
-    ($shape:expr_2021, $($label:ident = $val:literal),* $(,)?) => {
+    ($shape:expr, $($label:ident = $val:literal),* $(,)?) => {
         $crate::selection::selection_from($shape,
                                           &[
                                               $((stringify!($label), $val..$val+1)),*
                                           ]).unwrap()
     };
 
-    ($shape:expr_2021, $($label:ident = $range:expr_2021),* $(,)?) => {
+    ($shape:expr, $($label:ident = $range:expr),* $(,)?) => {
         $crate::selection::selection_from($shape, &[
             $((stringify!($label), $range)),*
         ]).unwrap()

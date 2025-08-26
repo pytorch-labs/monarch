@@ -894,7 +894,7 @@ mod tests {
     /// assert_routing_eq_with!(slice, selection, collect_routed_nodes);
     /// ```
     macro_rules! assert_routing_eq_with {
-        ($slice:expr_2021, $sel:expr_2021, $collector:expr_2021) => {{
+        ($slice:expr, $sel:expr, $collector:expr) => {{
             let sel = $sel;
             let slice = $slice.clone();
             let mut expected: Vec<_> = sel.eval(&EvalOpts::lenient(), &slice).unwrap().collect();
@@ -908,7 +908,7 @@ mod tests {
     /// Asserts that `collect_routed_nodes` matches `Selection::eval`
     /// on the given slice.
     macro_rules! assert_collect_routed_nodes_eq {
-        ($slice:expr_2021, $sel:expr_2021) => {
+        ($slice:expr, $sel:expr) => {
             assert_routing_eq_with!($slice, $sel, collect_routed_nodes)
         };
     }
@@ -916,7 +916,7 @@ mod tests {
     /// Asserts that CommActor routing delivers to the same nodes as
     /// `Selection::eval`.
     macro_rules! assert_commactor_routing_eq {
-        ($slice:expr_2021, $sel:expr_2021) => {
+        ($slice:expr, $sel:expr) => {
             assert_routing_eq_with!($slice, $sel, |s, sl| {
                 collect_commactor_routing_tree(s, sl)
                     .delivered
@@ -934,7 +934,7 @@ mod tests {
     /// (`collect_commactor_routing_tree`) against the expected output
     /// from `Selection::eval`.
     macro_rules! assert_all_routing_strategies_eq {
-        ($slice:expr_2021, $sel:expr_2021) => {
+        ($slice:expr, $sel:expr) => {
             assert_collect_routed_nodes_eq!($slice, $sel);
             assert_commactor_routing_eq!($slice, $sel);
         };
