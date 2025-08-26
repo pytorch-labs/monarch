@@ -40,8 +40,7 @@ async def _flush_logs() -> None:
     for _ in range(5):
         await am.print.call("has print streaming")
 
-    # TODO: will soon be removed by D80051803
-    await asyncio.sleep(2)
+    await pm.stop()
 
 
 @main.command("flush-logs")

@@ -10,7 +10,6 @@ use std::env;
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::OnceLock;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -36,91 +35,7 @@ pub fn initialize() {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .finish();
     tracing::subscriber::set_global_default(subscriber).expect("failed to set subscriber");
-
-    static INITIALIZED: OnceLock<()> = OnceLock::new();
-    INITIALIZED.get_or_init(|| {
-        #[cfg(target_os = "linux")]
-        linux::initialize();
-    });
-}
-
-#[cfg(target_os = "linux")]
-mod linux {
-    use std::backtrace::Backtrace;
-    use std::process;
-
-    use nix::sys::signal::SigHandler;
-    use nix::unistd::getpid;
-    use tokio::signal::unix::SignalKind;
-    use tokio::signal::unix::signal;
-
-    pub(crate) fn initialize() {
-        // Safety: Because I want to
-        unsafe {
-            extern "C" fn handle_fatal_signal(signo: libc::c_int) {
-                let bt = Backtrace::force_capture();
-                let signame = nix::sys::signal::Signal::try_from(signo).expect("unknown signal");
-                tracing::error!("stacktrace"= %bt, "fatal signal {signo}:{signame} received");
-                std::process::exit(1);
-            }
-            nix::sys::signal::signal(
-                nix::sys::signal::SIGABRT,
-                SigHandler::Handler(handle_fatal_signal),
-            )
-            .expect("unable to register signal handler");
-            nix::sys::signal::signal(
-                nix::sys::signal::SIGSEGV,
-                SigHandler::Handler(handle_fatal_signal),
-            )
-            .expect("unable to register signal handler");
-        }
-
-        // Set up the async signal handler FIRST
-        let rt = tokio::runtime::Handle::current();
-        rt.spawn(async {
-            // Set up signal handler before prctl
-            let mut sigusr1 = match signal(SignalKind::user_defined1()) {
-                Ok(s) => s,
-                Err(err) => {
-                    eprintln!("failed to set up SIGUSR1 signal handler: {:?}", err);
-                    return;
-                }
-            };
-
-            // SAFETY: Now set PDEATHSIG after handler is ready. This
-            // is unsafe.
-            unsafe {
-                if libc::prctl(
-                    libc::PR_SET_PDEATHSIG,
-                    nix::sys::signal::SIGUSR1 as libc::c_ulong,
-                ) != 0
-                {
-                    eprintln!(
-                        "prctl(PR_SET_PDEATHSIG) failed: {}",
-                        std::io::Error::last_os_error()
-                    );
-                    return;
-                }
-
-                // Close the race: if parent already died, we are now orphaned.
-                if libc::getppid() == 1 {
-                    tracing::error!(
-                        "hyperactor[{}]: parent already dead on startup; exiting",
-                        getpid()
-                    );
-                    std::process::exit(1);
-                }
-            }
-
-            // Wait for the signal
-            sigusr1.recv().await;
-            tracing::error!(
-                "hyperactor[{}]: parent process died (SIGUSR1 received); exiting",
-                getpid()
-            );
-            process::exit(1);
-        });
-    }
+    tracing::info!("process {} logging initialized", std::process::id());
 }
 
 #[derive(Parser)]
@@ -128,6 +43,10 @@ struct Args {
     /// Run bootstrap logic
     #[arg(long)]
     bootstrap: bool,
+
+    /// Keep the process hierarchy alive indefinitely
+    #[arg(long)]
+    keep_alive: bool,
 }
 
 // -- TestActor
@@ -226,7 +145,7 @@ impl Handler<Echo> for ProxyActor {
     }
 }
 
-async fn run_client(exe_path: PathBuf) -> Result<(), anyhow::Error> {
+async fn run_client(exe_path: PathBuf, keep_alive: bool) -> Result<(), anyhow::Error> {
     let mut cmd = Command::new(PathBuf::from(&exe_path));
     cmd.arg("--bootstrap");
 
@@ -255,23 +174,94 @@ async fn run_client(exe_path: PathBuf) -> Result<(), anyhow::Error> {
     alloc.stop_and_wait().await?;
     drop(alloc);
 
+    if keep_alive {
+        // Artificially keep the hierarchy alive. Use `ps -aef | grep
+        // $USER | grep proxy_test | head -1 | awk '{print "kill -TERM
+        // -" $2}'` to interactively test termination.
+        loop {
+            #[allow(clippy::disallowed_methods)]
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        }
+    }
+
     Ok(())
+}
+
+#[cfg(unix)]
+fn get_process_group_id() -> libc::pid_t {
+    // SAFETY: We are calling the POSIX FFI `getpgrp()`.
+    // - `getpgrp()` takes no arguments and returns the calling
+    //   process's process group ID as a `pid_t`. There are no
+    //   pointers, buffers, or invariants to uphold on the Rust side.
+    // - The returned value is just an integer; using it as such
+    //   cannot violate Rust’s memory safety guarantees.
+    unsafe { libc::getpgrp() }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
-    // Logs are written to /tmp/$USER/monarch_log*.
     initialize();
 
     let args = Args::parse();
     if args.bootstrap {
         hyperactor_mesh::bootstrap_or_die().await;
     } else {
-        let exe_path: PathBuf = env::current_exe().unwrap_or_else(|e| {
+        #[cfg(unix)]
+        {
+            // SAFETY: We are calling the POSIX FFI `setpgid(0, 0)`.
+            // - Arguments are plain integers; no pointers or borrowed memory
+            //   are passed.
+            // - Per POSIX, (0, 0) means “make the calling process the leader
+            //   of a new process group whose pgid equals its pid”. This has
+            //   no impact on Rust’s aliasing, lifetimes, or memory safety.
+            // - We immediately check the return value and *do not* assume
+            //   success; on error we log using `last_os_error()` and
+            //   continue without invoking UB.
+            // - This is executed before we spawn any child processes, so
+            //   process-group semantics are well-defined and no races with
+            //   our own children are possible.
+            unsafe {
+                if libc::setpgid(0, 0) != 0 {
+                    tracing::error!("setpgid failed: {}", std::io::Error::last_os_error());
+                } else {
+                    tracing::info!(
+                        "client {} is now process group leader of pgrp {}",
+                        std::process::id(),
+                        get_process_group_id()
+                    );
+                }
+            }
+        }
+
+        let exe_path = env::current_exe().unwrap_or_else(|e| {
             eprintln!("Failed to get current executable path: {}", e);
             std::process::exit(1);
         });
-        run_client(exe_path).await?;
+
+        run_client(exe_path, args.keep_alive).await?;
+
+        #[cfg(unix)]
+        {
+            tracing::info!("client done. sending kill");
+
+            // SAFETY: We are calling the POSIX FFI `kill(−pgid, SIGTERM)`
+            // to signal a process group.
+            // - `pgid` is obtained from `getpgrp()` (a positive `pid_t`
+            //   by POSIX contract).
+            // - We assert `pgid > 0` before negation so we never pass 0
+            //   or a positive pid when we intend a group target. A
+            //   negative pid means “signal that process group”.
+            // - The signal number (`SIGTERM`) is a valid constant.
+            // - No pointers or borrowed memory are passed; no Rust
+            //   aliasing/lifetime assumptions are involved. We check the
+            //   return value and report any errno.
+            unsafe {
+                let pgid = libc::getpgrp();
+                if libc::kill(-pgid, libc::SIGTERM) != 0 {
+                    eprintln!("kill failed: {}", std::io::Error::last_os_error());
+                }
+            }
+        }
     }
 
     Ok(())

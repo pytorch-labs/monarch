@@ -112,7 +112,7 @@ impl Actor for ParameterServerActor {
 
     async fn new(_params: Self::Params) -> Result<Self, anyhow::Error> {
         let (owner_ref, worker_world_size) = _params;
-        println!("creating parameter server actor");
+        tracing::info!("creating parameter server actor");
         let weights_data = vec![0u8; BUFFER_SIZE].into_boxed_slice();
         let grad_buffer_data =
             vec![vec![0u8; BUFFER_SIZE].into_boxed_slice(); worker_world_size].into_boxed_slice();
@@ -203,7 +203,7 @@ impl Handler<PsUpdate> for ParameterServerActor {
             }
             grad.fill(0);
         }
-        println!("[parameter server actor] updated");
+        tracing::info!("[parameter server actor] updated");
         reply.send(cx, true)?;
         Ok(())
     }
@@ -213,9 +213,10 @@ impl Handler<PsUpdate> for ParameterServerActor {
 impl Handler<Log> for ParameterServerActor {
     /// Logs the server's weights and gradient buffer
     async fn handle(&mut self, _this_: &Context<Self>, _msg_: Log) -> Result<(), anyhow::Error> {
-        println!(
+        tracing::info!(
             "[parameter server actor] weights: {:?}, grad_buffer: {:?}",
-            self.weights_data, self.grad_buffer_data,
+            self.weights_data,
+            self.grad_buffer_data,
         );
         Ok(())
     }
@@ -303,9 +304,9 @@ impl Handler<WorkerInit> for WorkerActor {
         cx: &Context<Self>,
         WorkerInit(ps_ref, rdma_managers): WorkerInit,
     ) -> Result<(), anyhow::Error> {
-        let (rank, _) = cx.cast_info();
+        let rank = cx.cast_info().rank();
 
-        println!("[worker_actor_{}] initializing", rank);
+        tracing::info!("[worker_actor_{}] initializing", rank);
 
         let client = cx.mailbox_for_py();
         let (handle, receiver) = client.open_once_port::<(RdmaBuffer, RdmaBuffer)>();
@@ -336,7 +337,7 @@ impl Handler<WorkerStep> for WorkerActor {
         cx: &Context<Self>,
         WorkerStep(reply): WorkerStep,
     ) -> Result<(), anyhow::Error> {
-        let (rank, _) = cx.cast_info();
+        let rank = cx.cast_info().rank();
 
         for (grad_value, weight) in self
             .local_gradients
@@ -345,9 +346,10 @@ impl Handler<WorkerStep> for WorkerActor {
         {
             *grad_value = grad_value.wrapping_add(*weight + 1);
         }
-        println!(
+        tracing::info!(
             "[worker_actor_{}] pushing gradients {:?}",
-            rank, self.local_gradients
+            rank,
+            self.local_gradients
         );
 
         let owner_ref = self
@@ -385,11 +387,12 @@ impl Handler<WorkerUpdate> for WorkerActor {
         cx: &Context<Self>,
         WorkerUpdate(reply): WorkerUpdate,
     ) -> Result<(), anyhow::Error> {
-        let (rank, _) = cx.cast_info();
+        let rank = cx.cast_info().rank();
 
-        println!(
+        tracing::info!(
             "[worker_actor_{}] pulling new weights from parameter server (before: {:?})",
-            rank, self.weights_data,
+            rank,
+            self.weights_data,
         );
         let /*mut*/ lbuffer = self
             .rdma_manager
@@ -418,8 +421,8 @@ impl Handler<WorkerUpdate> for WorkerActor {
 impl Handler<Log> for WorkerActor {
     /// Logs the worker's weights
     async fn handle(&mut self, cx: &Context<Self>, _: Log) -> Result<(), anyhow::Error> {
-        let (rank, _) = cx.cast_info();
-        println!("[worker_actor_{}] weights: {:?}", rank, self.weights_data);
+        let rank = cx.cast_info().rank();
+        tracing::info!("[worker_actor_{}] weights: {:?}", rank, self.weights_data);
         Ok(())
     }
 }
@@ -456,7 +459,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
         };
     } else {
         // For other configurations, use default settings (parameter server + workers all use the same ibv device)
-        println!(
+        tracing::info!(
             "using default IbverbsConfig as {} devices were found (expected > 4 for H100)",
             devices.len()
         );
@@ -465,10 +468,10 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
     }
 
     // As normal, create a proc mesh for the parameter server.
-    println!("creating parameter server proc mesh...");
+    tracing::info!("creating parameter server proc mesh...");
 
     let mut alloc = ProcessAllocator::new(Command::new(
-        buck_resources::get("monarch/monarch_rdma/examples/bootstrap").unwrap(),
+        buck_resources::get("monarch/monarch_rdma/examples/parameter_server/bootstrap").unwrap(),
     ));
 
     let ps_proc_mesh = ProcMesh::allocate(
@@ -481,7 +484,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
     )
     .await?;
 
-    println!(
+    tracing::info!(
         "creating parameter server's RDMA manager with config: {}",
         ps_ibv_config
     );
@@ -496,7 +499,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
         .unwrap();
 
     // Create a proc mesh for workers, where each worker is assigned to its own GPU.
-    println!("creating worker proc mesh ({} workers)...", num_workers);
+    tracing::info!("creating worker proc mesh ({} workers)...", num_workers);
     let worker_proc_mesh = ProcMesh::allocate(
         alloc
             .allocate(AllocSpec {
@@ -507,7 +510,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
     )
     .await?;
 
-    println!(
+    tracing::info!(
         "creating worker's RDMA manager with config: {}",
         worker_ibv_config
     );
@@ -517,7 +520,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
         .await
         .unwrap();
 
-    println!("spawning parameter server");
+    tracing::info!("spawning parameter server");
     let ps_actor_mesh: RootActorMesh<'_, ParameterServerActor> = ps_proc_mesh
         .spawn(
             "parameter_server",
@@ -529,7 +532,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
     // The parameter server is a single actor, we can just grab it and call it directly.
     let ps_actor = ps_actor_mesh.iter().next().unwrap();
 
-    println!("spawning worker actors");
+    tracing::info!("spawning worker actors");
     let worker_actor_mesh: RootActorMesh<'_, WorkerActor> =
         worker_proc_mesh.spawn("worker_actors", &()).await.unwrap();
 
@@ -539,7 +542,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
     // We intentionally decouple spawning with initialization, which is fairly common in Ray workloads
     // In this case, we use it for dual purpose - be able to use the cast APIs to assign rank (Monarch specific) and
     // to get access to return values for error messaging (applies to both Monarch and Ray)
-    println!("initializing worker actor mesh");
+    tracing::info!("initializing worker actor mesh");
     worker_actor_mesh
         .cast(
             worker_proc_mesh.client(),
@@ -549,9 +552,9 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
         )
         .unwrap();
 
-    println!("starting training loop");
+    tracing::info!("starting training loop");
     for step in 0..num_steps {
-        println!("===== starting step {} =====", step);
+        tracing::info!("===== starting step {} =====", step);
         worker_actor_mesh
             .cast(
                 worker_proc_mesh.client(),

@@ -185,11 +185,22 @@ impl Actor for CommActor {
         {
             let sender = message.sender();
             let return_port = PortRef::attest_message_port(sender);
+            message_envelope.set_error(DeliveryError::Multicast(format!(
+                "comm actor {} failed to forward the cast message; return to \
+                its original sender's port {}",
+                cx.self_id(),
+                return_port.port_id(),
+            )));
             return_port
                 .send(cx, Undeliverable(message_envelope.clone()))
                 .map_err(|err| {
-                    message_envelope
-                        .try_set_error(DeliveryError::BrokenLink(format!("send failure: {err}")));
+                    let error = DeliveryError::BrokenLink(format!(
+                        "error occured when returning ForwardMessage to the original \
+                        sender's port {}; error is: {}",
+                        return_port.port_id(),
+                        err,
+                    ));
+                    message_envelope.set_error(error);
                     UndeliverableMessageError::return_failure(&message_envelope)
                 })?;
             return Ok(());
@@ -198,11 +209,22 @@ impl Actor for CommActor {
         // 2. Case delivery failure at a "deliver here" step.
         if let Some(sender) = message_envelope.headers().get(CAST_ORIGINATING_SENDER) {
             let return_port = PortRef::attest_message_port(sender);
+            message_envelope.set_error(DeliveryError::Multicast(format!(
+                "comm actor {} failed to deliver the cast message to the dest \
+                actor; return to its original sender's port {}",
+                cx.self_id(),
+                return_port.port_id(),
+            )));
             return_port
                 .send(cx, Undeliverable(message_envelope.clone()))
                 .map_err(|err| {
-                    message_envelope
-                        .try_set_error(DeliveryError::BrokenLink(format!("send failure: {err}")));
+                    let error = DeliveryError::BrokenLink(format!(
+                        "error occured when returning cast message to the original \
+                        sender's port {}; error is: {}",
+                        return_port.port_id(),
+                        err,
+                    ));
+                    message_envelope.set_error(error);
                     UndeliverableMessageError::return_failure(&message_envelope)
                 })?;
             return Ok(());

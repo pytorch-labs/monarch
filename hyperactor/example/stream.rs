@@ -90,6 +90,7 @@ async fn main() {
             .spawn(&format!("countee_{}", i), counter_actor.port().bind())
             .await
             .unwrap();
+        #[allow(clippy::disallowed_methods)]
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }

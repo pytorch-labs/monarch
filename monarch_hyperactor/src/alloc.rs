@@ -9,7 +9,6 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::sync::Mutex;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
@@ -39,6 +38,17 @@ use crate::channel::PyChannelAddr;
 use crate::pytokio::PyPythonTask;
 use crate::runtime::get_tokio_runtime;
 
+/// Convert a PyDict to an Extent
+fn pydict_to_extent(shape: &Bound<'_, PyDict>) -> PyResult<Extent> {
+    let mut labels = Vec::new();
+    let mut sizes = Vec::new();
+    for (key, value) in shape {
+        labels.push(key.extract::<String>()?);
+        sizes.push(value.extract::<usize>()?);
+    }
+    Ok(Extent::new(labels, sizes).unwrap())
+}
+
 /// A python class that wraps a Rust Alloc trait object. It represents what
 /// is shown on the python side. Internals are not exposed.
 /// It ensures that the Alloc is only used once (i.e. moved) in rust.
@@ -47,60 +57,80 @@ use crate::runtime::get_tokio_runtime;
     module = "monarch._rust_bindings.monarch_hyperactor.alloc"
 )]
 pub struct PyAlloc {
-    pub inner: Arc<Mutex<Option<PyAllocWrapper>>>,
+    pub inner: Option<Box<dyn Alloc + Sync + Send>>,
+}
+
+struct ReshapedAlloc {
+    extent: Extent,
+    base: Box<dyn Alloc + Sync + Send>,
+}
+
+#[async_trait]
+impl Alloc for ReshapedAlloc {
+    async fn next(&mut self) -> Option<ProcState> {
+        self.base.next().await
+    }
+
+    fn extent(&self) -> &Extent {
+        &self.extent
+    }
+
+    fn world_id(&self) -> &WorldId {
+        self.base.world_id()
+    }
+
+    fn transport(&self) -> ChannelTransport {
+        self.base.transport()
+    }
+
+    async fn stop(&mut self) -> Result<(), AllocatorError> {
+        self.base.stop().await
+    }
 }
 
 impl PyAlloc {
     /// Create a new PyAlloc with provided boxed trait.
     pub fn new(inner: Box<dyn Alloc + Sync + Send>) -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(Some(PyAllocWrapper { inner }))),
-        }
+        Self { inner: Some(inner) }
     }
 
     /// Take the internal Alloc object.
-    pub fn take(&self) -> Option<PyAllocWrapper> {
-        self.inner.lock().unwrap().take()
+    pub fn take(&mut self) -> Option<Box<dyn Alloc + Sync + Send>> {
+        self.inner.take()
     }
 }
 
 #[pymethods]
 impl PyAlloc {
     fn __repr__(&self) -> PyResult<String> {
-        let data = self.inner.lock().unwrap();
-        match &*data {
+        match &self.inner {
             None => Ok("Alloc(None)".to_string()),
             Some(wrapper) => Ok(format!("Alloc({})", wrapper.shape())),
         }
     }
-}
+    pub fn reshape(&mut self, shape: &Bound<'_, PyDict>) -> PyResult<Option<PyAlloc>> {
+        let alloc = self.take();
+        alloc
+            .map(|alloc| {
+                let extent = alloc.extent();
+                let old_num_elements = extent.num_ranks();
 
-/// Internal wrapper to translate from a dyn Alloc to an impl Alloc. Used
-/// to support polymorphism in the Python bindings.
-pub struct PyAllocWrapper {
-    inner: Box<dyn Alloc + Sync + Send>,
-}
+                // Create extent from the PyDict
+                let new_extent = pydict_to_extent(shape)?;
 
-#[async_trait]
-impl Alloc for PyAllocWrapper {
-    async fn next(&mut self) -> Option<ProcState> {
-        self.inner.next().await
-    }
-
-    fn extent(&self) -> &Extent {
-        self.inner.extent()
-    }
-
-    fn world_id(&self) -> &WorldId {
-        self.inner.world_id()
-    }
-
-    fn transport(&self) -> ChannelTransport {
-        self.inner.transport()
-    }
-
-    async fn stop(&mut self) -> Result<(), AllocatorError> {
-        self.inner.stop().await
+                let new_elements = new_extent.num_ranks();
+                if old_num_elements != new_elements {
+                    return Err(PyErr::new::<PyValueError, _>(format!(
+                        "cannot reshape {} != {}",
+                        old_num_elements, new_elements
+                    )));
+                }
+                Ok(PyAlloc::new(Box::new(ReshapedAlloc {
+                    extent: new_extent,
+                    base: alloc,
+                })))
+            })
+            .transpose()
     }
 }
 
@@ -138,20 +168,16 @@ pub struct PyAllocSpec {
 impl PyAllocSpec {
     #[new]
     #[pyo3(signature = (constraints, **kwargs))]
-    fn new(constraints: &PyAllocConstraints, kwargs: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
-        let Some(kwargs) = kwargs else {
-            return Err(PyValueError::new_err(
-                "Shape must have at least one dimension",
-            ));
-        };
-        let extent_dict = kwargs.downcast::<PyDict>()?;
-
+    fn new(constraints: &PyAllocConstraints, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<Self> {
         let mut keys = Vec::new();
         let mut values = Vec::new();
-        for (key, value) in extent_dict {
-            keys.push(key.clone());
-            values.push(value.clone());
-        }
+
+        if let Some(kwargs) = kwargs {
+            for (key, value) in kwargs {
+                keys.push(key.clone());
+                values.push(value.clone());
+            }
+        };
 
         let extent = Extent::new(
             keys.into_iter()

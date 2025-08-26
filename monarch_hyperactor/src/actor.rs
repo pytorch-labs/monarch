@@ -21,6 +21,8 @@ use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::OncePortHandle;
+use hyperactor::mailbox::MessageEnvelope;
+use hyperactor::mailbox::Undeliverable;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::Unbind;
@@ -50,13 +52,13 @@ use crate::local_state_broker::BrokerId;
 use crate::local_state_broker::LocalStateBrokerMessage;
 use crate::mailbox::EitherPortRef;
 use crate::mailbox::PyMailbox;
+use crate::mailbox::PythonUndeliverableMessageEnvelope;
 use crate::proc::InstanceWrapper;
 use crate::proc::PyActorId;
 use crate::proc::PyProc;
 use crate::proc::PySerialized;
 use crate::pytokio::PythonTask;
 use crate::runtime::signal_safe_block_on;
-use crate::shape::PyShape;
 
 #[pyclass(frozen, module = "monarch._rust_bindings.monarch_hyperactor.actor")]
 #[derive(Serialize, Deserialize, Named)]
@@ -329,10 +331,10 @@ impl PythonMessage {
                                 .unwrap()
                         },
                         |x| {
-                            let (rank, _) = cx.cast_info();
+                            let point = cx.cast_info();
                             py.import("monarch._src.actor.actor_mesh")
                                 .unwrap()
-                                .call_method1("Port", (x, mailbox, rank))
+                                .call_method1("Port", (x, mailbox, point.rank()))
                                 .unwrap()
                         },
                     )
@@ -445,6 +447,11 @@ pub struct PythonActor {
     task_locals: Option<pyo3_async_runtimes::TaskLocals>,
     panic_watcher: UnhandledErrorObserver,
     panic_sender: UnboundedSender<anyhow::Result<(), SerializablePyErr>>,
+
+    /// instance object that we keep across handle calls
+    /// so that we can store information from the Init (spawn rank, controller controller)
+    /// and provide it to other calls
+    instance: Option<Py<crate::mailbox::Instance>>,
 }
 
 impl PythonActor {
@@ -478,6 +485,7 @@ impl Actor for PythonActor {
                 task_locals,
                 panic_watcher: UnhandledErrorObserver::ForwardTo(rx),
                 panic_sender: tx,
+                instance: None,
             })
         })?)
     }
@@ -497,6 +505,41 @@ impl Actor for PythonActor {
             },
         );
         Ok(())
+    }
+
+    async fn handle_undeliverable_message(
+        &mut self,
+        cx: &Instance<Self>,
+        envelope: Undeliverable<MessageEnvelope>,
+    ) -> Result<(), anyhow::Error> {
+        assert_eq!(envelope.0.sender(), cx.self_id());
+
+        let (envelope, handled) = Python::with_gil(|py| {
+            let py_envelope = PythonUndeliverableMessageEnvelope {
+                inner: Some(envelope),
+            }
+            .into_bound_py_any(py)?;
+            let handled = self
+                .actor
+                .call_method(py, "_handle_undeliverable_message", (&py_envelope,), None)
+                .map_err(|err| anyhow::Error::from(SerializablePyErr::from(py, &err)))?
+                .extract::<bool>(py)?;
+            Ok::<_, anyhow::Error>((
+                py_envelope
+                    .downcast::<PythonUndeliverableMessageEnvelope>()
+                    .map_err(PyErr::from)?
+                    .try_borrow_mut()
+                    .map_err(PyErr::from)?
+                    .take()?,
+                handled,
+            ))
+        })?;
+
+        if !handled {
+            <Self as Actor>::handle_undeliverable_message(self, cx, envelope).await
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -608,7 +651,7 @@ impl Handler<HandlePanic> for PythonActorPanicWatcher {
                 return Err(err.into());
             }
             None => {
-                tracing::warn!("panic forwarding channel was closed unexpectidly")
+                tracing::warn!("panic forwarding channel was closed unexpectedly")
             }
         }
         Ok(())
@@ -625,11 +668,15 @@ impl Handler<PythonMessage> for PythonActor {
         let (sender, receiver) = oneshot::channel();
 
         let future = Python::with_gil(|py| -> Result<_, SerializablePyErr> {
+            let instance = self.instance.get_or_insert_with(|| {
+                let instance: crate::mailbox::Instance = cx.into();
+                instance.into_pyobject(py).unwrap().into()
+            });
             let awaitable = self.actor.call_method(
                 py,
                 "handle",
                 (
-                    crate::mailbox::Context::new(py, cx),
+                    crate::mailbox::Context::new(cx, instance.clone_ref(py)),
                     resolved.method,
                     resolved.bytes,
                     PanicFlag {

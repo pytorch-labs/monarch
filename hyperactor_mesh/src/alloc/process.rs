@@ -87,6 +87,7 @@ impl ProcessAllocator {
 impl Allocator for ProcessAllocator {
     type Alloc = ProcessAlloc;
 
+    #[hyperactor::instrument(fields(name = "process_allocate"))]
     async fn allocate(&mut self, spec: AllocSpec) -> Result<ProcessAlloc, AllocatorError> {
         let (bootstrap_addr, rx) = channel::serve(ChannelAddr::any(ChannelTransport::Unix))
             .await

@@ -68,6 +68,16 @@ T = TypeVar("T")
 
 
 class Future(Generic[T]):
+    """A future object representing the result of an asynchronous computation.
+
+    Future provides a way to access the result of a computation that may not
+    have completed yet. It allows for non-blocking execution and provides
+    methods to wait for completion and retrieve results.
+
+    Args:
+        client (Client): The client connection for handling the future
+    """
+
     def __init__(self, client: "Client"):
         self._client = client
         self._status = "incomplete"

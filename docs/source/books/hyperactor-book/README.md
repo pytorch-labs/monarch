@@ -8,8 +8,9 @@ This is the development documentation for the hyperactor system, built using [`m
 
 ./src/introduction
 ./src/refrences
-mailbox
 macros
+mailbox
+channels
 actors
 summary
 ```

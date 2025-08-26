@@ -6,6 +6,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+/// Utilities to verify cancellation safety.
+pub mod cancel_safe;
 /// PingPongActor test util.
 pub mod pingpong;
 /// ProcSupervisionCoordinator test util.

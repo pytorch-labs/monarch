@@ -11,27 +11,33 @@
 //! **big-endian** length prefix (u64), followed by exactly that many
 //! bytes of payload.
 //!
-//! Message frames are serialized with `bincode`; ack frames are
-//! represented directly as an 8-byte big-endian sequence number.
+//! Message frames carry a `serde_multipart::Message` (not raw
+//! bincode). In compat mode (current default), this is encoded as a
+//! sentinel `u64::MAX` followed by a single bincode payload. Response frames
+//! are a bincode-serialized NetRxResponse enum, containing either the acked
+//! sequence number, or the Reject value indicating that the server rejected
+//! the connection.
 //!
-//! Message frame (example):
+//! Message frame (compat/unipart) example:
 //! ```text
-//! +------------------ len: u64 (BE) ------------------+--------------------- data -------------+
-//! | \x00\x00\x00\x00\x00\x00\x00\x0B                  | 11 bytes of bincode-serialized message |
-//! +---------------------------------------------------+----------------------------------------+
+//! +------------------ len: u64 (BE) ------------------+----------------------- data -----------------------+
+//! | \x00\x00\x00\x00\x00\x00\x00\x10                  | \xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF | <bincode bytes> |
+//! |                       16                          |           u64::MAX             |                   |
+//! +---------------------------------------------------+-----------------------------------------------------+
 //! ```
 //!
-//! ACK frame (wire format):
+//! Response frame (wire format):
 //! ```text
-//! +------------------ len: u64 (BE) ------------------+---------------- 8-byte ACK (u64 BE) ---+
-//! | \x00\x00\x00\x00\x00\x00\x00\x08                  | <acknowledged sequence number bytes>   |
+//! +------------------ len: u64 (BE) ------------------+---------------- data ------------------+
+//! | \x00\x00\x00\x00\x00\x00\x00\x??                  | <bincode acked sequence num or reject> |
 //! +---------------------------------------------------+----------------------------------------+
 //! ```
 //!
 //! I/O is handled by `FrameReader`/`FrameWrite`, which are
 //! cancellation-safe and avoid extra copies. Helper fns
-//! `serialize_ack(u64) -> Bytes` and `deserialize_ack(Bytes) ->
-//! Result<u64, usize>` convert to/from the ACK payload.
+//! `serialize_response(NetRxResponse) -> Result<Bytes, bincode::Error>`
+//! and `deserialize_response(Bytes) -> Result<NetRxResponse, bincode::Error>`
+//! convert to/from the response payload.
 //!
 //! ### Limits & EOF semantics
 //! * **Max frame size:** frames larger than
@@ -57,9 +63,7 @@ use std::task::Poll;
 use backoff::ExponentialBackoffBuilder;
 use backoff::backoff::Backoff;
 use bytes::Buf;
-use bytes::BufMut;
 use bytes::Bytes;
-use bytes::BytesMut;
 use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
 use enum_as_inner::EnumAsInner;
@@ -86,6 +90,7 @@ use crate::RemoteMessage;
 use crate::clock::Clock;
 use crate::clock::RealClock;
 use crate::config;
+use crate::config::CHANNEL_MULTIPART;
 use crate::metrics;
 
 mod framed;
@@ -139,17 +144,30 @@ enum Frame<M> {
     Message(u64, M),
 }
 
-fn serialize_ack(seq: u64) -> Bytes {
-    let mut data = BytesMut::with_capacity(8);
-    data.put_u64(seq);
-    data.freeze()
+#[derive(Debug, Serialize, Deserialize, EnumAsInner)]
+enum NetRxResponse {
+    Ack(u64),
+    Reject,
 }
 
-fn deserialize_ack(mut data: Bytes) -> Result<u64, usize> {
-    if data.len() != 8 {
-        return Err(data.len());
+fn serialize_response(response: NetRxResponse) -> Result<Bytes, bincode::Error> {
+    bincode::serialize(&response).map(|bytes| bytes.into())
+}
+
+fn deserialize_response(data: Bytes) -> Result<NetRxResponse, bincode::Error> {
+    bincode::deserialize(&data)
+}
+
+/// Serializes using the "illegal" multipart encoding whenever multipart
+/// is not enabled.
+fn serialize_bincode<S: ?Sized + serde::Serialize>(
+    value: &S,
+) -> Result<serde_multipart::Message, bincode::Error> {
+    if config::global::get(CHANNEL_MULTIPART) {
+        serde_multipart::serialize_bincode(value)
+    } else {
+        serde_multipart::serialize_illegal_bincode(value)
     }
-    Ok(data.get_u64())
 }
 
 /// A Tx implemented on top of a Link. The Tx manages the link state,
@@ -190,7 +208,7 @@ impl<M: RemoteMessage> NetTx<M> {
         #[derive(Debug)]
         struct QueuedMessage<M: RemoteMessage> {
             seq: u64,
-            data: Bytes,
+            message: serde_multipart::Message,
             received_at: Instant,
             return_channel: oneshot::Sender<M>,
         }
@@ -228,12 +246,12 @@ impl<M: RemoteMessage> NetTx<M> {
                 self.deque.is_empty()
             }
 
-            fn front_bytes(&self) -> Option<Bytes> {
-                self.deque.front().map(|msg| msg.data.clone())
+            fn front_message(&self) -> Option<serde_multipart::Message> {
+                self.deque.front().map(|msg| msg.message.clone())
             }
 
             fn front_size(&self) -> Option<usize> {
-                self.deque.front().map(|msg| msg.data.len())
+                self.deque.front().map(|msg| msg.message.frame_len())
             }
 
             fn pop_front(&mut self) -> Option<QueuedMessage<M>> {
@@ -253,14 +271,13 @@ impl<M: RemoteMessage> NetTx<M> {
                 );
 
                 let frame = Frame::Message(self.next_seq, message);
-                let data: Bytes = bincode::serialize(&frame)
-                    .map_err(|e| format!("serialization error: {e}"))?
-                    .into();
-                metrics::REMOTE_MESSAGE_SEND_SIZE.record(data.len() as f64, &[]);
+                let message =
+                    serialize_bincode(&frame).map_err(|e| format!("serialization error: {e}"))?;
+                metrics::REMOTE_MESSAGE_SEND_SIZE.record(message.frame_len() as f64, &[]);
 
                 self.deque.push_back(QueuedMessage {
                     seq: self.next_seq,
-                    data,
+                    message,
                     received_at,
                     return_channel,
                 });
@@ -441,7 +458,7 @@ impl<M: RemoteMessage> NetTx<M> {
             /// Connected and ready to go.
             Connected {
                 reader: FrameReader<ReadHalf<S>>,
-                write_state: WriteState<WriteHalf<S>, ()>,
+                write_state: WriteState<WriteHalf<S>, serde_multipart::Frame, ()>,
             },
         }
 
@@ -516,13 +533,16 @@ impl<M: RemoteMessage> NetTx<M> {
                         ..
                     },
                 ) if !outbox.is_empty() => {
-                    let body = outbox.front_bytes().unwrap();
+                    let message = outbox.front_message().unwrap();
                     (
                         State::Running(Deliveries { outbox, unacked }),
                         Conn::Connected {
                             reader,
                             // Dequeue the next message to be sent:
-                            write_state: WriteState::Writing(FrameWrite::new(writer, body), ()),
+                            write_state: WriteState::Writing(
+                                FrameWrite::new(writer, message.framed()),
+                                (),
+                            ),
                         },
                     )
                 }
@@ -554,17 +574,33 @@ impl<M: RemoteMessage> NetTx<M> {
                         ack_result = reader.next() => {
                             match ack_result {
                                 Ok(Some(buffer)) => {
-                                    match deserialize_ack(buffer) {
-                                        Ok(ack) => {
-                                            unacked.prune(ack);
-                                            (State::Running(Deliveries { outbox, unacked }), Conn::Connected { reader, write_state })
+                                    match deserialize_response(buffer) {
+                                        Ok(response) => {
+                                            match response {
+                                                NetRxResponse::Ack(ack) => {
+                                                    unacked.prune(ack);
+                                                    (State::Running(Deliveries { outbox, unacked }), Conn::Connected { reader, write_state })
+                                                }
+                                                NetRxResponse::Reject => {
+                                                    let error_msg = format!(
+                                                        "session {}.{}: server rejected connection.",
+                                                        link.dest(),
+                                                        session_id
+                                                    );
+                                                    tracing::error!(error_msg);
+                                                    (State::Closing {
+                                                        deliveries: Deliveries{outbox, unacked},
+                                                        reason: error_msg,
+                                                    }, Conn::reconnect_with_default())
+                                                }
+                                            }
                                         }
-                                        Err(len) => {
+                                        Err(err) => {
                                             let error_msg = format!(
-                                                "session {}.{}: ack message size is not 8 bytes. It is {} bytes",
+                                                "session {}.{}: failed deserializing response: {}",
                                                 link.dest(),
                                                 session_id,
-                                                len,
+                                                err,
                                             );
                                             tracing::error!(error_msg);
                                             // Similar to the message flow, we always close the
@@ -694,10 +730,10 @@ impl<M: RemoteMessage> NetTx<M> {
                     } else {
                         match link.connect().await {
                             Ok(stream) => {
-                                let frame =
-                                    bincode::serialize(&Frame::<M>::Init(session_id)).unwrap();
+                                let message =
+                                    serialize_bincode(&Frame::<M>::Init(session_id)).unwrap();
 
-                                let mut write = FrameWrite::new(stream, frame.into());
+                                let mut write = FrameWrite::new(stream, message.framed());
                                 let initialized = write.send().await.is_ok();
                                 let stream = write.complete();
 
@@ -736,7 +772,7 @@ impl<M: RemoteMessage> NetTx<M> {
                                 )
                             }
                             Err(err) => {
-                                tracing::debug!(
+                                tracing::error!(
                                     "session {}.{}: failed to connect: {}",
                                     link.dest(),
                                     session_id,
@@ -781,7 +817,7 @@ impl<M: RemoteMessage> NetTx<M> {
                     .drain(..)
                     .chain(outbox.deque.drain(..))
                     .filter_map(|queued_msg| {
-                        bincode::deserialize(&queued_msg.data)
+                        serde_multipart::deserialize_bincode(queued_msg.message.clone())
                             .ok()
                             .and_then(|frame| match frame {
                                 Frame::Message(_, msg) => Some((queued_msg.return_channel, msg)),
@@ -995,17 +1031,17 @@ pub enum ClientError {
 }
 
 #[derive(EnumAsInner)]
-enum WriteState<W, T> {
+enum WriteState<W, F, T> {
     /// No frame being written.
     Idle(W),
     /// Currently writing a frame, with associated T-typed value.
-    Writing(FrameWrite<W>, T),
+    Writing(FrameWrite<W, F>, T),
 
     /// Internal state to manage completions.
     Broken,
 }
 
-impl<W: AsyncWrite + Unpin, T> WriteState<W, T> {
+impl<W: AsyncWrite + Unpin, F: Buf, T> WriteState<W, F, T> {
     async fn send(&mut self) -> io::Result<T> {
         match self {
             Self::Idle(_) => futures::future::pending().await,
@@ -1024,7 +1060,7 @@ impl<W: AsyncWrite + Unpin, T> WriteState<W, T> {
 
 struct ServerConn<S> {
     reader: FrameReader<ReadHalf<S>>,
-    write_state: WriteState<WriteHalf<S>, u64>,
+    write_state: WriteState<WriteHalf<S>, Bytes, u64>,
     source: ChannelAddr,
     dest: ChannelAddr,
 }
@@ -1046,7 +1082,9 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
         let Some(frame) = self.reader.next().await? else {
             anyhow::bail!("end of stream before first frame from {}", self.source);
         };
-        let Frame::Init(session_id) = bincode::deserialize::<Frame<M>>(&frame)? else {
+        let message = serde_multipart::Message::from_framed(frame)?;
+        let Frame::Init(session_id) = serde_multipart::deserialize_bincode::<Frame<M>>(message)?
+        else {
             anyhow::bail!("unexpected initial frame from {}", self.source);
         };
         Ok(session_id)
@@ -1066,7 +1104,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
         let ack_time_interval = config::global::get(config::MESSAGE_ACK_TIME_INTERVAL);
         let ack_msg_interval = config::global::get(config::MESSAGE_ACK_EVERY_N_MESSAGES);
 
-        let (mut final_next, final_result) = loop {
+        let (mut final_next, final_result, reject_conn) = loop {
             if self.write_state.is_idle()
                 && (next.ack + ack_msg_interval <= next.seq
                     || (next.ack < next.seq && last_ack_time.elapsed() > ack_time_interval))
@@ -1075,32 +1113,74 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                 else {
                     panic!("illegal state");
                 };
-                self.write_state = WriteState::Writing(
-                    FrameWrite::new(writer, serialize_ack(next.seq - 1)),
-                    next.seq,
-                );
+                let ack = match serialize_response(NetRxResponse::Ack(next.seq - 1)) {
+                    Ok(ack) => ack,
+                    Err(err) => {
+                        break (
+                            next,
+                            Err::<(), anyhow::Error>(err.into()).context(format!(
+                                "error serializing ack for message from {:?}",
+                                self.source
+                            )),
+                            false,
+                        );
+                    }
+                };
+                self.write_state = WriteState::Writing(FrameWrite::new(writer, ack), next.seq);
             }
 
             tokio::select! {
                 bytes = self.reader.next() => {
-                    let frame = match bytes {
-                        Ok(bytes) => bytes.map(|buf| bincode::deserialize(&buf)).transpose(),
-                        Err(e) => Err(e.into()),
+                    // First handle transport-level I/O errors, and EOFs.
+                    let bytes = match bytes {
+                        Ok(Some(bytes)) => bytes,
+                        Ok(None) => break (next, Ok(()), false),
+
+                        Err(err) => break (
+                            next,
+                            Err::<(), anyhow::Error>(err.into()).context(
+                                format!(
+                                    "error reading into Frame with M = {} for data from {:?}",
+                                    type_name::<M>(),
+                                    self.source,
+                                )
+                            ),
+                            false
+                        ),
                     };
-                    match frame {
-                        Ok(Some(Frame::Init(_))) => {
-                            break (next, Err(anyhow::anyhow!("unexpected init frame from {}", self.source)))
+
+                    // De-frame the multi-part message.
+                    let message = match serde_multipart::Message::from_framed(bytes) {
+                        Ok(message) => message,
+                        Err(err) => break (
+                            next,
+                            Err::<(), anyhow::Error>(err.into()).context(
+                                format!(
+                                    "failed to de-frame message with M = {} for data from {:?}",
+                                    type_name::<M>(),
+                                    self.source,
+                                )
+                            ),
+                            false
+                        ),
+                    };
+
+                    // Finally decode the message. This assembles the M-typed message
+                    // from its constituent parts.
+                    match serde_multipart::deserialize_bincode(message) {
+                        Ok(Frame::Init(_)) => {
+                            break (next, Err(anyhow::anyhow!("unexpected init frame from {}", self.source)), true)
                         },
                         // Ignore retransmits.
-                        Ok(Some(Frame::Message(seq, _))) if seq < next.seq => (),
+                        Ok(Frame::Message(seq, _)) if seq < next.seq => (),
                         // The following segment ensures exactly-once semantics.
                         // That means No out-of-order delivery and no duplicate delivery.
-                        Ok(Some(Frame::Message(seq, message))) => {
+                        Ok(Frame::Message(seq, message)) => {
                             // received seq should be equal to next seq. Else error out!
                             if seq > next.seq {
                                 tracing::error!("out-of-sequence message from {}", self.source);
                                 let next_seq = next.seq;
-                                break (next, Err(anyhow::anyhow!("out-of-sequence message from {}, expected seq {}, got {}", self.source, next_seq, seq)))
+                                break (next, Err(anyhow::anyhow!("out-of-sequence message from {}, expected seq {}, got {}", self.source, next_seq, seq)), true)
                             }
                             match tx.send(message).await {
                                 Ok(()) => {
@@ -1116,25 +1196,24 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                                     next.seq = seq+1;
                                 }
                                 Err(err) => {
-                                    break (next, Err::<(), anyhow::Error>(err.into()).context(format!("error relaying message to mspc channel for {:?}", self.source)))
+                                    break (next, Err::<(), anyhow::Error>(err.into()).context(format!("error relaying message to mspc channel for {:?}", self.source)), false)
                                 }
                             }
                         },
-
-                        Ok(None) => break (next, Ok(())),
-
                         Err(err) => break (
                             next,
                             Err::<(), anyhow::Error>(err.into()).context(
                                 format!(
-                                    "error reading into Frame with M = {} for data from {:?}",
+                                    "failed to deserialize message with M = {} for data from {:?}",
                                     type_name::<M>(),
                                     self.source,
                                 )
-                            )
+                            ),
+                            false
                         ),
                     }
-                }
+                },
+
                 // We have to be careful to manage the ack write state here, so that we do not
                 // write partial acks in the presence of cancellation.
                 ack_result = self.write_state.send() => {
@@ -1144,38 +1223,50 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                             next.ack = acked_seq;
                         }
                         Err(err) => {
-                            break (next, Err::<(), anyhow::Error>(err.into()).context(format!("error acking peer message from {:?}", self.source)))
+                            break (next, Err::<(), anyhow::Error>(err.into()).context(format!("error acking peer message from {:?}", self.source)), false)
                         }
                     }
-                }
+                },
                 // Have a tick to abort select! call to make sure the ack for the last message can get the chance
                 // to be sent as a result of time interval being reached.
                 _ = RealClock.sleep_until(last_ack_time + ack_time_interval), if next.ack < next.seq => {},
-                _ = cancel_token.cancelled() => break (next, Ok(()))
+                _ = cancel_token.cancelled() => break (next, Ok(()), false)
             }
         };
+
+        let mut final_ack = final_next.ack;
         // Flush any ongoing write.
         if self.write_state.is_writing() {
-            let _ = self.write_state.send().await;
+            match self.write_state.send().await {
+                Ok(acked_seq) => {
+                    if acked_seq > final_ack {
+                        final_ack = acked_seq;
+                    }
+                }
+                Err(_) => (),
+            };
         }
         // best effort: "flush" any remaining ack before closing this session
-        if self.write_state.is_idle() && final_next.ack < final_next.seq {
+        if self.write_state.is_idle() && final_ack < final_next.seq {
             let Ok(writer) = replace(&mut self.write_state, WriteState::Broken).into_idle() else {
                 panic!("illegal state");
             };
-            self.write_state = WriteState::Writing(
-                FrameWrite::new(writer, serialize_ack(final_next.seq - 1)),
-                final_next.seq,
-            );
+            let result = async {
+                let ack = serialize_response(NetRxResponse::Ack(final_next.seq - 1))
+                    .map_err(anyhow::Error::from)?;
+                self.write_state =
+                    WriteState::Writing(FrameWrite::new(writer, ack), final_next.seq);
+                self.write_state.send().await.map_err(anyhow::Error::from)
+            };
 
-            match self.write_state.send().await {
+            match result.await {
                 Ok(acked_seq) => {
                     final_next.ack = acked_seq;
                 }
                 Err(e) => {
                     tracing::warn!(
                         "session {}:{} failed to flush acks for connection from \
-                        {} due to error : {:?}. Normally, this is okay because \
+                        {} due to error : {}. Normally, this is okay because \
                         Tx will reconnect, and acks will be resent in the next \
                         connection. However, if either Tx or Rx is dropped, the \
                         reconnection will not happen, and subsequently the \
@@ -1188,6 +1279,20 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                 }
             }
         }
+
+        if self.write_state.is_idle() && reject_conn {
+            let Ok(writer) = replace(&mut self.write_state, WriteState::Broken).into_idle() else {
+                panic!("illegal state");
+            };
+            match serialize_response(NetRxResponse::Reject) {
+                Ok(data) => {
+                    self.write_state = WriteState::Writing(FrameWrite::new(writer, data), 0);
+                    let _ = self.write_state.send().await;
+                }
+                Err(_) => (),
+            };
+        }
+
         (final_next, final_result)
     }
 }
@@ -2196,11 +2301,10 @@ mod tests {
         assert!(rx.await.is_err());
     }
 
-    #[ignore = "fix problem in Sandcastle T208303369"]
     #[tracing_test::traced_test]
     #[tokio::test]
     async fn test_meta_tls_basic() {
-        let addr = ChannelAddr::any(ChannelTransport::MetaTls);
+        let addr = ChannelAddr::any(ChannelTransport::MetaTls(TlsMode::IpV6));
         let (hostname, port) = match addr {
             ChannelAddr::MetaTls(hostname, port) => (hostname, port),
             _ => ("".to_string(), 0),
@@ -2460,8 +2564,8 @@ mod tests {
                                         tracing::debug!("MockLink relays a msg from client. msg: {:?}", msg);
                                     }
                                 } else {
-                                    let result = deserialize_ack(data.clone());
-                                    if let Ok(seq) = result {
+                                    let result = deserialize_response(data.clone());
+                                    if let Ok(NetRxResponse::Ack(seq)) = result {
                                         tracing::debug!("MockLink relays an ack from server. seq: {:?}", seq);
                                     }
                                 }
@@ -2610,15 +2714,18 @@ mod tests {
         W: AsyncWrite + Unpin,
     {
         if init {
-            let frame = bincode::serialize(&Frame::<u64>::Init(session_id)).unwrap();
-            let mut fw = FrameWrite::new(writer, Bytes::from(frame));
+            let message =
+                serde_multipart::serialize_bincode(&Frame::<u64>::Init(session_id)).unwrap();
+            let mut fw = FrameWrite::new(writer, message.framed());
             fw.send().await.unwrap();
             writer = fw.complete();
         }
 
         for (seq, message) in messages {
-            let frame = bincode::serialize(&Frame::<M>::Message(*seq, message.clone())).unwrap();
-            let mut fw = FrameWrite::new(writer, Bytes::from(frame));
+            let message =
+                serde_multipart::serialize_bincode(&Frame::<M>::Message(*seq, message.clone()))
+                    .unwrap();
+            let mut fw = FrameWrite::new(writer, message.framed());
             fw.send().await.unwrap();
             writer = fw.complete();
         }
@@ -2636,7 +2743,7 @@ mod tests {
             let mut last_acked: i128 = -1;
             loop {
                 let bytes = reader.next().await.unwrap().unwrap();
-                let acked = deserialize_ack(bytes).unwrap();
+                let acked = deserialize_response(bytes).unwrap().into_ack().unwrap();
                 assert!(
                     acked as i128 > last_acked,
                     "acks should be delivered in ascending order"
@@ -2748,7 +2855,7 @@ mod tests {
             .await;
             assert_eq!(rx.recv().await, Some(100u64 + i));
             let bytes = reader.next().await.unwrap().unwrap();
-            let acked = deserialize_ack(bytes).unwrap();
+            let acked = deserialize_response(bytes).unwrap().into_ack().unwrap();
             assert_eq!(acked, i);
         }
 
@@ -2816,7 +2923,8 @@ mod tests {
     ) {
         let expected = Frame::Message(expect.0, expect.1);
         let bytes = reader.next().await.unwrap().expect("unexpected EOF");
-        let frame: Frame<M> = bincode::deserialize(bytes.as_ref()).unwrap();
+        let message = serde_multipart::Message::from_framed(bytes).unwrap();
+        let frame: Frame<M> = serde_multipart::deserialize_bincode(message).unwrap();
 
         assert_eq!(frame, expected, "from ln={loc}");
     }
@@ -2829,7 +2937,8 @@ mod tests {
     ) -> u64 {
         let session_id = {
             let bytes = reader.next().await.unwrap().expect("unexpected EOF");
-            let frame: Frame<M> = bincode::deserialize(bytes.as_ref()).unwrap();
+            let message = serde_multipart::Message::from_framed(bytes).unwrap();
+            let frame: Frame<M> = serde_multipart::deserialize_bincode(message).unwrap();
             match frame {
                 Frame::Init(session_id) => session_id,
                 _ => panic!("the 1st frame is not Init: {:?}. from ln={loc}", frame),
@@ -2879,9 +2988,12 @@ mod tests {
             .await;
 
             for i in 0u64..5u64 {
-                writer = FrameWrite::write_frame(writer, serialize_ack(i))
-                    .await
-                    .unwrap();
+                writer = FrameWrite::write_frame(
+                    writer,
+                    serialize_response(NetRxResponse::Ack(i)).unwrap(),
+                )
+                .await
+                .unwrap();
             }
             // Wait for the acks to be processed by NetTx.
             RealClock.sleep(Duration::from_secs(3)).await;
@@ -2942,9 +3054,12 @@ mod tests {
                 // In the last iteration, ack part of the messages. This should
                 // prune them from future resent.
                 if i == n - 1 {
-                    writer = FrameWrite::write_frame(writer, serialize_ack(1))
-                        .await
-                        .unwrap();
+                    writer = FrameWrite::write_frame(
+                        writer,
+                        serialize_response(NetRxResponse::Ack(1)).unwrap(),
+                    )
+                    .await
+                    .unwrap();
                     // Wait for the acks to be processed by NetTx.
                     RealClock.sleep(Duration::from_secs(3)).await;
                 }
@@ -3000,15 +3115,24 @@ mod tests {
                 if i == n - 1 {
                     // Intentionally ack 1 again to verify it is okay to ack
                     // messages that was already acked.
-                    writer = FrameWrite::write_frame(writer, serialize_ack(1))
-                        .await
-                        .unwrap();
-                    writer = FrameWrite::write_frame(writer, serialize_ack(2))
-                        .await
-                        .unwrap();
-                    writer = FrameWrite::write_frame(writer, serialize_ack(3))
-                        .await
-                        .unwrap();
+                    writer = FrameWrite::write_frame(
+                        writer,
+                        serialize_response(NetRxResponse::Ack(1)).unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                    writer = FrameWrite::write_frame(
+                        writer,
+                        serialize_response(NetRxResponse::Ack(2)).unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                    writer = FrameWrite::write_frame(
+                        writer,
+                        serialize_response(NetRxResponse::Ack(3)).unwrap(),
+                    )
+                    .await
+                    .unwrap();
                     // Wait for the acks to be processed by NetTx.
                     RealClock.sleep(Duration::from_secs(3)).await;
                 }
@@ -3040,9 +3164,12 @@ mod tests {
 
                 // In the last iteration, ack part of the messages from the 2nd send.
                 if i == n - 1 {
-                    writer = FrameWrite::write_frame(writer, serialize_ack(7))
-                        .await
-                        .unwrap();
+                    writer = FrameWrite::write_frame(
+                        writer,
+                        serialize_response(NetRxResponse::Ack(7)).unwrap(),
+                    )
+                    .await
+                    .unwrap();
                     // Wait for the acks to be processed by NetTx.
                     RealClock.sleep(Duration::from_secs(3)).await;
                 }
@@ -3086,9 +3213,10 @@ mod tests {
         let (mut reader, mut writer) = take_receiver(&receiver_storage).await;
         verify_stream(&mut reader, &[(0u64, 100u64)], None, line!()).await;
         // ack it
-        writer = FrameWrite::write_frame(writer, serialize_ack(0))
-            .await
-            .unwrap();
+        writer =
+            FrameWrite::write_frame(writer, serialize_response(NetRxResponse::Ack(0)).unwrap())
+                .await
+                .unwrap();
         // confirm Tx received ack
         //
         // Using `is_err` to confirm the message is delivered/acked is confusing,
@@ -3099,7 +3227,7 @@ mod tests {
         // Although Tx did not actually send seq=1, we still ack it from Rx to
         // pretend Tx already sent it, just it did not know it was sent
         // successfully.
-        let _ = FrameWrite::write_frame(writer, serialize_ack(1))
+        let _ = FrameWrite::write_frame(writer, serialize_response(NetRxResponse::Ack(1)).unwrap())
             .await
             .unwrap();
 
@@ -3133,7 +3261,7 @@ mod tests {
         // Confirm message is sent to rx.
         verify_stream(&mut reader, &[(0u64, 100u64)], None, line!()).await;
         // ack it
-        let _ = FrameWrite::write_frame(writer, serialize_ack(0))
+        let _ = FrameWrite::write_frame(writer, serialize_response(NetRxResponse::Ack(0)).unwrap())
             .await
             .unwrap();
         RealClock.sleep(Duration::from_secs(3)).await;
@@ -3367,5 +3495,53 @@ mod tests {
         for handle in tx_handles {
             handle.await.unwrap();
         }
+    }
+
+    #[tracing_test::traced_test]
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_net_tx_closed_on_server_reject() {
+        let link = MockLink::<u64>::new();
+        let receiver_storage = link.receiver_storage();
+        let mut tx = NetTx::<u64>::new(link);
+        net_tx_send(&tx, &[100]).await;
+
+        {
+            let (_reader, writer) = take_receiver(&receiver_storage).await;
+            let _ =
+                FrameWrite::write_frame(writer, serialize_response(NetRxResponse::Reject).unwrap())
+                    .await;
+            // Wait for response to be processed by NetTx before dropping reader/writer. Otherwise
+            // the channel will be closed and we will get the wrong error.
+            RealClock.sleep(tokio::time::Duration::from_secs(3)).await;
+        }
+
+        verify_tx_closed(&mut tx.status, "server rejected connection").await;
+    }
+
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_server_rejects_conn_on_out_of_sequence_message() {
+        let config = config::global::lock();
+        let _guard = config.override_key(config::MESSAGE_ACK_EVERY_N_MESSAGES, 1);
+        let manager = SessionManager::new();
+        let session_id = 123u64;
+
+        let (_handle, mut reader, writer, mut rx, _cancel_token) = serve::<u64>(&manager).await;
+        let _ = write_stream(
+            writer,
+            session_id,
+            &[(0, 100u64), (1, 101u64), (3, 103u64)],
+            true,
+        )
+        .await;
+        assert_eq!(rx.recv().await, Some(100u64));
+        assert_eq!(rx.recv().await, Some(101u64));
+        let bytes = reader.next().await.unwrap().unwrap();
+        let acked = deserialize_response(bytes).unwrap().into_ack().unwrap();
+        assert_eq!(acked, 0);
+        let bytes = reader.next().await.unwrap().unwrap();
+        let acked = deserialize_response(bytes).unwrap().into_ack().unwrap();
+        assert_eq!(acked, 1);
+        let bytes = reader.next().await.unwrap().unwrap();
+        assert!(deserialize_response(bytes).unwrap().is_reject());
     }
 }

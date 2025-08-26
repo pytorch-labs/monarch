@@ -58,7 +58,7 @@ pub fn monitored_return_handle() -> PortHandle<Undeliverable<MessageEnvelope>> {
         let (h, _) = new_undeliverable_port();
         crate::init::get_runtime().spawn(async move {
             while let Ok(Undeliverable(mut envelope)) = rx.recv().await {
-                envelope.try_set_error(DeliveryError::BrokenLink(
+                envelope.set_error(DeliveryError::BrokenLink(
                     "message returned to undeliverable port".to_string(),
                 ));
                 super::UndeliverableMailboxSender.post(envelope, /*unused */ h.clone());
@@ -79,7 +79,7 @@ pub fn custom_monitored_return_handle(caller: &str) -> PortHandle<Undeliverable<
     let (return_handle, mut rx) = new_undeliverable_port();
     tokio::task::spawn(async move {
         while let Ok(Undeliverable(mut envelope)) = rx.recv().await {
-            envelope.try_set_error(DeliveryError::BrokenLink(
+            envelope.set_error(DeliveryError::BrokenLink(
                 "message returned to undeliverable port".to_string(),
             ));
             tracing::error!("{caller} took back an undeliverable message: {}", envelope);
@@ -131,7 +131,7 @@ impl UndeliverableMessageError {
         UndeliverableMessageError::DeliveryFailure {
             from: envelope.sender().clone(),
             to: envelope.dest().clone(),
-            error: envelope.error().map(|e| format!("{:?}", e)),
+            error: envelope.error_msg(),
         }
     }
 
@@ -139,7 +139,7 @@ impl UndeliverableMessageError {
     pub fn return_failure(envelope: &MessageEnvelope) -> Self {
         UndeliverableMessageError::ReturnFailure {
             sender: envelope.sender().clone(),
-            error: envelope.error().map(|e| format!("{:?}", e)),
+            error: envelope.error_msg(),
         }
     }
 }
@@ -153,21 +153,19 @@ pub fn supervise_undeliverable_messages(
 ) {
     tokio::spawn(async move {
         while let Ok(Undeliverable(mut envelope)) = rx.recv().await {
-            envelope.try_set_error(DeliveryError::BrokenLink(
-                "message returned to undeliverable port".to_string(),
+            envelope.set_error(DeliveryError::BrokenLink(
+                "message returned to supervised undeliverable port".to_string(),
             ));
-            if supervision_port
-                .send(ActorSupervisionEvent {
-                    actor_id: envelope.dest().actor_id().clone(),
-                    actor_status: ActorStatus::Failed(format!(
-                        "message not delivered: {}",
-                        envelope
-                    )),
-                    message_headers: Some(envelope.headers().clone()),
-                    caused_by: None,
-                })
-                .is_err()
-            {
+            if let Err(e) = supervision_port.send(ActorSupervisionEvent {
+                actor_id: envelope.dest().actor_id().clone(),
+                actor_status: ActorStatus::Failed(format!("message not delivered: {}", envelope)),
+                message_headers: Some(envelope.headers().clone()),
+                caused_by: None,
+            }) {
+                envelope.set_error(DeliveryError::BrokenLink(format!(
+                    "failed to send supervision event to port handle {}: {}",
+                    supervision_port, e,
+                )));
                 UndeliverableMailboxSender
                     .post(envelope.clone(), /*unused*/ monitored_return_handle())
             }

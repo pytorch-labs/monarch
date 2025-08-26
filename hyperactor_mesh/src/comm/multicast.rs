@@ -22,6 +22,7 @@ use hyperactor::message::ErasedUnbound;
 use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::reference::ActorId;
 use ndslice::Extent;
+use ndslice::Point;
 use ndslice::Shape;
 use ndslice::Slice;
 use ndslice::selection::Selection;
@@ -253,16 +254,16 @@ pub trait CastInfo {
     /// If something wasn't explicitly sent via a cast, then
     /// we represent it as the only member of a 0-dimensonal cast shape,
     /// which is the same as a singleton.
-    fn cast_info(&self) -> (usize, Shape);
+    fn cast_info(&self) -> Point;
     fn sender(&self) -> &ActorId;
 }
 
 impl<A: Actor> CastInfo for Context<'_, A> {
-    fn cast_info(&self) -> (usize, Shape) {
+    fn cast_info(&self) -> Point {
         let headers = self.headers();
         match (headers.get(CAST_RANK), headers.get(CAST_SHAPE)) {
-            (Some(rank), Some(shape)) => (*rank, shape.clone()),
-            (None, None) => (0, Shape::unity()),
+            (Some(rank), Some(shape)) => shape.extent().point_of_rank(*rank).unwrap(),
+            (None, None) => Extent::unity().point_of_rank(0).unwrap(),
             _ => panic!("Expected either both rank and shape or neither"),
         }
     }

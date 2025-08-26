@@ -77,7 +77,10 @@ fn python_env_dirs() -> (Option<String>, Option<String>) {
     }
     (include_dir, lib_dir)
 }
+#[cfg(target_os = "macos")]
+fn main() {}
 
+#[cfg(not(target_os = "macos"))]
 fn main() {
     let mut builder = bindgen::Builder::default()
         // Parse nccl.h as C++ with -std=gnu++20.

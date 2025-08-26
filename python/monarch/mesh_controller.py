@@ -123,7 +123,7 @@ def _initialize_env(worker_point: Point, proc_id: str) -> None:
         _, worker_env = _get_worker_exec_info()
         local_rank = worker_point["gpus"]
         gpus_per_host = worker_point.size("gpus")
-        num_worker_procs = len(worker_point.shape)
+        num_worker_procs = worker_point.extent.nelements
         process_env = {
             **worker_env,
             "CUDA_VISIBLE_DEVICES": str(local_rank),

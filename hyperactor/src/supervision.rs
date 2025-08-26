@@ -42,9 +42,7 @@ impl ActorSupervisionEvent {
     /// actor status when reporting events to users.
     pub fn status(&self) -> ActorStatus {
         match &self.actor_status {
-            ActorStatus::Failed(msg) => {
-                ActorStatus::Failed(format!("{}: {}", self.to_string(), msg))
-            }
+            ActorStatus::Failed(msg) => ActorStatus::Failed(format!("{}: {}", self, msg)),
             status => status.clone(),
         }
     }

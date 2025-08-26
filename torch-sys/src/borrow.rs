@@ -54,7 +54,7 @@ impl<'a> MultiBorrow<'a> {
         Self { cells: Vec::new() }
     }
 
-    pub fn borrow(&self) -> Result<Vec<Borrow>, BorrowError> {
+    pub fn borrow(&self) -> Result<Vec<Borrow<'_>>, BorrowError> {
         // Dedupe borrows so that we don't accidentally borrow the same alias twice.
         let mut alias_ptrs: HashMap<
             *const AtomicRefCell<()>,

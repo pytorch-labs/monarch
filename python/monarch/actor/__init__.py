@@ -15,6 +15,7 @@ from monarch._src.actor.actor_mesh import (
     ActorError,
     as_endpoint,
     Channel,
+    context,
     current_actor_name,
     current_rank,
     current_size,
@@ -25,6 +26,8 @@ from monarch._src.actor.actor_mesh import (
 from monarch._src.actor.debugger import debug_controller
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.future import Future
+
+from monarch._src.actor.host_mesh import HostMesh, this_host, this_proc
 from monarch._src.actor.proc_mesh import (
     get_or_spawn_controller,
     local_proc_mesh,
@@ -53,4 +56,8 @@ __all__ = [
     "ValueMesh",
     "debug_controller",
     "get_or_spawn_controller",
+    "this_host",
+    "this_proc",
+    "HostMesh",
+    "context",
 ]

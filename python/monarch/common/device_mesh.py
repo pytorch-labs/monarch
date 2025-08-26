@@ -154,6 +154,20 @@ class DeviceMeshInfo:
 
 
 class DeviceMesh(Referenceable, MeshTrait):
+    """A mesh of devices for distributed tensor operations.
+
+    DeviceMesh represents a collection of devices arranged in a
+    multidimensional grid for parallel computation. It manages
+    communication between devices and enables distributed execution
+    of operations across the mesh.
+
+    Args:
+        client (Client): The client connection to the mesh infrastructure
+        processes (NDSlice): Multi-dimensional slice representing the process layout
+        names (Dims): Names for each dimension of the mesh
+        mesh_name (str, optional): Name identifier for the mesh. Default: "default"
+    """
+
     def __init__(
         self,
         client: "Client",

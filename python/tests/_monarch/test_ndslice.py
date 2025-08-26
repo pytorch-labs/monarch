@@ -12,7 +12,7 @@ from unittest import TestCase
 
 from monarch._rust_bindings.monarch_hyperactor.selection import Selection
 
-from monarch._rust_bindings.monarch_hyperactor.shape import Shape, Slice
+from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Point, Shape, Slice
 
 
 class TestNdslice(TestCase):
@@ -189,6 +189,23 @@ class TestShape(TestCase):
             repr(shape),
             'Shape { labels: ["label0", "label1"], slice: Slice { offset: 0, sizes: [2, 3], strides: [3, 1] } }',
         )
+
+
+class TestPoint(TestCase):
+    def test_point_str_simple(self) -> None:
+        """Test __str__ method for Point with simple 2D shape."""
+
+        shape = Extent(["label0", "label1"], [3, 4])
+
+        # Test different ranks and their string representations
+        point_0 = Point(0, shape)
+        self.assertEqual(str(point_0), "{'label0': 0/3, 'label1': 0/4}")
+
+        point_3 = Point(3, shape)
+        self.assertEqual(str(point_3), "{'label0': 0/3, 'label1': 3/4}")
+
+        point_11 = Point(11, shape)
+        self.assertEqual(str(point_11), "{'label0': 2/3, 'label1': 3/4}")
 
 
 class TestSelection(TestCase):

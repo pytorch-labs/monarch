@@ -50,17 +50,33 @@ jobs:
         export _GLIBCXX_USE_CXX11_ABI=1
         export CUDA_LIB_DIR=/usr/lib64
 
+        # Build Monarch completely for documentation - use dedicated script
+        ./scripts/build_monarch_for_docs.sh
+
         # Generate documentation for all workspace crates
         cargo doc --workspace --no-deps
 
         # Prepare documentation structure for Sphinx and final output
-        mkdir -p docs/source/target docs/build/html/rust-api
+        mkdir -p docs/source/target
         cp -r target/doc docs/source/target/
 
-        # Build Sphinx documentation
-        cd docs && make html && cd ..
+        # Build Sphinx documentation with error detection
+        echo "Building Sphinx documentation..."
+        cd docs
+
+        make clean
+        make html SPHINXOPTS="-v --keep-going" || {
+            echo "WARNING: Sphinx build had issues. Running diagnostics..."
+            ../scripts/handle_sphinx_errors.sh
+        }
+
+        cd ..
+
+        # Verify the API sections were generated properly using dedicated script
+        python scripts/verify_api_docs.py
 
         # Copy Rust API docs to final location
+        mkdir -p docs/build/html/rust-api
         cp -r target/doc/* docs/build/html/rust-api/
 
         # Copy documentation to artifact directory

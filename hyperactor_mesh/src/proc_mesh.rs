@@ -124,11 +124,17 @@ struct EventState {
 }
 
 impl ProcMesh {
+    #[hyperactor::instrument(fields(name = "proc_mesh_allocate"))]
+    pub async fn allocate(
+        alloc: impl Alloc + Send + Sync + 'static,
+    ) -> Result<Self, AllocatorError> {
+        ProcMesh::allocate_boxed(Box::new(alloc)).await
+    }
     /// Allocate a new ProcMesh from the provided allocator. Allocate returns
     /// after the mesh has been successfully (and fully) allocated, returning
     /// early on any allocation failure.
-    pub async fn allocate(
-        mut alloc: impl Alloc + Send + Sync + 'static,
+    pub async fn allocate_boxed(
+        mut alloc: Box<dyn Alloc + Send + Sync>,
     ) -> Result<Self, AllocatorError> {
         // We wait for the full allocation to be running before returning the mesh.
         let shape = alloc.shape().clone();
@@ -144,10 +150,7 @@ impl ProcMesh {
 
             match state {
                 ProcState::Created { proc_id, point, .. } => {
-                    let rank = shape
-                        .slice()
-                        .location(point.coords())
-                        .map_err(|err| AllocatorError::Other(err.into()))?;
+                    let rank = point.rank();
                     if let Some(old_proc_id) = proc_ids.insert(rank, proc_id.clone()) {
                         tracing::warn!("rank {rank} reassigned from {old_proc_id} to {proc_id}");
                     }
@@ -334,7 +337,7 @@ impl ProcMesh {
 
         Ok(Self {
             event_state: Some(EventState {
-                alloc: Box::new(alloc),
+                alloc,
                 supervision_events,
             }),
             actor_event_router: Arc::new(DashMap::new()),

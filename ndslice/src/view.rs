@@ -78,6 +78,10 @@ impl Extent {
         })
     }
 
+    pub fn unity() -> Extent {
+        Extent::new(vec![], vec![]).unwrap()
+    }
+
     /// Returns the ordered list of dimension labels in this extent.
     pub fn labels(&self) -> &[String] {
         &self.inner.labels
@@ -180,7 +184,7 @@ impl Extent {
     }
 
     /// Iterate points in this extent.
-    pub fn points(&self) -> ExtentPointsIterator {
+    pub fn points(&self) -> ExtentPointsIterator<'_> {
         ExtentPointsIterator {
             extent: self,
             pos: CartesianIterator::new(self.sizes().to_vec()),
@@ -191,12 +195,14 @@ impl Extent {
 impl std::fmt::Display for Extent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let n = self.sizes().len();
+        write!(f, "{{")?;
         for i in 0..n {
-            write!(f, "{}={}", self.labels()[i], self.sizes()[i])?;
+            write!(f, "'{}': {}", self.labels()[i], self.sizes()[i])?;
             if i != n - 1 {
-                write!(f, ",")?;
+                write!(f, ", ")?;
             }
         }
+        write!(f, "}}")?;
         Ok(())
     }
 }
@@ -370,7 +376,13 @@ impl std::fmt::Display for Point {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let n = self.coords.len();
         for i in 0..n {
-            write!(f, "{}={}", self.extent.labels()[i], self.coords[i])?;
+            write!(
+                f,
+                "{}={}/{}",
+                self.extent.labels()[i],
+                self.coords[i],
+                self.extent.sizes()[i]
+            )?;
             if i != n - 1 {
                 write!(f, ",")?;
             }
@@ -625,7 +637,7 @@ impl<T: Viewable> ViewExt for T {
 /// ```
 #[macro_export]
 macro_rules! extent {
-    ( $( $label:ident = $size:expr_2021 ),* $(,)? ) => {
+    ( $( $label:ident = $size:expr ),* $(,)? ) => {
         {
             let mut labels = Vec::new();
             let mut sizes = Vec::new();
@@ -831,10 +843,10 @@ mod test {
     #[test]
     fn test_extent_display() {
         let extent = Extent::new(vec!["x".into(), "y".into(), "z".into()], vec![4, 5, 6]).unwrap();
-        assert_eq!(format!("{}", extent), "x=4,y=5,z=6");
+        assert_eq!(format!("{}", extent), "{'x': 4, 'y': 5, 'z': 6}");
 
         let empty_extent = Extent::new(vec![], vec![]).unwrap();
-        assert_eq!(format!("{}", empty_extent), "");
+        assert_eq!(format!("{}", empty_extent), "{}");
     }
 
     #[test]
@@ -851,7 +863,7 @@ mod test {
     fn test_point_display() {
         let extent = Extent::new(vec!["x".into(), "y".into(), "z".into()], vec![4, 5, 6]).unwrap();
         let point = extent.point(vec![1, 2, 3]).unwrap();
-        assert_eq!(format!("{}", point), "x=1,y=2,z=3");
+        assert_eq!(format!("{}", point), "x=1/4,y=2/5,z=3/6");
 
         assert!(extent.point(vec![]).is_err());
 

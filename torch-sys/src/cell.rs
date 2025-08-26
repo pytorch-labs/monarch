@@ -103,7 +103,7 @@ impl<T: ?Sized> AliasTrackingRefCell<T> {
     /// # Panics
     /// Will panic if the given `T` or any of its aliases are mutably borrowed.
     /// For a non-panicking version, see [`try_borrow`](AliasTrackingRefCell::try_borrow).
-    pub fn borrow(&self) -> AliasTrackingRef<T> {
+    pub fn borrow(&self) -> AliasTrackingRef<'_, T> {
         match self.try_borrow() {
             Ok(borrow) => borrow,
             Err(e) => panic!("borrow failed: {:?}", e),
@@ -115,7 +115,7 @@ impl<T: ?Sized> AliasTrackingRefCell<T> {
     /// lasts until the `AliasTrackingRef` is dropped.
     ///
     /// This is a non-panicking version of [`borrow`](AliasTrackingRefCell::borrow).
-    pub fn try_borrow(&self) -> Result<AliasTrackingRef<T>, BorrowError> {
+    pub fn try_borrow(&self) -> Result<AliasTrackingRef<'_, T>, BorrowError> {
         Ok(AliasTrackingRef {
             borrow: self.alias_tracker.try_borrow()?,
             // SAFETY: The alias_tracker borrow guarantees that there is only
@@ -131,7 +131,7 @@ impl<T: ?Sized> AliasTrackingRefCell<T> {
     /// Will panic if the `Tensor` or any of its aliases are borrowed. For a
     /// non-panicking version, see
     /// [`try_borrow_mut`](TensorCell::try_borrow_mut).
-    pub fn borrow_mut(&self) -> AliasTrackingRefMut<T> {
+    pub fn borrow_mut(&self) -> AliasTrackingRefMut<'_, T> {
         match self.try_borrow_mut() {
             Ok(borrow) => borrow,
             Err(e) => panic!("borrow_mut failed: {:?}", e),
@@ -143,7 +143,7 @@ impl<T: ?Sized> AliasTrackingRefCell<T> {
     /// is dropped.
     ///
     /// This is a non-panicking version of [`borrow_mut`](TensorCell::borrow_mut).
-    pub fn try_borrow_mut(&self) -> Result<AliasTrackingRefMut<T>, BorrowMutError> {
+    pub fn try_borrow_mut(&self) -> Result<AliasTrackingRefMut<'_, T>, BorrowMutError> {
         Ok(AliasTrackingRefMut {
             borrow: self.alias_tracker.try_borrow_mut()?,
             // SAFETY: The alias_tracker mutable borrow guarantees unique access.

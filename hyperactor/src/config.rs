@@ -23,6 +23,7 @@ use std::time::Duration;
 
 use crate::attrs::Attrs;
 use crate::attrs::declare_attrs;
+use crate::data::Encoding;
 
 // Declare configuration keys using the new attrs system with defaults
 declare_attrs! {
@@ -49,6 +50,12 @@ declare_attrs! {
 
     /// Heartbeat interval for remote allocator
     pub attr REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
+
+    /// The default encoding to be used.
+    pub attr DEFAULT_ENCODING: Encoding = Encoding::Bincode;
+
+    /// Whether to use multipart encoding for network channel communications.
+    pub attr CHANNEL_MULTIPART: bool = false;
 }
 
 /// Load configuration from environment variables
@@ -97,6 +104,20 @@ pub fn from_env() -> Attrs {
         }
     }
 
+    // Load default encoding
+    if let Ok(val) = env::var("HYPERACTOR_DEFAULT_ENCODING") {
+        if let Ok(parsed) = val.parse::<Encoding>() {
+            config[DEFAULT_ENCODING] = parsed;
+        }
+    }
+
+    // Load channel multipart.
+    if let Ok(val) = env::var("HYPERACTOR_CHANNEL_MULTIPART") {
+        if let Ok(parsed) = val.parse::<bool>() {
+            config[CHANNEL_MULTIPART] = parsed;
+        }
+    }
+
     config
 }
 
@@ -134,6 +155,12 @@ pub fn merge(config: &mut Attrs, other: &Attrs) {
     }
     if other.contains_key(REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL) {
         config[REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL] = other[REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL];
+    }
+    if other.contains_key(DEFAULT_ENCODING) {
+        config[DEFAULT_ENCODING] = other[DEFAULT_ENCODING];
+    }
+    if other.contains_key(CHANNEL_MULTIPART) {
+        config[CHANNEL_MULTIPART] = other[CHANNEL_MULTIPART];
     }
 }
 

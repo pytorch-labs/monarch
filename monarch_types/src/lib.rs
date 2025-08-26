@@ -12,6 +12,10 @@ mod pyobject;
 mod python;
 mod pytree;
 
+use std::error::Error;
+
+use pyo3::PyErr;
+use pyo3::exceptions::PyValueError;
 pub use pyobject::PickledPyObject;
 pub use python::SerializablePyErr;
 pub use python::TryIntoPyObjectUnsafe;
@@ -34,4 +38,16 @@ macro_rules! py_global {
                 .clone()
         }
     };
+}
+
+pub trait MapPyErr<T> {
+    fn map_pyerr(self) -> Result<T, PyErr>;
+}
+impl<T, E> MapPyErr<T> for Result<T, E>
+where
+    E: Error,
+{
+    fn map_pyerr(self) -> Result<T, PyErr> {
+        self.map_err(|err| PyErr::new::<PyValueError, _>(err.to_string()))
+    }
 }

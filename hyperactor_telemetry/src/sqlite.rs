@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -379,6 +380,14 @@ impl SqliteTracing {
         let db_path_str = db_path.to_string_lossy();
         let layer = SqliteLayer::new_with_file(&db_path_str)?;
         let connection = layer.connection();
+
+        // Set file permissions to be readable and writable by owner and group
+        // This ensures the Python application can access the database file
+        if let Ok(metadata) = fs::metadata(&db_path) {
+            let mut permissions = metadata.permissions();
+            permissions.set_mode(0o664); // rw-rw-r--
+            let _ = fs::set_permissions(&db_path, permissions);
+        }
 
         init_tracing_subscriber(layer);
 

@@ -508,8 +508,8 @@ pub(crate) mod test_util {
             cx: &Context<Self>,
             GetRank(ok, reply): GetRank,
         ) -> Result<(), anyhow::Error> {
-            let (rank, _) = cx.cast_info();
-            reply.send(cx, rank)?;
+            let point = cx.cast_info();
+            reply.send(cx, point.rank())?;
             anyhow::ensure!(ok, "intentional error!"); // If `!ok` exit with `Err()`.
             Ok(())
         }
@@ -668,7 +668,7 @@ mod tests {
     // These tests are parametric over allocators.
     #[macro_export]
     macro_rules! actor_mesh_test_suite {
-        ($allocator:expr_2021) => {
+        ($allocator:expr) => {
             use std::assert_matches::assert_matches;
 
             use ndslice::extent;

@@ -266,14 +266,12 @@ impl Handler<AssignRankMessage> for WorkerActor {
         cx: &hyperactor::Context<Self>,
         _: AssignRankMessage,
     ) -> anyhow::Result<()> {
-        let (rank, shape) = cx.cast_info();
-        self.rank = rank;
+        let point = cx.cast_info();
+        self.rank = point.rank();
         self.respond_with_python_message = true;
         Python::with_gil(|py| {
             let mesh_controller = py.import("monarch.mesh_controller").unwrap();
-            let shape: PyShape = shape.into();
-            let shape: Py<PyShape> = Py::new(py, shape).unwrap();
-            let p: PyPoint = PyPoint::new(rank, shape);
+            let p: PyPoint = point.into();
             mesh_controller
                 .call_method1("_initialize_env", (p, cx.proc().proc_id().to_string()))
                 .unwrap();

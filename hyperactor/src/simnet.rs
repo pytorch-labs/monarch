@@ -26,11 +26,14 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use dashmap::DashSet;
 use enum_as_inner::EnumAsInner;
+use ndslice::view::Point;
+use rand::SeedableRng;
+use rand::rngs::StdRng;
+use rand_distr::Distribution;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
-use serde_with::serde_as;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -43,6 +46,7 @@ use tokio::time::interval;
 use crate::ActorId;
 use crate::Mailbox;
 use crate::OncePortRef;
+use crate::ProcId;
 use crate::channel::ChannelAddr;
 use crate::clock::Clock;
 use crate::clock::RealClock;
@@ -70,7 +74,8 @@ const OPERATIONAL_MESSAGE_BUFFER_SIZE: usize = 8;
 pub trait Address: Hash + Debug + Eq + PartialEq + Ord + PartialOrd + Clone {}
 impl<A: Hash + Debug + Eq + PartialEq + Ord + PartialOrd + Clone> Address for A {}
 
-type SimulatorTimeInstant = u64;
+/// Minimum time unit for the simulator.
+pub type SimulatorTimeInstant = tokio::time::Instant;
 
 /// The unit of execution for the simulator.
 /// Using handle(), simnet can schedule executions in the network.
@@ -88,21 +93,18 @@ pub trait Event: Send + Sync + Debug {
     /// For a proc spawn, it will be creating the proc object and instantiating it.
     /// For any event that manipulates the network (like adding/removing nodes etc.)
     /// implement handle_network().
-    async fn handle(&self) -> Result<(), SimNetError>;
+    async fn handle(&mut self) -> Result<(), SimNetError>;
 
     /// This is the method that will be called when the simulator fires the event
     /// Unless you need to make changes to the network, you do not have to implement this.
     /// Only implement handle() method for all non-simnet requirements.
-    async fn handle_network(&self, _phantom: &SimNet) -> Result<(), SimNetError> {
+    async fn handle_network(&mut self, _phantom: &SimNet) -> Result<(), SimNetError> {
         self.handle().await
     }
 
     /// The latency of the event. This could be network latency, induced latency (sleep), or
     /// GPU work latency.
-    fn duration_ms(&self) -> u64;
-
-    /// Read the simnet config and update self accordingly.
-    async fn read_simnet_config(&mut self, _topology: &Arc<Mutex<SimNetConfig>>) {}
+    fn duration(&self) -> tokio::time::Duration;
 
     /// A user-friendly summary of the event
     fn summary(&self) -> String;
@@ -117,61 +119,20 @@ struct NodeJoinEvent {
 
 #[async_trait]
 impl Event for NodeJoinEvent {
-    async fn handle(&self) -> Result<(), SimNetError> {
+    async fn handle(&mut self) -> Result<(), SimNetError> {
         Ok(())
     }
 
-    async fn handle_network(&self, simnet: &SimNet) -> Result<(), SimNetError> {
-        simnet.bind(self.channel_addr.clone()).await;
+    async fn handle_network(&mut self, _simnet: &SimNet) -> Result<(), SimNetError> {
         self.handle().await
     }
 
-    fn duration_ms(&self) -> u64 {
-        0
+    fn duration(&self) -> tokio::time::Duration {
+        tokio::time::Duration::ZERO
     }
 
     fn summary(&self) -> String {
         "Node join".into()
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct SleepEvent {
-    done_tx: OncePortRef<()>,
-    mailbox: Mailbox,
-    duration_ms: u64,
-}
-
-impl SleepEvent {
-    pub(crate) fn new(done_tx: OncePortRef<()>, mailbox: Mailbox, duration_ms: u64) -> Box<Self> {
-        Box::new(Self {
-            done_tx,
-            mailbox,
-            duration_ms,
-        })
-    }
-}
-
-#[async_trait]
-impl Event for SleepEvent {
-    async fn handle(&self) -> Result<(), SimNetError> {
-        Ok(())
-    }
-
-    async fn handle_network(&self, _simnet: &SimNet) -> Result<(), SimNetError> {
-        self.done_tx
-            .clone()
-            .send(&self.mailbox, ())
-            .map_err(|_err| SimNetError::Closed("TODO".to_string()))?;
-        Ok(())
-    }
-
-    fn duration_ms(&self) -> u64 {
-        self.duration_ms
-    }
-
-    fn summary(&self) -> String {
-        format!("Sleeping for {} ms", self.duration_ms)
     }
 }
 
@@ -188,11 +149,11 @@ pub struct TorchOpEvent {
 
 #[async_trait]
 impl Event for TorchOpEvent {
-    async fn handle(&self) -> Result<(), SimNetError> {
+    async fn handle(&mut self) -> Result<(), SimNetError> {
         Ok(())
     }
 
-    async fn handle_network(&self, _simnet: &SimNet) -> Result<(), SimNetError> {
+    async fn handle_network(&mut self, _simnet: &SimNet) -> Result<(), SimNetError> {
         self.done_tx
             .clone()
             .send(&self.mailbox, ())
@@ -200,8 +161,8 @@ impl Event for TorchOpEvent {
         Ok(())
     }
 
-    fn duration_ms(&self) -> u64 {
-        100
+    fn duration(&self) -> tokio::time::Duration {
+        tokio::time::Duration::from_millis(100)
     }
 
     fn summary(&self) -> String {
@@ -255,21 +216,7 @@ pub(crate) struct ScheduledEvent {
 #[async_trait]
 pub trait Dispatcher<A> {
     /// Send a raw data blob to the given target.
-    async fn send(&self, source: Option<A>, target: A, data: Serialized)
-    -> Result<(), SimNetError>;
-}
-
-#[derive(Hash, Eq, PartialEq, Debug)]
-pub(crate) struct SimNetEdge {
-    pub(crate) src: ChannelAddr,
-    pub(crate) dst: ChannelAddr,
-}
-
-#[serde_as]
-#[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct SimNetEdgeInfo {
-    #[serde_as(as = "serde_with::DurationSeconds<f64>")]
-    pub(crate) latency: Duration,
+    async fn send(&self, target: A, data: Serialized) -> Result<(), SimNetError>;
 }
 
 /// SimNetError is used to indicate errors that occur during
@@ -304,6 +251,10 @@ pub enum SimNetError {
     /// SimnetHandle being accessed without starting simnet
     #[error("simnet not started")]
     NotStarted,
+
+    /// A task has panicked.
+    #[error("panicked task")]
+    PanickedTask,
 }
 
 struct State {
@@ -324,17 +275,133 @@ pub enum TrainingScriptState {
     Waiting,
 }
 
+/// A distribution of latencies that can be sampled from
+pub enum LatencyDistribution {
+    /// A beta distribution scaled to a given range of values
+    Beta(BetaDistribution),
+}
+
+impl LatencyDistribution {
+    fn sample(&self, rng: &mut StdRng) -> tokio::time::Duration {
+        match &self {
+            LatencyDistribution::Beta(sampler) => sampler.sample(rng),
+        }
+    }
+}
+
+/// A beta distribution scaled to a given range of values.
+pub struct BetaDistribution {
+    min_duration: tokio::time::Duration,
+    max_duration: tokio::time::Duration,
+    dist: rand_distr::Beta<f64>,
+}
+
+impl BetaDistribution {
+    /// Sample a sclaed value from the distribution.
+    pub fn sample(&self, rng: &mut StdRng) -> tokio::time::Duration {
+        let sample = self.dist.sample(rng);
+
+        self.min_duration
+            + tokio::time::Duration::from_micros(
+                (sample * (self.max_duration - self.min_duration).as_micros() as f64) as u64,
+            )
+    }
+
+    /// Create a new beta distribution.
+    pub fn new(
+        min_duration: tokio::time::Duration,
+        max_duration: tokio::time::Duration,
+        alpha: f64,
+        beta: f64,
+    ) -> anyhow::Result<Self> {
+        if min_duration > max_duration {
+            return Err(anyhow::anyhow!(
+                "min_duration must not be greater than max_duration, got min_duration: {:?}, max_duration: {:?}",
+                min_duration,
+                max_duration
+            ));
+        }
+        Ok(Self {
+            min_duration,
+            max_duration,
+            dist: rand_distr::Beta::new(alpha, beta)?,
+        })
+    }
+}
+/// Configuration for latencies between distances for the simulator
+pub struct LatencyConfig {
+    /// inter-region latency distribution
+    pub inter_region_distribution: LatencyDistribution,
+    /// inter-data center latency distribution
+    pub inter_dc_distribution: LatencyDistribution,
+    /// inter-zone latency distribution
+    pub inter_zone_distribution: LatencyDistribution,
+    /// Single random number generator for all distributions to ensure deterministic sampling
+    pub rng: StdRng,
+}
+
+impl LatencyConfig {
+    fn from_distance(&mut self, distance: &Distance) -> tokio::time::Duration {
+        match distance {
+            Distance::Region => self.inter_region_distribution.sample(&mut self.rng),
+            Distance::DataCenter => self.inter_dc_distribution.sample(&mut self.rng),
+            Distance::Zone => self.inter_zone_distribution.sample(&mut self.rng),
+            Distance::Rack | Distance::Host | Distance::Same => tokio::time::Duration::ZERO,
+        }
+    }
+}
+
+impl Default for LatencyConfig {
+    fn default() -> Self {
+        let seed: u64 = 0000;
+        let mut seed_bytes = [0u8; 32];
+        seed_bytes[..8].copy_from_slice(&seed.to_le_bytes());
+
+        Self {
+            inter_region_distribution: LatencyDistribution::Beta(
+                BetaDistribution::new(
+                    tokio::time::Duration::from_millis(500),
+                    tokio::time::Duration::from_millis(1000),
+                    2.0,
+                    1.0,
+                )
+                .unwrap(),
+            ),
+            inter_dc_distribution: LatencyDistribution::Beta(
+                BetaDistribution::new(
+                    tokio::time::Duration::from_millis(50),
+                    tokio::time::Duration::from_millis(100),
+                    2.0,
+                    1.0,
+                )
+                .unwrap(),
+            ),
+            inter_zone_distribution: LatencyDistribution::Beta(
+                BetaDistribution::new(
+                    tokio::time::Duration::from_millis(5),
+                    tokio::time::Duration::from_millis(10),
+                    2.0,
+                    1.0,
+                )
+                .unwrap(),
+            ),
+            rng: StdRng::from_seed(seed_bytes),
+        }
+    }
+}
+
 /// A handle to a running [`SimNet`] instance.
 pub struct SimNetHandle {
     join_handle: Mutex<Option<JoinHandle<Vec<SimulatorEventRecord>>>>,
     event_tx: UnboundedSender<(Box<dyn Event>, bool, Option<SimulatorTimeInstant>)>,
-    config: Arc<Mutex<SimNetConfig>>,
     pending_event_count: Arc<AtomicUsize>,
     /// A receiver to receive simulator operational messages.
     /// The receiver can be moved out of the simnet handle.
     training_script_state_tx: tokio::sync::watch::Sender<TrainingScriptState>,
     /// Signal to stop the simnet loop
     stop_signal: Arc<AtomicBool>,
+    resources: DashMap<ProcId, Point>,
+    latencies: std::sync::Mutex<LatencyConfig>,
 }
 
 impl SimNetHandle {
@@ -412,21 +479,6 @@ impl SimNetHandle {
         }
     }
 
-    /// Update the network configuration to SimNet.
-    pub async fn update_network_config(&self, config: NetworkConfig) -> Result<(), SimNetError> {
-        let guard = &self.config.lock().await.topology;
-        for edge in config.edges {
-            guard.insert(
-                SimNetEdge {
-                    src: edge.src.clone(),
-                    dst: edge.dst.clone(),
-                },
-                edge.metadata,
-            );
-        }
-        Ok(())
-    }
-
     /// Wait for all of the received events to be scheduled for flight.
     /// It ticks the simnet time till all of the scheduled events are processed.
     pub async fn flush(&self, timeout: Duration) -> Result<(), SimNetError> {
@@ -445,24 +497,63 @@ impl SimNetHandle {
             "timeout waiting for received events to be scheduled".to_string(),
         ))
     }
+
+    /// Register the location in resource space for a Proc
+    pub fn register_proc(&self, proc_id: ProcId, point: Point) {
+        self.resources.insert(proc_id, point);
+    }
+
+    /// Sample a latency between two procs
+    pub fn sample_latency(&self, src: &ProcId, dest: &ProcId) -> tokio::time::Duration {
+        let distances = [
+            Distance::Region,
+            Distance::DataCenter,
+            Distance::Zone,
+            Distance::Rack,
+            Distance::Host,
+            Distance::Same,
+        ];
+
+        let src_coords = self
+            .resources
+            .get(src)
+            .map(|point| point.coords().clone())
+            .unwrap_or(distances.iter().map(|_| 0).collect::<Vec<usize>>());
+
+        let dest_coords = self
+            .resources
+            .get(dest)
+            .map(|point| point.coords().clone())
+            .unwrap_or(distances.iter().map(|_| 0).collect::<Vec<usize>>());
+
+        for ((src, dest), distance) in src_coords.into_iter().zip(dest_coords).zip(distances) {
+            if src != dest {
+                let mut guard = self.latencies.lock().unwrap_or_else(|e| e.into_inner());
+                return guard.from_distance(&distance);
+            }
+        }
+
+        let mut guard = self.latencies.lock().unwrap_or_else(|e| e.into_inner());
+        guard.from_distance(&Distance::Same)
+    }
 }
 
-pub(crate) type Topology = DashMap<SimNetEdge, SimNetEdgeInfo>;
-
-/// Configure network topology for the simnet
-pub struct SimNetConfig {
-    // For now, we assume the network is fully connected
-    // so as to avoid the complexity of maintaining a graph
-    // and determining the shortest path between two nodes.
-    pub(crate) topology: Topology,
+#[derive(Debug)]
+enum Distance {
+    Region,
+    DataCenter,
+    Zone,
+    Rack,
+    Host,
+    Same,
 }
+
 /// SimNet defines a network of nodes.
 /// Each node is identified by a unique id.
 /// The network is represented as a graph of nodes.
 /// The graph is represented as a map of edges.
 /// The network also has a cloud of inflight messages
 pub struct SimNet {
-    config: Arc<Mutex<SimNetConfig>>,
     address_book: DashSet<ChannelAddr>,
     state: State,
     max_latency: Duration,
@@ -472,15 +563,15 @@ pub struct SimNet {
 }
 
 /// Starts a sim net.
-/// Args:
-///     max_duration_ms: an optional config to override default settings of the network latency
 pub fn start() {
+    start_with_config(LatencyConfig::default())
+}
+
+/// Starts a sim net with configured latencies between distances
+pub fn start_with_config(config: LatencyConfig) {
     let max_duration_ms = 1000 * 10;
     // Construct a topology with one node: the default A.
     let address_book: DashSet<ChannelAddr> = DashSet::new();
-
-    let topology = DashMap::new();
-    let config = Arc::new(Mutex::new(SimNetConfig { topology }));
 
     let (training_script_state_tx, training_script_state_rx) =
         tokio::sync::watch::channel(TrainingScriptState::Waiting);
@@ -490,13 +581,11 @@ pub fn start() {
     let stop_signal = Arc::new(AtomicBool::new(false));
 
     let join_handle = Mutex::new(Some({
-        let config = config.clone();
         let pending_event_count = pending_event_count.clone();
         let stop_signal = stop_signal.clone();
 
         tokio::spawn(async move {
             SimNet {
-                config,
                 address_book,
                 state: State {
                     scheduled_events: BTreeMap::new(),
@@ -514,69 +603,32 @@ pub fn start() {
     HANDLE.get_or_init(|| SimNetHandle {
         join_handle,
         event_tx,
-        config,
         pending_event_count,
         training_script_state_tx,
         stop_signal,
+        resources: DashMap::new(),
+        latencies: std::sync::Mutex::new(config),
     });
 }
 
 impl SimNet {
-    /// Bind an address to a node id. If node id is not provided, then
-    /// randomly choose a node id. If the address is already bound to a node id,
-    /// then return the existing node id.
-    async fn bind(&self, address: ChannelAddr) {
-        // Add if not present.
-        if self.address_book.insert(address.clone()) {
-            // Add dummy latencies with all the other nodes.
-            for other in self.address_book.iter() {
-                let duration_ms = if other.key() == &address {
-                    1
-                } else {
-                    rand::random::<u64>() % self.max_latency.as_millis() as u64 + 1
-                };
-                let latency = Duration::from_millis(duration_ms);
-                let guard = &self.config.lock().await.topology;
-                guard.insert(
-                    SimNetEdge {
-                        src: address.clone(),
-                        dst: other.clone(),
-                    },
-                    SimNetEdgeInfo { latency },
-                );
-                if address != *other.key() {
-                    guard.insert(
-                        SimNetEdge {
-                            src: other.clone(),
-                            dst: address.clone(),
-                        },
-                        SimNetEdgeInfo { latency },
-                    );
-                }
-            }
-        }
-    }
-
-    async fn create_scheduled_event(&mut self, mut event: Box<dyn Event>) -> ScheduledEvent {
+    fn create_scheduled_event(&mut self, event: Box<dyn Event>) -> ScheduledEvent {
         // Get latency
-        event.read_simnet_config(&self.config).await;
         ScheduledEvent {
-            time: SimClock.millis_since_start(
-                SimClock.now() + tokio::time::Duration::from_millis(event.duration_ms()),
-            ),
+            time: SimClock.now() + event.duration(),
             event,
         }
     }
 
     /// Schedule the event into the network.
     fn schedule_event(&mut self, scheduled_event: ScheduledEvent, advanceable: bool) {
-        let start_at = SimClock.millis_since_start(SimClock.now());
+        let start_at = SimClock.now();
         let end_at = scheduled_event.time;
 
         self.records.push(SimulatorEventRecord {
             summary: scheduled_event.event.summary(),
-            start_at,
-            end_at,
+            start_at: SimClock.duration_since_start(start_at).as_millis() as u64,
+            end_at: SimClock.duration_since_start(end_at).as_millis() as u64,
         });
 
         if advanceable {
@@ -604,9 +656,15 @@ impl SimNet {
     ) -> Vec<SimulatorEventRecord> {
         // The simulated number of milliseconds the training script
         // has spent waiting for the backend to resolve a future
-        let mut training_script_waiting_time: u64 = 0;
+        let mut training_script_waiting_time = tokio::time::Duration::from_millis(0);
         // Duration elapsed while only non_advanceable_events has events
         let mut debounce_timer: Option<tokio::time::Instant> = None;
+
+        let debounce_duration = std::env::var("SIM_DEBOUNCE")
+            .ok()
+            .and_then(|val| val.parse::<u64>().ok())
+            .unwrap_or(1);
+
         'outer: loop {
             // Check if we should stop
             if stop_signal.load(Ordering::SeqCst) {
@@ -614,7 +672,10 @@ impl SimNet {
             }
 
             while let Ok(Some((event, advanceable, time))) = RealClock
-                .timeout(tokio::time::Duration::from_millis(1), event_rx.recv())
+                .timeout(
+                    tokio::time::Duration::from_millis(debounce_duration),
+                    event_rx.recv(),
+                )
                 .await
             {
                 let scheduled_event = match time {
@@ -622,7 +683,7 @@ impl SimNet {
                         time: time + training_script_waiting_time,
                         event,
                     },
-                    None => self.create_scheduled_event(event).await,
+                    None => self.create_scheduled_event(event),
                 };
                 self.schedule_event(scheduled_event, advanceable);
             }
@@ -638,9 +699,7 @@ impl SimNet {
                         .scheduled_events
                         .first_key_value()
                         .is_some_and(|(time, _)| {
-                            *time
-                                > SimClock.millis_since_start(RealClock.now())
-                                    + training_script_waiting_time
+                            *time > RealClock.now() + training_script_waiting_time
                         })
                 {
                     tokio::task::yield_now().await;
@@ -696,7 +755,7 @@ impl SimNet {
                                     time: time + training_script_waiting_time,
                                     event,
                                 },
-                                None => self.create_scheduled_event(event).await,
+                                None => self.create_scheduled_event(event),
                             };
                             self.schedule_event(scheduled_event, advanceable);
                         },
@@ -705,12 +764,11 @@ impl SimNet {
                     continue;
                 };
                 if training_script_state_rx.borrow().is_waiting() {
-                    let advanced_time =
-                        scheduled_time - SimClock.millis_since_start(SimClock.now());
+                    let advanced_time = scheduled_time - SimClock.now();
                     training_script_waiting_time += advanced_time;
                 }
                 SimClock.advance_to(scheduled_time);
-                for scheduled_event in scheduled_events {
+                for mut scheduled_event in scheduled_events {
                     self.pending_event_count
                         .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
                     if scheduled_event.event.handle_network(self).await.is_err() {
@@ -749,35 +807,9 @@ pub struct SimulatorEventRecord {
     /// Event dependent summary for user
     pub summary: String,
     /// The time at which the message delivery was started.
-    pub start_at: SimulatorTimeInstant,
+    pub start_at: u64,
     /// The time at which the message was delivered to the receiver.
-    pub end_at: SimulatorTimeInstant,
-}
-
-/// A configuration for the network topology.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct NetworkConfig {
-    edges: Vec<EdgeConfig>,
-}
-
-/// A configuration for the network edge.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct EdgeConfig {
-    #[serde(deserialize_with = "deserialize_channel_addr")]
-    src: ChannelAddr,
-    #[serde(deserialize_with = "deserialize_channel_addr")]
-    dst: ChannelAddr,
-    metadata: SimNetEdgeInfo,
-}
-
-impl NetworkConfig {
-    /// Create a new configuration from a YAML string.
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SimNetError`.
-    pub fn from_yaml(yaml: &str) -> Result<Self, SimNetError> {
-        let config: NetworkConfig = serde_yaml::from_str(yaml)
-            .map_err(|err| SimNetError::InvalidArg(format!("failed to parse config: {}", err)))?;
-        Ok(config)
-    }
+    pub end_at: u64,
 }
 
 #[cfg(test)]
@@ -786,6 +818,7 @@ mod tests {
     use std::sync::Arc;
 
     use async_trait::async_trait;
+    use ndslice::extent;
     use tokio::sync::Mutex;
 
     use super::*;
@@ -805,26 +838,22 @@ mod tests {
         src_addr: SimAddr,
         dest_addr: SimAddr,
         data: Serialized,
-        duration_ms: u64,
+        duration: tokio::time::Duration,
         dispatcher: Option<TestDispatcher>,
     }
 
     #[async_trait]
     impl Event for MessageDeliveryEvent {
-        async fn handle(&self) -> Result<(), simnet::SimNetError> {
+        async fn handle(&mut self) -> Result<(), simnet::SimNetError> {
             if let Some(dispatcher) = &self.dispatcher {
                 dispatcher
-                    .send(
-                        Some(self.src_addr.clone()),
-                        self.dest_addr.clone(),
-                        self.data.clone(),
-                    )
+                    .send(self.dest_addr.clone(), self.data.clone())
                     .await?;
             }
             Ok(())
         }
-        fn duration_ms(&self) -> u64 {
-            self.duration_ms
+        fn duration(&self) -> tokio::time::Duration {
+            self.duration
         }
 
         fn summary(&self) -> String {
@@ -834,19 +863,6 @@ mod tests {
                 self.dest_addr.addr().clone()
             )
         }
-
-        async fn read_simnet_config(&mut self, config: &Arc<Mutex<SimNetConfig>>) {
-            let edge = SimNetEdge {
-                src: self.src_addr.addr().clone(),
-                dst: self.dest_addr.addr().clone(),
-            };
-            self.duration_ms = config
-                .lock()
-                .await
-                .topology
-                .get(&edge)
-                .map_or_else(|| 1, |v| v.latency.as_millis() as u64);
-        }
     }
 
     impl MessageDeliveryEvent {
@@ -855,12 +871,13 @@ mod tests {
             dest_addr: SimAddr,
             data: Serialized,
             dispatcher: Option<TestDispatcher>,
+            duration: tokio::time::Duration,
         ) -> Self {
             Self {
                 src_addr,
                 dest_addr,
                 data,
-                duration_ms: 1,
+                duration,
                 dispatcher,
             }
         }
@@ -881,12 +898,7 @@ mod tests {
 
     #[async_trait]
     impl Dispatcher<SimAddr> for TestDispatcher {
-        async fn send(
-            &self,
-            _source: Option<SimAddr>,
-            target: SimAddr,
-            data: Serialized,
-        ) -> Result<(), SimNetError> {
+        async fn send(&self, target: SimAddr, data: Serialized) -> Result<(), SimNetError> {
             let mut buf = self.mbuffers.lock().await;
             buf.entry(target).or_default().push(data);
             Ok(())
@@ -914,67 +926,69 @@ mod tests {
 
     #[tokio::test]
     async fn test_simnet_config() {
-        // Tests that we can create a simnet, config latency between two node and deliver
-        // the message with configured latency.
-        start();
-        let alice = "local:1".parse::<simnet::ChannelAddr>().unwrap();
-        let bob = "local:2".parse::<simnet::ChannelAddr>().unwrap();
-        let latency = Duration::from_millis(1000);
-        let config = NetworkConfig {
-            edges: vec![EdgeConfig {
-                src: alice.clone(),
-                dst: bob.clone(),
-                metadata: SimNetEdgeInfo { latency },
-            }],
-        };
-        simnet_handle()
-            .unwrap()
-            .update_network_config(config)
-            .await
-            .unwrap();
+        // Tests that we can create a simnet, config latency between distances and sample latencies between procs.
+        let ext = extent!(region = 1, dc = 1, zone = 1, rack = 4, host = 4, gpu = 8);
 
-        let alice = SimAddr::new(alice).unwrap();
-        let bob = SimAddr::new(bob).unwrap();
-        let msg = Box::new(MessageDeliveryEvent::new(
-            alice,
-            bob,
-            Serialized::serialize(&"123".to_string()).unwrap(),
-            None,
-        ));
-        simnet_handle().unwrap().send_event(msg).unwrap();
-        simnet_handle()
-            .unwrap()
-            .flush(Duration::from_secs(30))
-            .await
-            .unwrap();
-        let records = simnet_handle().unwrap().close().await;
-        let expected_record = SimulatorEventRecord {
-            summary: "Sending message from local:1 to local:2".to_string(),
-            start_at: 0,
-            end_at: latency.as_millis() as u64,
+        let alice = id!(world[0]);
+        let bob = id!(world[1]);
+        let charlie = id!(world[2]);
+
+        let config = LatencyConfig {
+            inter_zone_distribution: LatencyDistribution::Beta(
+                BetaDistribution::new(
+                    tokio::time::Duration::from_millis(1000),
+                    tokio::time::Duration::from_millis(1000),
+                    1.0,
+                    1.0,
+                )
+                .unwrap(),
+            ),
+            inter_dc_distribution: LatencyDistribution::Beta(
+                BetaDistribution::new(
+                    tokio::time::Duration::from_millis(2000),
+                    tokio::time::Duration::from_millis(2000),
+                    1.0,
+                    1.0,
+                )
+                .unwrap(),
+            ),
+            ..Default::default()
         };
-        assert!(records.as_ref().unwrap().len() == 1);
-        assert_eq!(records.unwrap().first().unwrap(), &expected_record);
+        start_with_config(config);
+
+        let handle = simnet_handle().unwrap();
+        handle.register_proc(alice.clone(), ext.point(vec![0, 0, 0, 0, 0, 0]).unwrap());
+        handle.register_proc(bob.clone(), ext.point(vec![0, 0, 1, 0, 0, 0]).unwrap());
+        handle.register_proc(charlie.clone(), ext.point(vec![0, 1, 0, 0, 0, 0]).unwrap());
+        assert_eq!(
+            handle.sample_latency(&alice, &bob),
+            tokio::time::Duration::from_millis(1000)
+        );
+        assert_eq!(
+            handle.sample_latency(&alice, &charlie),
+            tokio::time::Duration::from_millis(2000)
+        );
     }
 
     #[tokio::test]
     async fn test_simnet_debounce() {
-        start();
+        let config = LatencyConfig {
+            inter_zone_distribution: LatencyDistribution::Beta(
+                BetaDistribution::new(
+                    tokio::time::Duration::from_millis(1000),
+                    tokio::time::Duration::from_millis(1000),
+                    1.0,
+                    1.0,
+                )
+                .unwrap(),
+            ),
+            ..Default::default()
+        };
+        start_with_config(config);
         let alice = "local:1".parse::<simnet::ChannelAddr>().unwrap();
         let bob = "local:2".parse::<simnet::ChannelAddr>().unwrap();
 
         let latency = Duration::from_millis(10000);
-        simnet_handle()
-            .unwrap()
-            .update_network_config(NetworkConfig {
-                edges: vec![EdgeConfig {
-                    src: alice.clone(),
-                    dst: bob.clone(),
-                    metadata: SimNetEdgeInfo { latency },
-                }],
-            })
-            .await
-            .unwrap();
 
         let alice = SimAddr::new(alice).unwrap();
         let bob = SimAddr::new(bob).unwrap();
@@ -988,6 +1002,7 @@ mod tests {
                     bob.clone(),
                     Serialized::serialize(&"123".to_string()).unwrap(),
                     None,
+                    latency,
                 )))
                 .unwrap();
             RealClock
@@ -1040,18 +1055,21 @@ mod tests {
             addr_1.clone(),
             messages[0].clone(),
             sender.clone(),
+            tokio::time::Duration::ZERO,
         ));
         let two = Box::new(MessageDeliveryEvent::new(
             addr_2.clone(),
             addr_3.clone(),
             messages[1].clone(),
             sender.clone(),
+            tokio::time::Duration::ZERO,
         ));
         let three = Box::new(MessageDeliveryEvent::new(
             addr_0.clone(),
             addr_1.clone(),
             messages[2].clone(),
             sender.clone(),
+            tokio::time::Duration::ZERO,
         ));
 
         simnet_handle().unwrap().send_event(one).unwrap();
@@ -1080,64 +1098,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_read_config_from_yaml() {
-        let yaml = r#"
- edges:
-   - src: local:0
-     dst: local:1
-     metadata:
-       latency: 1
-   - src: local:0
-     dst: local:2
-     metadata:
-       latency: 2
-   - src: local:1
-     dst: local:2
-     metadata:
-       latency: 3
- "#;
-        let config = NetworkConfig::from_yaml(yaml).unwrap();
-        assert_eq!(config.edges.len(), 3);
-        assert_eq!(
-            config.edges[0].src,
-            "local:0".parse::<simnet::ChannelAddr>().unwrap()
-        );
-        assert_eq!(
-            config.edges[0].dst,
-            "local:1".parse::<simnet::ChannelAddr>().unwrap()
-        );
-        assert_eq!(config.edges[0].metadata.latency, Duration::from_secs(1));
-        assert_eq!(
-            config.edges[1].src,
-            "local:0".parse::<simnet::ChannelAddr>().unwrap()
-        );
-        assert_eq!(
-            config.edges[1].dst,
-            "local:2".parse::<simnet::ChannelAddr>().unwrap()
-        );
-        assert_eq!(config.edges[1].metadata.latency, Duration::from_secs(2));
-        assert_eq!(
-            config.edges[2].src,
-            "local:1".parse::<simnet::ChannelAddr>().unwrap()
-        );
-        assert_eq!(
-            config.edges[2].dst,
-            "local:2".parse::<simnet::ChannelAddr>().unwrap()
-        );
-        assert_eq!(config.edges[2].metadata.latency, Duration::from_secs(3));
-    }
-
-    #[tokio::test]
     async fn test_sim_sleep() {
         start();
 
         let start = SimClock.now();
-        assert_eq!(SimClock.millis_since_start(start), 0);
+        assert_eq!(
+            SimClock.duration_since_start(start),
+            tokio::time::Duration::ZERO
+        );
 
         SimClock.sleep(tokio::time::Duration::from_secs(10)).await;
 
         let end = SimClock.now();
-        assert_eq!(SimClock.millis_since_start(end), 10000);
+        assert_eq!(
+            SimClock.duration_since_start(end),
+            tokio::time::Duration::from_secs(10)
+        );
     }
 
     #[tokio::test]

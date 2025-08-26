@@ -33,6 +33,12 @@ extensions = [
     "sphinxext.opengraph",
     "myst_parser",
     "sphinx_gallery.gen_gallery",
+    "sphinx.ext.autodoc",
+    "sphinx.ext.autosummary",
+    "sphinx.ext.napoleon",
+    "sphinx.ext.intersphinx",
+    "sphinx.ext.viewcode",
+    "public_api_generator",  # Our custom extension for public API docs
 ]
 
 sphinx_gallery_conf = {
@@ -56,6 +62,7 @@ exclude_patterns = []
 # Add the repository root to the path so Sphinx can find the notebook files
 sys.path.insert(0, os.path.abspath("."))
 sys.path.insert(0, os.path.abspath("../.."))
+sys.path.insert(0, os.path.abspath("_ext"))  # Add our custom extensions
 
 html_theme = "pytorch_sphinx_theme2"
 html_theme_path = [pytorch_sphinx_theme2.get_html_theme_path()]
@@ -149,6 +156,80 @@ sys.path.insert(0, os.path.abspath("../../books"))
 
 # Allow errors in notebook execution
 nbsphinx_allow_errors = True
+
+# Napoleon settings for docstring parsing
+napoleon_google_docstring = True
+napoleon_numpy_docstring = True
+napoleon_include_init_with_doc = False
+napoleon_include_private_with_doc = False
+napoleon_use_param = True
+napoleon_use_rtype = True
+
+# Autodoc settings
+autodoc_default_options = {
+    "members": True,
+    "member-order": "bysource",
+    "special-members": "__init__",
+    "undoc-members": True,
+    "exclude-members": "__weakref__",
+}
+
+# Autosummary settings
+autosummary_generate = True
+autosummary_imported_members = True
+
+# Add monarch package to Python path
+sys.path.insert(0, os.path.abspath("../../python"))
+
+# Autodoc configuration - Environment-based mocking
+# In CI: Rust bindings are built, so no mocking needed
+# Locally: Mock Rust bindings if they're not available
+
+if os.getenv("CI"):
+    # CI environment: Monarch is fully built with Rust bindings
+    print("CI environment detected: Using real Monarch imports")
+    autodoc_mock_imports = []
+else:
+    # Local development: Mock Rust bindings that may not be available
+    print("Local environment detected: Using mocked imports for Rust bindings")
+    autodoc_mock_imports = [
+        "monarch._rust_bindings",
+        "monarch._rust_bindings.monarch_extension",
+        "monarch._rust_bindings.monarch_hyperactor",
+        "monarch._rust_bindings.monarch_hyperactor.shape",
+        "monarch._rust_bindings.monarch_hyperactor.selection",
+        "monarch._rust_bindings.monarch_hyperactor.proc",
+        "torch._C._autograd",
+        "torch.autograd.graph",
+        # Additional mocking for specific imports
+        "monarch._rust_bindings.monarch_extension.tensor_worker",
+        "monarch.gradient._gradient_generator",
+        "torchshow",
+        "torch.utils._python_dispatch",
+        "torch.nn.attention",
+        "torch.nn.functional",
+        # Mock any other problematic dependencies
+        "monarch.worker._testing_function",
+        "monarch.builtins.log",
+        "monarch.builtins.random",
+    ]
+
+# Additional autodoc settings for better documentation generation
+autodoc_typehints = "description"
+autodoc_typehints_description_target = "documented"
+
+# Suppress warnings for missing modules during import
+suppress_warnings = ["autodoc.import_object"]
+
+# Intersphinx mapping
+intersphinx_mapping = {
+    "python": ("https://docs.python.org/3", None),
+    "torch": ("https://pytorch.org/docs/stable/", None),
+}
+
+# Configuration for the public API generator extension
+public_api_source_module = "monarch"
+public_api_output_file = "api/index.rst"
 
 
 def truncate_index_file_at_raw_html(file_path):

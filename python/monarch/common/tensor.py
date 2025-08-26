@@ -74,6 +74,18 @@ class DropLocation(NamedTuple):
 
 
 class Tensor(Referenceable, BaseTensor):
+    """A distributed tensor for distributed computation across device meshes.
+
+    Tensor represents a distributed tensor that spans across multiple devices
+    in a device mesh. It provides the same interface as PyTorch tensors but
+    enables distributed operations and communication patterns.
+
+    Args:
+        fake (torch.Tensor): A fake tensor representing the shape and type
+        mesh (DeviceMesh): The device mesh this tensor is distributed across
+        stream (Stream): The computation stream for this tensor
+    """
+
     # pyre-fixme[13]: Attribute `stream` is never initialized.
     stream: Stream
     # pyre-fixme[13]: Attribute `mesh` is never initialized.

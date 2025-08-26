@@ -22,6 +22,12 @@ class Alloc:
     one of the allocator implementations, such as `ProcessAllocator` or
     `LocalAllocator`.
     """
+    def reshape(self, extent: Dict[str, int]) -> Alloc:
+        """
+        Reshape the alloc to a different shape before creating the proc mesh.
+        The number of elements in the new alloc must be the same.
+        """
+        ...
 
 @final
 class AllocConstraints:

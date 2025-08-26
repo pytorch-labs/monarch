@@ -175,6 +175,23 @@ send_wqe(params);
 launch_send_wqe(params);
 ```
 
+## Reference Documentation
+
+### Mellanox Programming Manual
+
+For detailed information about the various data structures and protocols used by Mellanox/NVIDIA adapters, refer to the official Mellanox Ethernet Adapters Programming Manual. This document provides comprehensive documentation of:
+
+- Low-level hardware interfaces and data structures
+- Work Queue Element (WQE) formats and opcodes
+- Completion Queue Element (CQE) structures
+- Memory protection keys and registration
+- Direct hardware access patterns
+- Doorbell and completion notification mechanisms
+
+The manual is essential for understanding the underlying hardware primitives that RDMaxcel abstracts and provides unified access to.
+
+**URL**: https://network.nvidia.com/files/doc-2020/ethernet-adapters-programming-manual.pdf
+
 ## Conclusion
 
 RDMaxcel provides a powerful abstraction for RDMA operations that works seamlessly across CPU and GPU environments. By using the same code path for both device and host operations, it simplifies development and enables new possibilities for GPU-accelerated networking applications.

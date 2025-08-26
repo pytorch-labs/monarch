@@ -13,7 +13,7 @@ use pyo3::prelude::*;
 
 #[pyfunction]
 #[pyo3(name = "start_event_loop")]
-pub fn start_simnet_event_loop(py: Python) -> PyResult<Bound<'_, PyAny>> {
+pub fn start_simnet_event_loop<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
     monarch_hyperactor::runtime::future_into_py(py, async move {
         simnet::start();
         Ok(())

@@ -177,6 +177,10 @@ pub enum DeliveryError {
     /// A (local) mailbox delivery error.
     #[error("mailbox error: {0}")]
     Mailbox(String),
+
+    /// A multicast related delivery error.
+    #[error("multicast error: {0}")]
+    Multicast(String),
 }
 
 /// An envelope that carries a message destined to a remote actor.
@@ -194,7 +198,7 @@ pub struct MessageEnvelope {
     data: Serialized,
 
     /// Error contains a delivery error when message delivery failed.
-    error: Option<DeliveryError>,
+    errors: Vec<DeliveryError>,
 
     /// Additional context for this message.
     headers: Attrs,
@@ -208,7 +212,7 @@ impl MessageEnvelope {
             sender,
             dest,
             data,
-            error: None,
+            errors: Vec::new(),
             headers,
         }
     }
@@ -224,13 +228,13 @@ impl MessageEnvelope {
         dest: PortId,
         value: &T,
         headers: Attrs,
-    ) -> Result<Self, bincode::Error> {
+    ) -> Result<Self, crate::data::Error> {
         Ok(Self {
             headers,
             data: Serialized::serialize(value)?,
             sender: source,
             dest,
-            error: None,
+            errors: Vec::new(),
         })
     }
 
@@ -264,12 +268,10 @@ impl MessageEnvelope {
         self.dest.index() == Signal::port()
     }
 
-    /// Tries to sets a delivery error for the message. If the error is already
-    /// set, nothing is updated.
-    pub fn try_set_error(&mut self, error: DeliveryError) {
-        if self.error.is_none() {
-            self.error = Some(error);
-        }
+    /// Set a delivery error for the message. If errors are already set, append
+    /// it to the existing errors.
+    pub fn set_error(&mut self, error: DeliveryError) {
+        self.errors.push(error)
     }
 
     /// The message has been determined to be undeliverable with the
@@ -290,14 +292,31 @@ impl MessageEnvelope {
             ),
         );
 
-        self.try_set_error(error);
+        self.set_error(error);
         undeliverable::return_undeliverable(return_handle, self);
     }
 
-    /// Get the error of why this message was undeliverable. None means this
+    /// Get the errors of why this message was undeliverable. Empty means this
     /// message was not determined as undeliverable.
-    pub fn error(&self) -> Option<&DeliveryError> {
-        self.error.as_ref()
+    pub fn errors(&self) -> &Vec<DeliveryError> {
+        &self.errors
+    }
+
+    /// Get the string representation of the errors of this message was
+    /// undeliverable. None means this message was not determined as
+    /// undeliverable.
+    pub fn error_msg(&self) -> Option<String> {
+        if self.errors.is_empty() {
+            None
+        } else {
+            Some(
+                self.errors
+                    .iter()
+                    .map(|e| e.to_string())
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            )
+        }
     }
 
     fn open(self) -> (MessageMetadata, Serialized) {
@@ -305,7 +324,7 @@ impl MessageEnvelope {
             sender,
             dest,
             data,
-            error,
+            errors,
             headers,
         } = self;
 
@@ -313,7 +332,7 @@ impl MessageEnvelope {
             MessageMetadata {
                 sender,
                 dest,
-                error,
+                errors,
                 headers,
             },
             data,
@@ -324,7 +343,7 @@ impl MessageEnvelope {
         let MessageMetadata {
             sender,
             dest,
-            error,
+            errors,
             headers,
         } = metadata;
 
@@ -332,7 +351,7 @@ impl MessageEnvelope {
             sender,
             dest,
             data,
-            error,
+            errors,
             headers,
         }
     }
@@ -340,7 +359,7 @@ impl MessageEnvelope {
 
 impl fmt::Display for MessageEnvelope {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.error {
+        match &self.error_msg() {
             None => write!(f, "{} > {}: {}", self.sender, self.dest, self.data),
             Some(err) => write!(
                 f,
@@ -356,7 +375,7 @@ impl fmt::Display for MessageEnvelope {
 pub struct MessageMetadata {
     sender: ActorId,
     dest: PortId,
-    error: Option<DeliveryError>,
+    errors: Vec<DeliveryError>,
     headers: Attrs,
 }
 
@@ -679,7 +698,25 @@ impl MailboxSender for UndeliverableMailboxSender {
         envelope: MessageEnvelope,
         _return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        tracing::error!("message not delivered: {}", envelope);
+        let sender_name = envelope.sender.name();
+        let mut error_str = "".to_string();
+        if !envelope.errors.is_empty() {
+            error_str = envelope
+                .errors
+                .iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("; ");
+        }
+
+        tracing::error!(
+            name = "undelivered_message",
+            actor_name = sender_name,
+            actor_id = envelope.sender.to_string(),
+            "message not delivered to {}, {}",
+            envelope.dest.actor_id().name(),
+            error_str,
+        );
     }
 }
 
@@ -714,6 +751,7 @@ impl<T: Message> Buffer<T> {
         }
     }
 
+    #[allow(clippy::result_large_err)]
     fn send(
         &self,
         item: (T, PortHandle<Undeliverable<T>>),
@@ -784,13 +822,6 @@ impl MailboxSender for BoxedMailboxSender {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        metrics::MAILBOX_POSTS.add(
-            1,
-            hyperactor_telemetry::kv_pairs!(
-                "actor_id" => envelope.sender.to_string(),
-                "dest_actor_id" => envelope.dest.0.to_string(),
-            ),
-        );
         self.0.post(envelope, return_handle);
     }
 }
@@ -853,7 +884,7 @@ fn server_return_handle<T: MailboxServer>(server: T) -> PortHandle<Undeliverable
                 UndeliverableMailboxSender.post(e, monitored_return_handle());
                 continue;
             }
-            envelope.try_set_error(DeliveryError::BrokenLink(
+            envelope.set_error(DeliveryError::BrokenLink(
                 "message was undeliverable".to_owned(),
             ));
             server.post(
@@ -900,7 +931,7 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
                     UndeliverableMailboxSender.post(e, monitored_return_handle());
                     continue;
                 }
-                envelope.try_set_error(DeliveryError::BrokenLink(
+                envelope.set_error(DeliveryError::BrokenLink(
                     "message was undeliverable".to_owned(),
                 ));
                 server.post(
@@ -1337,7 +1368,20 @@ impl MailboxSender for Mailbox {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        tracing::trace!(name = "post", "posting message to {}", envelope.dest);
+        metrics::MAILBOX_POSTS.add(
+            1,
+            hyperactor_telemetry::kv_pairs!(
+                "actor_id" => envelope.sender.to_string(),
+                "dest_actor_id" => envelope.dest.0.to_string(),
+            ),
+        );
+        tracing::trace!(
+            name = "post",
+            actor_name = envelope.sender.name(),
+            actor_id = envelope.sender.to_string(),
+            "posting message to {}",
+            envelope.dest
+        );
 
         if envelope.dest().actor_id() != &self.inner.actor_id {
             return self.inner.forwarder.post(envelope, return_handle);
@@ -1364,7 +1408,7 @@ impl MailboxSender for Mailbox {
                     headers,
                     sender,
                     dest,
-                    error: metadata_error,
+                    errors: metadata_errors,
                 } = metadata;
 
                 // We use the entry API here so that we can remove the
@@ -1400,7 +1444,7 @@ impl MailboxSender for Mailbox {
                                 headers,
                                 sender,
                                 dest,
-                                error: metadata_error,
+                                errors: metadata_errors,
                             },
                             data,
                         )
@@ -2995,7 +3039,7 @@ mod tests {
         // no outstanding return handles it terminates.
         let monitor_handle = tokio::spawn(async move {
             while let Ok(Undeliverable(mut envelope)) = return_receiver.recv().await {
-                envelope.try_set_error(DeliveryError::BrokenLink(
+                envelope.set_error(DeliveryError::BrokenLink(
                     "returned in unit test".to_string(),
                 ));
                 UndeliverableMailboxSender

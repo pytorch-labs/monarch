@@ -22,6 +22,7 @@ pub struct PySelection {
 }
 
 impl PySelection {
+    #[allow(dead_code)]
     pub(crate) fn inner(&self) -> &Selection {
         &self.inner
     }

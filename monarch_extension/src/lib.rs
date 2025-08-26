@@ -29,7 +29,6 @@ mod blocking;
 mod panic;
 mod trace;
 
-use monarch_types::py_global;
 use pyo3::prelude::*;
 
 #[pyfunction]
