@@ -43,6 +43,7 @@ use hyperactor::mailbox::MailboxClient;
 use hyperactor::mailbox::MailboxSender;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
+use hyperactor::observe;
 use hyperactor::proc::Proc;
 use hyperactor::supervision::ActorSupervisionEvent;
 use serde::Deserialize;
@@ -124,7 +125,7 @@ pub struct MeshAgent {
 }
 
 impl MeshAgent {
-    #[hyperactor::instrument]
+    #[hyperactor::observe("mesh_agent")]
     pub(crate) async fn bootstrap(
         proc_id: ProcId,
     ) -> Result<(Proc, ActorHandle<Self>), anyhow::Error> {
@@ -143,7 +144,6 @@ impl MeshAgent {
             supervisor: None, // not yet assigned
         };
         let handle = proc.spawn::<Self>("mesh", agent).await?;
-        tracing::info!("bootstrap_end");
         Ok((proc, handle))
     }
 }

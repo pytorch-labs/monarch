@@ -448,6 +448,7 @@ impl Proc {
 
     /// Spawn a named (root) actor on this proc. The name of the actor must be
     /// unique.
+    #[hyperactor::observe("proc")]
     pub async fn spawn<A: Actor>(
         &self,
         name: &str,

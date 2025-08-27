@@ -131,6 +131,7 @@ pub use hyperactor_macros::forward;
 pub use hyperactor_macros::instrument;
 #[doc(inline)]
 pub use hyperactor_macros::instrument_infallible;
+pub use hyperactor_macros::observe;
 pub use hyperactor_telemetry::declare_static_counter;
 pub use hyperactor_telemetry::declare_static_gauge;
 pub use hyperactor_telemetry::declare_static_histogram;
