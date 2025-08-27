@@ -185,6 +185,13 @@ impl<W: AsyncWrite + Unpin, B: Buf> FrameWrite<W, B> {
                 let count = self.writer.write_vectored(&chunks[0..num_chunks]).await?;
                 self.body.advance(count);
             } else {
+                // Not all transport types do implicit flushes, so we need to
+                // explicitly flush here.
+                //
+                // One example is rusttls, whose doc says:
+                // > You must call poll_flush to ensure that it is written to TcpStream.
+                // https://docs.rs/tokio-rustls/0.26.2/tokio_rustls/index.html
+                self.writer.flush().await?;
                 return Ok(());
             }
         }
