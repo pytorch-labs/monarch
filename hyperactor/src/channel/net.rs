@@ -67,6 +67,7 @@ use bytes::Buf;
 use bytes::Bytes;
 use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
+use derivative::Derivative;
 use enum_as_inner::EnumAsInner;
 use serde::de::Error;
 use tokio::io::AsyncRead;
@@ -206,7 +207,6 @@ impl<M: RemoteMessage> NetTx<M> {
         // If we can't deliver a message within this limit consider
         // `link` broken and return.
 
-        #[derive(Debug)]
         struct QueuedMessage<M: RemoteMessage> {
             seq: u64,
             message: serde_multipart::Message,
@@ -214,13 +214,21 @@ impl<M: RemoteMessage> NetTx<M> {
             return_channel: oneshot::Sender<M>,
         }
 
-        #[derive(Debug)]
+        impl<M: RemoteMessage> fmt::Debug for QueuedMessage<M> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.seq.fmt(f)
+            }
+        }
+
+        #[derive(Derivative)]
+        #[derivative(Debug)]
         struct Outbox<'a, M: RemoteMessage> {
             // The seq number of the next new message put into outbox. Requeued
             // unacked messages should still use their already assigned seq
             // numbers.
             next_seq: u64,
             deque: VecDeque<QueuedMessage<M>>,
+            #[derivative(Debug = "ignore")]
             log_id: &'a str,
         }
 
@@ -306,10 +314,12 @@ impl<M: RemoteMessage> NetTx<M> {
             }
         }
 
-        #[derive(Debug)]
+        #[derive(Derivative)]
+        #[derivative(Debug)]
         struct Unacked<'a, M: RemoteMessage> {
             deque: VecDeque<QueuedMessage<M>>,
             largest_acked: Option<u64>,
+            #[derivative(Debug = "ignore")]
             log_id: &'a str,
         }
 
@@ -775,6 +785,7 @@ impl<M: RemoteMessage> NetTx<M> {
                 }
             }
         }; // loop
+        tracing::debug!("{log_id}: NetRx exited its loop with state: {state:?}");
 
         match state {
             State::Closing {
@@ -1060,6 +1071,8 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
         mut next: Next,
     ) -> (Next, Result<(), anyhow::Error>) {
         let log_id = format!("session {}.{}<-{}", self.dest, session_id, self.source);
+        let initial_next: Next = next.clone();
+        let mut rcv_raw_frame_count = 0u64;
         let mut last_ack_time = RealClock.now();
 
         let ack_time_interval = config::global::get(config::MESSAGE_ACK_TIME_INTERVAL);
@@ -1089,12 +1102,15 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
             }
 
             tokio::select! {
-                bytes = self.reader.next() => {
+                bytes_result = self.reader.next() => {
+                    rcv_raw_frame_count += 1;
                     // First handle transport-level I/O errors, and EOFs.
-                    let bytes = match bytes {
+                    let bytes = match bytes_result {
                         Ok(Some(bytes)) => bytes,
-                        Ok(None) => break (next, Ok(()), false),
-
+                        Ok(None) => {
+                            tracing::debug!("{log_id}: reader returns None, meaning EOF");
+                            break (next, Ok(()), false);
+                        }
                         Err(err) => break (
                             next,
                             Err::<(), anyhow::Error>(err.into()).context(
@@ -1195,6 +1211,15 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                 _ = cancel_token.cancelled() => break (next, Ok(()), false)
             }
         };
+        // Note:
+        //   1. processed seq/ack is Next-1;
+        //   2. rcv_raw_frame_count contains the last frame which might not be
+        //      desrializable, e.g. EOF, error, etc.
+        tracing::debug!(
+            "{log_id}: NetRx exited its loop with states: initial Netx was \
+            {initial_next:?}; final Next is {final_next:?} ; rcv raw frame \
+            count is {rcv_raw_frame_count}.",
+        );
 
         let mut final_ack = final_next.ack;
         // Flush any ongoing write.
@@ -1373,7 +1398,7 @@ impl<T> MVar<T> {
 }
 
 /// Used to bookkeep message processing states.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct Next {
     // The last received message's seq number + 1.
     seq: u64,
