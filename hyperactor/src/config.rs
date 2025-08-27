@@ -56,6 +56,9 @@ declare_attrs! {
 
     /// Whether to use multipart encoding for network channel communications.
     pub attr CHANNEL_MULTIPART: bool = false;
+
+    /// How often to check for full MSPC channel on NetRx.
+    pub attr CHANNEL_NET_RX_BUFFER_FULL_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 }
 
 /// Load configuration from environment variables

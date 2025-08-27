@@ -1145,7 +1145,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                                 tracing::error!(msg);
                                 break (next, Err(anyhow::anyhow!(msg)), true)
                             }
-                            match tx.send(message).await {
+                            match self.send_with_buffer_metric(&log_id, &tx, message).await {
                                 Ok(()) => {
                                     // In channel's contract, "delivered" means the message
                                     // is sent to the NetRx object. Therefore, we could bump
@@ -1159,7 +1159,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                                     next.seq = seq+1;
                                 }
                                 Err(err) => {
-                                    break (next, Err::<(), anyhow::Error>(err.into()).context(format!("{log_id}: error relaying message to mspc channel")), false)
+                                    break (next, Err::<(), anyhow::Error>(err).context(format!("{log_id}: error relaying message to mspc channel")), false)
                                 }
                             }
                         },
@@ -1251,6 +1251,47 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
         }
 
         (final_next, final_result)
+    }
+
+    // NetRx's buffer, i.e. the mspc channel between NetRx and its
+    // client, should rarely be full for long. But when it is full, it
+    // will block NetRx from taking more messages, sending back ack,
+    // and subsequently lead to uncommon behaviors such as ack
+    // timeout, backpressure on NetTx, etc. In order to aid debugging,
+    // it is important to add a metric measuring full buffer
+    // occurences.
+    async fn send_with_buffer_metric<M: RemoteMessage>(
+        &mut self,
+        log_id: &str,
+        tx: &mpsc::Sender<M>,
+        message: M,
+    ) -> anyhow::Result<()> {
+        let start = RealClock.now();
+        loop {
+            tokio::select! {
+                biased;
+                permit_result = tx.reserve() => {
+                    permit_result?.send(message);
+                    return Ok(())
+                }
+                _ = RealClock.sleep(config::global::get(config::CHANNEL_NET_RX_BUFFER_FULL_CHECK_INTERVAL)) => {
+                    // When buffer is full too long, we log it.
+                    metrics::CHANNEL_NET_RX_BUFFER_FULL.add(
+                        1,
+                        hyperactor_telemetry::kv_pairs!(
+                            "dest" => self.dest.to_string(),
+                            "source" => self.source.to_string(),
+                        ),
+                    );
+                    // Full buffer should happen rarely. So we also add a log
+                    // here to make debugging easy.
+                    tracing::debug!(
+                        "{log_id}: encountered full mspc channel for {} secs",
+                        start.elapsed().as_secs(),
+                    );
+                }
+            }
+        }
     }
 }
 
