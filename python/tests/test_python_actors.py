@@ -1007,7 +1007,9 @@ async def test_flush_on_disable_aggregation() -> None:
         ), stdout_content
 
         # 10 = 5 log lines * 2 procs
-        assert len(re.findall(r"single log line", stdout_content)) == 10, stdout_content
+        assert (
+            len(re.findall(r"\[.* [0-9]+\] single log line", stdout_content)) == 10
+        ), stdout_content
 
     finally:
         # Ensure file descriptors are restored even if something goes wrong

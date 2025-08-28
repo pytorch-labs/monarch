@@ -426,11 +426,11 @@ fn get_local_log_destination(
 ) -> Result<Box<dyn io::AsyncWrite + Send + Unpin>> {
     let env: env::Env = env::Env::current();
     Ok(match env {
-        env::Env::Test => match output_target {
+        env::Env::Test | env::Env::Local => match output_target {
             OutputTarget::Stdout => Box::new(LinePrefixingWriter::new(local_rank, io::stdout())),
             OutputTarget::Stderr => Box::new(LinePrefixingWriter::new(local_rank, io::stderr())),
         },
-        env::Env::Local | env::Env::MastEmulator | env::Env::Mast => {
+        env::Env::MastEmulator | env::Env::Mast => {
             create_file_writer(local_rank, output_target, env)?
         }
     })
