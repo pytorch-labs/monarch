@@ -140,7 +140,7 @@ impl MessageDeliveryEvent {
 
 #[async_trait]
 impl Event for MessageDeliveryEvent {
-    async fn handle(&mut self) -> Result<(), SimNetError> {
+    async fn handle(&self) -> Result<(), SimNetError> {
         // Send the message to the correct receiver.
         SENDER
             .send(self.dest_addr.clone(), self.data.clone())
