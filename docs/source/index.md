@@ -29,7 +29,7 @@ Here are some suggested steps to get started with Monarch:
 
 1. **Learn the Basics**: Check out the [Getting Started](get_started) guide to learn the basics of Monarch
 2. **Explore Examples**: Review the [Examples](./generated/examples/index) to see Monarch in action
-3. **Dive Deeper**: Explore the API Documentation(rust-api) for more detailed information:
+3. **Dive Deeper**: Explore the API Documentation for more detailed information:
     - [Python API](api/index)
     - [Rust API](rust-api)
 
