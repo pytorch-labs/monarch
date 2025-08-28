@@ -650,7 +650,7 @@ def proc_mesh(
     setup: Callable[[], None] | None = None,
 ) -> ProcMesh:
     warnings.warn(
-        "use this_host().spawn_proc(per_host = {'hosts': 2, 'gpus': 3}) instead of monarch.actor.proc_mesh(hosts=2, gpus=3)",
+        "use this_host().spawn_procs(per_host = {'hosts': 2, 'gpus': 3}) instead of monarch.actor.proc_mesh(hosts=2, gpus=3)",
         DeprecationWarning,
         stacklevel=2,
     )
