@@ -1167,22 +1167,25 @@ class LsActor(Actor):
         return os.listdir(self.workspace)
 
 
-# oss_skip: there are address assignment issues in git CI, needs to be revisited
+# oss_skip: TODO kiuk@ investigate why this fails in CI with FileNotFound error on rust-side
 @pytest.mark.oss_skip
 async def test_sync_workspace() -> None:
     # create two workspaces: one for local and one for remote
-    with tempfile.TemporaryDirectory() as workspace_src, tempfile.TemporaryDirectory() as workspace_dst, unittest.mock.patch.dict(
-        os.environ, {"WORKSPACE_DIR": workspace_dst}
-    ):
-        pm = await this_host().spawn_procs(per_host={"gpus": 1})
+    with tempfile.TemporaryDirectory() as workspace_src, tempfile.TemporaryDirectory() as workspace_dst:
 
-        os.environ["WORKSPACE_DIR"] = workspace_dst
-        config = defaults.config("slurm", workspace_src)
-        await pm.sync_workspace(
-            workspace=config.workspace, conda=False, auto_reload=True
+        def bootstrap_WORKSPACE_DIR() -> None:
+            import os
+
+            os.environ["WORKSPACE_DIR"] = workspace_dst
+
+        pm = this_host().spawn_procs(
+            per_host={"gpus": 1}, bootstrap=bootstrap_WORKSPACE_DIR
         )
 
-        # now file in remote workspace initially
+        config = defaults.config("slurm", workspace_src)
+        await pm.sync_workspace(workspace=config.workspace, auto_reload=True)
+
+        # no file in remote workspace initially
         am = await pm.spawn("ls", LsActor, workspace_dst)
         for item in list(am.ls.call().get()):
             assert len(item[1]) == 0
@@ -1194,13 +1197,16 @@ async def test_sync_workspace() -> None:
             f.flush()
 
         # force a sync and it should populate on the dst workspace
-        await pm.sync_workspace(config.workspace, conda=False, auto_reload=True)
+        await pm.sync_workspace(config.workspace, auto_reload=True)
         for item in list(am.ls.call().get()):
             assert len(item[1]) == 1
             assert item[1][0] == "new_file"
             file_path = os.path.join(workspace_dst, item[1][0])
             with open(file_path, "r") as f:
                 assert f.readline() == "hello world"
+
+    # sanity check
+    assert "WORKSPACE_DIR" not in os.environ, "test leaves env var side-effects!"
 
 
 class TestActorMeshStop(unittest.IsolatedAsyncioTestCase):
@@ -1333,3 +1339,25 @@ async def test_undeliverable_message() -> None:
 def test_this_and_that():
     counter = this_proc().spawn("counter", Counter, 7)
     assert 7 == counter.value.call_one().get()
+
+
+class ReceptorActor(Actor):
+    @endpoint
+    def status(self):
+        return 1
+
+
+async def test_things_survive_losing_python_reference() -> None:
+    """Test the slice_receptor_mesh function in LOCAL mode, verifying that setup methods are called."""
+
+    receptor = (
+        this_host()
+        .spawn_procs(per_host={"gpus": 1})
+        .spawn(
+            "receptor",
+            ReceptorActor,
+        )
+    )
+    receptor = receptor.slice(gpus=0)
+
+    await receptor.status.call()

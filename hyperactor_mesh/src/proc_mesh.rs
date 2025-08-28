@@ -10,7 +10,10 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt;
 use std::ops::Deref;
+use std::panic::Location;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -37,6 +40,7 @@ use hyperactor::mailbox::DialMailboxRouter;
 use hyperactor::mailbox::MailboxRouter;
 use hyperactor::mailbox::MailboxServer;
 use hyperactor::mailbox::MessageEnvelope;
+use hyperactor::mailbox::PortHandle;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::metrics;
@@ -69,16 +73,75 @@ use crate::shortuuid::ShortUuid;
 pub mod mesh_agent;
 
 use std::sync::OnceLock;
+use std::sync::RwLock;
 
-/// A global router shared by all meshes managed in this process;
-/// this allows different meshes to communicate with each other.
+/// Router: constructable anytime.
 ///
-/// This is definitely a "good enough for now" solution; in the future,
-/// we'll likely have some form of truly global registration for meshes,
-/// also benefitting tooling, etc.
+/// A global router shared by all meshes managed in this process; this
+/// allows different meshes to communicate with each other.
+///
+/// This is definitely a "good enough for now" solution; in the
+/// future, we'll likely have some form of truly global registration
+/// for meshes, also benefitting tooling, etc.
 pub(crate) fn global_router() -> &'static MailboxRouter {
     static GLOBAL_ROUTER: OnceLock<MailboxRouter> = OnceLock::new();
     GLOBAL_ROUTER.get_or_init(MailboxRouter::new)
+}
+
+/// Single, process-wide supervision sink storage.
+///
+/// This is a pragmatic "good enough for now" global used to route
+/// undeliverables observed by the process-global root client (c.f.
+/// [`global_root_client`])to the *currently active* `ProcMesh`. Newer
+/// meshes override older ones ("last sink wins").
+static GLOBAL_SUPERVISION_SINK: OnceLock<RwLock<Option<PortHandle<ActorSupervisionEvent>>>> =
+    OnceLock::new();
+
+/// Returns the lazily-initialized container that holds the current
+/// process-global supervision sink.
+///
+/// Internal helper: callers should use `set_global_supervision_sink`
+/// and `get_global_supervision_sink` instead.
+fn sink_cell() -> &'static RwLock<Option<PortHandle<ActorSupervisionEvent>>> {
+    GLOBAL_SUPERVISION_SINK.get_or_init(|| RwLock::new(None))
+}
+
+/// Install (or replace) the process-global supervision sink.
+///
+/// This function enforces "last sink wins" semantics: if a sink was
+/// already installed, it is replaced and the previous sink is
+/// returned. Called from `ProcMesh::allocate_boxed`, after creating
+/// the mesh's supervision port.
+///
+/// Returns:
+/// - `Some(prev)` if a prior sink was installed, allowing the caller
+///   to log/inspect it if desired;
+/// - `None` if this is the first sink.
+///
+/// Thread-safety: takes a write lock briefly to swap the handle.
+pub(crate) fn set_global_supervision_sink(
+    sink: PortHandle<ActorSupervisionEvent>,
+) -> Option<PortHandle<ActorSupervisionEvent>> {
+    let cell = sink_cell();
+    let mut guard = cell.write().unwrap();
+    let prev = guard.take();
+    *guard = Some(sink);
+    prev
+}
+
+/// Get a clone of the current process-global supervision sink, if
+/// any.
+///
+/// This is used by the process-global root client [c.f.
+/// `global_root_client`] to forward undeliverables once a mesh has
+/// installed its sink. If no sink has been installed yet, returns
+/// `None` and callers should defer/ignore forwarding until one
+/// appears.
+///
+/// Thread-safety: takes a read lock briefly; cloning the `PortHandle`
+/// is cheap.
+pub(crate) fn get_global_supervision_sink() -> Option<PortHandle<ActorSupervisionEvent>> {
+    sink_cell().read().unwrap().clone()
 }
 
 /// Context use by root client to send messages.
@@ -94,9 +157,43 @@ pub fn global_root_client() -> &'static Instance<()> {
             BoxedMailboxSender::new(global_router().clone()),
         );
         global_router().bind(world_id.clone().into(), client_proc.clone());
-        client_proc
+
+        let (client, handle) = client_proc
             .instance("client")
-            .expect("root instance create")
+            .expect("root instance create");
+
+        // Bind the global root client's undeliverable port and
+        // forward any undeliverable messages to the currently active
+        // supervision sink.
+        //
+        // The resolver (`get_global_supervision_sink`) is passed as a
+        // function pointer, so each time an undeliverable is
+        // processed, we look up the *latest* sink. This allows the
+        // root client to seamlessly track whichever ProcMesh most
+        // recently installed a supervision sink (e.g., the
+        // application mesh instead of an internal controller mesh).
+        //
+        // The hook logs each undeliverable, along with whether a sink
+        // was present at the time of receipt, which helps diagnose
+        // lost or misrouted events.
+        let (undeliverable_tx, undeliverable_rx) =
+            client.open_port::<Undeliverable<MessageEnvelope>>();
+        undeliverable_tx.bind_to(Undeliverable::<MessageEnvelope>::port());
+        hyperactor::mailbox::supervise_undeliverable_messages_with(
+            undeliverable_rx,
+            crate::proc_mesh::get_global_supervision_sink,
+            |env| {
+                let sink_present = crate::proc_mesh::get_global_supervision_sink().is_some();
+                tracing::info!(
+                    actor = %env.dest().actor_id(),
+                    headers = ?env.headers(),
+                    sink_present,
+                    "global root client undeliverable observed"
+                );
+            },
+        );
+
+        (client, handle)
     });
     instance
 }
@@ -124,18 +221,42 @@ struct EventState {
 }
 
 impl ProcMesh {
-    #[hyperactor::instrument(fields(name = "proc_mesh_allocate"))]
+    #[hyperactor::instrument(fields(name = "ProcMesh::allocate"))]
     pub async fn allocate(
         alloc: impl Alloc + Send + Sync + 'static,
     ) -> Result<Self, AllocatorError> {
         ProcMesh::allocate_boxed(Box::new(alloc)).await
     }
+
     /// Allocate a new ProcMesh from the provided allocator. Allocate returns
     /// after the mesh has been successfully (and fully) allocated, returning
     /// early on any allocation failure.
-    pub async fn allocate_boxed(
+    #[track_caller]
+    pub fn allocate_boxed(
+        alloc: Box<dyn Alloc + Send + Sync>,
+    ) -> impl std::future::Future<Output = Result<Self, AllocatorError>> {
+        Self::allocate_boxed_inner(alloc, Location::caller())
+    }
+
+    fn alloc_counter() -> &'static AtomicUsize {
+        static C: OnceLock<AtomicUsize> = OnceLock::new();
+        C.get_or_init(|| AtomicUsize::new(0))
+    }
+
+    async fn allocate_boxed_inner(
         mut alloc: Box<dyn Alloc + Send + Sync>,
+        loc: &'static Location<'static>,
     ) -> Result<Self, AllocatorError> {
+        let world = alloc.world_id().name().to_string();
+        let alloc_id = Self::alloc_counter().fetch_add(1, Ordering::Relaxed) + 1;
+        tracing::info!(
+            %world,
+            alloc_id,
+            caller = %format!("{}:{}", loc.file(), loc.line()),
+            shape = ?alloc.shape(),
+            "allocating proc mesh"
+        );
+
         // We wait for the full allocation to be running before returning the mesh.
         let shape = alloc.shape().clone();
 
@@ -245,25 +366,49 @@ impl ProcMesh {
         global_router().bind(alloc.world_id().clone().into(), router.clone());
         global_router().bind(client_proc_id.into(), router.clone());
 
-        // TODO: No actor bound to "supervisor" yet.
         let supervisor = client_proc.attach("supervisor")?;
         let (supervision_port, supervision_events) =
             supervisor.open_port::<ActorSupervisionEvent>();
+        // Install this mesh’s supervision sink.
+        //
+        // We intentionally use "last sink wins": if multiple
+        // ProcMeshes exist in the process (e.g., a hidden
+        // controller_controller mesh and the app/test mesh), the most
+        // recently allocated mesh’s sink replaces the prior global
+        // sink.
+        //
+        // Scope: this only affects undeliverables that arrive on the
+        // `global_root_client()` undeliverable port. Per-mesh client
+        // bindings (set up below) are unaffected and continue to
+        // forward their own undeliverables to this mesh’s
+        // `supervision_port`.
+        //
+        // NOTE: This is a pragmatic stopgap to restore correct
+        // routing with multiple meshes in-process. If/when we move to
+        // per-world root clients, this override can be removed.
+        let _prev = set_global_supervision_sink(supervision_port.clone());
 
-        // Now, configure the full mesh, so that the local agents are
-        // wired up to our router.
-        // TODO: No actor bound to "client" yet.
+        // Wire this mesh’s *own* client mailbox to supervision.
+        //
+        // Attach a client mailbox for this `ProcMesh`, bind its
+        // undeliverable port, and forward those undeliverables as
+        // `ActorSupervisionEvent` records into this mesh's
+        // supervision_port.
+        //
+        // Scope: covers undeliverables observed on this mesh's client
+        // mailbox only. It does not affect other meshes or the
+        // `global_root_client()`.
         let client = client_proc.attach("client")?;
         // Bind an undeliverable message port in the client.
         let (undeliverable_messages, client_undeliverable_receiver) =
             client.open_port::<Undeliverable<MessageEnvelope>>();
         undeliverable_messages.bind_to(Undeliverable::<MessageEnvelope>::port());
-        // Monitor undeliverable messages from the client and emit
-        // corresponding actor supervision events via the supervision
-        // port.
         hyperactor::mailbox::supervise_undeliverable_messages(
             supervision_port.clone(),
             client_undeliverable_receiver,
+            |env| {
+                tracing::info!(actor=%env.dest().actor_id(), "per-mesh client undeliverable observed");
+            },
         );
 
         // Map of procs -> channel addresses
@@ -443,6 +588,11 @@ impl ProcMesh {
         {
             // Instantiate supervision routing BEFORE spawning the actor mesh.
             self.actor_event_router.insert(actor_name.to_string(), tx);
+            tracing::info!(
+                event = "router_insert",
+                mesh = %actor_name,
+                map_len = self.actor_event_router.len(),
+            );
         }
         let root_mesh = RootActorMesh::new(
             self,
@@ -608,42 +758,89 @@ impl ProcEvents {
 
                     break Some(ProcEvent::Stopped(*rank, reason));
                 }
+
+                // Supervision events for this ProcMesh, delivered on
+                // the client's "supervisor" port. Some failures are
+                // observed while messages are routed through the
+                // comm-actor tree; in those cases the event's
+                // `actor_id` points at a comm actor rather than the
+                // logical actor-mesh. When the `CAST_ACTOR_MESH_ID`
+                // header is present, we normalize the event by
+                // rewriting `actor_id` to a synthetic mesh-level id
+                // so that routing reaches the correct `ActorMesh`
+                // subscribers.
                 Ok(mut event) = self.event_state.supervision_events.recv() => {
-                    tracing::debug!("received ProcEvent supervision event: {event:?}");
-                    // Cast message might fail to deliver when it is propagated
-                    // through the comm actor tree. In this case, the event is
-                    // for the actor mesh, not the comm actor. In that case,
-                    // we update the event with the actor mesh id, so it can be
-                    // forwarded to the mesh.
-                    if let Some(headers) = &event.message_headers
-                        && let Some(actor_mesh_id) = headers.get(CAST_ACTOR_MESH_ID)
-                    {
-                        // Make a dummy actor id to represent the mesh in ActorSupervisionEvent.
-                        // TODO(T231868026): find a better way to represent all actors in an actor
-                        // mesh for supervision event
-                        event.actor_id = ActorId(
-                            ProcId::Ranked(WorldId(actor_mesh_id.0.0.clone()), 0),
-                            actor_mesh_id.1.clone(),
-                            0,
-                        );
-                    };
+                    let had_headers = event.message_headers.is_some();
+                    tracing::info!(
+                        actor = %event.actor_id,
+                        status = %event.actor_status,
+                        had_headers,
+                        "proc supervision: event received"
+                    );
+                    tracing::debug!(?event, "proc supervision: full event");
+
+                    // Normalize events that came via the comm tree.
+                    if let Some(headers) = &event.message_headers {
+                        if let Some(actor_mesh_id) = headers.get(CAST_ACTOR_MESH_ID) {
+                            let old_actor = event.actor_id.clone();
+                            event.actor_id = ActorId(
+                                ProcId::Ranked(WorldId(actor_mesh_id.0.0.clone()), 0),
+                                actor_mesh_id.1.clone(),
+                                0,
+                            );
+                            tracing::debug!(
+                                old_actor = %old_actor,
+                                new_actor = %event.actor_id,
+                                "proc supervision: remapped comm-actor id to mesh id from CAST_ACTOR_MESH_ID"
+                            );
+                        } else {
+                            tracing::debug!(
+                                "proc supervision: headers present but no CAST_ACTOR_MESH_ID; leaving actor_id unchanged"
+                            );
+                        }
+                    } else {
+                        tracing::debug!("proc supervision: no headers attached; leaving actor_id unchanged");
+                    }
+
+                    // Forward the supervision event to the ActorMesh (keyed by its mesh name)
+                    // that registered for events in this ProcMesh. The routing table
+                    // (actor_event_router) is keyed by ActorMeshName, which we obtain from
+                    // actor_id.name(). If no matching mesh is found, log the current table
+                    // to aid diagnosis.
                     let actor_id = event.actor_id.clone();
                     let actor_status = event.actor_status.clone();
                     let reason = event.to_string();
+                    if let Some(tx) = self.actor_event_router.get(actor_id.name()) {
+                        tracing::info!(
+                            actor = %actor_id,
+                            status = %actor_status,
+                            "proc supervision: delivering event to registered ActorMesh"
+                        );
+                        if tx.send(event).is_err() {
+                            tracing::warn!(
+                                actor = %actor_id,
+                                "proc supervision: registered ActorMesh dropped receiver; unable to deliver"
+                            );
+                        }
+                    } else {
+                        let registered_meshes: Vec<_> = self.actor_event_router.iter().map(|e| e.key().clone()).collect();
+                        tracing::warn!(
+                            actor = %actor_id,
+                            known_meshes = ?registered_meshes,
+                            "proc supervision: no ActorMesh registered for this actor"
+                        );
+                    }
+                    // Ensure we have a known rank for the proc
+                    // containing this actor. If we don't, we can't
+                    // attribute the failure to a known process.
                     let Some(rank) = self.ranks.get(actor_id.proc_id()) else {
-                        tracing::warn!("received supervision event for unmapped actor {}", actor_id);
+                        tracing::warn!(
+                            actor = %actor_id,
+                            "proc supervision: actor belongs to an unmapped proc; dropping event"
+                        );
                         continue;
                     };
-                    // transmit to the correct root actor mesh.
-                    {
-                        if let Some(tx) = self.actor_event_router.get(actor_id.name()) {
-                            if tx.send(event).is_err() {
-                                tracing::warn!("unable to transmit supervision event to actor {}", actor_id);
-                            }
-                        } else {
-                            tracing::warn!("received supervision event for unregistered actor {}", actor_id);
-                        }
-                    }
+
                     metrics::PROC_MESH_ACTOR_FAILURES.add(
                         1,
                         hyperactor_telemetry::kv_pairs!(
@@ -653,7 +850,8 @@ impl ProcEvents {
                         ),
                     );
 
-                    // Send this event to Python proc mesh to keep its health status up to date.
+                    // Send this event to Python proc mesh to keep its
+                    // health status up to date.
                     break Some(ProcEvent::Crashed(*rank, reason))
                 }
             }
@@ -692,6 +890,11 @@ impl<D: Deref<Target = ProcMesh> + Send + Sync + 'static> SharedSpawnable for D 
         {
             // Instantiate supervision routing BEFORE spawning the actor mesh.
             self.actor_event_router.insert(actor_name.to_string(), tx);
+            tracing::info!(
+                event = "router_insert",
+                mesh = %actor_name,
+                map_len = self.actor_event_router.len(),
+            );
         }
         let ranks =
             ProcMesh::spawn_on_procs::<A>(&self.client, self.agents(), actor_name, params).await?;

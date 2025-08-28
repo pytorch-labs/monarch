@@ -363,8 +363,14 @@ impl Handler<RsyncMessage> for RsyncActor {
                 .context("resolving workspace location")?;
             let (connect_msg, completer) = Connect::allocate(cx.self_id().clone(), cx);
             connect.send(cx, connect_msg)?;
+
+            // some machines (e.g. github CI) do not have ipv6, so try ipv6 then fallback to ipv4
+            let ipv6_lo: SocketAddr = "[::1]:0".parse()?;
+            let ipv4_lo: SocketAddr = "127.0.0.1:0".parse()?;
+            let addrs: [SocketAddr; 2] = [ipv6_lo, ipv4_lo];
+
             let (listener, mut stream) = try_join!(
-                TcpListener::bind(("::1", 0)).err_into(),
+                TcpListener::bind(&addrs[..]).err_into(),
                 completer.complete(),
             )?;
             let addr = listener.local_addr()?;

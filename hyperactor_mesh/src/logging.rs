@@ -352,7 +352,7 @@ impl LogSender for LocalLogSender {
                 hostname: self.hostname.clone(),
                 pid: self.pid,
                 output_target: target,
-                payload: Serialized::serialize_anon(&payload)?,
+                payload: Serialized::serialize(&payload)?,
             });
         } else {
             tracing::debug!(
@@ -764,7 +764,7 @@ fn deserialize_message_lines(
     }
 
     // If both fail, return an error
-    anyhow::bail!("Failed to deserialize message as either String or Vec<u8>")
+    anyhow::bail!("failed to deserialize message as either String or Vec<u8>")
 }
 
 /// A client to receive logs from remote processes
@@ -1060,7 +1060,7 @@ mod tests {
             hostname: "my_host".into(),
             pid: 1,
             output_target: OutputTarget::Stderr,
-            payload: Serialized::serialize_anon(&"will not stream".to_string()).unwrap(),
+            payload: Serialized::serialize(&"will not stream".to_string()).unwrap(),
         });
 
         // Turn on streaming
@@ -1069,7 +1069,7 @@ mod tests {
             hostname: "my_host".into(),
             pid: 1,
             output_target: OutputTarget::Stderr,
-            payload: Serialized::serialize_anon(&"will stream".to_string()).unwrap(),
+            payload: Serialized::serialize(&"will stream".to_string()).unwrap(),
         });
 
         // TODO: it is hard to test out anything meaningful here as the client flushes to stdout.
@@ -1079,7 +1079,7 @@ mod tests {
     fn test_deserialize_message_lines_string() {
         // Test deserializing a String message with multiple lines
         let message = "Line 1\nLine 2\nLine 3".to_string();
-        let serialized = Serialized::serialize_anon(&message).unwrap();
+        let serialized = Serialized::serialize(&message).unwrap();
 
         let result = deserialize_message_lines(&serialized).unwrap();
 
@@ -1087,7 +1087,7 @@ mod tests {
 
         // Test deserializing a Vec<u8> message with UTF-8 content
         let message_bytes = "Hello\nWorld\nUTF-8 \u{1F980}".as_bytes().to_vec();
-        let serialized = Serialized::serialize_anon(&message_bytes).unwrap();
+        let serialized = Serialized::serialize(&message_bytes).unwrap();
 
         let result = deserialize_message_lines(&serialized).unwrap();
 
@@ -1095,7 +1095,7 @@ mod tests {
 
         // Test deserializing a single line message
         let message = "Single line message".to_string();
-        let serialized = Serialized::serialize_anon(&message).unwrap();
+        let serialized = Serialized::serialize(&message).unwrap();
 
         let result = deserialize_message_lines(&serialized).unwrap();
 
@@ -1103,7 +1103,7 @@ mod tests {
 
         // Test deserializing an empty lines
         let message = "\n\n".to_string();
-        let serialized = Serialized::serialize_anon(&message).unwrap();
+        let serialized = Serialized::serialize(&message).unwrap();
 
         let result = deserialize_message_lines(&serialized).unwrap();
 
@@ -1111,12 +1111,13 @@ mod tests {
 
         // Test error handling for invalid UTF-8 bytes
         let invalid_utf8_bytes = vec![0xFF, 0xFE, 0xFD]; // Invalid UTF-8 sequence
-        let serialized = Serialized::serialize_anon(&invalid_utf8_bytes).unwrap();
+        let serialized = Serialized::serialize_as::<Vec<u8>, _>(&invalid_utf8_bytes).unwrap();
 
         let result = deserialize_message_lines(&serialized);
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("invalid utf-8"));
+        let message = result.unwrap_err().to_string();
+        assert!(message.contains("invalid utf-8"), "{}", message);
     }
 
     // Mock implementation of AsyncWrite that captures written data

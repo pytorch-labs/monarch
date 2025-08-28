@@ -38,6 +38,7 @@ use hyperactor::mailbox::MailboxServer;
 use hyperactor::reference::Reference;
 use hyperactor::serde_json;
 use mockall::automock;
+use ndslice::Region;
 use ndslice::View;
 use ndslice::ViewExt;
 use ndslice::view::Extent;
@@ -72,7 +73,7 @@ pub enum RemoteProcessAllocatorMessage {
     /// Create allocation with given spec and send updates to bootstrap_addr.
     Allocate {
         /// The view of a larger allocation for which this remote allocator is responsible.
-        view: View,
+        view: Region,
         /// Bootstrap address to be used for sending updates.
         bootstrap_addr: ChannelAddr,
         /// Ordered list of hosts in this allocation. Can be used to
@@ -96,7 +97,7 @@ pub enum RemoteProcessAllocatorMessage {
 #[derive(Debug, Clone, Serialize, Deserialize, Named, AsRefStr)]
 pub enum RemoteProcessProcStateMessage {
     /// Allocation successful and Update, Done messages will follow.
-    Allocated { world_id: WorldId, view: View },
+    Allocated { world_id: WorldId, view: Region },
     /// ProcState updates.
     Update(ProcState),
     /// Underlying Alloc is done.
@@ -292,7 +293,7 @@ impl RemoteProcessAllocator {
 
     async fn handle_allocation_request(
         alloc: Box<dyn Alloc + Send + Sync>,
-        view: View,
+        view: Region,
         serve_transport: ChannelTransport,
         bootstrap_addr: ChannelAddr,
         hosts: Vec<String>,
@@ -361,7 +362,7 @@ impl RemoteProcessAllocator {
 
     async fn handle_allocation_loop(
         mut alloc: Box<dyn Alloc + Send + Sync>,
-        view: View,
+        view: Region,
         bootstrap_addr: ChannelAddr,
         router: DialMailboxRouter,
         forward_addr: ChannelAddr,
@@ -1170,7 +1171,7 @@ impl Drop for RemoteProcessAlloc {
 /// Computes the offset of the given view for allocation purposes.
 /// The offset is the first rank in the view. Because we have grouped
 /// this from an extent, we know these are contiguous.
-fn offset_of_view(view: &View) -> Option<usize> {
+fn offset_of_view(view: &Region) -> Option<usize> {
     let (_point, offset) = view.iter().next()?;
     Some(offset)
 }

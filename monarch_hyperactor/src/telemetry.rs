@@ -8,8 +8,6 @@
 
 #![allow(unsafe_op_in_unsafe_fn)]
 
-use std::cell::Cell;
-
 use hyperactor::clock::ClockKind;
 use hyperactor::clock::RealClock;
 use hyperactor::clock::SimClock;
@@ -19,37 +17,6 @@ use opentelemetry::global;
 use opentelemetry::metrics;
 use pyo3::prelude::*;
 use pyo3::types::PyTraceback;
-use tracing::span::EnteredSpan;
-// Thread local to store the current span
-thread_local! {
-    static ACTIVE_ACTOR_SPAN: Cell<Option<EnteredSpan>> = const { Cell::new(None) };
-}
-
-/// Enter the span stored in the thread local
-#[pyfunction]
-pub fn enter_span(module_name: String, method_name: String, actor_id: String) -> PyResult<()> {
-    let mut maybe_span = ACTIVE_ACTOR_SPAN.take();
-    if maybe_span.is_none() {
-        maybe_span = Some(
-            tracing::info_span!(
-                "py_actor_method",
-                name = method_name,
-                target = module_name,
-                actor_id = actor_id
-            )
-            .entered(),
-        );
-    }
-    ACTIVE_ACTOR_SPAN.set(maybe_span);
-    Ok(())
-}
-
-/// Exit the span stored in the thread local
-#[pyfunction]
-pub fn exit_span() -> PyResult<()> {
-    ACTIVE_ACTOR_SPAN.replace(None);
-    Ok(())
-}
 
 /// Get the current span ID from the active span
 #[pyfunction]
@@ -210,8 +177,17 @@ struct PySpan {
 #[pymethods]
 impl PySpan {
     #[new]
-    fn new(name: &str) -> Self {
-        let span = tracing::span!(tracing::Level::DEBUG, "python.span", name = name);
+    fn new(name: &str, actor_id: Option<&str>) -> Self {
+        let span = if let Some(actor_id) = actor_id {
+            tracing::span!(
+                tracing::Level::DEBUG,
+                "python.span",
+                name = name,
+                actor_id = actor_id
+            )
+        } else {
+            tracing::span!(tracing::Level::DEBUG, "python.span", name = name)
+        };
         let entered_span = span.entered();
 
         Self { span: entered_span }
@@ -291,20 +267,6 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(f)?;
 
     // Register the span-related functions
-    let enter_span_fn = wrap_pyfunction!(enter_span, module)?;
-    enter_span_fn.setattr(
-        "__module__",
-        "monarch._rust_bindings.monarch_hyperactor.telemetry",
-    )?;
-    module.add_function(enter_span_fn)?;
-
-    let exit_span_fn = wrap_pyfunction!(exit_span, module)?;
-    exit_span_fn.setattr(
-        "__module__",
-        "monarch._rust_bindings.monarch_hyperactor.telemetry",
-    )?;
-    module.add_function(exit_span_fn)?;
-
     let get_current_span_id_fn = wrap_pyfunction!(get_current_span_id, module)?;
     get_current_span_id_fn.setattr(
         "__module__",

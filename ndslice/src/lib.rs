@@ -54,6 +54,9 @@ pub mod strategy;
 /// Utilities.
 pub mod utils;
 
+/// A small parsing library for identifiers.
+pub mod parse;
+
 /// Types to describe extents, points and views.
 pub mod view;
 /// Describes the shape of a coordinate space.
@@ -67,10 +70,10 @@ pub use view::Point;
 /// Errors that can occur during point construction or validation.
 pub use view::PointError;
 /// Represents a logical view or projection.
+pub use view::Region;
+/// Trait for data structures from which views can be created.
 pub use view::View;
 /// Extension methods for view construction.
 pub use view::ViewExt;
 /// The iterator over views.
 pub use view::ViewIterator;
-/// Trait for data structures from which views can be created.
-pub use view::Viewable;

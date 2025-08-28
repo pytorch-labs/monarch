@@ -286,10 +286,12 @@ void launch_send_wqe(wqe_params_t params) {
  * number of bytes transferred and increments the consumer index.
  *
  * @param byte_cnt Pointer to store the number of bytes transferred (-1 if no
- * valid completion)
+ * valid completion, error if -2, success if >= 0)
  * @param params Structure containing all parameters needed for polling the CQ
  */
 __host__ __device__ void cqe_poll(int32_t* byte_cnt, cqe_poll_params_t params) {
+  assert(*byte_cnt == -1); // byte_cnt should be initialized to -1
+
   // Calculate the index in the CQ buffer
   uint32_t idx = params.consumer_index;
   uint32_t buffer_idx = idx & (params.cqe_cnt - 1);
@@ -303,20 +305,23 @@ __host__ __device__ void cqe_poll(int32_t* byte_cnt, cqe_poll_params_t params) {
   // Extract the opcode (upper 4 bits)
   uint8_t actual_opcode = op_own >> 4;
 
-  // check ownership (lower 1 bit), needs SW ownership to be consumed
+  // to check if the CQE is owned by SW (but opcode at 0xF implies also not
+  // owned!)
   bool is_sw_owned = ((op_own & 0x1) == ((idx / params.cqe_cnt) & 0x1));
+  is_sw_owned = is_sw_owned && (actual_opcode != 0xF);
 
   // this only checks for valid opcode, in some case should generate error
-  const uint8_t FIRST_TWO_BITS_MASK = 0x3; // Binary: 00000011
-  bool is_valid_opcode = (actual_opcode & ~FIRST_TWO_BITS_MASK) == 0;
+  const uint8_t FIRST_TWO_BITS_MASK = 0xC; // Binary: 1100
+  bool is_valid_opcode = (actual_opcode & FIRST_TWO_BITS_MASK) == 0;
 
   if (is_sw_owned && is_valid_opcode) {
     *byte_cnt = byte_swap32(*(uint32_t*)(cqe + 44));
-
     volatile uint32_t* dbrec = (uint32_t*)params.dbrec;
     *dbrec = byte_swap32((idx + 1) & 0xFFFFFF);
-  } else {
-    *byte_cnt = -1;
+  } else if (is_sw_owned && !is_valid_opcode) {
+    *byte_cnt = -2; // signal error
+    volatile uint32_t* dbrec = (uint32_t*)params.dbrec;
+    *dbrec = byte_swap32((idx + 1) & 0xFFFFFF);
   }
 }
 

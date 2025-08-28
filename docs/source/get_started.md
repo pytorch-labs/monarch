@@ -187,6 +187,6 @@ If you encounter issues:
 - Make sure your CUDA environment is properly set up
 - Check that you're using a compatible version of PyTorch
 - Verify that all dependencies are installed correctly
-- Consult the [GitHub repository](https://github.com/pytorch-labs/monarch) for known issues
+- Consult the [GitHub repository](https://github.com/meta-pytorch/monarch) for known issues
 
 Remember that Monarch is currently in an experimental stage, so you may encounter bugs or incomplete features. Contributions and bug reports are welcome!

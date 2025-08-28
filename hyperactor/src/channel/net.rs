@@ -60,12 +60,14 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Poll;
 
+use anyhow::Context;
 use backoff::ExponentialBackoffBuilder;
 use backoff::backoff::Backoff;
 use bytes::Buf;
 use bytes::Bytes;
 use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
+use derivative::Derivative;
 use enum_as_inner::EnumAsInner;
 use serde::de::Error;
 use tokio::io::AsyncRead;
@@ -205,7 +207,6 @@ impl<M: RemoteMessage> NetTx<M> {
         // If we can't deliver a message within this limit consider
         // `link` broken and return.
 
-        #[derive(Debug)]
         struct QueuedMessage<M: RemoteMessage> {
             seq: u64,
             message: serde_multipart::Message,
@@ -213,13 +214,21 @@ impl<M: RemoteMessage> NetTx<M> {
             return_channel: oneshot::Sender<M>,
         }
 
-        #[derive(Debug)]
+        impl<M: RemoteMessage> fmt::Debug for QueuedMessage<M> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.seq.fmt(f)
+            }
+        }
+
+        #[derive(Derivative)]
+        #[derivative(Debug)]
         struct Outbox<'a, M: RemoteMessage> {
             // The seq number of the next new message put into outbox. Requeued
             // unacked messages should still use their already assigned seq
             // numbers.
             next_seq: u64,
             deque: VecDeque<QueuedMessage<M>>,
+            #[derivative(Debug = "ignore")]
             log_id: &'a str,
         }
 
@@ -305,10 +314,12 @@ impl<M: RemoteMessage> NetTx<M> {
             }
         }
 
-        #[derive(Debug)]
+        #[derive(Derivative)]
+        #[derivative(Debug)]
         struct Unacked<'a, M: RemoteMessage> {
             deque: VecDeque<QueuedMessage<M>>,
             largest_acked: Option<u64>,
+            #[derivative(Debug = "ignore")]
             log_id: &'a str,
         }
 
@@ -501,12 +512,8 @@ impl<M: RemoteMessage> NetTx<M> {
                             (running, conn)
                         }
                         Err(err) => {
-                            let error_msg = format!(
-                                "session {}.{}: failed to push message to outbox: {}",
-                                link.dest(),
-                                session_id,
-                                err
-                            );
+                            let error_msg =
+                                format!("{log_id}: failed to push message to outbox: {err}");
                             tracing::error!(error_msg);
                             (
                                 State::Closing {
@@ -560,9 +567,7 @@ impl<M: RemoteMessage> NetTx<M> {
                         // If acking message takes too long, consider the link broken.
                         _ = unacked.wait_for_timeout(), if !unacked.is_empty() => {
                             let error_msg = format!(
-                                "session {}.{}: failed to receive ack within timeout {} secs; link is currently connected",
-                                link.dest(),
-                                session_id,
+                                "{log_id}: failed to receive ack within timeout {} secs; link is currently connected",
                                 config::global::get(config::MESSAGE_DELIVERY_TIMEOUT).as_secs(),
                             );
                             tracing::error!(error_msg);
@@ -583,9 +588,7 @@ impl<M: RemoteMessage> NetTx<M> {
                                                 }
                                                 NetRxResponse::Reject => {
                                                     let error_msg = format!(
-                                                        "session {}.{}: server rejected connection.",
-                                                        link.dest(),
-                                                        session_id
+                                                        "{log_id}: server rejected connection.",
                                                     );
                                                     tracing::error!(error_msg);
                                                     (State::Closing {
@@ -597,10 +600,7 @@ impl<M: RemoteMessage> NetTx<M> {
                                         }
                                         Err(err) => {
                                             let error_msg = format!(
-                                                "session {}.{}: failed deserializing response: {}",
-                                                link.dest(),
-                                                session_id,
-                                                err,
+                                                "{log_id}: failed deserializing response: {err}",
                                             );
                                             tracing::error!(error_msg);
                                             // Similar to the message flow, we always close the
@@ -618,10 +618,7 @@ impl<M: RemoteMessage> NetTx<M> {
                                 }
                                 Err(err) => {
                                         tracing::error!(
-                                            "session {}.{}: failed while receiving ack: {}",
-                                            link.dest(),
-                                            session_id,
-                                            err
+                                            "{log_id}: failed while receiving ack: {err}",
                                         );
                                         // Reconnect and wish the error will go away.
                                         (State::Running(Deliveries { outbox, unacked }), Conn::reconnect_with_default())
@@ -640,10 +637,7 @@ impl<M: RemoteMessage> NetTx<M> {
                                 }
                                 Err(err) => {
                                     tracing::info!(
-                                        "session {}.{}: outbox send error: {}; message size: {}",
-                                        link.dest(),
-                                        session_id,
-                                        err,
+                                        "{log_id}: outbox send error: {err}; message size: {}",
                                         outbox.front_size().expect("outbox should not be empty"),
                                     );
                                     (State::Running(Deliveries { outbox, unacked }), Conn::reconnect_with_default())
@@ -666,10 +660,7 @@ impl<M: RemoteMessage> NetTx<M> {
                                         }
                                         Err(err) => {
                                             let error_msg = format!(
-                                                "session {}.{}: failed to push message to outbox: {}",
-                                                link.dest(),
-                                                session_id,
-                                                err
+                                                "{log_id}: failed to push message to outbox: {err}",
                                             );
                                             tracing::error!(error_msg);
                                             (State::Closing {
@@ -699,11 +690,8 @@ impl<M: RemoteMessage> NetTx<M> {
                     // If delivering this message is taking too long,
                     // consider the link broken.
                     if outbox.is_expired() {
-                        let error_msg = format!(
-                            "session {}.{}: failed to deliver message within timeout",
-                            link.dest(),
-                            session_id,
-                        );
+                        let error_msg =
+                            format!("{log_id}: failed to deliver message within timeout");
                         tracing::error!(error_msg);
                         (
                             State::Closing {
@@ -714,9 +702,7 @@ impl<M: RemoteMessage> NetTx<M> {
                         )
                     } else if unacked.is_expired() {
                         let error_msg = format!(
-                            "session {}.{}: failed to receive ack within timeout {} secs; link is currently broken",
-                            link.dest(),
-                            session_id,
+                            "{log_id}: failed to receive ack within timeout {} secs; link is currently broken",
                             config::global::get(config::MESSAGE_DELIVERY_TIMEOUT).as_secs(),
                         );
                         tracing::error!(error_msg);
@@ -772,7 +758,7 @@ impl<M: RemoteMessage> NetTx<M> {
                                 )
                             }
                             Err(err) => {
-                                tracing::error!(
+                                tracing::debug!(
                                     "session {}.{}: failed to connect: {}",
                                     link.dest(),
                                     session_id,
@@ -799,6 +785,7 @@ impl<M: RemoteMessage> NetTx<M> {
                 }
             }
         }; // loop
+        tracing::debug!("{log_id}: NetRx exited its loop with state: {state:?}");
 
         match state {
             State::Closing {
@@ -836,12 +823,7 @@ impl<M: RemoteMessage> NetTx<M> {
 
         // Notify senders that this link is no longer usable
         if let Err(err) = notify.send(TxStatus::Closed) {
-            tracing::debug!(
-                "session {}.{}: tx status update error: {}",
-                link.dest(),
-                session_id,
-                err
-            );
+            tracing::debug!("{log_id}: tx status update error: {err}");
         }
 
         if let Conn::Connected {
@@ -850,23 +832,13 @@ impl<M: RemoteMessage> NetTx<M> {
         } = conn
         {
             if let Err(err) = frame_writer.send().await {
-                tracing::info!(
-                    "session {}.{}: write error: {}",
-                    link.dest(),
-                    session_id,
-                    err
-                );
+                tracing::info!("{log_id}: write error: {err}",);
             } else if let Err(err) = frame_writer.complete().flush().await {
-                tracing::info!(
-                    "session {}.{}: flush error: {}",
-                    link.dest(),
-                    session_id,
-                    err
-                );
+                tracing::info!("{log_id}: flush error: {err}",);
             }
         }
 
-        tracing::debug!("session {}.{}: NetTx::run exits", link.dest(), session_id);
+        tracing::debug!("{log_id}: NetTx::run exits");
     }
 }
 
@@ -1098,7 +1070,9 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
         cancel_token: CancellationToken,
         mut next: Next,
     ) -> (Next, Result<(), anyhow::Error>) {
-        use anyhow::Context;
+        let log_id = format!("session {}.{}<-{}", self.dest, session_id, self.source);
+        let initial_next: Next = next.clone();
+        let mut rcv_raw_frame_count = 0u64;
         let mut last_ack_time = RealClock.now();
 
         let ack_time_interval = config::global::get(config::MESSAGE_ACK_TIME_INTERVAL);
@@ -1118,10 +1092,8 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                     Err(err) => {
                         break (
                             next,
-                            Err::<(), anyhow::Error>(err.into()).context(format!(
-                                "error serializing ack for message from {:?}",
-                                self.source
-                            )),
+                            Err::<(), anyhow::Error>(err.into())
+                                .context(format!("{log_id}: error serializing ack",)),
                             false,
                         );
                     }
@@ -1130,19 +1102,21 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
             }
 
             tokio::select! {
-                bytes = self.reader.next() => {
+                bytes_result = self.reader.next() => {
+                    rcv_raw_frame_count += 1;
                     // First handle transport-level I/O errors, and EOFs.
-                    let bytes = match bytes {
+                    let bytes = match bytes_result {
                         Ok(Some(bytes)) => bytes,
-                        Ok(None) => break (next, Ok(()), false),
-
+                        Ok(None) => {
+                            tracing::debug!("{log_id}: reader returns None, meaning EOF");
+                            break (next, Ok(()), false);
+                        }
                         Err(err) => break (
                             next,
                             Err::<(), anyhow::Error>(err.into()).context(
                                 format!(
-                                    "error reading into Frame with M = {} for data from {:?}",
+                                    "{log_id}: error reading into Frame with M = {}",
                                     type_name::<M>(),
-                                    self.source,
                                 )
                             ),
                             false
@@ -1156,9 +1130,8 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                             next,
                             Err::<(), anyhow::Error>(err.into()).context(
                                 format!(
-                                    "failed to de-frame message with M = {} for data from {:?}",
+                                    "{log_id}: failed to de-frame message with M = {}",
                                     type_name::<M>(),
-                                    self.source,
                                 )
                             ),
                             false
@@ -1169,20 +1142,26 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                     // from its constituent parts.
                     match serde_multipart::deserialize_bincode(message) {
                         Ok(Frame::Init(_)) => {
-                            break (next, Err(anyhow::anyhow!("unexpected init frame from {}", self.source)), true)
+                            break (next, Err(anyhow::anyhow!("{log_id}: unexpected init frame")), true)
                         },
                         // Ignore retransmits.
-                        Ok(Frame::Message(seq, _)) if seq < next.seq => (),
+                        Ok(Frame::Message(seq, _)) if seq < next.seq => {
+                            tracing::debug!(
+                                "{log_id}: ignoring retransmit; retransmit seq: {}; expected next seq: {}",
+                                seq,
+                                next.seq,
+                            );
+                        },
                         // The following segment ensures exactly-once semantics.
                         // That means No out-of-order delivery and no duplicate delivery.
                         Ok(Frame::Message(seq, message)) => {
                             // received seq should be equal to next seq. Else error out!
                             if seq > next.seq {
-                                tracing::error!("out-of-sequence message from {}", self.source);
-                                let next_seq = next.seq;
-                                break (next, Err(anyhow::anyhow!("out-of-sequence message from {}, expected seq {}, got {}", self.source, next_seq, seq)), true)
+                                let msg = format!("{log_id}: out-of-sequence message, expected seq {}, got {}", next.seq, seq);
+                                tracing::error!(msg);
+                                break (next, Err(anyhow::anyhow!(msg)), true)
                             }
-                            match tx.send(message).await {
+                            match self.send_with_buffer_metric(&log_id, &tx, message).await {
                                 Ok(()) => {
                                     // In channel's contract, "delivered" means the message
                                     // is sent to the NetRx object. Therefore, we could bump
@@ -1196,7 +1175,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                                     next.seq = seq+1;
                                 }
                                 Err(err) => {
-                                    break (next, Err::<(), anyhow::Error>(err.into()).context(format!("error relaying message to mspc channel for {:?}", self.source)), false)
+                                    break (next, Err::<(), anyhow::Error>(err).context(format!("{log_id}: error relaying message to mspc channel")), false)
                                 }
                             }
                         },
@@ -1204,9 +1183,8 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                             next,
                             Err::<(), anyhow::Error>(err.into()).context(
                                 format!(
-                                    "failed to deserialize message with M = {} for data from {:?}",
+                                    "{log_id}: failed to deserialize message with M = {}",
                                     type_name::<M>(),
-                                    self.source,
                                 )
                             ),
                             false
@@ -1223,7 +1201,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                             next.ack = acked_seq;
                         }
                         Err(err) => {
-                            break (next, Err::<(), anyhow::Error>(err.into()).context(format!("error acking peer message from {:?}", self.source)), false)
+                            break (next, Err::<(), anyhow::Error>(err.into()).context(format!("{log_id}: error acking peer message")), false)
                         }
                     }
                 },
@@ -1233,6 +1211,15 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                 _ = cancel_token.cancelled() => break (next, Ok(()), false)
             }
         };
+        // Note:
+        //   1. processed seq/ack is Next-1;
+        //   2. rcv_raw_frame_count contains the last frame which might not be
+        //      desrializable, e.g. EOF, error, etc.
+        tracing::debug!(
+            "{log_id}: NetRx exited its loop with states: initial Netx was \
+            {initial_next:?}; final Next is {final_next:?} ; rcv raw frame \
+            count is {rcv_raw_frame_count}.",
+        );
 
         let mut final_ack = final_next.ack;
         // Flush any ongoing write.
@@ -1264,17 +1251,12 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                     final_next.ack = acked_seq;
                 }
                 Err(e) => {
-                    tracing::warn!(
-                        "session {}:{} failed to flush acks for connection from \
-                        {} due to error : {}. Normally, this is okay because \
-                        Tx will reconnect, and acks will be resent in the next \
-                        connection. However, if either Tx or Rx is dropped, the \
-                        reconnection will not happen, and subsequently the \
-                        pending ack will never be sent out.",
-                        self.dest,
-                        session_id,
-                        self.source,
-                        e
+                    tracing::debug!(
+                        "{log_id}: failed to flush acks due to error : {e}. \
+                        Normally, this is okay because Tx will reconnect, and \
+                        acks will be resent in the next connection. However, if \
+                        either Tx or Rx is dropped, the reconnection will not \
+                        happen, and subsequently the pending ack will never be sent out.",
                     );
                 }
             }
@@ -1294,6 +1276,47 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
         }
 
         (final_next, final_result)
+    }
+
+    // NetRx's buffer, i.e. the mspc channel between NetRx and its
+    // client, should rarely be full for long. But when it is full, it
+    // will block NetRx from taking more messages, sending back ack,
+    // and subsequently lead to uncommon behaviors such as ack
+    // timeout, backpressure on NetTx, etc. In order to aid debugging,
+    // it is important to add a metric measuring full buffer
+    // occurences.
+    async fn send_with_buffer_metric<M: RemoteMessage>(
+        &mut self,
+        log_id: &str,
+        tx: &mpsc::Sender<M>,
+        message: M,
+    ) -> anyhow::Result<()> {
+        let start = RealClock.now();
+        loop {
+            tokio::select! {
+                biased;
+                permit_result = tx.reserve() => {
+                    permit_result?.send(message);
+                    return Ok(())
+                }
+                _ = RealClock.sleep(config::global::get(config::CHANNEL_NET_RX_BUFFER_FULL_CHECK_INTERVAL)) => {
+                    // When buffer is full too long, we log it.
+                    metrics::CHANNEL_NET_RX_BUFFER_FULL.add(
+                        1,
+                        hyperactor_telemetry::kv_pairs!(
+                            "dest" => self.dest.to_string(),
+                            "source" => self.source.to_string(),
+                        ),
+                    );
+                    // Full buffer should happen rarely. So we also add a log
+                    // here to make debugging easy.
+                    tracing::debug!(
+                        "{log_id}: encountered full mspc channel for {} secs",
+                        start.elapsed().as_secs(),
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -1375,7 +1398,7 @@ impl<T> MVar<T> {
 }
 
 /// Used to bookkeep message processing states.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct Next {
     // The last received message's seq number + 1.
     seq: u64,
@@ -1407,7 +1430,10 @@ impl SessionManager {
         S: AsyncRead + AsyncWrite + Send + 'static + Unpin,
         M: RemoteMessage,
     {
-        let session_id = conn.handshake::<M>().await?;
+        let session_id = conn
+            .handshake::<M>()
+            .await
+            .context("error occoured when serving handshake")?;
 
         let session_var = match self.sessions.entry(session_id) {
             Entry::Occupied(entry) => entry.get().clone(),
@@ -1889,7 +1915,6 @@ pub(crate) mod meta {
     use std::io::BufReader;
     use std::sync::Arc;
 
-    use anyhow::Context;
     use anyhow::Result;
     use tokio::net::TcpListener;
     use tokio::net::TcpStream;

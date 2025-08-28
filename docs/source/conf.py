@@ -84,7 +84,7 @@ html_theme_options = {
         },
         {
             "name": "GitHub",
-            "url": "https://github.com/pytorch-labs/monarch",
+            "url": "https://github.com/meta-pytorch/monarch",
             "icon": "fa-brands fa-github",
         },
         {
@@ -112,9 +112,9 @@ html_context = {
     "theme_variables": theme_variables,
     "display_github": True,
     "github_url": "https://github.com",
-    "github_user": "pytorch-labs",
+    "github_user": "meta-pytorch",
     "github_repo": "monarch",
-    "feedback_url": "https://github.com/pytorch-labs/monarch",
+    "feedback_url": "https://github.com/meta-pytorch/monarch",
     "github_version": "main",
     "doc_path": "docs/source",
     "library_links": theme_variables.get("library_links", []),

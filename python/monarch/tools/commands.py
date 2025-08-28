@@ -182,12 +182,14 @@ def info(server_handle: str) -> Optional[ServerSpec]:
         mesh_specs.append(spec)
 
     scheduler, namespace, _ = parse_app_handle(server_handle)
+
     return ServerSpec(
         name=appdef.name,
         state=status.state,
         meshes=mesh_specs,
         scheduler=scheduler,
         namespace=namespace,
+        ui_url=status.ui_url,
     )
 
 
@@ -320,7 +322,6 @@ async def get_or_create(
             )
 
         print(f"{CYAN}New job `{new_server_handle}` is ready to serve.{ENDC}")
-        return server_info
     else:
         print(f"{CYAN}Found existing job `{server_handle}` ready to serve.{ENDC}")
 
@@ -329,7 +330,10 @@ async def get_or_create(
             kill(server_handle)
             server_info = await get_or_create(name, config, check_interval)
 
-        return server_info
+    if server_info.ui_url:  # not all schedulers have a UI URL
+        print(f"{CYAN}Job URL: {server_info.ui_url}{ENDC}")
+
+    return server_info
 
 
 def kill(server_handle: str) -> None:

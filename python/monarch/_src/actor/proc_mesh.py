@@ -320,7 +320,9 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
 
         pm = ProcMesh(hy_proc_mesh, shape)
         if _attach_controller_controller:
-            pm._controller_controller = context().actor_instance._controller_controller
+            instance = context().actor_instance
+            pm._controller_controller = instance._controller_controller
+            instance._add_child(pm)
 
         async def task(
             pm: "ProcMesh",
@@ -376,16 +378,18 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
             )
 
         actor_mesh = HyProcMesh.spawn_async(pm, name, _Actor, _use_standin_mesh())
+        instance = context().actor_instance
         service = ActorMesh._create(
             Class,
             actor_mesh,
-            context().actor_instance._mailbox,
+            instance._mailbox,
             self._shape,
             self,
             self._controller_controller,
             *args,
             **kwargs,
         )
+        instance._add_child(service)
         return cast(T, service)
 
     @property

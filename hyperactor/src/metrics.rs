@@ -48,6 +48,11 @@ declare_static_counter!(CHANNEL_CONNECTIONS, "channel.connections");
 declare_static_counter!(CHANNEL_CONNECTION_ERRORS, "channel.connection_errors");
 // Tracks the number of channel reconnection attempts
 declare_static_counter!(CHANNEL_RECONNECTIONS, "channel.reconnections");
+// Tracks the number of NetRx encountering full buffer, i.e. its mspc channel.
+
+// This metric counts how often the NetRx→client mpsc channel remains full,
+// incrementing once per CHANNEL_NET_RX_BUFFER_FULL_CHECK_INTERVAL while blocked.
+declare_static_counter!(CHANNEL_NET_RX_BUFFER_FULL, "channel.net_rx_buffer_full");
 
 // PROC MESH
 // Tracks the number of active processes in the process mesh

@@ -763,6 +763,8 @@ pub(crate) struct Instance {
     controller_controller: Option<PyObject>,
     #[pyo3(get, set)]
     rank: PyPoint,
+    #[pyo3(get, set, name = "_children")]
+    children: Option<PyObject>,
 }
 #[pymethods]
 impl Instance {
@@ -786,6 +788,7 @@ impl<A: hyperactor::Actor> From<&hyperactor::proc::Instance<A>> for Instance {
             proc_mesh: None,
             controller_controller: None,
             rank: PyPoint::new(0, Extent::unity().into()),
+            children: None,
         }
     }
 }
@@ -798,6 +801,7 @@ impl<A: hyperactor::Actor> From<&hyperactor::proc::Context<'_, A>> for Instance 
             proc_mesh: None,
             controller_controller: None,
             rank: cx.cast_info().into(),
+            children: None,
         }
     }
 }

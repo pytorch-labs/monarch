@@ -168,7 +168,6 @@ impl ActionsBuilder {
                     // --omit-dir-times
                 } else {
                     match (self.mtime_comparator)(&src.mtime, &dst.mtime) {
-                        Ordering::Less => bail!("{}: dst newer than src", path.display()),
                         Ordering::Equal => {
                             ensure!(
                                 src.ftype.same(&dst.ftype),
@@ -178,7 +177,7 @@ impl ActionsBuilder {
                                 src
                             );
                         }
-                        Ordering::Greater => {
+                        Ordering::Greater | Ordering::Less => {
                             self.actions.insert(
                                 path,
                                 match src.ftype {

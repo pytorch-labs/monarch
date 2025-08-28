@@ -229,7 +229,17 @@ impl<M: RemoteMessage> Rx<M> for MpscRx<M> {
 }
 
 /// The hostname to use for TLS connections.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    strum::EnumIter,
+    strum::Display,
+    strum::EnumString
+)]
 pub enum TlsMode {
     /// Use IpV6 address for TLS connections.
     IpV6,
@@ -265,6 +275,35 @@ impl fmt::Display for ChannelTransport {
             Self::Local => write!(f, "local"),
             Self::Sim(transport) => write!(f, "sim({})", transport),
             Self::Unix => write!(f, "unix"),
+        }
+    }
+}
+
+impl FromStr for ChannelTransport {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // Hacky parsing; can't recurse (e.g., sim(sim(..)))
+        if let Some(rest) = s.strip_prefix("sim(") {
+            if let Some(end) = rest.rfind(')') {
+                let inner = &rest[..end];
+                let inner_transport = ChannelTransport::from_str(inner)?;
+                return Ok(ChannelTransport::Sim(Box::new(inner_transport)));
+            } else {
+                return Err(anyhow::anyhow!("invalid sim transport"));
+            }
+        }
+
+        match s {
+            "tcp" => Ok(ChannelTransport::Tcp),
+            "local" => Ok(ChannelTransport::Local),
+            "unix" => Ok(ChannelTransport::Unix),
+            s if s.starts_with("metatls(") && s.ends_with(")") => {
+                let inner = &s["metatls(".len()..s.len() - 1];
+                let mode = inner.parse()?;
+                Ok(ChannelTransport::MetaTls(mode))
+            }
+            unknown => Err(anyhow::anyhow!("unknown channel transport: {}", unknown)),
         }
     }
 }

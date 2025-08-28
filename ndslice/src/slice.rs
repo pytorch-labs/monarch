@@ -373,6 +373,11 @@ impl Slice {
         Ok(result)
     }
 
+    /// Returns whether the provided rank is contained in this slice.
+    pub fn contains(&self, value: usize) -> bool {
+        self.coordinates(value).is_ok()
+    }
+
     /// The total length of the slice's indices.
     pub fn len(&self) -> usize {
         self.sizes.iter().product()

@@ -128,6 +128,7 @@ class ServerSpec:
     meshes: list[MeshSpec]
     scheduler: str
     namespace: str = ""
+    ui_url: Optional[str] = None
 
     @property
     def server_handle(self) -> str:
@@ -210,6 +211,7 @@ class ServerSpec:
         return {
             "name": self.name,
             "server_handle": self.server_handle,
+            **({"ui_url": self.ui_url} if self.ui_url else {}),
             "state": self.state.name,
             "meshes": {
                 mesh.name: {

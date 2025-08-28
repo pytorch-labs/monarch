@@ -105,10 +105,12 @@ async def bench_actor_scaling(counters: UserCounters) -> None:
     host_counts = [1, 10, 100]
     message_sizes = [1024]
     duration_seconds = 10
+    gpus = 1
 
     for host_count in host_counts:
         for message_size in message_sizes:
-            mesh = await proc_mesh(hosts=host_count)
+            mesh = proc_mesh(hosts=host_count, gpus=gpus)
+            await mesh.initialized
             await mesh.logging_option(stream_to_client=False, aggregate_window_sec=None)
             actor_mesh = await mesh.spawn("actor", SleepActor)
             # Allow Actor init to finish
@@ -116,7 +118,7 @@ async def bench_actor_scaling(counters: UserCounters) -> None:
 
             stats = await run_actor_scaling_benchmark(
                 actor_mesh,
-                host_count * 8,
+                host_count * gpus,
                 message_size,
                 duration_seconds,
                 sleep_secs=0.1,

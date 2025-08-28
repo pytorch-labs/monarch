@@ -7,6 +7,7 @@
  */
 
 use std::collections::HashSet;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use anyhow::Context as _;
@@ -354,8 +355,13 @@ pub async fn code_sync_mesh(
     let (method, method_fut) = match method {
         CodeSyncMethod::Rsync => {
             // Spawn a rsync daemon to accept incoming connections from actors.
+            // some machines (e.g. github CI) do not have ipv6, so try ipv6 then fallback to ipv4
+            let ipv6_lo: SocketAddr = "[::1]:0".parse()?;
+            let ipv4_lo: SocketAddr = "127.0.0.1:0".parse()?;
+            let addrs: [SocketAddr; 2] = [ipv6_lo, ipv4_lo];
             let daemon =
-                RsyncDaemon::spawn(TcpListener::bind(("::1", 0)).await?, &local_workspace).await?;
+                RsyncDaemon::spawn(TcpListener::bind(&addrs[..]).await?, &local_workspace).await?;
+
             let daemon_addr = daemon.addr().clone();
             let (rsync_conns_tx, rsync_conns_rx) = mailbox.open_port::<Connect>();
             (

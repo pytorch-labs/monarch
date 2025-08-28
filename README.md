@@ -69,7 +69,7 @@ pytest python/tests/ -v -m "not oss_skip"
 
 ```sh
 # Clone the repository and navigate to it
-git clone https://github.com/pytorch-labs/monarch.git
+git clone https://github.com/meta-pytorch/monarch.git
 cd monarch
 
 # Install nightly rust toolchain

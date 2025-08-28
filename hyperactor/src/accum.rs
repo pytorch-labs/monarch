@@ -555,11 +555,11 @@ mod tests {
             .collect(),
         );
 
-        fn verify<T: PartialEq + DeserializeOwned + Debug>(
+        fn verify<T: PartialEq + DeserializeOwned + Debug + Named>(
             updates: Vec<Serialized>,
             expected: HashMap<Index, T>,
         ) {
-            let typehash = <WatermarkUpdateReducer<i64> as Named>::typehash();
+            let typehash = <WatermarkUpdateReducer<T> as Named>::typehash();
             assert_eq!(
                 resolve_reducer(typehash, None)
                     .unwrap()

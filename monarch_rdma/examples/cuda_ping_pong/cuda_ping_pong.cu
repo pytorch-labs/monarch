@@ -42,22 +42,23 @@ __global__ void rdmaPingPong(
                 64 * (send_wqe_params.wr_id % send_wqe_params.wqe_cnt));
         send_wqe_params.wr_id += 1;
         send_wqe_params.laddr += send_wqe_params.length;
-        while (*poll_result < 0) {
+        while (*poll_result == -1) {
           cqe_poll(poll_result, send_cqe_params);
         }
+        assert(*poll_result != -2);
         send_cqe_params.consumer_index += 1;
-        // *((volatile uint32_t*)send_cqe_params.dbrec) =
-        //     send_cqe_params.consumer_index & 0xffffff;
 
         recv_wqe(recv_wqe_params);
         recv_wqe_params.wr_id += 1;
       } else {
-        while (*poll_result < 0) {
+        while (*poll_result == -1) {
           cqe_poll(poll_result, recv_cqe_params);
         }
+        assert(*poll_result != -2);
         recv_cqe_params.consumer_index += 1;
         send_wqe_params.laddr += *poll_result;
         send_wqe_params.raddr = send_wqe_params.laddr;
+        printf("msg number: %d, msg size = %d\n", j, *poll_result);
       }
       *poll_result = -1;
       is_leader = !is_leader;
@@ -143,5 +144,8 @@ extern "C" cudaError_t launchPingPong(
       poll_result,
       is_leader);
 
+  if (is_leader) {
+    err = cudaDeviceSynchronize();
+  }
   return err;
 }

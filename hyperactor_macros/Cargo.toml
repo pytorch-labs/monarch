@@ -6,7 +6,7 @@ version = "0.0.0"
 authors = ["Facebook <opensource+crates-hyperactor-macros@fb.com>"]
 edition = "2021"
 description = "macros to support the Hyperactor actors and data exchange"
-repository = "https://github.com/pytorch-labs/monarch/"
+repository = "https://github.com/meta-pytorch/monarch/"
 license = "BSD-3-Clause"
 
 [lib]

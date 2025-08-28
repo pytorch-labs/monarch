@@ -30,9 +30,13 @@ pub struct FrameReader<R> {
 
 enum FrameReaderState {
     /// Accumulating 8-byte length prefix.
-    ReadLen { buf: BytesMut }, // buf.len() <= 8
+    ReadLen { buf: [u8; 8], off: usize },
     /// Accumulating body of exactly `len` bytes.
-    ReadBody { len: usize, buf: BytesMut }, // buf.len() <= len
+    ReadBody {
+        buf: Vec<u8>,
+        off: usize,
+        len: usize,
+    }, // off <= len
 }
 
 impl<R: AsyncRead + Unpin> FrameReader<R> {
@@ -43,7 +47,8 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
             reader,
             max_frame_length,
             state: FrameReaderState::ReadLen {
-                buf: BytesMut::with_capacity(8),
+                buf: [0; 8],
+                off: 0,
             },
         }
     }
@@ -65,17 +70,19 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
     pub async fn next(&mut self) -> io::Result<Option<Bytes>> {
         loop {
             match &mut self.state {
-                FrameReaderState::ReadLen { buf } if buf.len() < 8 => {
-                    let n = self.reader.read_buf(buf).await?;
+                FrameReaderState::ReadLen { buf, off } if *off < 8 => {
+                    let n = self.reader.read(&mut buf[*off..]).await?;
+                    *off += n;
+                    assert!(*off <= 8);
 
-                    // https://docs.rs/tokio/latest/tokio/io/trait.AsyncReadExt.html#method.read_buf
+                    // https://docs.rs/tokio/latest/tokio/io/trait.AsyncReadExt.html#method.read
                     // "This reader has reached its "end of file" and will likely no longer
                     // be able to produce bytes. Note that this does not mean that the reader
                     // will always no longer be able to produce bytes."
                     //
                     // In practice, this means EOF.
                     if n == 0 {
-                        if buf.is_empty() {
+                        if *off == 0 {
                             // We ended on a frame boundary. End of stream:
                             return Ok(None);
                         } else {
@@ -84,28 +91,35 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
                     }
                 }
 
-                FrameReaderState::ReadLen { buf } => {
-                    let len = buf.get_u64() as usize;
+                FrameReaderState::ReadLen { buf, off } => {
+                    assert_eq!(*off, 8);
+                    let len = (&buf[..]).get_u64() as usize;
                     if len > self.max_frame_length {
                         return Err(io::ErrorKind::InvalidData.into());
                     }
                     self.state = FrameReaderState::ReadBody {
+                        // TODO: allow for uninitialized fills
+                        buf: vec![0; len],
+                        off: 0,
                         len,
-                        buf: BytesMut::with_capacity(len),
                     };
                 }
 
-                FrameReaderState::ReadBody { len, buf } if buf.len() < *len => {
-                    let n = self.reader.read_buf(buf).await?;
+                FrameReaderState::ReadBody { buf, off, len } if *off < *len => {
+                    let n = self.reader.read(&mut buf[*off..*len]).await?;
                     if n == 0 {
                         return Err(io::ErrorKind::UnexpectedEof.into());
                     }
+                    *off += n;
+                    assert!(*off <= *len)
                 }
 
-                FrameReaderState::ReadBody { len, buf } if buf.len() == *len => {
-                    let frame = take(buf).freeze();
+                FrameReaderState::ReadBody { buf, off, len } => {
+                    assert_eq!(*off, *len);
+                    let frame = take(buf).into();
                     self.state = FrameReaderState::ReadLen {
-                        buf: BytesMut::with_capacity(8),
+                        buf: [0; 8],
+                        off: 0,
                     };
                     return Ok(Some(frame));
                 }
@@ -171,6 +185,13 @@ impl<W: AsyncWrite + Unpin, B: Buf> FrameWrite<W, B> {
                 let count = self.writer.write_vectored(&chunks[0..num_chunks]).await?;
                 self.body.advance(count);
             } else {
+                // Not all transport types do implicit flushes, so we need to
+                // explicitly flush here.
+                //
+                // One example is rusttls, whose doc says:
+                // > You must call poll_flush to ensure that it is written to TcpStream.
+                // https://docs.rs/tokio-rustls/0.26.2/tokio_rustls/index.html
+                self.writer.flush().await?;
                 return Ok(());
             }
         }

@@ -663,7 +663,11 @@ async def test_supervision_with_proc_mesh_stopped(mesh):
 # TODO - re-enable after resolving T232206970
 @pytest.mark.oss_skip
 async def test_supervision_with_sending_error():
+    # Messages of length > this will cause a send error and a returned
+    # undeliverable.
     os.environ["HYPERACTOR_CODEC_MAX_FRAME_LENGTH"] = "50000000"
+    # Limit retries for sending before giving up.
+    os.environ["HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT_SECS"] = "5"
 
     proc = await proc_mesh(gpus=1)
     actor_mesh = await proc.spawn("healthy", HealthyActor)

@@ -198,8 +198,8 @@ impl ErasedUnbound {
         self.bindings.visit_mut(f)
     }
 
-    fn downcast<M: DeserializeOwned>(self) -> anyhow::Result<Unbound<M>> {
-        let message: M = self.message.deserialized()?;
+    fn downcast<M: DeserializeOwned + Named>(self) -> anyhow::Result<Unbound<M>> {
+        let message: M = self.message.deserialized_unchecked()?;
         Ok(Unbound {
             message,
             bindings: self.bindings,
@@ -213,7 +213,7 @@ impl ErasedUnbound {
 #[serde(from = "ErasedUnbound")]
 pub struct IndexedErasedUnbound<M>(ErasedUnbound, PhantomData<M>);
 
-impl<M: DeserializeOwned> IndexedErasedUnbound<M> {
+impl<M: DeserializeOwned + Named> IndexedErasedUnbound<M> {
     pub(crate) fn downcast(self) -> anyhow::Result<Unbound<M>> {
         self.0.downcast()
     }

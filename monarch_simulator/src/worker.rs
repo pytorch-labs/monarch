@@ -583,7 +583,7 @@ impl WorkerMessageHandler for WorkerActor {
         );
         let rvalue = RValue::Tensor(TensorCell::new(tensor));
         let value = PyTree::from(rvalue);
-        let result = Ok(Serialized::serialize_anon(&value)?);
+        let result = Ok(Serialized::serialize(&value)?);
         self.controller_actor_ref
             .fetch_result(cx, seq, result)
             .await?;

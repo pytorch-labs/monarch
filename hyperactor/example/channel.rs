@@ -6,6 +6,9 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use clap::Parser;
+use clap::Subcommand;
+use enum_as_inner::EnumAsInner;
 use hyperactor::Named;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
@@ -18,13 +21,34 @@ use serde::Serialize;
 use tokio::time::Duration;
 use tokio::time::Instant;
 
-#[derive(Clone, Debug, Named, Serialize, Deserialize)]
-struct Message(serde_multipart::Part);
+#[derive(Clone, Debug, Named, Serialize, Deserialize, EnumAsInner)]
+enum Message {
+    Hello(ChannelAddr),
+    Echo(serde_multipart::Part),
+}
 
-async fn server(
-    mut server_rx: ChannelRx<Message>,
-    client_addr: ChannelAddr,
-) -> Result<(), anyhow::Error> {
+impl Message {
+    fn len(&self) -> usize {
+        match self {
+            Message::Hello(_) => 0,
+            Message::Echo(part) => part.len(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        match self {
+            Message::Hello(_) => true,
+            Message::Echo(part) => part.is_empty(),
+        }
+    }
+}
+
+async fn server(mut server_rx: ChannelRx<Message>) -> Result<(), anyhow::Error> {
+    let client_addr: ChannelAddr = server_rx
+        .recv()
+        .await?
+        .into_hello()
+        .map_err(|_| anyhow::anyhow!("expected hello message"))?;
     let client_tx = channel::dial(client_addr)?;
     loop {
         let message = server_rx.recv().await?;
@@ -32,29 +56,21 @@ async fn server(
     }
 }
 
-// Analog of https://www.internalfb.com/phabricator/paste/view/P1903314366, using Channel APIs.
-// Possibly we should create separate threads for the client and server to also make the OS-level
-// setup equivalent.
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), anyhow::Error> {
-    let transport = ChannelTransport::Tcp;
-    // let transport = ChannelTransport::Local;
-    let message_size = 1_000_000;
-    let num_iter = 1000;
-
-    let (client_addr, mut client_rx) =
-        channel::serve::<Message>(ChannelAddr::any(transport.clone()))
-            .await
-            .unwrap();
-    let (server_addr, server_rx) = channel::serve::<Message>(ChannelAddr::any(transport.clone()))
-        .await
-        .unwrap();
-
-    let _server_handle = tokio::spawn(server(server_rx, client_addr));
-
+async fn client(
+    server_addr: ChannelAddr,
+    message_size: usize,
+    num_iter: Option<usize>,
+) -> anyhow::Result<()> {
     let server_tx = channel::dial(server_addr)?;
 
-    let message = Message(serde_multipart::Part::from(vec![0u8; message_size]));
+    let (client_addr, mut client_rx) =
+        channel::serve::<Message>(ChannelAddr::any(server_tx.addr().transport().clone()))
+            .await
+            .unwrap();
+
+    server_tx.post(Message::Hello(client_addr));
+
+    let message = Message::Echo(serde_multipart::Part::from(vec![0u8; message_size]));
 
     for _ in 0..10 {
         // Warmup
@@ -70,13 +86,21 @@ async fn main() -> Result<(), anyhow::Error> {
 
     #[allow(clippy::disallowed_methods)]
     let start = Instant::now();
-    for _ in 0..num_iter {
-        total_bytes_sent += message.0.len();
+    for i in 0usize.. {
+        if num_iter.is_some_and(|n| i >= n) {
+            break;
+        }
+
+        total_bytes_sent += message.len();
         #[allow(clippy::disallowed_methods)]
         let start = Instant::now();
         server_tx.post(message.clone() /*cheap */);
-        total_bytes_received += client_rx.recv().await?.0.len();
+        total_bytes_received += client_rx.recv().await?.len();
         latencies.push(start.elapsed());
+
+        if i % 1000 == 0 {
+            println!("sent: {} messages, {} MiB", i, total_bytes_sent >> 20);
+        }
     }
     let elapsed = start.elapsed();
 
@@ -103,6 +127,67 @@ async fn main() -> Result<(), anyhow::Error> {
         "Bandwidth: {} bytes/sec ({} Mbps)",
         bandwidth_bytes_per_sec, bandwidth_mbps
     );
+
+    Ok(())
+}
+
+#[derive(Parser)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+
+    /// The transport to use
+    #[arg(long, default_value = "tcp")]
+    transport: ChannelTransport,
+
+    /// Message size in bytes
+    #[arg(long, default_value_t = 1_000_000)]
+    message_size: usize,
+
+    /// Number of iterations
+    #[arg(long)]
+    num_iter: Option<usize>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    Client { server_addr: ChannelAddr },
+    Server,
+}
+
+// Analog of https://www.internalfb.com/phabricator/paste/view/P1903314366, using Channel APIs.
+// Possibly we should create separate threads for the client and server to also make the OS-level
+// setup equivalent.
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<(), anyhow::Error> {
+    let args = Cli::parse();
+
+    match args.command {
+        Some(Commands::Server) => {
+            let (server_addr, server_rx) =
+                channel::serve::<Message>(ChannelAddr::any(args.transport.clone()))
+                    .await
+                    .unwrap();
+            eprintln!("server listening on {}", server_addr);
+            server(server_rx).await?;
+        }
+
+        Some(Commands::Client { server_addr }) => {
+            client(server_addr, args.message_size, args.num_iter).await?;
+        }
+
+        // No command: run a self-contained benchmark.
+        None => {
+            let (server_addr, server_rx) =
+                channel::serve::<Message>(ChannelAddr::any(args.transport.clone()))
+                    .await
+                    .unwrap();
+            let _server_handle = tokio::spawn(server(server_rx));
+            let client_handle = tokio::spawn(client(server_addr, args.message_size, args.num_iter));
+
+            client_handle.await??;
+        }
+    }
 
     Ok(())
 }

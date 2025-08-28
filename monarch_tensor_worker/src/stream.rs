@@ -1694,7 +1694,7 @@ impl StreamMessageHandler for StreamActor {
             pipe.send(PipeMessage::SendValue(value))?;
         } else {
             let result = match value {
-                Ok(value) => Ok(Serialized::serialize_anon(&value).map_err(anyhow::Error::from)?),
+                Ok(value) => Ok(Serialized::serialize(&value).map_err(anyhow::Error::from)?),
                 Err(e) => Err(e),
             };
             self.controller_actor.fetch_result(cx, seq, result).await?;
@@ -2199,12 +2199,12 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .unwrap();
-            let x = allclose(
+
+            allclose(
                 &factory_float_tensor(data, "cpu".try_into().unwrap()),
                 &actual.borrow(),
             )
-            .unwrap();
-            x
+            .unwrap()
         }
 
         async fn validate_dependent_error(&mut self, reference: Ref, error: Arc<SeqError>) {
