@@ -15,7 +15,6 @@ import os
 import subprocess
 import sys
 import unittest
-from datetime import timedelta
 from time import sleep
 from typing import Generator, Optional
 from unittest import mock
@@ -54,8 +53,6 @@ from monarch.tools.network import get_sockaddr
 
 from torch.distributed.elastic.utils.distributed import get_free_port
 from torchx.specs import AppState
-
-_100_MILLISECONDS = timedelta(milliseconds=100)
 
 SERVER_READY = "monarch.tools.commands.server_ready"
 UNUSED = "__UNUSED__"

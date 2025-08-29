@@ -448,6 +448,7 @@ impl Proc {
 
     /// Spawn a named (root) actor on this proc. The name of the actor must be
     /// unique.
+    #[hyperactor::observe("proc")]
     pub async fn spawn<A: Actor>(
         &self,
         name: &str,
@@ -880,15 +881,7 @@ impl<A: Actor> Instance<A> {
     /// Notify subscribers of a change in the actors status and bump counters with the duration which
     /// the last status was active for.
     fn change_status(&self, new: ActorStatus) {
-        // let old = self.status_tx.send_replace(new.clone());
         self.status_tx.send_replace(new.clone());
-        let actor_id_str = self.self_id().to_string();
-        *self.status_span.lock().expect("can't change") = tracing::debug_span!(
-            "actor_status",
-            actor_id = actor_id_str,
-            actor_name = self.self_id().name(),
-            name = new.arm().unwrap_or_default()
-        );
     }
 
     /// This instance's actor ID.

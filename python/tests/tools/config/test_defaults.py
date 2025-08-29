@@ -34,14 +34,6 @@ class TestDefaults(unittest.TestCase):
                 config.scheduler_args["foo"] = "bar"
                 self.assertNotIn("foo", defaults.config(scheduler).scheduler_args)
 
-    def test_default_config_workspace(self) -> None:
-        current_working_dir = str(Path.cwd())
-        config = defaults.config(
-            "local_cwd",
-            current_working_dir,
-        )
-        self.assertEqual(current_working_dir, config.workspace)
-
     def test_default_config_appdef(self) -> None:
         for scheduler, _ in {
             "mast": {"image": "_DUMMY_FBPKG_:0"},

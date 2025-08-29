@@ -46,7 +46,6 @@ from monarch._rust_bindings.monarch_hyperactor.proc_mesh import (
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape, Slice
 from monarch._src.actor.actor_mesh import _Actor, Actor, ActorMesh, context
-
 from monarch._src.actor.allocator import (
     AllocateMixin,
     AllocHandle,
@@ -68,7 +67,8 @@ from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.future import DeprecatedNotAFuture, Future
 from monarch._src.actor.logging import LoggingManager
 from monarch._src.actor.shape import MeshTrait
-from monarch.tools.config import Workspace
+from monarch.tools.config.environment import CondaEnvironment
+from monarch.tools.config.workspace import Workspace
 from monarch.tools.utils import conda as conda_utils
 
 
@@ -423,7 +423,7 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
 
     async def sync_workspace(
         self,
-        workspace: Workspace = None,
+        workspace: Workspace,
         conda: bool = False,
         auto_reload: bool = False,
     ) -> None:
@@ -439,12 +439,15 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
         assert set(self._shape.labels).issubset({"gpus", "hosts"})
 
         workspaces = []
-        if workspace is not None:
+        for src_dir, dst_dir in workspace.dirs.items():
             workspaces.append(
                 WorkspaceConfig(
-                    local=Path(workspace),
+                    local=Path(src_dir),
                     remote=RemoteWorkspace(
-                        location=WorkspaceLocation.FromEnvVar("WORKSPACE_DIR"),
+                        location=WorkspaceLocation.FromEnvVar(
+                            env="WORKSPACE_DIR",
+                            relpath=dst_dir,
+                        ),
                         shape=WorkspaceShape.shared("gpus"),
                     ),
                     method=CodeSyncMethod.Rsync,
@@ -453,6 +456,9 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
 
         # If `conda` is set, also sync the currently activated conda env.
         conda_prefix = conda_utils.active_env_dir()
+        if isinstance(workspace.env, CondaEnvironment):
+            conda_prefix = workspace.env._conda_prefix
+
         if conda and conda_prefix is not None:
             conda_prefix = Path(conda_prefix)
 
@@ -464,7 +470,10 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
                 WorkspaceConfig(
                     local=conda_prefix,
                     remote=RemoteWorkspace(
-                        location=WorkspaceLocation.FromEnvVar("CONDA_PREFIX"),
+                        location=WorkspaceLocation.FromEnvVar(
+                            env="CONDA_PREFIX",
+                            relpath="",
+                        ),
                         shape=WorkspaceShape.shared("gpus"),
                     ),
                     method=CodeSyncMethod.CondaSync,
@@ -641,7 +650,7 @@ def proc_mesh(
     setup: Callable[[], None] | None = None,
 ) -> ProcMesh:
     warnings.warn(
-        "use this_host().spawn_proc(per_host = {'hosts': 2, 'gpus': 3}) instead of monarch.actor.proc_mesh(hosts=2, gpus=3)",
+        "use this_host().spawn_procs(per_host = {'hosts': 2, 'gpus': 3}) instead of monarch.actor.proc_mesh(hosts=2, gpus=3)",
         DeprecationWarning,
         stacklevel=2,
     )

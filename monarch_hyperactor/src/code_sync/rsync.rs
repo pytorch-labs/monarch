@@ -198,7 +198,8 @@ pub async fn do_rsync(addr: &SocketAddr, workspace: &Path) -> Result<RsyncResult
     // line in rsync output.
     fs::create_dir_all(workspace).await?;
 
-    let output = Command::new(get_rsync_bin_path().await?)
+    let rsync_bin_path = get_rsync_bin_path().await?;
+    let output = Command::new(rsync_bin_path)
         .arg("--archive")
         .arg("--delete")
         // Show detailed changes for each file
@@ -216,7 +217,16 @@ pub async fn do_rsync(addr: &SocketAddr, workspace: &Path) -> Result<RsyncResult
         .stderr(Stdio::piped())
         .output()
         .await
-        .context("spawning `rsync` binary")?;
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                anyhow::anyhow!(
+                    "rsync binary: '{}' does not exist. Please ensure 'rsync' is installed and available in PATH.",
+                    rsync_bin_path.display()
+                )
+            } else {
+                anyhow::anyhow!("failed to execute rsync: {}", e)
+            }
+        })?;
 
     output
         .status

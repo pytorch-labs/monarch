@@ -17,11 +17,11 @@ class WorkspaceLocation:
     """
     @final
     class Constant(WorkspaceLocation):
-        def __init__(self, path) -> None: ...
+        def __init__(self, path: str | Path) -> None: ...
 
     @final
     class FromEnvVar(WorkspaceLocation):
-        def __init__(self, var) -> None: ...
+        def __init__(self, env: str, relpath: str | Path) -> None: ...
 
     def resolve(self) -> Path:
         """

@@ -41,14 +41,16 @@ use serde::Serialize;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 enum PyWorkspaceLocation {
     Constant(PathBuf),
-    FromEnvVar(String),
+    FromEnvVar { env: String, relpath: PathBuf },
 }
 
 impl From<PyWorkspaceLocation> for WorkspaceLocation {
     fn from(workspace: PyWorkspaceLocation) -> WorkspaceLocation {
         match workspace {
             PyWorkspaceLocation::Constant(v) => WorkspaceLocation::Constant(v),
-            PyWorkspaceLocation::FromEnvVar(v) => WorkspaceLocation::FromEnvVar(v),
+            PyWorkspaceLocation::FromEnvVar { env, relpath } => {
+                WorkspaceLocation::FromEnvVar { env, relpath }
+            }
         }
     }
 }

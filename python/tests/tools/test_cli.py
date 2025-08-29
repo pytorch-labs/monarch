@@ -12,7 +12,7 @@ import unittest
 from unittest import mock
 
 from monarch.tools.cli import config_from_cli_args, get_parser, main
-from monarch.tools.config import Config
+from monarch.tools.config import Config, Workspace
 from monarch.tools.mesh_spec import MeshSpec, ServerSpec
 
 from tests.tools.utils import capture_stdout
@@ -117,7 +117,7 @@ class TestCli(unittest.TestCase):
                     "mail-type": "FAIL",
                 },
                 dryrun=True,
-                workspace="/mnt/users/foo",
+                workspace=Workspace(dirs={"/mnt/users/foo": ""}),
             ),
             config,
         )

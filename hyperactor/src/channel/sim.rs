@@ -140,7 +140,7 @@ impl MessageDeliveryEvent {
 
 #[async_trait]
 impl Event for MessageDeliveryEvent {
-    async fn handle(&mut self) -> Result<(), SimNetError> {
+    async fn handle(&self) -> Result<(), SimNetError> {
         // Send the message to the correct receiver.
         SENDER
             .send(self.dest_addr.clone(), self.data.clone())
@@ -498,7 +498,7 @@ mod tests {
         let dest = id!(world[1].dest);
         let handle = simnet::simnet_handle().unwrap();
 
-        let ext = extent!(region = 1, dc = 1, zone = 1, rack = 4, host = 4, gpu = 8);
+        let ext = extent!(region = 1, dc = 1, zone = 2, rack = 4, host = 4, gpu = 8);
         handle.register_proc(
             controller.proc_id().clone(),
             ext.point(vec![0, 0, 1, 0, 0, 0]).unwrap(),
@@ -572,7 +572,7 @@ mod tests {
         let client = id!(world[2].client);
 
         let handle = simnet::simnet_handle().unwrap();
-        let ext = extent!(region = 1, dc = 1, zone = 1, rack = 4, host = 4, gpu = 8);
+        let ext = extent!(region = 1, dc = 1, zone = 2, rack = 4, host = 4, gpu = 8);
         handle.register_proc(
             controller.proc_id().clone(),
             ext.point(vec![0, 0, 1, 0, 0, 0]).unwrap(),

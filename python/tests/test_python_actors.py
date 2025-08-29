@@ -1007,7 +1007,9 @@ async def test_flush_on_disable_aggregation() -> None:
         ), stdout_content
 
         # 10 = 5 log lines * 2 procs
-        assert len(re.findall(r"single log line", stdout_content)) == 10, stdout_content
+        assert (
+            len(re.findall(r"\[.* [0-9]+\] single log line", stdout_content)) == 10
+        ), stdout_content
 
     finally:
         # Ensure file descriptors are restored even if something goes wrong
@@ -1167,8 +1169,6 @@ class LsActor(Actor):
         return os.listdir(self.workspace)
 
 
-# oss_skip: TODO kiuk@ investigate why this fails in CI with FileNotFound error on rust-side
-@pytest.mark.oss_skip
 async def test_sync_workspace() -> None:
     # create two workspaces: one for local and one for remote
     with tempfile.TemporaryDirectory() as workspace_src, tempfile.TemporaryDirectory() as workspace_dst:

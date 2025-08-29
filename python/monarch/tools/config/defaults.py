@@ -8,10 +8,12 @@
 
 """Defines defaults for ``monarch.tools``"""
 
+import warnings
 from typing import Callable
 
 from monarch.tools.components import hyperactor
-from monarch.tools.config import Config, UnnamedAppDef, Workspace
+from monarch.tools.config import Config, UnnamedAppDef
+from monarch.tools.config.workspace import Workspace
 
 from torchx import specs
 from torchx.schedulers import (
@@ -40,9 +42,17 @@ def scheduler_factories() -> dict[str, SchedulerFactory]:
     }
 
 
-def config(scheduler: str, workspace: Workspace = None) -> Config:
+def config(scheduler: str, workspace: str | None = None) -> Config:
     """The default :py:class:`~monarch.tools.config.Config` to use when submitting to the provided ``scheduler``."""
-    return Config(scheduler=scheduler, workspace=workspace)
+    warnings.warn(
+        "`defaults.config()` is deprecated, prefer instantiating `Config()` directly",
+        FutureWarning,
+        stacklevel=2,
+    )
+    return Config(
+        scheduler=scheduler,
+        workspace=Workspace(dirs={workspace: ""}) if workspace else Workspace.null(),
+    )
 
 
 def dryrun_info_formatter(dryrun_info: specs.AppDryRunInfo) -> Callable[..., str]:

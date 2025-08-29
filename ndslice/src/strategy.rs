@@ -705,12 +705,12 @@ mod tests {
     // Theorem 4: Isomorphism (Rank-point round-trip is identity on
     // all ranks)
     //
-    // For every valid rank ∈ [0, extent.len()), converting it to a
+    // For every valid rank r ∈ [0, extent.len()), converting it to a
     // point and back gives the same rank:
     //
     //     rank(point_of_rank(r)) = r
     //
-    // In categorical terms: point_of_rank ∘ rank = 𝟙ₙ
+    // In categorical terms: rank ∘ point_of_rank = 𝟙
     proptest! {
         #[test]
         fn rank_point_trip(extent in gen_extent(1..=4, 8)) {
@@ -724,6 +724,26 @@ mod tests {
                     point,
                     point.rank()
                 );
+            }
+        }
+    }
+
+    // Theorem 5: Isomorphism (Point–Coords–Rank round-trip is
+    // identity on all points)
+    //
+    // For every point p ∈ extent.points(), converting its coordinates
+    // back to a rank yields the same rank:
+    //
+    //     rank_of_coords(coords(p)) = rank(p)
+    //
+    // In categorical terms: rank_of_coords ∘ coords = rank
+    proptest! {
+        #[test]
+        fn coords_to_rank_roundtrip(extent in gen_extent(0..=4, 8)) {
+            for p in extent.points() {
+                let c = p.coords();
+                let r = extent.rank_of_coords(&c).expect("coords from Point must be valid");
+                prop_assert_eq!(r, p.rank(), "coords->rank mismatch for {}", p);
             }
         }
     }
