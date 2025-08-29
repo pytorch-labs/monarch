@@ -30,8 +30,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from monarch.actor import Actor, endpoint, proc_mesh
-from monarch.rdma import RDMABuffer
+from monarch.actor import Actor, endpoint, this_host
+from monarch.tensor_engine import RDMABuffer
 from torch.distributions import Categorical, kl_divergence
 
 # %%
@@ -204,7 +204,7 @@ class Scorer(Actor):
         """
         s = slice.state.to("cuda").unsqueeze(0).repeat(G, 1)
         a = slice.actions.to("cuda").float().unsqueeze(-1)
-        rewards = self.net(torch.cat([s, a], dim=-1)).squeeze(-1).cpu()
+        rewards = self.net(torch.cat([s, a], dim=-1)).squeeze(-1)
 
         scored = TrajectorySlice(
             policy_version=slice.policy_version,
@@ -274,6 +274,7 @@ class Learner(Actor):
         self.replay_buffer = replay_buffer
         self.batch_size = 2
         self.generators: Optional[Any] = None
+        self._weights_handle: Dict[str, Tuple[torch.Tensor, RDMABuffer]] = {}
 
     @endpoint
     async def init_generators(self, generators: Any) -> None:
@@ -285,16 +286,18 @@ class Learner(Actor):
         self.generators = generators
 
     @endpoint
-    async def weights_handle(self) -> Dict[str, RDMABuffer]:
+    async def weights_handle(self) -> Dict[str, Tuple[torch.Tensor, RDMABuffer]]:
         """Create RDMA buffers for model weights.
 
         Returns:
             Dictionary mapping parameter names to RDMA buffers
         """
-        return {
-            k: RDMABuffer(v.view(torch.uint8).flatten())
+        cpu_tensors = {
+            k: v.cpu().view(torch.uint8).flatten()
             for k, v in self.model.state_dict().items()
         }
+        self._weights_handle = {k: (v, RDMABuffer(v)) for k, v in cpu_tensors.items()}
+        return self._weights_handle
 
     def _compute_advantages(self, rewards: torch.Tensor) -> torch.Tensor:
         """Compute advantages from rewards.
@@ -369,6 +372,12 @@ class Learner(Actor):
         self.optim.step()
         self.policy_version += 1
 
+        # update buffers
+        sd = self.model.state_dict()
+        for n, (t, _) in self._weights_handle.items():
+            t.copy_(sd[n].view(torch.uint8).flatten())
+
+        # Return loss value
         return loss.detach()
 
     @endpoint
@@ -477,8 +486,9 @@ class Generator(Actor):
         async with self.cond:
             # Copy weights from RDMA buffers
             sd = self.model.state_dict()
-            for n, b in self.weight_buffers.items():
-                await b.read_into(sd[n].view(torch.uint8).flatten())
+            cpu_sd = {k: torch.zeros_like(v, device="cpu") for k, v in sd.items()}
+            for n, (_, b) in self.weight_buffers.items():
+                await b.read_into(cpu_sd[n].view(torch.uint8).flatten())
             self.model.load_state_dict(sd)
             # Update version and state
             self.policy_version = version
@@ -490,8 +500,8 @@ class Generator(Actor):
 async def main():
     """Run the distributed reinforcement learning training loop."""
     # Create process meshes for different components
-    learner_mesh = await proc_mesh(gpus=1)
-    gen_mesh = await proc_mesh(gpus=2)
+    learner_mesh = this_host().spawn_procs(per_host={"gpus": 1})
+    gen_mesh = this_host().spawn_procs(per_host={"gpus": 1})
 
     # Spawn actors on the learner mesh
     traj_q = await learner_mesh.spawn("traj", TrajectoryQueue)
