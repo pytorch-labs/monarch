@@ -6,6 +6,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::env;
+
 use clap::Parser;
 use clap::Subcommand;
 use enum_as_inner::EnumAsInner;
@@ -41,6 +43,26 @@ impl Message {
             Message::Echo(part) => part.is_empty(),
         }
     }
+}
+
+fn setup_meta_tls_env() -> anyhow::Result<()> {
+    // Ensure client auth works when the server requires it.
+    if std::env::var("THRIFT_TLS_CL_CERT_PATH").is_err() {
+        // SAFETY: No concerns about concurrent read/writes in this
+        // context.
+        unsafe {
+            env::set_var(
+                "THRIFT_TLS_CL_CERT_PATH",
+                "/var/facebook/x509_identities/server.pem",
+            );
+            env::set_var(
+                "THRIFT_TLS_CL_KEY_PATH",
+                "/var/facebook/x509_identities/server.pem",
+            );
+        }
+    }
+    eprintln!("Using Meta's production TLS certificates");
+    Ok(())
 }
 
 async fn server(mut server_rx: ChannelRx<Message>) -> Result<(), anyhow::Error> {
@@ -147,6 +169,11 @@ struct Cli {
     /// Number of iterations
     #[arg(long)]
     num_iter: Option<usize>,
+
+    /// Enable TLS by using MetaTLS transport automatically
+    /// (self-contained mode)
+    #[arg(long)]
+    tls: bool,
 }
 
 #[derive(Subcommand)]
@@ -162,12 +189,18 @@ enum Commands {
 async fn main() -> Result<(), anyhow::Error> {
     let args = Cli::parse();
 
+    if args.tls {
+        setup_meta_tls_env()?;
+    }
+
     match args.command {
         Some(Commands::Server) => {
-            let (server_addr, server_rx) =
-                channel::serve::<Message>(ChannelAddr::any(args.transport.clone()))
-                    .await
-                    .unwrap();
+            let bind = if args.tls {
+                ChannelAddr::MetaTls(fqdn()?, 0)
+            } else {
+                ChannelAddr::any(args.transport.clone())
+            };
+            let (server_addr, server_rx) = channel::serve::<Message>(bind).await.unwrap();
             eprintln!("server listening on {}", server_addr);
             server(server_rx).await?;
         }
@@ -178,10 +211,12 @@ async fn main() -> Result<(), anyhow::Error> {
 
         // No command: run a self-contained benchmark.
         None => {
-            let (server_addr, server_rx) =
-                channel::serve::<Message>(ChannelAddr::any(args.transport.clone()))
-                    .await
-                    .unwrap();
+            let server_bind = if args.tls {
+                ChannelAddr::MetaTls(fqdn()?, 0)
+            } else {
+                ChannelAddr::any(args.transport.clone())
+            };
+            let (server_addr, server_rx) = channel::serve::<Message>(server_bind).await.unwrap();
             let _server_handle = tokio::spawn(server(server_rx));
             let client_handle = tokio::spawn(client(server_addr, args.message_size, args.num_iter));
 
@@ -190,4 +225,16 @@ async fn main() -> Result<(), anyhow::Error> {
     }
 
     Ok(())
+}
+
+fn fqdn() -> anyhow::Result<String> {
+    if let Ok(out) = std::process::Command::new("hostname").arg("-f").output() {
+        if out.status.success() {
+            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !s.is_empty() {
+                return Ok(s);
+            }
+        }
+    }
+    Ok(hostname::get()?.to_string_lossy().into_owned())
 }
