@@ -15,8 +15,8 @@ jobs:
       fail-fast: true
       matrix:
         include:
-          - name: 4xlarge
-            runs-on: linux.4xlarge
+          - name: 12xlarge
+            runs-on: linux.12xlarge
     with:
       timeout: 60
       runner: ${{ matrix.runs-on }}
