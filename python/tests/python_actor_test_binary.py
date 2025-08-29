@@ -42,6 +42,9 @@ async def _flush_logs() -> None:
 
     await pm.stop()
 
+    # TODO: without stop, we will have PyGILState_Release error under stress test
+    await pm.stop()
+
 
 @main.command("flush-logs")
 def flush_logs() -> None:
