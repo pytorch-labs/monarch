@@ -597,6 +597,7 @@ pub(crate) mod test_util {
                 .allocate(AllocSpec {
                     extent: extent! { replica = 1 },
                     constraints: Default::default(),
+                    proc_name: None,
                 })
                 .await
                 .unwrap();
@@ -697,6 +698,7 @@ mod tests {
                     .allocate(AllocSpec {
                         extent: extent! { replica = 1 },
                         constraints: Default::default(),
+                        proc_name: None,
                     })
                     .await
                     .unwrap();
@@ -719,6 +721,7 @@ mod tests {
                     .allocate(AllocSpec {
                         extent: extent!(replica = 4),
                         constraints: Default::default(),
+                        proc_name: None,
                     })
                     .await
                     .unwrap();
@@ -744,6 +747,7 @@ mod tests {
                     .allocate(AllocSpec {
                         extent: extent!(replica = 2),
                         constraints: Default::default(),
+                        proc_name: None,
                     })
                     .await
                     .unwrap();
@@ -779,6 +783,7 @@ mod tests {
                     .allocate(AllocSpec {
                         extent: extent!(x = X, y = Y, z = Z),
                         constraints: Default::default(),
+                        proc_name: None,
                     })
                     .await
                     .unwrap();
@@ -822,6 +827,7 @@ mod tests {
                     .allocate(AllocSpec {
                         extent: extent!(replica = 2, host = 2, gpu = 8),
                         constraints: Default::default(),
+                        proc_name: None,
                     })
                     .await
                     .unwrap();
@@ -863,6 +869,7 @@ mod tests {
                         // reasonable (< 60s).
                         extent: extent!(replica = 2, host = 2, gpu = 8),
                         constraints: Default::default(),
+                        proc_name: None,
                     })
                     .await
                     .unwrap();
@@ -893,6 +900,7 @@ mod tests {
                         .allocate(AllocSpec {
                             extent: extent!(replica = 1),
                             constraints: Default::default(),
+                            proc_name: None,
                         })
                         .await
                         .unwrap();
@@ -940,6 +948,7 @@ mod tests {
                     .allocate(AllocSpec {
                         extent,
                         constraints: Default::default(),
+                        proc_name: None,
                     })
                     .await
                     .unwrap();
@@ -969,6 +978,7 @@ mod tests {
                     .allocate(AllocSpec {
                         extent: extent!(replica = 1 ),
                         constraints: Default::default(),
+                        proc_name: None,
                     })
                     .await
                     .unwrap();
@@ -998,6 +1008,7 @@ mod tests {
                     .allocate(AllocSpec {
                         extent: extent.clone(),
                         constraints: Default::default(),
+                        proc_name: None,
                     })
                     .await
                     .unwrap();
@@ -1061,6 +1072,7 @@ mod tests {
                 .allocate(AllocSpec {
                     extent: extent!(replica = 2),
                     constraints: Default::default(),
+                    proc_name: None,
                 })
                 .await
                 .unwrap();
@@ -1128,6 +1140,7 @@ mod tests {
                 .allocate(AllocSpec {
                     extent: extent!(replica = 1),
                     constraints: Default::default(),
+                    proc_name: None,
                 })
                 .await
                 .unwrap();
@@ -1194,6 +1207,7 @@ mod tests {
                 .allocate(AllocSpec {
                     extent: extent!(replica = 2),
                     constraints: Default::default(),
+                    proc_name: None,
                 })
                 .await
                 .unwrap();
@@ -1280,6 +1294,7 @@ mod tests {
                 .allocate(AllocSpec {
                     extent,
                     constraints: Default::default(),
+                    proc_name: None,
                 })
                 .await
                 .unwrap();
@@ -1333,6 +1348,7 @@ mod tests {
                 .allocate(AllocSpec {
                     extent: extent! { replica = 1 },
                     constraints: Default::default(),
+                    proc_name: None,
                 })
                 .await
                 .unwrap();

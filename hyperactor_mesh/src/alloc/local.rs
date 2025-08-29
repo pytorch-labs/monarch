@@ -152,7 +152,27 @@ impl Alloc for LocalAlloc {
 
             match self.todo_rx.recv().await? {
                 Action::Start(rank) => {
-                    let proc_id = ProcId::Ranked(self.world_id.clone(), rank);
+                    let (addr, proc_rx) = loop {
+                        match channel::serve(ChannelAddr::any(self.transport())).await {
+                            Ok(addr_and_proc_rx) => break addr_and_proc_rx,
+                            Err(err) => {
+                                tracing::error!(
+                                    "failed to create channel for rank {}: {}",
+                                    rank,
+                                    err
+                                );
+                                #[allow(clippy::disallowed_methods)]
+                                sleep(Duration::from_secs(1)).await;
+                                continue;
+                            }
+                        }
+                    };
+
+                    let proc_id = match &self.spec.proc_name {
+                        Some(name) => ProcId::Direct(addr.clone(), name.clone()),
+                        None => ProcId::Ranked(self.world_id.clone(), rank),
+                    };
+
                     let bspan = tracing::info_span!("mesh_agent_bootstrap");
                     let (proc, mesh_agent) = match MeshAgent::bootstrap(proc_id.clone()).await {
                         Ok(proc_and_agent) => proc_and_agent,
@@ -169,22 +189,6 @@ impl Alloc for LocalAlloc {
                         }
                     };
                     drop(bspan);
-
-                    let (addr, proc_rx) = loop {
-                        match channel::serve(ChannelAddr::any(self.transport())).await {
-                            Ok(addr_and_proc_rx) => break addr_and_proc_rx,
-                            Err(err) => {
-                                tracing::error!(
-                                    "failed to create channel for rank {}: {}",
-                                    rank,
-                                    err
-                                );
-                                #[allow(clippy::disallowed_methods)]
-                                sleep(Duration::from_secs(1)).await;
-                                continue;
-                            }
-                        }
-                    };
 
                     // Undeliverable messages get forwarded to the mesh agent.
                     let handle = proc.clone().serve(proc_rx);
@@ -205,12 +209,14 @@ impl Alloc for LocalAlloc {
                             return None;
                         }
                     };
+                    let create_key = ShortUuid::generate();
                     let created = ProcState::Created {
-                        proc_id: proc_id.clone(),
+                        create_key: create_key.clone(),
                         point,
                         pid: std::process::id(),
                     };
                     self.queue.push_back(ProcState::Running {
+                        create_key,
                         proc_id,
                         mesh_agent: mesh_agent.bind(),
                         addr,
@@ -242,6 +248,10 @@ impl Alloc for LocalAlloc {
         };
         self.stopped = event.is_none();
         event
+    }
+
+    fn spec(&self) -> &AllocSpec {
+        &self.spec
     }
 
     fn extent(&self) -> &Extent {
