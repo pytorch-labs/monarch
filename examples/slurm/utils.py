@@ -31,6 +31,7 @@ logger: logging.Logger = logging.getLogger(__name__)
 
 # Replace these constants with values specific from your cluster
 HOST_TYPE = "aws_g5.12xlarge"
+# TODO: Fix torchx so this should not be required from the user.
 HOST_MEMORY = 186777
 
 
@@ -43,7 +44,7 @@ async def get_appdef(num_hosts):
     appdef = hyperactor.host_mesh(
         image=image,
         # TODO: For some reason gpu.medium doens't work here
-        meshes=[f"mesh0:{num_hosts}:aws_g5.12xlarge"],  # mesh_name:num_hosts:host_type
+        meshes=[f"mesh0:{num_hosts}:{HOST_TYPE}"],  # mesh_name:num_hosts:host_type
     )
     return appdef
 
@@ -53,17 +54,10 @@ async def get_server_info(appdef):
 
     # TODO: Register this so we don't have to do this every time
     for role in appdef.roles:
-        role.resource.memMB = 186777
+        role.resource.memMB = HOST_MEMORY
 
     config = Config(
         scheduler="slurm",
-        scheduler_args={
-            # NOTE: replace with your own values
-            "hpcIdentity": "pytorch_distributed",
-            "hpcJobOncall": "monarch",
-            "hpcClusterUuid": "MastProdCluster",
-            "rmAttribution": "pytorch4all_clients_approved",
-        },
         appdef=appdef,
         workspace=str(CWD),  # or None to disable building ephemeral,
     )
